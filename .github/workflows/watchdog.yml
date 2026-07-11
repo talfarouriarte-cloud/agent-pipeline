@@ -587,6 +587,14 @@ jobs:
           ANTHROPIC_API_KEY: ""
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # allowed_bots (2026-07-11, repo de origen, incidente PR #1266): la
+          # acción rechaza actores bot por defecto (su anti-loop). Los runs del
+          # watchdog por workflow_run heredan el actor de la cadena
+          # (claude[bot] cuando el Creator empujó) y la etapa architect moría
+          # al nacer — las escaladas solo funcionaban desde cron/dispatch
+          # (actor humano). Seguro aquí: prompt interno fijo, etapa gateada
+          # por detect.
+          allowed_bots: "claude,github-actions"
           # PAT, NO GITHUB_TOKEN: los comentarios y labels del watchdog
           # DEBEN disparar los workflows del Creator/Reviewer. Eventos del
           # GITHUB_TOKEN default no disparan otros workflows (anti-loop de
