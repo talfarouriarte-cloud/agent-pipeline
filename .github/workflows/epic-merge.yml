@@ -63,6 +63,14 @@ jobs:
           # gate en checks sale con el GITHUB_TOKEN (statuses no disparan
           # workflows: sin riesgo de loop).
           STATUS_TOKEN: ${{ github.token }}
+          # Inputs al script vía env (2026-07-11, Fase C): con ${{ }} dentro
+          # del script, el bloque entero se evalúa como plantilla y revienta
+          # el límite de 21000 chars por expresión de Actions.
+          IN_PARTIAL_LIFETIME_CAP: ${{ inputs.partial_lifetime_cap }}
+          IN_PARTIAL_ROUND_CAP: ${{ inputs.partial_round_cap }}
+          IN_DEFAULT_BRANCH: ${{ inputs.default_branch }}
+          IN_EPIC_LABEL: ${{ inputs.epic_label }}
+          IN_CI_WORKFLOW_NAME: ${{ inputs.ci_workflow_name }}
         with:
           github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
           script: |
@@ -187,7 +195,7 @@ jobs:
                     await github.rest.issues.removeLabel({ owner, repo, issue_number: issueNumber, name: l.name }).catch(() => {});
                   await github.rest.issues.addLabels({ owner, repo, issue_number: issueNumber, labels: [`rondas:${totalRounds + 1}`] });
                 } catch (e) { core.info('label rondas falló: ' + e.message); }
-                const CAP_TOTAL = ${{ inputs.partial_lifetime_cap }};
+                const CAP_TOTAL = Number(process.env.IN_PARTIAL_LIFETIME_CAP);
                 if (totalRounds >= CAP_TOTAL) {
                   try { await github.rest.issues.addLabels({ owner, repo, issue_number: issueNumber, labels: ['stalled'] }); } catch (e) {}
                   try { await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber,
@@ -195,17 +203,17 @@ jobs:
                   await diag(prNumber, `MERGEADO parcial, pero el issue #${issueNumber} acumula ${totalRounds} relanzamientos totales (cap ${CAP_TOTAL}): stalled + rounds-cap-reached. architect-resolve debe PARTIRLO, no re-armarlo.`);
                   return;
                 }
-                if (relaunches >= ${{ inputs.partial_round_cap }}) {
+                if (relaunches >= Number(process.env.IN_PARTIAL_ROUND_CAP)) {
                   try { await github.rest.issues.addLabels({ owner, repo, issue_number: issueNumber, labels: ['stalled'] }); } catch (e) {}
                   try { await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber,
-                    body: `Cap de relanzamientos parciales alcanzado (ronda de ${{ inputs.partial_round_cap }}). El contador se resetea a partir de aquí: un des-stall humano abre una ronda nueva.\n\n<!-- relaunch-cap-reached -->` }); } catch (e) {}
-                  await diag(prNumber, `MERGEADO parcial, pero ya hubo ${relaunches} relanzamientos en esta ronda (cap ${{ inputs.partial_round_cap }}): issue #${issueNumber} marcado stalled, NO re-armo. Escala a humano.`);
+                    body: `Cap de relanzamientos parciales alcanzado (ronda de ${process.env.IN_PARTIAL_ROUND_CAP}). El contador se resetea a partir de aquí: un des-stall humano abre una ronda nueva.\n\n<!-- relaunch-cap-reached -->` }); } catch (e) {}
+                  await diag(prNumber, `MERGEADO parcial, pero ya hubo ${relaunches} relanzamientos en esta ronda (cap ${process.env.IN_PARTIAL_ROUND_CAP}): issue #${issueNumber} marcado stalled, NO re-armo. Escala a humano.`);
                   return;
                 }
                 try {
                   await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber,
                     body: `@claude\n\nPR parcial #${prNumber} mergeado. Continúa con el ALCANCE RESTANTE de este issue: re-verifica contra el HEAD actual qué criterios de aceptación siguen sin cubrir y cúbrelos. Si tu próximo PR completa el issue, NO lo marques parcial.\n\n<!-- epic-partial-relaunch -->` });
-                  await diag(prNumber, `MERGEADO parcial: issue #${issueNumber} SIGUE ABIERTO, re-armado para el alcance restante (${relaunches + 1}/${{ inputs.partial_round_cap }}).`);
+                  await diag(prNumber, `MERGEADO parcial: issue #${issueNumber} SIGUE ABIERTO, re-armado para el alcance restante (${relaunches + 1}/${process.env.IN_PARTIAL_ROUND_CAP}).`);
                 } catch (e) { await diag(prNumber, `mergeado parcial pero re-armar #${issueNumber} falló: ${e.message}`); }
                 return;
               }
@@ -243,7 +251,7 @@ jobs:
                       `Auditoría post-épica (run único). Alcance: **${scope}**.`,
                       ``,
                       `Rol y protocolo: \`docs/agents/epic-auditor.md\` (vinculante).`,
-                      `Compara el árbol mergeado de \`${{ inputs.default_branch }}\` contra el alcance TOTAL`,
+                      `Compara el árbol mergeado de \`${process.env.IN_DEFAULT_BRANCH}\` contra el alcance TOTAL`,
                       `de la épica (ADR + unión de issues del rango), no PR-a-PR.`,
                       ``,
                       `@claude arranca la auditoría siguiendo docs/agents/epic-auditor.md.`,
@@ -310,7 +318,7 @@ jobs:
                 let mIssue = null;
                 try { mIssue = (await github.rest.issues.get({ owner, repo, issue_number: mIssueNumber })).data; }
                 catch (e) { await diag(prNumber, `manual: issues.get #${mIssueNumber} falló: ${e.message}`); return; }
-                if (!(mIssue.labels || []).map(l => l.name).includes('${{ inputs.epic_label }}')) { core.info('manual: issue sin label de épica; no-op.'); return; }
+                if (!(mIssue.labels || []).map(l => l.name).includes(process.env.IN_EPIC_LABEL)) { core.info('manual: issue sin label de épica; no-op.'); return; }
                 await diag(prNumber, `merge MANUAL detectado: proceso sentinels de #${mIssueNumber}.`);
                 await postMerge(p, mIssueNumber, mIssue);
                 return;
@@ -345,7 +353,7 @@ jobs:
               try { issue = (await github.rest.issues.get({ owner, repo, issue_number: issueNumber })).data; }
               catch (e) { await diag(prNumber, `issues.get #${issueNumber} falló: ${e.message}`); return; }
               const issueLabels = (issue.labels || []).map(l => l.name);
-              if (!issueLabels.includes('${{ inputs.epic_label }}')) { await diag(prNumber, `issue #${issueNumber} sin label de épica; no-op.`); return; }
+              if (!issueLabels.includes(process.env.IN_EPIC_LABEL)) { await diag(prNumber, `issue #${issueNumber} sin label de épica; no-op.`); return; }
 
               // GATE 1: CI verde. PRIMARIO = la `conclusion` del propio evento
               // workflow_run. RESPALDO (reescrito 2026-07-10, incidente PR #1205):
@@ -364,13 +372,13 @@ jobs:
               // y lo invalida en el attempt 1 de código nuevo. Primario; el
               // payload del evento y la consulta directa quedan de respaldo.
               let ciOk = prLabels.includes('ci-verde')
-                || (run && run.name === '${{ inputs.ci_workflow_name }}' && run.conclusion === 'success');
+                || (run && run.name === process.env.IN_CI_WORKFLOW_NAME && run.conclusion === 'success');
               if (!ciOk && pf) {
                 try {
                   const { data: ciRuns } = await github.rest.actions.listWorkflowRunsForRepo({
                     owner, repo, head_sha: pf.head.sha, per_page: 30 });
                   const cis = ciRuns.workflow_runs
-                    .filter(r => r.name === '${{ inputs.ci_workflow_name }}')
+                    .filter(r => r.name === process.env.IN_CI_WORKFLOW_NAME)
                     .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
                   ciOk = cis.length > 0 && cis[0].status === 'completed' && cis[0].conclusion === 'success';
                 } catch (e) { core.info('consulta directa de CI falló: ' + e.message); }

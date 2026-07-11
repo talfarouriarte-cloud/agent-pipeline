@@ -133,6 +133,16 @@ jobs:
           # (anti-loop de GitHub). Solo se usa para esa llamada puntual;
           # el resto del scan sigue con el GITHUB_TOKEN.
           ARM_PAT: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          # Inputs al script vía env (2026-07-11, Fase C): el script rozaba el
+          # límite de 21000 chars por expresión (21.896) — misma clase que el
+          # fallo de arranque de epic-merge en el primer consumidor.
+          IN_CREATOR_WF: ${{ inputs.creator_workflow_name }}
+          IN_REVIEWER_WF: ${{ inputs.reviewer_workflow_name }}
+          IN_CI_WF: ${{ inputs.ci_workflow_name }}
+          IN_EPIC_MERGE_WF: ${{ inputs.epic_merge_workflow_name }}
+          IN_EXTRA_WFS: ${{ inputs.extra_pipeline_workflows }}
+          IN_LOOKBACK_MIN: ${{ inputs.lookback_min }}
+          IN_DEFAULT_BRANCH: ${{ inputs.default_branch }}
         with:
           script: |
             // Umbral de silencio por tipo de disparo: en workflow_run el
@@ -154,9 +164,9 @@ jobs:
             // activos no deben ocultarlo. Si falla también el 2º intento
             // (run_attempt>=2), anomalía para la etapa architect.
             try {
-              const AGENT_WFS = ['${{ inputs.creator_workflow_name }}', '${{ inputs.reviewer_workflow_name }}'];
+              const AGENT_WFS = [process.env.IN_CREATOR_WF, process.env.IN_REVIEWER_WF];
               const STARTUP_MAX_S = 90;
-              const LOOKBACK_MIN = ${{ inputs.lookback_min }}; // ~2 ticks de cron
+              const LOOKBACK_MIN = Number(process.env.IN_LOOKBACK_MIN); // ~2 ticks de cron
               const { data: recent } = await github.rest.actions.listWorkflowRunsForRepo({
                 ...O, status: 'failure', per_page: 30 });
               for (const r of recent.workflow_runs) {
@@ -184,7 +194,7 @@ jobs:
             // Un run del pipeline no vive >6h de verdad (timeouts de job
             // ≤ ~1h); todo lo más viejo se ignora o el gate quedaría
             // bloqueado para siempre.
-            const PIPELINE = ['${{ inputs.creator_workflow_name }}', '${{ inputs.reviewer_workflow_name }}', '${{ inputs.ci_workflow_name }}', '${{ inputs.epic_merge_workflow_name }}', ...('${{ inputs.extra_pipeline_workflows }}'.split(',').map(s => s.trim()).filter(Boolean))];
+            const PIPELINE = [process.env.IN_CREATOR_WF, process.env.IN_REVIEWER_WF, process.env.IN_CI_WF, process.env.IN_EPIC_MERGE_WF, ...((process.env.IN_EXTRA_WFS || '').split(',').map(s => s.trim()).filter(Boolean))];
             const MAX_RUN_AGE_H = 6;
             let inFlight = false;
             for (const status of ['in_progress', 'queued']) {
@@ -360,7 +370,7 @@ jobs:
                 if (rebases < 2) {
                   await github.rest.issues.createComment({
                     ...O, issue_number: pr.number,
-                    body: `${REBASE_MARK}\n@claude rebasa esta rama sobre \`origin/${{ inputs.default_branch }}\` y resuelve los conflictos (watchdog: PR en conflicto sin checks posibles — sin merge-ref no corren CI ni Reviewer). Alcance intacto: solo rebase + resolución. <!-- ping-creator -->`,
+                    body: `${REBASE_MARK}\n@claude rebasa esta rama sobre \`origin/${process.env.IN_DEFAULT_BRANCH}\` y resuelve los conflictos (watchdog: PR en conflicto sin checks posibles — sin merge-ref no corren CI ni Reviewer). Alcance intacto: solo rebase + resolución. <!-- ping-creator -->`,
                   });
                   core.notice(`PR #${pr.number}: dirty sin checks; ping de rebase ${rebases + 1}/2.`);
                 } else if (rebases >= 2) {
@@ -375,7 +385,7 @@ jobs:
                 ...O, head_sha: pr.head.sha, per_page: 20,
               });
               const ci = ciRuns.workflow_runs
-                .filter(r => r.name === '${{ inputs.ci_workflow_name }}')
+                .filter(r => r.name === process.env.IN_CI_WF)
                 .sort((x, y) => new Date(y.created_at) - new Date(x.created_at))[0];
               if (!ci || ci.status !== 'completed' || ci.conclusion !== 'failure') continue;
 
