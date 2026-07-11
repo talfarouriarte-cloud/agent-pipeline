@@ -17,22 +17,20 @@ Two paths: **A) new repo from scratch** and **B) existing repo already running a
 
 Order matters: the pipeline cannot derive decisions until spec/ADRs exist (consumer contract §1-2).
 
-**A0. Branch structure.** Create the working branch (conventionally `develop`) and set it as the repo default branch — the pipeline operates ONLY on the default branch; the production branch (conventionally `main`) receives human-gated promotions and nothing else. On a repo whose deploy is coupled to a branch (e.g. GitHub Pages serving `main`), this split IS the staging mechanism: promotion = deploy. All stub `default_branch` inputs and the pipeline-map instance must match the choice made here.
-
 **A1. Documents first.**
 1. Copy `templates/spec.template.md` → `spec.md`; fill vision, principles, stack, boundaries. Minimum bar: enough that an implementation question of the form "should X behave like Y?" can be answered by quoting it.
 2. Copy `templates/decisions.template.md` → `decisions.md`; register ADR-001 (project foundation) in adr-lint format. Run `node scripts/adr-lint.mjs` green.
-3. Copy `templates/CLAUDE.domain.template.md` → `CLAUDE.md` domain section; write `docs/conventions.md`.
+3. Compose `CLAUDE.md` = `vendored/CLAUDE.loop.md` (loop mechanics — MANDATORY: omitting it breaks PR creation, the "orphan PR" failure class) + `templates/CLAUDE.domain.template.md` filled in; write `docs/conventions.md`.
 4. Copy `templates/role-annex.template.md` → one annex per role with repo-specific mandates (branch names, test commands, protected paths).
 5. Instantiate `templates/pipeline-map.template.md` → `.claude/skills/pipeline-map/SKILL.md`.
 
-**A2. Vendored files.** Copy `vendored/` into place (`.claude/hooks/`, `.claude/agents/`, `.claude/settings.json`, `docs/agents/*.md`, `scripts/adr-lint.mjs`). Vendored skills go to `.claude/skills/<name>/SKILL.md` — all of them EXCEPT `project-launch` (genesis protocol; lives only in this central repo and in the Architect session). Keep the `synced from agent-pipeline@<sha>` headers intact.
+**A2. Vendored files.** Copy `vendored/` into place (`.claude/hooks/`, `.claude/agents/`, `.claude/settings.json`, `docs/agents/*.md`, `scripts/adr-lint.mjs`). Keep the `synced from agent-pipeline@<sha>` headers intact.
 
 **A3. CI.** Create the repo's own `ci.yml`: at minimum typecheck + the test command the stubs will pass as input, with a job name matching the merge-gate input, writing the `ci-verde` label on green. A repo with no test suite starts with typecheck-only CI — the gate still needs the green fact materialized.
 
 **A4. Labels & secrets.** Apply `templates/labels.json` (via `gh label` or API). Set secrets: Anthropic OAuth, `ARM_TOKEN`, PAT.
 
-**A5. Stubs.** Copy the five stubs, pin `@<tag>`, fill inputs (default branch, test/typecheck commands, caps, canonical doc names, CI job name). Size the caps consciously: the defaults (`creator_max_turns` 200, `reviewer_max_turns` 50, etc.) are sized for the ORIGIN repo's heavy engine issues — a consumer with smaller tasks should lower them; a lost session burns quota at the cap, and the watchdog re-arms if a legitimate session runs short. Add `watchdog-heartbeat` from template — on GitHub-hosted runners, NOT on the runner infra the other workflows use.
+**A5. Stubs.** Copy the five stubs, pin `@<tag>`, fill inputs (default branch, test/typecheck commands, caps, canonical doc names, CI job name). Add `watchdog-heartbeat` from template — on GitHub-hosted runners, NOT on the runner infra the other workflows use.
 
 **A6. Shakedown epic.** Design a deliberately small 2-issue epic exercising the full chain: issue → Creator PR → Reviewer verdict → auto-merge → `launch-next` → audit issue created and armed. Verify: labels materialize (`ci-verde`, `lgtm`, `estado:*`), commit statuses mirror (`epic-merge / gate`, `watchdog / turno`), audit runs invariants. Only after a green shakedown does real work start.
 

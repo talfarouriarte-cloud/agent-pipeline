@@ -1,6 +1,8 @@
-<!-- PLANTILLA agent-pipeline: sección de DOMINIO de CLAUDE.md. La mecánica
-del loop (marcadores de cierre, polaridad de PR, protocolo Creator↔Reviewer)
-llega vendorizada; esta sección añade lo específico del repo. -->
+<!-- PLANTILLA agent-pipeline: sección de DOMINIO de CLAUDE.md. El CLAUDE.md del
+consumidor se COMPONE: vendored/CLAUDE.loop.md (mecánica: marcadores de cierre,
+polaridad de PR, gh pr create obligatorio, protocolo Creator↔Reviewer) + esta
+sección de dominio. OMITIR la mitad vendorizada rompe la cadena (clase de fallo
+«PR huérfano», wmcb 2026-07-11). -->
 
 ## Dominio de este repo
 
