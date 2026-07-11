@@ -1,0 +1,453 @@
+name: Claude Code
+
+# Dispara cuando aparece @claude en:
+#  - el cuerpo o título de un issue (al abrirlo o editarlo)
+#  - un comentario de issue
+#  - un comentario de revisión sobre un PR
+#  - el cuerpo de una review de PR
+#
+# El workflow del Reviewer (reviewer.yml) sigue separado.
+# Loop Creator ↔ Reviewer post ADR-063: el Creator cierra con tag
+# ([READY-TO-MERGE], [NEEDS-HUMAN], o @reviewer) y este workflow
+# aplica las labels correspondientes. Cap de 3 comentarios de
+# claude[bot] en el PR para evitar espirales. Kill-switch vía label
+# `pause-agents`.
+
+# CALLABLE (agent-pipeline): los triggers de evento viven en el stub del
+# repo consumidor; este workflow hereda el contexto github.event del caller.
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner label (ej. ubuntu-latest, ubicloud-standard-2)
+        type: string
+        default: ubuntu-latest
+      default_branch:
+        description: Rama por defecto del repo consumidor
+        type: string
+        default: main
+      creator_model:
+        description: Modelo del Creator
+        type: string
+        default: claude-opus-4-8
+      creator_max_turns:
+        description: max-turns del Creator
+        type: number
+        default: 200
+      bot_comment_cap:
+        description: Cap de comentarios de claude[bot] por PR antes de human-needed
+        type: number
+        default: 8
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+      REVIEWER_GITHUB_TOKEN:
+        required: true
+
+jobs:
+  claude:
+    # Solo arranca si el evento contiene @claude. Esto reduce ruido y coste.
+    #
+    # FIX zero-width joiner (PR #205, 2026-05-23):
+    # El action emite ocasionalmente un U+200D (zero-width joiner)
+    # entre '@' y 'claude' al renderizar mentions del Reviewer. El
+    # substring literal '@claude' deja de aparecer en el body y
+    # contains() devuelve false. El Creator nunca arranca pese a que
+    # el Reviewer cree haberlo invocado. El sentinel HTML comment
+    # '<!-- ping-creator -->' es marca explícita de máquina, invisible
+    # en el render del comment, emitida por el Reviewer junto al
+    # '@claude' literal (que sigue visible para humanos). Convive con
+    # '@claude' literal: humanos pingean a mano con '@claude' simple
+    # y siguen disparando. Ver ADR-086.
+    # GATE author_association (agent-pipeline, repos públicos): solo OWNER/
+    # MEMBER/COLLABORATOR arman al Creator. Los pings de máquina (Reviewer,
+    # epic-merge, watchdog) salen con el PAT del propietario ⇒ OWNER.
+    if: |
+      (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association) || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association)) &&
+      ((github.event_name == 'issue_comment' && (contains(github.event.comment.body, '@claude') || contains(github.event.comment.body, '<!-- ping-creator -->'))) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
+      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude'))))
+
+    runs-on: ${{ inputs.runner }}
+
+    # Permisos mínimos para que Claude pueda escribir archivos, abrir PRs
+    # y comentar issues. id-token sirve para OIDC si añadimos providers
+    # alternativos (Bedrock, Vertex) en el futuro; no estorba dejarlo.
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+
+    steps:
+      # Kill-switch: si el issue/PR tiene la label `pause-agents`,
+      # aborta sin correr el agente. ADR-063.
+      - name: Check pause-agents kill-switch
+        id: check_pause
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = context.payload.issue?.labels
+              || context.payload.pull_request?.labels
+              || [];
+            const paused = labels.some(l => l.name === 'pause-agents');
+            if (paused) {
+              core.notice('Label `pause-agents` presente. Abortando Creator.');
+            }
+            core.setOutput('paused', paused);
+
+      # Cap de iteraciones: si en este PR ya hay 3+ comentarios de
+      # claude[bot] y el disparo viene de un bot (Reviewer), asume
+      # loop runaway, añade label `human-needed` y para. Si el
+      # disparo viene de un humano, el cap NO aplica (override).
+      # ADR-063.
+      #
+      # Ajustar CAP empíricamente si tu agente añade un comentario
+      # de resumen al abrir el PR (en cuyo caso CAP-1 = iteraciones
+      # efectivas Reviewer↔Creator).
+      - name: Check iteration cap (PR contexts only)
+        id: check_iterations
+        if: steps.check_pause.outputs.paused != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // CAP cuenta TODOS los comentarios de claude[bot] (Creator + Reviewer
+            // combinados). Una ronda completa Reviewer→Creator añade ~2 comentarios.
+            // CAP=8 permite ~3-4 rondas antes de escalar a humano. Si emergen loops
+            // bot↔bot patológicos, bajar; si el flow se atasca legítimamente, subir.
+            const CAP = ${{ inputs.bot_comment_cap }};
+
+            // Skip si sender es humano; cap solo aplica a loops bot↔bot.
+            if (context.payload.sender?.type === 'User') {
+              core.setOutput('cap_reached', false);
+              return;
+            }
+
+            // Resolver número del PR si el contexto es un PR.
+            const isPRComment =
+              context.eventName === 'issue_comment'
+              && !!context.payload.issue?.pull_request;
+            const isPRReviewEvent =
+              context.eventName === 'pull_request_review'
+              || context.eventName === 'pull_request_review_comment';
+            if (!isPRComment && !isPRReviewEvent) {
+              core.setOutput('cap_reached', false);
+              return;
+            }
+
+            const prNumber = context.payload.issue?.number
+              || context.payload.pull_request?.number;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+            const botComments = comments.filter(
+              c => c.user.login === 'claude[bot]'
+            );
+
+            if (botComments.length >= CAP) {
+              core.notice(
+                `Cap de ${CAP} comentarios de claude[bot] alcanzado `
+                + `(actual: ${botComments.length}). Añadiendo label `
+                + `\`human-needed\` y parando.`
+              );
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                labels: ['human-needed'],
+              });
+              core.setOutput('cap_reached', true);
+            } else {
+              core.setOutput('cap_reached', false);
+            }
+
+      - name: Checkout repository
+        if: |
+          steps.check_pause.outputs.paused != 'true'
+          && steps.check_iterations.outputs.cap_reached != 'true'
+        uses: actions/checkout@v4
+        with:
+          # fetch-depth: 0 trae todo el historial. Necesario para que Claude
+          # pueda razonar sobre commits previos cuando aplique.
+          fetch-depth: 0
+
+      # ───────────────────────────────────────────────────────────────────
+      # Sync FORZADO a la rama base ACTUAL antes de que la acción ramifique.
+      # Causa raíz (PR #866 salió 12 commits por detrás → conflicto): en eventos
+      # `issue_comment`, actions/checkout hace checkout de `github.sha`, que puede
+      # venir rancio; `claude-code-action` ramifica la rama nueva desde ese HEAD
+      # local. Esto fuerza el HEAD local a `origin/develop` antes de la acción, de
+      # modo que la rama del Creator SIEMPRE salga del develop más reciente.
+      # SOLO en trabajo de issue nuevo: en eventos de PR el Creator debe quedarse
+      # en la rama del PR (p.ej. para resolver conflictos), así que NO reseteamos.
+      # ───────────────────────────────────────────────────────────────────
+      - name: Sync a la rama base actual antes de ramificar (solo issues, no PRs)
+        if: |
+          steps.check_pause.outputs.paused != 'true'
+          && steps.check_iterations.outputs.cap_reached != 'true'
+          && (
+            (github.event_name == 'issue_comment' && !github.event.issue.pull_request)
+            || github.event_name == 'issues'
+          )
+        env:
+          BASE: ${{ inputs.default_branch }}
+        run: |
+          git fetch origin "$BASE"
+          git checkout -B "$BASE" "origin/$BASE"
+          git reset --hard "origin/$BASE"
+          echo "$BASE sincronizado a $(git rev-parse --short HEAD)"
+
+      - name: Run Claude Code
+        if: |
+          steps.check_pause.outputs.paused != 'true'
+          && steps.check_iterations.outputs.cap_reached != 'true'
+        # Blindaje de auth: forzamos OAuth Max como única vía de auth para el
+        # Creator. Razón: la action `anthropics/claude-code-action@v1` usa
+        # internamente la SDK estándar de Anthropic, que lee
+        # `ANTHROPIC_API_KEY` del env automáticamente. Si está disponible,
+        # la SDK puede priorizarla sobre el `claude_code_oauth_token` (orden
+        # opaco, no documentado). Resultado empírico: PRs del Creator
+        # factuaban ~$11 contra la API key facturada en lugar de consumir el
+        # plan Max. (El Reviewer también usa claude-code-action@v1 desde
+        # 2026-05-19 con el mismo blindaje; ver reviewer.yml.)
+        #
+        # Con `ANTHROPIC_API_KEY: ""` aquí, la SDK no encuentra API key en
+        # env y queda solo el OAuth. Si OAuth Max falla por cualquier razón
+        # (token expirado, rate limit), el job falla con error de auth claro
+        # en lugar de facturar silenciosamente. Trade-off aceptado: pierdes
+        # el fallback transparente al Creator a cambio de garantía de
+        # que ningún PR del Creator se factura sin avisar. El Reviewer
+        # sigue conservando su fallback documentado por footer.
+        env:
+          ANTHROPIC_API_KEY: ""
+          # Auto-partición (CLAUDE.md): los arms de hijos deben salir como
+          # actor humano — claude-code-action rechaza actores bot y el token
+          # del agente aparece como claude[bot] (incidente #1048, 2026-07-04).
+          ARM_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # claude-opus-4-8: modelo actual de mayor capacidad. Coherente
+          # con la decisión de usar el modelo más capaz para creación de
+          # código en el motor financiero. (Antes claude-opus-4-7; migrado
+          # a 4.8 — mismo precio, mejor tool-calling, mejor manejo de
+          # contexto largo/compactación, menos verbosidad de comentarios.)
+          # max-turns 100 razonable con OAuth Max (no hay coste por uso,
+          # solo cuota de bucket).
+          claude_args: |
+            --model ${{ inputs.creator_model }}
+            --max-turns ${{ inputs.creator_max_turns }}
+            --permission-mode bypassPermissions
+            --allowedTools "Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr edit:*),Bash(gh pr checks:*),Bash(gh pr merge:*)"
+
+      # Auto-labeling según tag de cierre del Creator. ADR-063.
+      # Solo en contextos de PR (los tags solo aplican en loop con Reviewer).
+      #
+      # FIX bucle silencioso (PR #180, 2026-05-21, ADR-064 amendment):
+      # El step solo re-aplica la label si el último comment de claude[bot]
+      # es POSTERIOR al comment que disparó el job. Razón: el trigger del
+      # workflow (if: contains(comment.body, '@claude')) hace substring
+      # match crudo y dispara también cuando otro agente (Reviewer)
+      # menciona el literal `@claude` en su cuerpo aunque sea entre
+      # backticks documentando convergencia. Si el step re-aplica label
+      # leyendo SIEMPRE el último comment de claude[bot] (que sigue siendo
+      # el del Creator de la ronda 1 con `@reviewer` al final), se genera
+      # un loop Reviewer↔Auto-label sin que el Creator produzca trabajo
+      # nuevo (14 rondas observadas en PR #180). El check de freshness
+      # rompe el bucle estructuralmente.
+      - name: Auto-label based on Creator's closing tag
+        if: |
+          success()
+          && steps.check_pause.outputs.paused != 'true'
+          && steps.check_iterations.outputs.cap_reached != 'true'
+          && (
+            github.event_name == 'pull_request_review'
+            || github.event_name == 'pull_request_review_comment'
+            || (github.event_name == 'issue_comment'
+                && github.event.issue.pull_request)
+          )
+        uses: actions/github-script@v7
+        with:
+          # IMPORTANTE: usar el PAT (REVIEWER_GITHUB_TOKEN), NO el GITHUB_TOKEN
+          # default. Razón: este step aplica la label `needs-review` que DEBE
+          # disparar el workflow del Reviewer (reviewer.yml `on: pull_request:
+          # types: [labeled]`). Eventos generados por GITHUB_TOKEN default NO
+          # disparan otros workflows (protección anti-loop de GitHub). Con el
+          # PAT, el evento `labeled` sí se emite y el Reviewer dispara.
+          # Doc: https://docs.github.com/en/actions/using-workflows/triggering-a-workflow
+          github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          script: |
+            const prNumber = context.payload.issue?.number
+              || context.payload.pull_request?.number;
+
+            // Releer comentarios (el agente acaba de añadir el suyo).
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+            const botComments = comments.filter(
+              c => c.user.login === 'claude[bot]'
+            );
+            if (botComments.length === 0) return;
+
+            const last = botComments[botComments.length - 1];
+
+            // FRESHNESS CHECK (PR #180 fix, ADR-064 amendment).
+            // El último comment de claude[bot] solo es señal válida de "el
+            // Creator acaba de cerrar trabajo en este run" si fue creado
+            // DESPUÉS del comment/review que disparó este job. Si es
+            // anterior, este job se disparó por un trigger espurio
+            // (típicamente: substring `@claude` en backticks dentro del
+            // body del Reviewer documentando convergencia) y NO debemos
+            // re-aplicar label porque desencadena un loop con el Reviewer.
+            const triggerCreatedAtRaw =
+              context.payload.comment?.created_at
+              || context.payload.review?.submitted_at
+              || null;
+            if (triggerCreatedAtRaw) {
+              const triggerCreatedAt = new Date(triggerCreatedAtRaw);
+              const lastBotCreatedAt = new Date(last.created_at);
+              if (lastBotCreatedAt <= triggerCreatedAt) {
+                core.notice(
+                  `Último comment de claude[bot] (${last.created_at}) es `
+                  + `anterior o igual al comment que disparó este job `
+                  + `(${triggerCreatedAtRaw}). Probablemente trigger espurio `
+                  + `(p.ej. substring \`@claude\` en backticks dentro de un `
+                  + `comment del Reviewer). NO re-aplico label para evitar `
+                  + `loop. Ver ADR-064 amendment.`
+                );
+                return;
+              }
+            }
+
+            const body = last.body || '';
+
+            // Detectar tag exacto. Prioridad: NEEDS-HUMAN > READY-TO-MERGE > @reviewer.
+            // (Si por error el agente pone varios, escalar gana.)
+            // ANCLADO a inicio de línea (2026-07-08, PR #1133): el substring
+            // crudo disparó human-needed por una MENCIÓN del tag entre
+            // backticks en prosa del Creator («gatillo `[NEEDS-HUMAN]` en
+            // CLAUDE.md»), congelando el PR con CI rojo fuera del radar del
+            // watchdog. Mismo bug ya corregido para `@claude` (ADR-064) y
+            // documentado para `ping-creator` (watchdog.md): un tag de cierre
+            // es un tag solo si ABRE su línea. CLAUDE.md permite
+            // `[NEEDS-HUMAN]: <razón>` con texto detrás, así que el ancla es
+            // de inicio de línea, no de línea completa. Failure class #4:
+            // text belts forbidden — esto acerca los tags a marcadores.
+            let label = null;
+            if (/^\s*\[NEEDS-HUMAN\]/m.test(body)) {
+              label = 'human-needed';
+            } else if (/^\s*\[READY-TO-MERGE\]/m.test(body)) {
+              label = 'ready-to-merge';
+            } else if (/^\s*@reviewer\b/im.test(body)) {
+              label = 'needs-review';
+            }
+
+            if (!label) {
+              core.notice(
+                'El último comentario del Creator no contiene tag de cierre '
+                + '([READY-TO-MERGE], [NEEDS-HUMAN], o @reviewer). '
+                + 'Sin label automática aplicada.'
+              );
+              return;
+            }
+
+            // Para `needs-review`: quitar y re-añadir para forzar disparo
+            // del Reviewer. El Reviewer se autoborra como primer paso
+            // (ADR-063 self-remove pattern), así que en estado normal la
+            // label NO está aquí. El remove defensivo cubre fallos
+            // parciales donde el Reviewer no llegó a autoborrarse.
+            if (label === 'needs-review') {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  name: 'needs-review',
+                });
+              } catch (e) {
+                // La label puede no estar; no es error.
+              }
+            }
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              labels: [label],
+            });
+            core.notice(`Label aplicada: ${label}`);
+
+      # ───────────────────────────────────────────────────────────────────
+      # Auto-lanzamiento de épica (ADR-193). Espejo del step `Auto-label`:
+      # usa el PAT (REVIEWER_GITHUB_TOKEN) porque eventos del GITHUB_TOKEN
+      # default NO disparan otros workflows (anti-recursión de GitHub). El
+      # Creator cierra con `<!-- launch-next: #N -->` (o `<!-- epic-done -->`);
+      # este step postea `@claude` en el issue N, y ESE evento (al venir del
+      # PAT) arranca la siguiente corrida del Creator.
+      #
+      # ADR-193 opción A (elegida): el LGTM del Reviewer sobre un PR con
+      # label `epica` despierta al Creator, que verifica CI y mergea él mismo
+      # (gh pr merge en allowedTools) y emite el sentinel launch-next. Este step
+      # solo postea el @claude del siguiente issue desde ese sentinel.
+      # ───────────────────────────────────────────────────────────────────
+      - name: Launch next epic issue (Creator's closing sentinel)
+        if: |
+          success()
+          && steps.check_pause.outputs.paused != 'true'
+          && steps.check_iterations.outputs.cap_reached != 'true'
+        uses: actions/github-script@v7
+        with:
+          # PAT, NO GITHUB_TOKEN: el @claude posteado debe disparar la
+          # siguiente corrida del Creator (ver step Auto-label para el motivo).
+          github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          script: |
+            const prNumber = context.payload.issue?.number
+              || context.payload.pull_request?.number;
+            if (!prNumber) return;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+            const botComments = comments.filter(c => c.user.login === 'claude[bot]');
+            if (botComments.length === 0) return;
+            const last = botComments[botComments.length - 1];
+
+            // FRESHNESS (igual que Auto-label): solo actuar si el cierre del
+            // Creator es POSTERIOR al evento que disparó este job.
+            const triggerAt = context.payload.comment?.created_at
+              || context.payload.review?.submitted_at || null;
+            if (triggerAt && new Date(last.created_at) <= new Date(triggerAt)) {
+              core.notice('Cierre del Creator no es fresco; no lanzo.');
+              return;
+            }
+
+            const body = last.body || '';
+
+            // epic-done ⇒ fin de la épica, no se lanza nada (el humano prueba).
+            if (/<!--\s*epic-done\s*-->/.test(body)) {
+              core.notice('Épica terminada; no hay siguiente issue.');
+              return;
+            }
+
+            const m = body.match(/<!--\s*launch-next:\s*#?(\d+)\s*-->/);
+            if (!m) return;
+            const nextIssue = Number(m[1]);
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: nextIssue,
+              body: '@claude',
+            });
+            core.notice(`Épica: lanzado el siguiente issue #${nextIssue}.`);

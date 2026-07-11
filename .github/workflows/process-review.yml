@@ -1,0 +1,160 @@
+# Process Reviewer — evaluación de proceso post-auditoría (2026-07-07)
+#
+# Se dispara al aplicarse la label `auditoria-completa` (2026-07-10: los
+# issues de auditoría y las process-proposal quedan ABIERTOS como panel
+# vivo de la épica hasta que el Architect limpia la cola al lanzar la
+# épica siguiente — cerrados desaparecían de la vista y el humano no los
+# leía; el trigger por `closed` habría disparado esta revisión en el
+# momento equivocado). Lee el
+# pipeline-map, las métricas de proceso de los últimos informes de auditoría
+# y publica como máximo 2 issues `process-proposal` con evidencia y
+# coste/riesgo — o comenta «Sin propuestas» en la auditoría.
+#
+# Separación de poderes: este agente PROPONE, nunca aplica. No modifica
+# ficheros, no arma nada, y sus bodies JAMÁS contienen la mención de arm.
+# El humano decide; docs los aplica el Architect; yml el humano.
+name: Process Reviewer
+
+# CALLABLE (agent-pipeline): trigger y concurrency en el stub
+# (concurrency group process-reviewer, cancel-in-progress: false).
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        default: ubuntu-latest
+      default_branch:
+        type: string
+        default: main
+      process_model:
+        type: string
+        default: claude-fable-5
+      process_fallback_model:
+        type: string
+        default: claude-opus-4-8
+      process_max_turns:
+        type: number
+        default: 60
+      timeout_minutes:
+        type: number
+        default: 20
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+      REVIEWER_GITHUB_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  review:
+    name: Process review
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    if: |
+      github.event.label.name == 'auditoria-completa'
+      && contains(github.event.issue.labels.*.name, 'auditoria')
+      && !contains(github.event.issue.labels.*.name, 'pause-agents')
+    steps:
+      - name: Checkout (pipeline-map + docs de agentes)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.default_branch }}
+
+      - name: Run process review
+        uses: anthropics/claude-code-action@v1
+        env:
+          # Blindaje OAuth-only (mismo patrón que reviewer.yml): si OAuth Max
+          # falla, el job da rojo en lugar de facturar por API key.
+          ANTHROPIC_API_KEY: ""
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Los issues de auditoría los cierra el bot/PAT.
+          allowed_bots: "claude"
+          # PAT para que los issues creados salgan con autoría del usuario.
+          # Sus bodies NUNCA llevan la mención de arm, así que no disparan nada.
+          github_token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          claude_args: |
+            --model ${{ inputs.process_model }}
+            --fallback-model ${{ inputs.process_fallback_model }}
+            # 60 desde 2026-07-09 (era 30): el mandato del loop de skills
+            # (ADR-212) añadió lecturas + commits Git Data; el run inaugural
+            # murió en error_max_turns tras completar lo esencial. Regla
+            # (pipeline-map, failure class mandate/toolbox-budget drift):
+            # al ampliar un mandato, ampliar herramientas Y presupuestos
+            # en el mismo cambio.
+            --max-turns ${{ inputs.process_max_turns }}
+            --allowedTools "Read,Glob,Grep,Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh issue create:*),Bash(gh issue comment:*),Bash(gh api:*)"
+          prompt: |
+            REPO: ${{ github.repository }}
+            AUDIT ISSUE: ${{ github.event.issue.number }}
+
+            Eres el process-reviewer del pipeline de agentes de este repo.
+            Tu única función: proponer mejoras de PROCESO (autonomía y
+            eficiencia del loop de agentes) basadas en EVIDENCIA métrica.
+            Jamás propones cambios de producto, modelo financiero o código
+            de la aplicación.
+
+            Protocolo:
+            1. Lee `.claude/skills/pipeline-map/SKILL.md` (mapa del sistema
+               y clases de fallo conocidas) y `docs/agents/protocol.md`.
+            2. Con `gh issue list --label auditoria --state closed --limit 4`
+               y `gh issue view <n> --comments`, lee los informes de las
+               últimas auditorías, en especial sus bloques
+               «## Métricas de proceso» y «## Observaciones de proceso».
+            3. Compara métricas entre épicas. Busca REGRESIONES o fricciones
+               repetidas (≥2 épicas): PRs/issue al alza, rondas de review al
+               alza, stalls, intervenciones humanas que el sistema debería
+               absorber, intervenciones repetidas del Watchdog por la misma
+               causa.
+            4. Si NO hay regresión ni patrón ≥2 épicas: comenta en el issue
+               de auditoría exactamente `Sin propuestas.` con una línea de
+               métricas comparadas, y termina. NO inventes mejoras para
+               justificarte — un informe vacío es un resultado válido.
+            5. Si hay patrón: crea COMO MÁXIMO 2 issues con
+               `gh issue create --label process-proposal`, cada uno con:
+               título `process-proposal · <resumen>`; el patrón con evidencia
+               citada (issue/PR/métrica concretos, ≥2 épicas); la propuesta
+               concreta (qué doc/hook/workflow cambiaría y cómo); coste y
+               riesgo (incluido el riesgo de la interacción con el resto del
+               pipeline — revisa «Known failure classes» del pipeline-map);
+               y a quién toca aplicarla (Architect=docs/hooks,
+               humano=workflows). Después comenta en el issue de auditoría
+               la lista de propuestas creadas.
+
+            6. LOOP DE SKILLS (ADR-212 — lee el ADR antes de editar). Además
+               de (4-5), evalúa el bloque «## Patrones de fallo del Creator»
+               de las auditorías:
+               - Si un TIPO de hallazgo recurre (≥3 en la épica o ≥2 épicas),
+                 puedes ejecutar hasta 2 EDICIONES DE SKILL por épica,
+                 EXCLUSIVAMENTE dentro de la sección
+                 «## Heurísticas aprendidas (loop)» de las skills entrenables
+                 listadas en ADR-212. Operaciones add/delete/replace acotadas;
+                 cada add paga contexto del Creator: prefiere delete/replace.
+               - Ejecuta el commit TÚ MISMO vía Git Data (gh api, sobre
+                 la rama por defecto, mensaje `skill(loop): <tipo> — <resumen>`) con el
+                 marcador `<!-- skill-edit: <tipo> <fecha> -->` en cada línea
+                 añadida/sustituida.
+               - Publica en el issue de auditoría un comentario con el diff,
+                 el tipo que ataca y la evidencia citada, terminado en
+                 `<!-- autonomous-decision -->` (veto humano asíncrono).
+               - REVERT por defecto: si una edición previa (marcador con ≥2
+                 épicas) tiene su tipo aún recurriendo según el bloque del
+                 Auditor, reviértela igual (commit + autonomous-decision).
+               - Si el clúster no tiene casa en ninguna skill (test
+                 single-home) y lleva ≥2 épicas: NO crees la skill tú —
+                 emite un `process-proposal` de creación con la descripción
+                 de disparo propuesta (el alta exige pipeline-map, que te
+                 está vetado).
+
+            Reglas duras:
+            - PROHIBIDO escribir la mención de arm (arroba+claude) en
+              cualquier body o comentario que publiques.
+            - PROHIBIDO modificar cualquier fichero FUERA de las secciones
+              «## Heurísticas aprendidas (loop)» de las skills entrenables
+              de ADR-212 (jamás docs, workflows, pipeline-map, protocol.md,
+              ni el resto de una skill): fuera de ese perímetro propones, el
+              humano decide, otros aplican.
+            - Máximo 2 propuestas y 2 skill-edits. Sin evidencia ⇒ nada.

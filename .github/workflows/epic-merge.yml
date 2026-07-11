@@ -1,0 +1,418 @@
+# =============================================================================
+# Epic Merge — auto-merge + auto-encadenado para épicas (ADR-193)
+# =============================================================================
+# Dispara cuando CI o el Reviewer terminan. Re-evalúa AMBOS gates; el que cierre
+# la pareja (el que acabe más tarde) mergea. Gate = CI verde AND Reviewer LGTM
+# AND label `epica` en el issue. Tras mergear, lee `<!-- launch-next: #N -->`
+# del cuerpo del issue y lanza el siguiente con @claude.
+#
+# Robustez: corre con el PAT (REVIEWER_GITHUB_TOKEN). TODO el cuerpo va envuelto
+# en try/catch → el run NUNCA falla; o mergea, o deja un comentario diagnóstico
+# en el PR explicando por qué no. Ese comentario (marcador <!-- epic-merge-diag -->)
+# es legible por API para depurar sin logs.
+#
+# human-execute (ADR-020): lo commitea el humano.
+# =============================================================================
+name: Epic Merge
+
+# CALLABLE (agent-pipeline): triggers (workflow_run de CI+Reviewer,
+# pull_request closed+labeled) y concurrency viven en el stub. El grupo de
+# concurrency del stub DEBE serializar por rama y llevar
+# cancel-in-progress: false. El nombre del workflow de CI del consumidor se
+# pasa como input `ci_workflow_name` (el gate lo compara contra run.name).
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        default: ubuntu-latest
+      default_branch:
+        type: string
+        default: main
+      ci_workflow_name:
+        description: Nombre EXACTO del workflow de CI del consumidor (name:)
+        type: string
+        default: CI
+      epic_label:
+        description: Label que marca issues de épica
+        type: string
+        default: epica
+      partial_round_cap:
+        description: Relanzamientos parciales por ronda antes de stalled
+        type: number
+        default: 3
+      partial_lifetime_cap:
+        description: Parciales acumulados de por vida antes de rounds-cap-reached
+        type: number
+        default: 6
+    secrets:
+      REVIEWER_GITHUB_TOKEN:
+        required: true
+
+jobs:
+  epic-merge:
+    runs-on: ${{ inputs.runner }}
+    permissions:
+      statuses: write     # espejo del gate en la caja de checks del PR (2026-07-10)
+      contents: read
+    steps:
+      - name: Evaluar y mergear
+        uses: actions/github-script@v7
+        env:
+          # El PAT del script NO tiene permiso de statuses; el espejo del
+          # gate en checks sale con el GITHUB_TOKEN (statuses no disparan
+          # workflows: sin riesgo de loop).
+          STATUS_TOKEN: ${{ github.token }}
+        with:
+          github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          script: |
+            const REVIEWER_LOGIN = 'talfarouriarte-cloud';
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const run = context.payload.workflow_run || null;
+
+            // Helper: deja/actualiza un comentario diagnóstico legible por API.
+            async function diag(prNumber, msg) {
+              try {
+                core.info('[epic-merge] ' + msg);
+                if (!prNumber) return;
+                const marker = '<!-- epic-merge-diag -->';
+                const { data: cs } = await github.rest.issues.listComments({
+                  owner, repo, issue_number: prNumber, per_page: 100 });
+                const mine = cs.filter(c => (c.body || '').includes(marker));
+                const body = `${marker}\n**epic-merge** (${new Date().toISOString()}): ${msg}`;
+                if (mine.length) {
+                  await github.rest.issues.updateComment({ owner, repo, comment_id: mine[mine.length-1].id, body });
+                } else {
+                  await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+                }
+              } catch (e) { core.warning('diag falló: ' + e.message); }
+            }
+
+            // Helper: label de estado única en el PR (estado:*) — legible de
+            // un vistazo en la lista de PRs (2026-07-05: merge manual sobre
+            // REVIEW pendiente porque el estado solo vivía en comentarios).
+            const ESTADOS = ['estado:esperando-ci', 'estado:esperando-reviewer', 'estado:esperando-creator'];
+            // Espejo del gate en la caja de checks del PR (2026-07-10): el
+            // mismo estado que la label, como commit status sobre el head
+            // SHA — contexto `epic-merge / gate`. Amarillo mientras espera,
+            // verde al satisfacerse/mergear. Sale con GITHUB_TOKEN (el PAT
+            // no tiene scope de statuses; los statuses no disparan nada).
+            const STATUS_DESC = {
+              'estado:esperando-ci': ['pending', 'Esperando CI verde'],
+              'estado:esperando-reviewer': ['pending', 'Esperando veredicto del Reviewer'],
+              'estado:esperando-creator': ['pending', 'Veredicto REVIEW/NITS abierto: turno del Creator'],
+              'merged': ['success', 'Gate satisfecho: mergeado por epic-merge'],
+              'manual': ['success', 'Mergeado manualmente; sentinels procesados'],
+            };
+            async function mirrorStatus(prNum, key) {
+              try {
+                const { data: p } = await github.rest.pulls.get({ owner, repo, pull_number: prNum });
+                const [state, description] = STATUS_DESC[key] || ['pending', key];
+                const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/statuses/${p.head.sha}`, {
+                  method: 'POST',
+                  headers: { Authorization: `Bearer ${process.env.STATUS_TOKEN}`, Accept: 'application/vnd.github+json' },
+                  body: JSON.stringify({ state, description: description.slice(0, 140), context: 'epic-merge / gate' }) });
+                if (!res.ok) core.info(`mirrorStatus HTTP ${res.status}`);
+              } catch (e) { core.info('mirrorStatus: ' + e.message); }
+            }
+            async function setStatus(prNum, label, statusKey) {
+              try {
+                const { data: cur } = await github.rest.issues.listLabelsOnIssue({ owner, repo, issue_number: prNum });
+                for (const l of cur) if (ESTADOS.includes(l.name) && l.name !== label)
+                  await github.rest.issues.removeLabel({ owner, repo, issue_number: prNum, name: l.name }).catch(() => {});
+                if (label && !cur.some(l => l.name === label))
+                  await github.rest.issues.addLabels({ owner, repo, issue_number: prNum, labels: [label] });
+              } catch (e) { core.info('setStatus: ' + e.message); }
+              await mirrorStatus(prNum, statusKey || label);
+            }
+
+            // ── Post-merge: parcial / cierre de issue / sentinels. Camino único
+            // para merge automático y manual (movimiento verbatim 2026-07-05).
+            async function postMerge(pr, issueNumber, issue) {
+              const prNumber = pr.number;
+              // PR PARCIAL (marcador `<!-- partial-pr -->` o "cierra parcialmente" en el
+              // body del PR): mergea, pero NO cierra el issue ni sigue el sentinel —
+              // re-arma el MISMO issue para el alcance restante. Cap de 3 relanzamientos
+              // (marcador <!-- epic-partial-relaunch -->) → label `stalled` y escala a
+              // humano, para que un Creator que trocea sin fin no cicle. Motivado por
+              // #954/#957: la Slice 2 murió en silencio al cerrarse el issue con el
+              // merge de la Slice 1.
+              const prBody = pr.body || '';
+              // Polaridad declarada (2026-07-07, #1113): el Creator DEBE marcar
+              // full-pr o partial-pr (hook pr-polarity lo fuerza en gh pr create).
+              // Sin declaración ⇒ PARCIAL: fallo seguro y ruidoso (re-arm espurio
+              // visible / stall) en vez de salto silencioso de alcance. El texto
+              // libre no decide (el cinturón /alcance restante/i causó el deadlock
+              // de #1112 por ceguera de polaridad).
+              const isFull = /<!--\s*full-pr\s*-->/.test(prBody);
+              const isPartial = !isFull && (/<!--\s*partial-pr\s*-->/.test(prBody) || /cierra\s+parcialmente/i.test(prBody) || true);
+              if (!isFull && !/<!--\s*partial-pr\s*-->/.test(prBody))
+                await diag(prNumber, 'PR sin declaración de polaridad (ni full-pr ni partial-pr): lo trato como PARCIAL por seguridad.');
+              if (isPartial) {
+                // Inmunidad a un `Closes #N` extraviado en el PR híbrido (2026-07-06,
+                // #1097): el autoclose nativo de GitHub cierra el issue al mergear
+                // ANTES de que este camino corra. Reabrir explícito e idempotente:
+                // un issue parcial SIEMPRE queda abierto.
+                try { await github.rest.issues.update({ owner, repo, issue_number: issueNumber, state: 'open' }); }
+                catch (e) { core.info('reabrir parcial falló: ' + e.message); }
+                // Contador POR RONDA (2026-07-07, #1100 stall-thrash): contar solo
+                // los relanzamientos posteriores al último tope. Antes contaba toda
+                // la vida del issue, así que tras un des-stall humano el primer
+                // parcial re-disparaba el cap al instante (stalled a las 01:13,
+                // des-stall 08:01, re-stalled 10:19). Cada des-stall abre una ronda
+                // fresca de 3, con el humano acotando entre rondas.
+                // Contador ACUMULADO de vida del issue (2026-07-07, régimen
+                // autónomo): a diferencia del de ronda, NUNCA se resetea. Al
+                // 6º parcial total el issue no se re-arma más: `stalled` +
+                // <!-- rounds-cap-reached -->, que ordena a architect-resolve
+                // RE-DIMENSIONAR (partición de architect.md) en vez de abrir
+                // otra ronda sobre el mismo issue. Es señal de fallo de
+                // dimensionamiento (failure class #2), no de parada: el
+                // trabajo continúa en los issues hijos, sin humano.
+                let relaunches = 0, totalRounds = 0;
+                try {
+                  const { data: ics } = await github.rest.issues.listComments({
+                    owner, repo, issue_number: issueNumber, per_page: 100 });
+                  let lastCap = -1;
+                  ics.forEach((c, idx) => { if ((c.body || '').includes('<!-- relaunch-cap-reached -->')) lastCap = idx; });
+                  relaunches = ics.filter((c, idx) => idx > lastCap && (c.body || '').includes('<!-- epic-partial-relaunch -->')).length;
+                  totalRounds = ics.filter(c => (c.body || '').includes('<!-- epic-partial-relaunch -->')).length;
+                } catch (e) { core.info('contar relanzamientos falló: ' + e.message); }
+                // Label de visibilidad `rondas:N` (parciales mergeados en la
+                // vida del issue, incluido este) — patrón estado:* pero en el issue.
+                try {
+                  const { data: curL } = await github.rest.issues.listLabelsOnIssue({ owner, repo, issue_number: issueNumber });
+                  for (const l of curL) if (/^rondas:\d+$/.test(l.name) && l.name !== `rondas:${totalRounds + 1}`)
+                    await github.rest.issues.removeLabel({ owner, repo, issue_number: issueNumber, name: l.name }).catch(() => {});
+                  await github.rest.issues.addLabels({ owner, repo, issue_number: issueNumber, labels: [`rondas:${totalRounds + 1}`] });
+                } catch (e) { core.info('label rondas falló: ' + e.message); }
+                const CAP_TOTAL = ${{ inputs.partial_lifetime_cap }};
+                if (totalRounds >= CAP_TOTAL) {
+                  try { await github.rest.issues.addLabels({ owner, repo, issue_number: issueNumber, labels: ['stalled'] }); } catch (e) {}
+                  try { await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber,
+                    body: `Cap ACUMULADO de relanzamientos parciales alcanzado (${totalRounds} en la vida del issue; cap ${CAP_TOTAL}). Este issue NO se re-arma más: su tamaño ha demostrado no caber en el presupuesto del Creator. architect-resolve: RE-DIMENSIONA el alcance restante (heurística de partición de docs/agents/architect.md — hijos con label de épica, encadenados, heredando el sentinel; cierra este issue con trazabilidad). NO abras otra ronda sobre este issue.\n\n<!-- rounds-cap-reached -->` }); } catch (e) {}
+                  await diag(prNumber, `MERGEADO parcial, pero el issue #${issueNumber} acumula ${totalRounds} relanzamientos totales (cap ${CAP_TOTAL}): stalled + rounds-cap-reached. architect-resolve debe PARTIRLO, no re-armarlo.`);
+                  return;
+                }
+                if (relaunches >= ${{ inputs.partial_round_cap }}) {
+                  try { await github.rest.issues.addLabels({ owner, repo, issue_number: issueNumber, labels: ['stalled'] }); } catch (e) {}
+                  try { await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber,
+                    body: `Cap de relanzamientos parciales alcanzado (ronda de ${{ inputs.partial_round_cap }}). El contador se resetea a partir de aquí: un des-stall humano abre una ronda nueva.\n\n<!-- relaunch-cap-reached -->` }); } catch (e) {}
+                  await diag(prNumber, `MERGEADO parcial, pero ya hubo ${relaunches} relanzamientos en esta ronda (cap ${{ inputs.partial_round_cap }}): issue #${issueNumber} marcado stalled, NO re-armo. Escala a humano.`);
+                  return;
+                }
+                try {
+                  await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber,
+                    body: `@claude\n\nPR parcial #${prNumber} mergeado. Continúa con el ALCANCE RESTANTE de este issue: re-verifica contra el HEAD actual qué criterios de aceptación siguen sin cubrir y cúbrelos. Si tu próximo PR completa el issue, NO lo marques parcial.\n\n<!-- epic-partial-relaunch -->` });
+                  await diag(prNumber, `MERGEADO parcial: issue #${issueNumber} SIGUE ABIERTO, re-armado para el alcance restante (${relaunches + 1}/${{ inputs.partial_round_cap }}).`);
+                } catch (e) { await diag(prNumber, `mergeado parcial pero re-armar #${issueNumber} falló: ${e.message}`); }
+                return;
+              }
+
+              await diag(prNumber, `MERGEADO (issue #${issueNumber}). Lanzando siguiente…`);
+
+              // Cerrar el issue completado. NO se delega al `Closes #N` del cuerpo del PR:
+              // el Creator lo emite de forma inconsistente (#858/#859 quedaron abiertos pese
+              // a su PR mergeado). Cierre explícito e idempotente.
+              try {
+                await github.rest.issues.update({ owner, repo, issue_number: issueNumber, state: 'closed', state_reason: 'completed' });
+              } catch (e) { core.info('cerrar issue falló: ' + e.message); }
+
+              // ENCADENAR
+              const body = issue.body || '';
+
+              // AUDITORÍA DE ÉPICA (run único post-épica). El ÚLTIMO issue de la
+              // cadena lleva `<!-- epic-audit: ADR-NNN, #first-#last -->` (lo hornea
+              // el Architect al diseñar la épica). Al mergear ese issue: se crea el
+              // issue de auditoría, armado en el propio body. Guards anti-recursión:
+              //  - de los correctivos, SOLO el último de la cadena correctiva
+              //    lleva el sentinel (re-auditoría automática, UNA ronda; si la
+              //    re-auditoría encuentra huecos, escala a humano — ver
+              //    docs/agents/epic-auditor.md);
+              //  - el issue de auditoría se crea aquí (no por merge) → no re-dispara.
+              const am = body.match(/<!--\s*epic-audit:\s*([^>]+?)\s*-->/);
+              if (am) {
+                const scope = am[1].trim();
+                try {
+                  const { data: audit } = await github.rest.issues.create({
+                    owner, repo,
+                    title: `Auditoría de épica · ${scope}`,
+                    labels: ['auditoria'],
+                    body: [
+                      `Auditoría post-épica (run único). Alcance: **${scope}**.`,
+                      ``,
+                      `Rol y protocolo: \`docs/agents/epic-auditor.md\` (vinculante).`,
+                      `Compara el árbol mergeado de \`${{ inputs.default_branch }}\` contra el alcance TOTAL`,
+                      `de la épica (ADR + unión de issues del rango), no PR-a-PR.`,
+                      ``,
+                      `@claude arranca la auditoría siguiendo docs/agents/epic-auditor.md.`,
+                    ].join('\n'),
+                  });
+                  await diag(prNumber, `MERGEADO + epic-audit: auditoría lanzada en #${audit.number}. Épica terminada.`);
+                } catch (e) {
+                  await diag(prNumber, `mergeado pero crear/armar auditoría falló: ${e.message}`);
+                }
+                return; // epic-audit implica fin de cadena (no coexiste con launch-next)
+              }
+
+              if (/<!--\s*epic-done\s*-->/.test(body)) { await diag(prNumber, 'MERGEADO + epic-done. Épica terminada.'); return; }
+              const lm = body.match(/<!--\s*launch-next:\s*#?(\d+)\s*-->/);
+              if (!lm) { await diag(prNumber, 'MERGEADO pero sin sentinel launch-next; cadena se detiene.'); return; }
+              const next = Number(lm[1]);
+              // Des-bloqueo mecánico del destino (2026-07-08, #1120): un
+              // eslabón re-armado por su cadena está por definición
+              // desbloqueado — si llevaba `stalled`/`human-needed` era por
+              // el prerrequisito que ESTE merge acaba de cerrar (patrón
+              // re-dimensionado: hijos insertados delante de un issue
+              // parado). Sin esta limpieza el arm dispara al Creator con
+              // el kill-switch aún puesto y el humano tiene que acordarse
+              // de retirarlo a mano — mecanismo, no memoria.
+              for (const stale of ['stalled', 'human-needed']) {
+                try { await github.rest.issues.removeLabel({ owner, repo, issue_number: next, name: stale }); }
+                catch (e) { /* 404 = no la tenía; ok */ }
+              }
+              try {
+                await github.rest.issues.createComment({ owner, repo, issue_number: next,
+                  body: `@claude\n\nArranque automático de épica tras merge de #${prNumber}.\n\n<!-- epic-auto-launch -->` });
+                await diag(prNumber, `MERGEADO + lanzado #${next} (labels de bloqueo limpiadas si las había).`);
+              } catch (e) { await diag(prNumber, `mergeado pero lanzar #${next} falló: ${e.message}`); }
+            }
+
+            let prNumber = null;
+            try {
+              // ── Evento labeled (ADR-218): solo `lgtm` evalúa; el resto de
+              // labels se ignoran aquí (concurrency ya serializa).
+              let labeledPr = null;
+              if (context.eventName === 'pull_request' && context.payload.action === 'labeled') {
+                if (context.payload.label?.name !== 'lgtm') return;
+                labeledPr = context.payload.pull_request;
+                if (labeledPr.state !== 'open' || labeledPr.merged) return;
+                core.info(`[epic-merge] trigger: labeled lgtm / rama ${labeledPr.head.ref}`);
+              }
+              // ── Camino MANUAL: pull_request closed(merged) por humano.
+              if (context.eventName === 'pull_request' && context.payload.action === 'closed') {
+                const p = context.payload.pull_request;
+                if (!p.merged) return; // cerrado sin merge: nada que procesar
+                prNumber = p.number;
+                await setStatus(prNumber, null, 'manual'); // limpiar estado:* + espejo verde
+                const mb = (p.head.ref || '').match(/issue-(\d+)/);
+                if (!mb) { core.info('manual: rama sin issue; no-op.'); return; }
+                const mIssueNumber = Number(mb[1]);
+                // Dedupe con el camino automático: si epic-merge ya mergeó él
+                // mismo, su diag contiene «MERGEADO» — no reprocesar sentinels.
+                try {
+                  const { data: cs } = await github.rest.issues.listComments({ owner, repo, issue_number: prNumber, per_page: 100 });
+                  if (cs.some(c => (c.body || '').includes('<!-- epic-merge-diag -->') && /MERGEADO/.test(c.body || ''))) {
+                    core.info('manual: epic-merge ya procesó este merge; no-op.'); return;
+                  }
+                } catch (e) { core.warning('manual dedupe: ' + e.message); }
+                let mIssue = null;
+                try { mIssue = (await github.rest.issues.get({ owner, repo, issue_number: mIssueNumber })).data; }
+                catch (e) { await diag(prNumber, `manual: issues.get #${mIssueNumber} falló: ${e.message}`); return; }
+                if (!(mIssue.labels || []).map(l => l.name).includes('${{ inputs.epic_label }}')) { core.info('manual: issue sin label de épica; no-op.'); return; }
+                await diag(prNumber, `merge MANUAL detectado: proceso sentinels de #${mIssueNumber}.`);
+                await postMerge(p, mIssueNumber, mIssue);
+                return;
+              }
+
+              const headBranch = labeledPr ? labeledPr.head.ref : run.head_branch;
+              const headSha = labeledPr ? labeledPr.head.sha : run.head_sha;
+              if (!labeledPr) core.info(`[epic-merge] trigger: ${run.name} / ${run.conclusion} / rama ${headBranch} / sha ${headSha}`);
+
+              // PR abierto de esta rama
+              let pr = labeledPr;
+              if (!pr) try {
+                const { data: prs } = await github.rest.pulls.list({
+                  owner, repo, state: 'open', head: `${owner}:${headBranch}` });
+                pr = prs.find(p => p.head.sha === headSha) || prs[0] || null;
+              } catch (e) { core.warning('pulls.list: ' + e.message); }
+              if (!pr) { core.info(`[epic-merge] sin PR abierto para ${headBranch}; no-op.`); return; }
+              prNumber = pr.number;
+
+              // kill-switches
+              const prLabels = (pr.labels || []).map(l => l.name);
+              if (prLabels.includes('pause-agents') || prLabels.includes('human-needed')) {
+                await diag(prNumber, 'pausado (pause-agents/human-needed); no mergeo.'); return;
+              }
+
+              // issue desde la rama claude/issue-NNN
+              const bm = (headBranch || '').match(/issue-(\d+)/);
+              if (!bm) { await diag(prNumber, `rama sin issue (${headBranch}); no-op.`); return; }
+              const issueNumber = Number(bm[1]);
+
+              let issue = null;
+              try { issue = (await github.rest.issues.get({ owner, repo, issue_number: issueNumber })).data; }
+              catch (e) { await diag(prNumber, `issues.get #${issueNumber} falló: ${e.message}`); return; }
+              const issueLabels = (issue.labels || []).map(l => l.name);
+              if (!issueLabels.includes('${{ inputs.epic_label }}')) { await diag(prNumber, `issue #${issueNumber} sin label de épica; no-op.`); return; }
+
+              // GATE 1: CI verde. PRIMARIO = la `conclusion` del propio evento
+              // workflow_run. RESPALDO (reescrito 2026-07-10, incidente PR #1205):
+              // consulta DIRECTA de los runs de CI para el head SHA (el PAT tiene
+              // Actions:read — el comentario histórico que decía lo contrario era
+              // falso). El respaldo anterior usaba `mergeable_state === 'clean'`
+              // como proxy de CI, y el status espejo `epic-merge / gate` en
+              // `pending` lo envenenaba: el gate observaba un estado que él mismo
+              // perturbaba, y todo PR cuyo LGTM llegara después del CI quedaba en
+              // `esperando-ci` para siempre. Nunca inferir CI de mergeable_state.
+              let pf = null;
+              try { pf = (await github.rest.pulls.get({ owner, repo, pull_number: prNumber })).data; }
+              catch (e) { core.info('pulls.get: ' + e.message); }
+              if (pf && (pf.state !== 'open' || pf.merged)) { await diag(prNumber, 'PR ya cerrado/mergeado; no-op.'); return; }
+              // Hecho materializado (ADR-218): CI escribe `ci-verde` al acabar
+              // y lo invalida en el attempt 1 de código nuevo. Primario; el
+              // payload del evento y la consulta directa quedan de respaldo.
+              let ciOk = prLabels.includes('ci-verde')
+                || (run && run.name === '${{ inputs.ci_workflow_name }}' && run.conclusion === 'success');
+              if (!ciOk && pf) {
+                try {
+                  const { data: ciRuns } = await github.rest.actions.listWorkflowRunsForRepo({
+                    owner, repo, head_sha: pf.head.sha, per_page: 30 });
+                  const cis = ciRuns.workflow_runs
+                    .filter(r => r.name === '${{ inputs.ci_workflow_name }}')
+                    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+                  ciOk = cis.length > 0 && cis[0].status === 'completed' && cis[0].conclusion === 'success';
+                } catch (e) { core.info('consulta directa de CI falló: ' + e.message); }
+              }
+              if (!ciOk) { await setStatus(prNumber, 'estado:esperando-ci'); await diag(prNumber, `CI no confirmado verde (trigger=${run ? run.name + '/' + run.conclusion : 'labeled:lgtm'}); espero al otro evento.`); return; }
+
+              // GATE 2: Reviewer LGTM. Hecho materializado primario (ADR-218):
+              // label `lgtm` (post-step determinista de reviewer.yml; CI la
+              // invalida en código nuevo). El escaneo de comentarios queda de
+              // RESPALDO TRANSITORIO (PRs pre-cambio); retirar en fase 2.
+              let lgtm = prLabels.includes('lgtm');
+              if (!lgtm) try {
+                const { data: comments } = await github.rest.issues.listComments({
+                  owner, repo, issue_number: prNumber, per_page: 100 });
+                const verdicts = comments.filter(c =>
+                  c.user.login === REVIEWER_LOGIN && /^\s*(LGTM|REVIEW|NITS)\b/.test(c.body || ''));
+                const last = verdicts[verdicts.length - 1];
+                lgtm = !!(last && /^\s*LGTM\b/.test(last.body));
+              } catch (e) { await diag(prNumber, `chequeo Reviewer falló: ${e.message}`); return; }
+              if (!lgtm) {
+                // ¿Espera al Reviewer (sin veredicto aún) o al Creator (REVIEW/NITS abiertos)?
+                let waitingOn = 'estado:esperando-reviewer';
+                try {
+                  const { data: cs2 } = await github.rest.issues.listComments({ owner, repo, issue_number: prNumber, per_page: 100 });
+                  const vs = cs2.filter(c => c.user.login === REVIEWER_LOGIN && /^\s*(LGTM|REVIEW|NITS)\b/.test(c.body || ''));
+                  if (vs.length && /^\s*(REVIEW|NITS)\b/.test(vs[vs.length - 1].body || '')) waitingOn = 'estado:esperando-creator';
+                } catch (e) { core.info('estado lgtm: ' + e.message); }
+                await setStatus(prNumber, waitingOn);
+                await diag(prNumber, `Reviewer aún no LGTM (${waitingOn.replace('estado:', '')}); espero.`);
+                return;
+              }
+
+              // MERGE (directo; si ya estuviera cerrado/mergeado, el propio merge lo reporta).
+              try {
+                await github.rest.pulls.merge({ owner, repo, pull_number: prNumber, merge_method: 'squash' });
+              } catch (e) { await diag(prNumber, `MERGE FALLÓ: ${e.message} (¿ya mergeado / protección de rama / token sin contents:write?)`); return; }
+              try { await github.rest.git.deleteRef({ owner, repo, ref: `heads/${headBranch}` }); } catch (e) {}
+
+              await setStatus(prNumber, null, 'merged'); // limpiar estado:* + espejo verde
+              await postMerge(pr, issueNumber, issue);
+              return;
+            } catch (e) {
+              core.warning('[epic-merge] excepción no esperada: ' + (e && e.message));
+              await diag(prNumber, 'excepción no esperada: ' + (e && e.message));
+            }

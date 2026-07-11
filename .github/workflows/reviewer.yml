@@ -1,1 +1,238 @@
+name: Opus Reviewer
 
+# CALLABLE (agent-pipeline): triggers y concurrency viven en el stub
+# (concurrency del stub DEBE llevar cancel-in-progress: false — un evento
+# labeled espurio no puede matar una review en vuelo; incidente PR #1109).
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        default: ubuntu-latest
+      reviewer_model:
+        type: string
+        default: claude-opus-4-8
+      reviewer_max_turns:
+        type: number
+        default: 50
+      timeout_minutes:
+        type: number
+        default: 15
+      agent_branch_prefix:
+        description: Prefijo de ramas del agente que auto-disparan review
+        type: string
+        default: claude/
+      review_context:
+        description: Líneas extra de contexto de dominio para el paso 2 del prompt (anexo por repo)
+        type: string
+        default: ""
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+      REVIEWER_GITHUB_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  review:
+    name: Reviewer
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    # Skip PRs from forks (no secret access).
+    # Kill-switch: skip si label `pause-agents` (ADR-063).
+    # Auto-trigger on PRs cuya HEAD ref empiece por `claude/` (rama del agente)
+    # — cubre tanto PRs abiertos por claude[bot] como PRs abiertos por el humano
+    # desde la compare URL del action cuando la rama es del agente (gap del
+    # action documentado en operational-notes). Manual via 'needs-review' label.
+    if: |
+      github.event.pull_request.head.repo.full_name == github.repository
+      && !contains(github.event.pull_request.labels.*.name, 'pause-agents')
+      && (
+        (github.event.action == 'opened' && (
+          github.event.pull_request.user.login == 'claude[bot]'
+          || startsWith(github.event.pull_request.head.ref, inputs.agent_branch_prefix)
+        ))
+        || (
+          github.event.action == 'labeled'
+          && github.event.label.name == 'needs-review'
+          && github.event.sender.login != 'claude[bot]'
+        )
+      )
+
+    steps:
+      # Patrón ADR-063: el agente disparado por una label la quita como
+      # primer paso. Así el próximo add (del Creator tras responder a
+      # los comentarios) vuelve a disparar el evento `labeled`. Sin
+      # esto, re-aplicar la misma label es no-op silencioso.
+      #
+      # Solo aplica cuando el trigger fue label (no en `opened`).
+      - name: Remove needs-review trigger label
+        if: |
+          github.event.action == 'labeled'
+          && github.event.label.name == 'needs-review'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                name: 'needs-review',
+              });
+              core.notice('Label `needs-review` removed (trigger consumed).');
+            } catch (e) {
+              // 404 si la label ya no está (race condition o removida
+              // manualmente). No es error en operativa normal.
+              core.notice(`Could not remove needs-review: ${e.message}`);
+            }
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Migración 2026-05-19: el Reviewer estaba en `scripts/reviewer.mjs`
+      # llamando Messages API directamente con CLAUDE_CODE_OAUTH_TOKEN. Eso
+      # NO funciona — OAuth tokens no son válidos contra Messages API (ver
+      # GitHub issue anthropics/claude-code#37205) — y el script tenía
+      # fallback silencioso a ANTHROPIC_API_KEY → facturación pay-per-token
+      # ~20€/día sin detectar.
+      #
+      # Ahora se usa claude-code-action@v1 igual que el Creator
+      # (claude-code.yml). El action invoca el binario `claude` CLI, no
+      # Messages API directa, así que SÍ funciona con OAuth Max ($0 real).
+      #
+      # `prompt:` activa automation mode del action — corre directo sin
+      # esperar `@claude` mention. El system prompt del Reviewer vive en
+      # docs/agents/reviewer.md y se carga via el propio prompt aquí.
+      - name: Run Reviewer
+        uses: anthropics/claude-code-action@v1
+        env:
+          # Blindaje OAuth-only: bloquea cualquier fallback silencioso a API
+          # key dentro de la SDK interna del action. Si OAuth Max falla, el
+          # job da rojo en lugar de facturar.
+          ANTHROPIC_API_KEY: ""
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # El PR del Creator viene de claude[bot]. El action tiene un guard
+          # anti-bot que rechaza disparos de actores no-humanos a menos que
+          # estén en allowed_bots. Sin esto, el Reviewer falla en PRs del
+          # Creator con: "Workflow initiated by non-human actor: claude
+          # (type: Bot). Add bot to allowed_bots list ...".
+          allowed_bots: "claude"
+
+          # GITHUB_TOKEN default NO dispara otros workflows (anti-loop GitHub).
+          # Para que el comentario del Reviewer con `@claude` dispare el
+          # Creator (claude-code.yml), usar PAT (REVIEWER_GITHUB_TOKEN).
+          github_token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          # track_progress NO se activa: solo es compatible con acciones
+          # 'opened/synchronize/ready_for_review/reopened' del evento
+          # pull_request. Como el Reviewer también se dispara via label
+          # 'needs-review' (action: labeled), activarlo rompería el flujo
+          # manual. Trade-off aceptable: pierdes comment de progreso
+          # visible, pero ganas robustez de invocación.
+          claude_args: |
+            --model ${{ inputs.reviewer_model }}
+            --max-turns ${{ inputs.reviewer_max_turns }}
+            --allowedTools "Read,Glob,Grep,Write,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*)"
+
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+            PR HEAD SHA: ${{ github.event.pull_request.head.sha }}
+            PR BASE SHA: ${{ github.event.pull_request.base.sha }}
+
+            Eres el Reviewer del repo. Tu rol completo, criterios de
+            severidad, formato del comment de output (cabecera de control
+            de loop con veredicto + @claude en línea 1-2, TOC al principio,
+            severidad por issue 🔴/🟡/🟢/🔵, verificaciones, criterio de
+            convergencia, criterios LGTM/REVIEW/NITS) están documentados
+            en `docs/agents/reviewer.md`.
+
+            Acciones requeridas (en este orden):
+
+            1. **Lee `docs/agents/reviewer.md` COMPLETO** antes de hacer
+               nada más. Es tu system prompt — internalízalo. Si algo en
+               las instrucciones siguientes contradice ese doc, gana el
+               doc.
+
+            2. **Lee el contexto relevante** del repo según el área que
+               toca el PR:
+               - `decisions.md` (ADRs vigentes) — siempre relevante.
+               - `spec.md` (contrato del producto).
+               - `CLAUDE.md` para convenciones operativas.
+               - `docs/agents/reviewer-annex.md` si existe (mandato
+                 específico del repo).
+               ${{ inputs.review_context }}
+
+            3. **Obtén el diff del PR**:
+               ```
+               gh pr diff ${{ github.event.pull_request.number }} > /tmp/diff.patch
+               ```
+               Excluir `pnpm-lock.yaml` del análisis (ruido de
+               dependencias auto-gestionado).
+
+            4. **Obtén el thread de comentarios del PR** (incluye reviews
+               previas tuyas si las hay):
+               ```
+               gh pr view ${{ github.event.pull_request.number }} --json comments,reviews > /tmp/thread.json
+               ```
+
+            5. **Audita el PR** según los criterios de
+               `docs/agents/reviewer.md`. Si NO es la primera review de
+               este PR (ya hay comments tuyos previos en `thread.json`),
+               aplica los criterios de convergencia: NO repitas issues
+               ya planteadas, verifica si las del Creator fueron
+               resueltas, decide LGTM/NITS/REVIEW.
+
+            6. **Postea tu review como comentario en el PR**:
+               ```
+               gh pr comment ${{ github.event.pull_request.number }} --body-file <archivo>
+               ```
+               Formato exacto del doc: veredicto + `@claude` (si REVIEW)
+               en cabecera al principio del comment para sobrevivir
+               truncamiento, TOC al principio, severidad por issue,
+               verificaciones.
+
+            Reglas absolutas:
+
+            - NO modifiques código del PR. Tu único output es el
+              comentario de review.
+            - NO mergees el PR.
+            - NO añadas/quites labels (excepto consumir `needs-review`
+              que ya gestiona el pre-step).
+            - Respeta el formato y los criterios de severidad definidos
+              en `docs/agents/reviewer.md` exactamente.
+
+      # ── Estado materializado (ADR-218): el veredicto que la sesión acaba
+      # de publicar se escribe como label por un paso DETERMINISTA (la
+      # disciplina de un LLM es olvidable; el mecanismo no). `lgtm` sale con
+      # el PAT: su evento `labeled` es el edge que le faltaba a epic-merge
+      # cuando el LGTM llega después del CI (incidente PR #1205).
+      - name: Materializar veredicto (label lgtm)
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          ARM_PAT: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+        with:
+          script: |
+            const O = { owner: context.repo.owner, repo: context.repo.repo };
+            const n = context.payload.pull_request.number;
+            const { data: cs } = await github.rest.issues.listComments({ ...O, issue_number: n, per_page: 100 });
+            const vs = cs.filter(c => /^\s*(LGTM|REVIEW|NITS)\b/.test((c.body || '').trim()));
+            if (!vs.length) return;
+            const lastV = (vs[vs.length - 1].body || '').trim().split(/\s/)[0].replace(':','');
+            if (lastV === 'LGTM') {
+              const res = await fetch(`https://api.github.com/repos/${O.owner}/${O.repo}/issues/${n}/labels`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${process.env.ARM_PAT}`, Accept: 'application/vnd.github+json' },
+                body: JSON.stringify({ labels: ['lgtm'] }) });
+              if (!res.ok) core.warning(`label lgtm: HTTP ${res.status}`);
+            } else {
+              await github.rest.issues.removeLabel({ ...O, issue_number: n, name: 'lgtm' }).catch(() => {});
+            }
