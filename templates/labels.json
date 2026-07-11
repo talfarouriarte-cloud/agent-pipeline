@@ -1,0 +1,19 @@
+[
+  {"name": "epica", "color": "5319e7", "description": "Issue de cadena de épica (habilita el merge gate)"},
+  {"name": "needs-review", "color": "fbca04", "description": "Turno del Reviewer (el Reviewer la consume al arrancar)"},
+  {"name": "lgtm", "color": "0e8a16", "description": "Hecho materializado: veredicto LGTM vigente (la escribe reviewer.yml)"},
+  {"name": "ci-verde", "color": "0e8a16", "description": "Hecho materializado: CI verde vigente (la escribe ci.yml)"},
+  {"name": "ready-to-merge", "color": "0e8a16", "description": "Cierre del Creator sin loop pendiente"},
+  {"name": "human-needed", "color": "b60205", "description": "Escalada terminal: requiere humano"},
+  {"name": "pause-agents", "color": "b60205", "description": "Kill-switch: ningún agente actúa sobre este item"},
+  {"name": "stalled", "color": "d93f0b", "description": "Item atascado; lo consume architect-resolve"},
+  {"name": "correctivo", "color": "c2e0c6", "description": "Issue correctivo creado por el Auditor"},
+  {"name": "auditoria", "color": "bfdadc", "description": "Issue de auditoría de épica"},
+  {"name": "auditoria-completa", "color": "bfdadc", "description": "Informe del Auditor terminado (dispara process-review)"},
+  {"name": "process-proposal", "color": "d4c5f9", "description": "Propuesta de mejora de proceso (panel vivo entre épicas)"},
+  {"name": "registro-decisiones", "color": "ededed", "description": "Issue-digest de decisiones autónomas/derivadas (veto asíncrono)"},
+  {"name": "watchdog-handoff-fix", "color": "f9d0c4", "description": "Intervención del watchdog: handoff roto reparado"},
+  {"name": "watchdog-turn-relaunch", "color": "f9d0c4", "description": "Intervención del watchdog: relanzamiento por turno zombie"},
+  {"name": "relaunch-cap-reached", "color": "e99695", "description": "Cap de ronda de parciales alcanzado"},
+  {"name": "rounds-cap-reached", "color": "e99695", "description": "Cap acumulado de parciales: partición obligatoria"}
+]

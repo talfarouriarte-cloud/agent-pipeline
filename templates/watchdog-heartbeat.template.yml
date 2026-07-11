@@ -1,0 +1,149 @@
+# TEMPLATE (agent-pipeline): copiar al repo consumidor y sustituir
+# __DEFAULT_BRANCH__ por la rama por defecto. NO es workflow_call a propósito:
+# el vigilante del vigilante debe correr en infraestructura independiente de
+# lo que vigila (runner GitHub-hosted, cero LLM) y sin dependencia del central.
+name: Watchdog Heartbeat
+
+# Latido del vigilante (2026-07-07): el régimen autónomo depende de que
+# watchdog.yml corra, pero nadie vigilaba al vigilante. Su cron es
+# best-effort (observado: 2 runs en 5h pese al */20) y workflow_run solo
+# dispara si ALGO corre — silencio total del pipeline es su punto ciego.
+#
+# Este workflow, con cron propio e independiente, hace dos cosas baratas
+# y deterministas (cero LLM):
+#
+#   1. REVIVIR: si el último run del Watchdog envejece > STALE_MIN,
+#      re-dispararlo vía workflow_dispatch (autoreparación, cero humano)
+#      y verificar en la misma corrida que el run nace. Solo si el
+#      dispatch falla o el run no aparece (vigilante muerto e
+#      irreanimable — p. ej. workflow deshabilitado) abre issue
+#      `human-needed`. Única vía nueva a humano, y genuinamente
+#      terminal: un watchdog irreanimable suele implicar tocar
+#      workflows, que es gate humano de todas formas.
+#
+#   2. DIGEST: sincroniza los comentarios <!-- autonomous-decision --> y
+#      <!-- derived-decision --> recientes al issue-registro (label
+#      `registro-decisiones`, creado idempotentemente, pinnearlo es
+#      cosmético). Convierte el veto asíncrono en ejercible: un solo
+#      lugar que mirar, en vez de comentarios dispersos por issues.
+#
+# GITHUB_TOKEN basta para todo: workflow_dispatch y repository_dispatch
+# son las dos excepciones documentadas del anti-loop de GitHub (eventos
+# del GITHUB_TOKEN no disparan otros workflows, SALVO estos dos). El
+# issue-digest no necesita disparar nada.
+
+on:
+  schedule:
+    # Cada 30 min, minutos desplazados: los crons en :00/:20/:30 sufren
+    # más throttling por congestión de la cola compartida de GitHub.
+    - cron: '13,43 * * * *'
+  workflow_dispatch: {}
+
+permissions:
+  actions: write     # listar runs del watchdog + dispatch de revival
+  issues: write      # issue de escalada + digest
+
+concurrency:
+  group: watchdog-heartbeat
+  cancel-in-progress: true
+
+jobs:
+  heartbeat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Revivir watchdog si está muerto
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner, repo = context.repo.repo;
+            const WF = 'watchdog.yml';
+            const STALE_MIN = 90;   // watchdog: cron */20 + workflow_run → 90 min de silencio = muerto
+            const now = Date.now();
+
+            async function latestRunAgeMin() {
+              const { data } = await github.rest.actions.listWorkflowRuns({
+                owner, repo, workflow_id: WF, per_page: 1 });
+              if (!data.workflow_runs.length) return Infinity;
+              return (now - new Date(data.workflow_runs[0].created_at).getTime()) / 60000;
+            }
+
+            async function escalate(reason) {
+              // Dedupe: no abrir un segundo issue si ya hay uno abierto.
+              const q = `repo:${owner}/${repo} is:issue is:open in:title "Watchdog muerto"`;
+              const { data: found } = await github.rest.search.issuesAndPullRequests({ q });
+              if (found.total_count > 0) { core.info('escalada ya abierta, no duplico'); return; }
+              await github.rest.issues.create({ owner, repo,
+                title: 'Watchdog muerto e irreanimable — intervención humana',
+                labels: ['human-needed'],
+                body: `El heartbeat detectó el Watchdog parado (último run hace >${STALE_MIN} min) y el revival automático falló: ${reason}\n\nComprobar: Actions → Watchdog (¿workflow deshabilitado?), quota, y los runs recientes de este heartbeat.\n\n<!-- watchdog-heartbeat-escalation -->` });
+              core.warning('Watchdog irreanimable: issue human-needed creado.');
+            }
+
+            const age = await latestRunAgeMin();
+            core.info(`Último run del watchdog: hace ${Math.round(age)} min`);
+            if (age <= STALE_MIN) return;
+
+            core.warning(`Watchdog parado (${Math.round(age)} min). Intento revival via workflow_dispatch.`);
+            try {
+              await github.rest.actions.createWorkflowDispatch({ owner, repo, workflow_id: WF, ref: '__DEFAULT_BRANCH__' });
+            } catch (e) { await escalate(`el dispatch lanzó error: ${e.message}`); return; }
+
+            // Verificar que el run nace (hasta ~2 min). Si no, escalar.
+            let revived = false;
+            for (let i = 0; i < 8; i++) {
+              await new Promise(r => setTimeout(r, 15000));
+              if (await latestRunAgeMin() < STALE_MIN) { revived = true; break; }
+            }
+            if (revived) core.notice('Watchdog revivido por dispatch.');
+            else await escalate('el dispatch no produjo ningún run en 2 min.');
+
+      - name: Digest de decisiones autónomas
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner, repo = context.repo.repo;
+            const MARKERS = ['<!-- autonomous-decision -->', '<!-- derived-decision -->'];
+            const WINDOW_H = 26;   // ventana generosa; el dedupe por URL evita duplicados
+
+            // 1. Localizar (o crear, idempotente) el issue-registro.
+            let digest = null;
+            const { data: regs } = await github.rest.issues.listForRepo({
+              owner, repo, labels: 'registro-decisiones', state: 'open', per_page: 1 });
+            if (regs.length) digest = regs[0];
+            else {
+              const { data: created } = await github.rest.issues.create({ owner, repo,
+                title: 'Registro de decisiones autónomas (digest)',
+                labels: ['registro-decisiones'],
+                body: 'Digest mecánico de comentarios `<!-- autonomous-decision -->` y `<!-- derived-decision -->` de todo el repo, sincronizado por watchdog-heartbeat.yml. Veto asíncrono: revisar aquí, revertir en origen. No cerrar: el heartbeat lo recrearía.' });
+              digest = created;
+              core.notice(`Issue-registro creado: #${digest.number}`);
+            }
+
+            // 2. Comentarios recientes de TODO el repo (issues y PRs) con marcador.
+            const since = new Date(Date.now() - WINDOW_H * 3600000).toISOString();
+            const recent = await github.paginate(github.rest.issues.listCommentsForRepo,
+              { owner, repo, since, per_page: 100 });
+            const decisions = recent.filter(c =>
+              MARKERS.some(m => (c.body || '').includes(m)) &&
+              !(c.html_url || '').includes(`/issues/${digest.number}#`));
+            if (!decisions.length) { core.info('Sin decisiones nuevas en la ventana.'); return; }
+
+            // 3. Dedupe por URL contra lo ya registrado en el digest.
+            const logged = await github.paginate(github.rest.issues.listComments,
+              { owner, repo, issue_number: digest.number, per_page: 100 });
+            const loggedText = logged.map(c => c.body || '').join('\n');
+            const fresh = decisions.filter(c => !loggedText.includes(c.html_url));
+            if (!fresh.length) { core.info('Todas las decisiones recientes ya registradas.'); return; }
+
+            // 4. Un comentario-digest por corrida con las entradas nuevas.
+            const lines = fresh.map(c => {
+              const kind = (c.body || '').includes(MARKERS[0]) ? 'AUTONOMOUS' : 'DERIVED';
+              const excerpt = (c.body || '').replace(/<!--[^>]*-->/g, '').trim()
+                .replace(/\s+/g, ' ').slice(0, 300);
+              return `- **[${kind}]** ${c.html_url}\n  > ${excerpt}…`;
+            });
+            await github.rest.issues.createComment({ owner, repo, issue_number: digest.number,
+              body: `Sincronización ${new Date().toISOString().slice(0, 16)}Z — ${fresh.length} decisión(es) nueva(s):\n\n${lines.join('\n')}` });
+            core.notice(`${fresh.length} decisiones añadidas al digest #${digest.number}.`);

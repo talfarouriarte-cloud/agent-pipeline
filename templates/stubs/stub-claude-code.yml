@@ -1,0 +1,28 @@
+# STUB (agent-pipeline): triggers aquí; lógica en el central. Anclar @vN.
+name: Claude Code
+on:
+  issues:
+    types: [opened, edited, assigned]
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+jobs:
+  call:
+    uses: talfarouriarte-cloud/agent-pipeline/.github/workflows/claude-code.yml@v1
+    with:
+      runner: ubuntu-latest
+      default_branch: main
+      creator_model: claude-opus-4-8
+      creator_max_turns: 200
+      bot_comment_cap: 8
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      REVIEWER_GITHUB_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}

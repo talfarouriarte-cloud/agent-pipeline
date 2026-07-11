@@ -1,0 +1,30 @@
+# STUB (agent-pipeline). workflow_run debe listar los name: EXACTOS de los
+# stubs de CI y Reviewer de ESTE repo; ci_workflow_name debe coincidir.
+name: Epic Merge
+on:
+  workflow_run:
+    workflows: ["CI", "Opus Reviewer"]
+    types: [completed]
+  pull_request:
+    types: [closed, labeled]
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  statuses: write
+  actions: read
+concurrency:
+  group: epic-merge-${{ github.event.workflow_run.head_branch || github.event.pull_request.head.ref }}
+  cancel-in-progress: false
+jobs:
+  call:
+    uses: talfarouriarte-cloud/agent-pipeline/.github/workflows/epic-merge.yml@v1
+    with:
+      runner: ubuntu-latest
+      default_branch: main
+      ci_workflow_name: CI
+      epic_label: epica
+      partial_round_cap: 3
+      partial_lifetime_cap: 6
+    secrets:
+      REVIEWER_GITHUB_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}

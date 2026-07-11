@@ -1,0 +1,41 @@
+# STUB (agent-pipeline). Los nombres de workflows del pipeline de ESTE repo
+# van en workflow_run Y en los inputs *_workflow_name (el detector compara).
+name: Watchdog
+on:
+  issues:
+    types: [labeled]
+  pull_request:
+    types: [labeled]
+  schedule:
+    - cron: '*/20 * * * *'
+  workflow_run:
+    workflows: ["Claude Code", "Opus Reviewer", "Epic Merge"]
+    types: [completed]
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  actions: write
+  id-token: write
+concurrency:
+  group: watchdog
+  cancel-in-progress: false
+jobs:
+  call:
+    uses: talfarouriarte-cloud/agent-pipeline/.github/workflows/watchdog.yml@v1
+    with:
+      runner: ubuntu-latest
+      default_branch: main
+      ci_workflow_name: CI
+      creator_workflow_name: Claude Code
+      reviewer_workflow_name: Opus Reviewer
+      epic_merge_workflow_name: Epic Merge
+      extra_pipeline_workflows: ""
+      epic_label: epica
+      resolve_model: claude-opus-4-8
+      resolve_max_turns: 40
+      lookback_min: 45
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      REVIEWER_GITHUB_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}

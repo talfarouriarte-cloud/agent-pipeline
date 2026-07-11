@@ -1,0 +1,26 @@
+# STUB (agent-pipeline). concurrency AQUÍ y con cancel-in-progress: false
+# (obligatorio: un labeled espurio no puede matar una review en vuelo).
+name: Opus Reviewer
+on:
+  pull_request:
+    types: [opened, labeled]
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+concurrency:
+  group: reviewer-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  call:
+    uses: talfarouriarte-cloud/agent-pipeline/.github/workflows/reviewer.yml@v1
+    with:
+      runner: ubuntu-latest
+      reviewer_model: claude-opus-4-8
+      reviewer_max_turns: 50
+      timeout_minutes: 15
+      agent_branch_prefix: claude/
+      review_context: ""
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      REVIEWER_GITHUB_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
