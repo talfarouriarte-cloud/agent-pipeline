@@ -32,7 +32,7 @@ Order matters: the pipeline cannot derive decisions until spec/ADRs exist (consu
 
 **A4. Labels & secrets.** Apply `templates/labels.json` (via `gh label` or API). Set secrets: Anthropic OAuth, `ARM_TOKEN`, PAT.
 
-**A5. Stubs.** Copy the five stubs, pin `@<tag>`, fill inputs (default branch, test/typecheck commands, caps, canonical doc names, CI job name). Add `watchdog-heartbeat` from template — on GitHub-hosted runners, NOT on the runner infra the other workflows use.
+**A5. Stubs.** Copy the five stubs, pin `@<tag>`, fill inputs (default branch, test/typecheck commands, caps, canonical doc names, CI job name). Size the caps consciously: the defaults (`creator_max_turns` 200, `reviewer_max_turns` 50, etc.) are sized for the ORIGIN repo's heavy engine issues — a consumer with smaller tasks should lower them; a lost session burns quota at the cap, and the watchdog re-arms if a legitimate session runs short. Add `watchdog-heartbeat` from template — on GitHub-hosted runners, NOT on the runner infra the other workflows use.
 
 **A6. Shakedown epic.** Design a deliberately small 2-issue epic exercising the full chain: issue → Creator PR → Reviewer verdict → auto-merge → `launch-next` → audit issue created and armed. Verify: labels materialize (`ci-verde`, `lgtm`, `estado:*`), commit statuses mirror (`epic-merge / gate`, `watchdog / turno`), audit runs invariants. Only after a green shakedown does real work start.
 
