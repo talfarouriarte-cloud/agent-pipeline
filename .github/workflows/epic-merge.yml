@@ -251,6 +251,7 @@ jobs:
                       `Auditoría post-épica (run único). Alcance: **${scope}**.`,
                       ``,
                       `Rol y protocolo: \`docs/agents/epic-auditor.md\` (vinculante).`,
+                      `Los «Invariantes funcionales de la épica» viven en el ISSUE DE ÉPICA del rango (casa canónica, junto al sentinel): léelos allí y EJECÚTALOS. Su ausencia ALLÍ es la omisión a visibilizar.`,
                       `Compara el árbol mergeado de \`${process.env.IN_DEFAULT_BRANCH}\` contra el alcance TOTAL`,
                       `de la épica (ADR + unión de issues del rango), no PR-a-PR.`,
                       ``,
@@ -266,7 +267,18 @@ jobs:
 
               if (/<!--\s*epic-done\s*-->/.test(body)) { await diag(prNumber, 'MERGEADO + epic-done. Épica terminada.'); return; }
               const lm = body.match(/<!--\s*launch-next:\s*#?(\d+)\s*-->/);
-              if (!lm) { await diag(prNumber, 'MERGEADO pero sin sentinel launch-next; cadena se detiene.'); return; }
+              if (!lm) {
+                // GUARD cola huérfana (v1.2): un issue `epica` mergeado sin
+                // NINGÚN sentinel nunca es fin normal — el fin legítimo de
+                // toda cadena es epic-audit. Antes: diag silencioso (incidente
+                // wmcb #6, 2026-07-11: épica cerrada sin auditoría ni proceso).
+                // `stalled` lo recoge architect-resolve por el trigger labeled.
+                await github.rest.issues.addLabels({ owner, repo, issue_number: issueNumber, labels: ['stalled'] });
+                await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber,
+                  body: '**epic-merge · cola huérfana**: issue de épica mergeado y cerrado SIN sentinel (ni launch-next ni epic-audit). El fin legítimo de una cadena es siempre epic-audit; esto es un defecto de horneado, no un fin. Escalado a architect-resolve vía `stalled`.\n\n<!-- cola-huerfana -->' });
+                await diag(prNumber, `MERGEADO pero sin sentinel: cola huérfana — issue #${issueNumber} marcado stalled y escalado.`);
+                return;
+              }
               const next = Number(lm[1]);
               // Des-bloqueo mecánico del destino (2026-07-08, #1120): un
               // eslabón re-armado por su cadena está por definición

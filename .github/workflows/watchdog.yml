@@ -490,6 +490,58 @@ jobs:
               core.notice('Sin anomalías.');
             }
 
+      # RED de PR huérfano (v1.2, incidentes wmcb #7 y #6, 2026-07-11): el
+      # Creator termina success con el trabajo en rama pero SIN abrir el PR,
+      # dejando un enlace «Create PR» (quick-pull /compare/) como artefacto.
+      # Firma determinista ⇒ reparación mecánica: el watchdog crea el PR con
+      # la polaridad declarada en el comentario de cierre (default full-pr).
+      # Sale con el PAT: un PR creado con GITHUB_TOKEN no dispararía reviewer.
+      - name: Orphan PR net
+        id: orphan_net
+        uses: actions/github-script@v7
+        env:
+          IN_EPIC_LABEL: ${{ inputs.epic_label }}
+          IN_DEFAULT_BRANCH: ${{ inputs.default_branch }}
+        with:
+          github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const O = { owner, repo };
+            const MARK = '<!-- orphan-pr-fix -->';
+            const issues = await github.rest.issues.listForRepo({ ...O, state: 'open', labels: process.env.IN_EPIC_LABEL, per_page: 20 });
+            for (const issue of issues.data) {
+              if (issue.pull_request) continue;
+              const comments = await github.rest.issues.listComments({ ...O, issue_number: issue.number, per_page: 100 });
+              const cs = comments.data;
+              if (cs.some(c => (c.body || '').includes(MARK))) continue; // ya reparado una vez: no repetir
+              const last = [...cs].reverse().find(c => c.user && c.user.login === 'claude[bot]');
+              if (!last) continue;
+              // Artefacto del fallo: enlace quick-pull /compare/<branch> en el cierre
+              const m = (last.body || '').match(/\/compare\/([A-Za-z0-9._\/-]+)\?/);
+              if (!m) continue;
+              const branch = decodeURIComponent(m[1]);
+              // Envejecimiento: 10 min desde el cierre del Creator (evita carreras con un gh pr create lento)
+              if (Date.now() - new Date(last.created_at).getTime() < 10 * 60 * 1000) continue;
+              // Rama existe y va por delante de la base
+              let cmp;
+              try { cmp = await github.rest.repos.compareCommits({ ...O, base: process.env.IN_DEFAULT_BRANCH, head: branch }); }
+              catch (e) { continue; }
+              if (cmp.data.ahead_by === 0) continue;
+              // Cero PRs abiertos desde la rama
+              const prs = await github.rest.pulls.list({ ...O, state: 'open', head: `${owner}:${branch}`, per_page: 5 });
+              if (prs.data.length > 0) continue;
+              const polarity = /partial-pr/.test(last.body || '') ? 'partial-pr' : 'full-pr';
+              const pr = await github.rest.pulls.create({ ...O,
+                title: issue.title.replace(/\s*\[épica[^\]]*\]\s*$/, ''),
+                head: branch, base: process.env.IN_DEFAULT_BRANCH,
+                body: `Closes #${issue.number}\n\n<!-- ${polarity} -->\n\n_PR creado mecánicamente por el watchdog (red de PR huérfano v1.2): Creator terminó con el trabajo en \`${branch}\` sin abrir el PR. Cuerpo del trabajo: ver el comentario de cierre del Creator en #${issue.number}._` });
+              await github.rest.issues.addLabels({ ...O, issue_number: pr.data.number, labels: [process.env.IN_EPIC_LABEL] });
+              await github.rest.issues.createComment({ ...O, issue_number: issue.number,
+                body: `**watchdog · red de PR huérfano**: PR #${pr.data.number} creado mecánicamente desde \`${branch}\` (polaridad ${polarity}). ${MARK}` });
+              core.info(`orphan-pr-fix: #${issue.number} → PR #${pr.data.number}`);
+              break; // uno por scan
+            }
+
   architect:
     needs: detect
     if: needs.detect.outputs.found == 'true'

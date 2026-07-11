@@ -166,10 +166,48 @@ jobs:
               core.setOutput('cap_reached', false);
             }
 
+      # GUARD de integridad de cadena (v1.2, incidente wmcb 2026-07-11):
+      # antes de disparar al Creator sobre un issue `epica`, verificar que la
+      # cadena alcanzable via launch-next termina en epic-audit. Una cadena
+      # sin auditoría al final es defecto de horneado: se marca stalled y NO
+      # se quema una sesión de agente. Solo aplica al arm de issues (no PRs).
+      - name: Check epic chain integrity (issues only)
+        id: check_chain
+        if: |
+          steps.check_pause.outputs.paused != 'true'
+          && steps.check_iterations.outputs.cap_reached != 'true'
+        uses: actions/github-script@v7
+        env:
+          IN_EPIC_LABEL: ${{ inputs.epic_label }}
+        with:
+          github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const isIssueCtx = !!context.payload.issue && !context.payload.issue.pull_request;
+            if (!isIssueCtx) { core.setOutput('broken', 'false'); return; }
+            const issue = context.payload.issue;
+            const labels = (issue.labels || []).map(l => l.name);
+            if (!labels.includes(process.env.IN_EPIC_LABEL)) { core.setOutput('broken', 'false'); return; }
+            // Traversal launch-next con cap 20
+            let body = issue.body || '';
+            let hops = 0;
+            while (hops++ < 20) {
+              if (/<!--\s*epic-audit:/.test(body)) { core.setOutput('broken', 'false'); return; }
+              const m = body.match(/<!--\s*launch-next:\s*#?(\d+)\s*-->/);
+              if (!m) break; // sin sentinel y sin epic-audit: cadena rota aquí
+              const next = await github.rest.issues.get({ owner, repo, issue_number: Number(m[1]) });
+              body = next.data.body || '';
+            }
+            await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['stalled'] });
+            await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
+              body: '**claude-code · guard de cadena**: la cadena alcanzable desde este issue via launch-next NO termina en un sentinel epic-audit (defecto de horneado). No se arma al Creator; escalado a architect-resolve via `stalled`.\n\n<!-- cadena-sin-auditoria -->' });
+            core.setOutput('broken', 'true');
+
       - name: Checkout repository
         if: |
           steps.check_pause.outputs.paused != 'true'
           && steps.check_iterations.outputs.cap_reached != 'true'
+          && steps.check_chain.outputs.broken != 'true'
         uses: actions/checkout@v4
         with:
           # fetch-depth: 0 trae todo el historial. Necesario para que Claude
@@ -190,6 +228,7 @@ jobs:
         if: |
           steps.check_pause.outputs.paused != 'true'
           && steps.check_iterations.outputs.cap_reached != 'true'
+          && steps.check_chain.outputs.broken != 'true'
           && (
             (github.event_name == 'issue_comment' && !github.event.issue.pull_request)
             || github.event_name == 'issues'
@@ -206,6 +245,7 @@ jobs:
         if: |
           steps.check_pause.outputs.paused != 'true'
           && steps.check_iterations.outputs.cap_reached != 'true'
+          && steps.check_chain.outputs.broken != 'true'
         # Blindaje de auth: forzamos OAuth Max como única vía de auth para el
         # Creator. Razón: la action `anthropics/claude-code-action@v1` usa
         # internamente la SDK estándar de Anthropic, que lee
@@ -265,6 +305,7 @@ jobs:
           success()
           && steps.check_pause.outputs.paused != 'true'
           && steps.check_iterations.outputs.cap_reached != 'true'
+          && steps.check_chain.outputs.broken != 'true'
           && (
             github.event_name == 'pull_request_review'
             || github.event_name == 'pull_request_review_comment'
@@ -403,6 +444,7 @@ jobs:
           success()
           && steps.check_pause.outputs.paused != 'true'
           && steps.check_iterations.outputs.cap_reached != 'true'
+          && steps.check_chain.outputs.broken != 'true'
         uses: actions/github-script@v7
         with:
           # PAT, NO GITHUB_TOKEN: el @claude posteado debe disparar la
