@@ -7,14 +7,20 @@
 // Uso: node scripts/adr-lint.mjs   (verde: exit 0; rojo: exit 1 + listado)
 import { readFileSync } from 'fs';
 
-const VOLS = ['docs/decisions/decisions-001-075.md',
+// Parametrización por repo (2026-07-11, alta de what-money-cant-buy):
+// adr-lint.config.json opcional en la raíz. Sin config, defaults = valores
+// históricos del repo de origen (corpus con endurecimiento desde ADR-217).
+// Un consumidor nuevo declara strictFrom: 1 — las reglas anti-alucinación
+// aplican desde su primer ADR.
+let cfg = {};
+try { cfg = JSON.parse(readFileSync('adr-lint.config.json', 'utf8')); } catch {}
+
+const VOLS = cfg.volumes ?? ['docs/decisions/decisions-001-075.md',
               'docs/decisions/decisions-076-149.md',
               'docs/decisions/decisions-150-current.md'];
-const INDEX = 'decisions.md';
-const LIVE = VOLS[2];
-// Las reglas 2-4 (citas, verbatim del propietario) aplican desde el
-// endurecimiento (ADR-217+); el corpus anterior es histórico.
-const STRICT_FROM = 217;
+const INDEX = cfg.index ?? 'decisions.md';
+const LIVE = VOLS[VOLS.length - 1];
+const STRICT_FROM = cfg.strictFrom ?? 217;
 
 const errs = [];
 const live = readFileSync(LIVE, 'utf8');
@@ -22,7 +28,7 @@ const live = readFileSync(LIVE, 'utf8');
 // al verificar una cita, el bloque que la hace se EXCLUYE del corpus —
 // sin esto, toda cita fabricada se auto-valida por existir en el propio
 // ADR que la fabrica (agujero cazado en la prueba de fuego del hook).
-const EXTRA = ['spec.md', 'docs/conventions.md'];
+const EXTRA = cfg.extraSources ?? ['spec.md', 'docs/conventions.md'];
 const corpus = [...VOLS, ...EXTRA].map(v => { try { return readFileSync(v, 'utf8'); } catch { return ''; } }).join('\n');
 const norm = s => s.replace(/\s+/g, ' ').trim();
 
@@ -32,7 +38,7 @@ const dup = headers.filter((n, i) => headers.indexOf(n) !== i);
 if (dup.length) errs.push(`ADR duplicado(s) en el volumen vivo: ${[...new Set(dup)].join(', ')}`);
 const idx = readFileSync(INDEX, 'utf8');
 for (const n of new Set(headers)) {
-  if (!new RegExp(`\\[ADR-${n}\\]`).test(idx)) errs.push(`ADR-${n} sin entrada en el índice (decisions.md)`);
+  if (!new RegExp(`\\[ADR-0*${n}\\]`).test(idx)) errs.push(`ADR-${n} sin entrada en el índice (decisions.md)`);
 }
 
 // ── 2. Citas atribuidas: deben grep-existir en el corpus ──
