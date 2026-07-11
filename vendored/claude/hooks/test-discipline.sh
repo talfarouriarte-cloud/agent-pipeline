@@ -23,7 +23,11 @@ fi
 [ -n "$cmd" ] || exit 0
 
 # ¿Invoca un runner de tests?
-if ! printf '%s' "$cmd" | grep -Eq '(^|[;&|[:space:]])(npx[[:space:]]+)?vitest([[:space:]]|$)|pnpm([[:space:]]+-r)?([[:space:]]+--[^[:space:]]+)*[[:space:]]+test([[:space:]]|$|:)|npm[[:space:]]+(run[[:space:]]+)?test([[:space:]]|$)'; then
+# Patrón de runners detectados: sobreescribible por repo en
+# .claude/hooks/test-discipline.pattern (una línea, ERE). Default: stack JS del origen.
+PATTERN_FILE="$CLAUDE_PROJECT_DIR/.claude/hooks/test-discipline.pattern"
+if [ -f "$PATTERN_FILE" ]; then RUNNER_ERE=$(head -1 "$PATTERN_FILE"); else RUNNER_ERE='(^|[;&|[:space:]])(npx[[:space:]]+)?vitest([[:space:]]|$)|pnpm([[:space:]]+-r)?([[:space:]]+--[^[:space:]]+)*[[:space:]]+test([[:space:]]|$|:)|npm[[:space:]]+(run[[:space:]]+)?test([[:space:]]|$)'; fi
+if ! printf '%s' "$cmd" | grep -Eq "$RUNNER_ERE"; then
   exit 0
 fi
 

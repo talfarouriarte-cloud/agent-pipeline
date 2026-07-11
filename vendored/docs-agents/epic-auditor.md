@@ -1,3 +1,4 @@
+<!-- Las referencias ADR-NNN, #issue y fechas de incidentes de este doc son del repo de ORIGEN del framework (provenance histórica), NO del repo consumidor. No las resuelvas contra el decisions.md local. -->
 <!-- synced from agent-pipeline@v1 — DO NOT EDIT locally; changes arrive as sync PRs -->
 
 # Epic Auditor — rol y protocolo

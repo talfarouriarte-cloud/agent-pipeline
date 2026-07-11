@@ -26,7 +26,7 @@ Order matters: the pipeline cannot derive decisions until spec/ADRs exist (consu
 4. Copy `templates/role-annex.template.md` → one annex per role with repo-specific mandates (branch names, test commands, protected paths).
 5. Instantiate `templates/pipeline-map.template.md` → `.claude/skills/pipeline-map/SKILL.md`.
 
-**A2. Vendored files.** Copy `vendored/` into place (`.claude/hooks/`, `.claude/agents/`, `.claude/settings.json`, `docs/agents/*.md`, `scripts/adr-lint.mjs`). Keep the `synced from agent-pipeline@<sha>` headers intact.
+**A2. Vendored files.** Copy `vendored/` into place (`.claude/hooks/`, `.claude/agents/`, `.claude/settings.json`, `docs/agents/*.md`, `scripts/adr-lint.mjs`). Vendored skills go to `.claude/skills/<name>/SKILL.md` — all of them EXCEPT `project-launch` (genesis protocol; lives only in this central repo and in the Architect session). Keep the `synced from agent-pipeline@<sha>` headers intact.
 
 **A3. CI.** Create the repo's own `ci.yml`: at minimum typecheck + the test command the stubs will pass as input, with a job name matching the merge-gate input, writing the `ci-verde` label on green. A repo with no test suite starts with typecheck-only CI — the gate still needs the green fact materialized.
 

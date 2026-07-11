@@ -1,3 +1,4 @@
+<!-- Las referencias ADR-NNN, #issue y fechas de incidentes de este doc son del repo de ORIGEN del framework (provenance histórica), NO del repo consumidor. No las resuelvas contra el decisions.md local. -->
 <!-- synced from agent-pipeline@v1 — DO NOT EDIT locally; changes arrive as sync PRs -->
 
 # Creator — Autoría de issues y patrón de invocación
@@ -103,7 +104,7 @@ Plantilla en orden:
 2. **Estado de partida** (verificable con `grep` o equivalente) con criterio de aborto si no se cumple.
 3. **Procedimiento** (si hay zip o pasos manuales no obvios).
 4. **Scope del PR** (secciones A, B, C... cada una con cambios concretos y referencias a líneas aproximadas).
-5. **Tests requeridos** (con número de tests, no descripción vaga) + **Protocolo de tests**: solo ficheros afectados (`npx vitest run <rutas>`), NUNCA la suite completa.
+5. **Tests requeridos** (con número de tests, no descripción vaga) + **Protocolo de tests**: solo ficheros afectados (con el comando por-fichero definido en tu ANEXO de rol), NUNCA la suite completa.
 6. **Bump de versión + CHANGELOG** explícitos.
 7. **Criterios de aceptación** (lista numerada con `✅`), cerrando con **un paso de verificación end-to-end** que demuestre que el conjunto funciona (comando concreto + resultado esperado), y la regla de **evidencia**: el comentario de cierre pega la salida literal de typecheck + tests afectados (CLAUDE.md § "Evidencia, no afirmación").
 8. **Out of scope** (qué NO toca este PR).
@@ -143,7 +144,7 @@ Cap operativo: 100 turns. Si la suma estimada supera 70, dividir el PR.
 | Copy-paste literal de >50 líneas en body | ~5-10 turns | Mejor zip-en-rama |
 | Aplicar zip-en-rama (cat/mv) | ~3 turns | Cualquier tamaño |
 | Regenerar fixture pinned | ~5-10 turns | Ejecutar script + verificar + comparar |
-| `pnpm test` con ajustes iterativos | ~10-30 turns | Variable según fallos |
+| suite completa con ajustes iterativos | ~10-30 turns | Variable según fallos |
 | Bump + CHANGELOG | ~3 turns | Edits localizados |
 | Update del comment de progreso | 1 turn cada vez | Limitarlos a fin de sección |
 | Lectura exploratoria del repo (Read en archivos nuevos para el Creator) | ~5-15 turns | Antes de cambios invasivos |
@@ -181,7 +182,7 @@ Por orden de severidad observada:
 
 4. **Updates frecuentes del comment de progreso**. Si el todo list tiene 14 items y se marca tras cada uno → 14 turns en housekeeping. **Mitigación**: instruir "actualiza al final de cada sección, no tras cada subtarea".
 
-5. **`pnpm test` global con cadena de fallos iterativos**. Si los tests existentes asumen un patrón que cambia, el Creator itera ajustes-test-ajustes-test. **Mitigación**: separar el cambio que rompe tests (sed batch primero) del cambio que añade lógica.
+5. **suite global con cadena de fallos iterativos**. Si los tests existentes asumen un patrón que cambia, el Creator itera ajustes-test-ajustes-test. **Mitigación**: separar el cambio que rompe tests (sed batch primero) del cambio que añade lógica.
 
 6. **Lectura exploratoria reactiva**. Si el issue no nombra los archivos clave, el Creator hace `Glob` + `Grep` + `Read` en cascada para descubrirlos. **Mitigación**: el issue debe nombrar archivos y líneas aproximadas explícitamente.
 
@@ -344,9 +345,9 @@ Cuando el job muere, el "(en curso)" marca exactamente la frontera de recuperaci
 
 ### Cuándo abrir el PR
 
-El PR se abre al final, una vez todas las secciones están pusheadas. Verificaciones locales antes de abrir: `pnpm typecheck` y **solo los ficheros de test que has tocado** (`npx vitest run <rutas>`). **NO abrir PR mid-flight** — un PR con secciones a medias dispara al Reviewer prematuramente.
+El PR se abre al final, una vez todas las secciones están pusheadas. Verificaciones locales antes de abrir: el chequeo estático y **solo los ficheros de test que has tocado**, ambos con los comandos de tu ANEXO de rol. **NO abrir PR mid-flight** — un PR con secciones a medias dispara al Reviewer prematuramente.
 
-> **REGLA DURA — NUNCA corras la suite completa en tu sandbox.** NO ejecutes `pnpm test`, ni `vitest run` sin argumentos, ni `pnpm build`. La suite completa **te cuelga** (causa confirmada de parada repetida de épicas) y es **redundante**: CI corre la suite completa + typecheck + build sobre el PR como gate de merge. Tu trabajo: tocar solo lo tuyo, correr **solo tus ficheros de test afectados** (`npx vitest run <rutas>`), commit + push conforme avanzas (por sección/fichero), abrir PR. El conjunto lo valida CI, no tú. Nunca acumules trabajo sin commitear esperando a una verificación amplia.
+> **REGLA DURA — NUNCA corras la suite completa en tu sandbox.** NO ejecutes la suite completa, ni el runner sin rutas, ni la build global (comandos concretos: ANEXO de rol). La suite completa **te cuelga** (causa confirmada de parada repetida de épicas) y es **redundante**: CI corre la suite completa + typecheck + build sobre el PR como gate de merge. Tu trabajo: tocar solo lo tuyo, correr **solo tus ficheros de test afectados** (comando: ANEXO de rol), commit + push conforme avanzas (por sección/fichero), abrir PR. El conjunto lo valida CI, no tú. Nunca acumules trabajo sin commitear esperando a una verificación amplia.
 
 Si el job muere antes de abrir el PR pero con todas las secciones pusheadas, el siguiente intento solo necesita ejecutar las verificaciones finales + `gh pr create`. Bajo coste de turns.
 
