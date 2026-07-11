@@ -17,6 +17,8 @@ Two paths: **A) new repo from scratch** and **B) existing repo already running a
 
 Order matters: the pipeline cannot derive decisions until spec/ADRs exist (consumer contract §1-2).
 
+**A0. Branch structure.** Create the working branch (conventionally `develop`) and set it as the repo default branch — the pipeline operates ONLY on the default branch; the production branch (conventionally `main`) receives human-gated promotions and nothing else. On a repo whose deploy is coupled to a branch (e.g. GitHub Pages serving `main`), this split IS the staging mechanism: promotion = deploy. All stub `default_branch` inputs and the pipeline-map instance must match the choice made here.
+
 **A1. Documents first.**
 1. Copy `templates/spec.template.md` → `spec.md`; fill vision, principles, stack, boundaries. Minimum bar: enough that an implementation question of the form "should X behave like Y?" can be answered by quoting it.
 2. Copy `templates/decisions.template.md` → `decisions.md`; register ADR-001 (project foundation) in adr-lint format. Run `node scripts/adr-lint.mjs` green.
