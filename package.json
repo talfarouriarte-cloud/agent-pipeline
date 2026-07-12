@@ -1,0 +1,15 @@
+{
+  "name": "agent-pipeline",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Framework central de pipeline agéntico (workflow_call para finplan y wmcb). Scripts de CI del propio central.",
+  "type": "module",
+  "scripts": {
+    "check-labels": "node scripts/check-labels.mjs",
+    "check-yaml": "node scripts/check-yaml.mjs",
+    "check-contracts": "node scripts/check-contracts.mjs"
+  },
+  "dependencies": {
+    "js-yaml": "4.3.0"
+  }
+}
