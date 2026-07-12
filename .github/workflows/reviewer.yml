@@ -42,28 +42,66 @@ jobs:
     name: Reviewer
     runs-on: ${{ inputs.runner }}
     timeout-minutes: ${{ inputs.timeout_minutes }}
-    # Skip PRs from forks (no secret access).
-    # Kill-switch: skip si label `pause-agents` (ADR-063).
-    # Auto-trigger on PRs cuya HEAD ref empiece por `claude/` (rama del agente)
-    # — cubre tanto PRs abiertos por claude[bot] como PRs abiertos por el humano
-    # desde la compare URL del action cuando la rama es del agente (gap del
-    # action documentado en operational-notes). Manual via 'needs-review' label.
+    # v1.4: el gate SEMÁNTICO vive como PRIMER STEP github-script; el job-if
+    # queda reducido a un prefiltro de coste (sin él, cada evento `labeled`
+    # del pipeline — ci-verde, lgtm, estado:* — levantaría un runner solo
+    # para que el gate diga no). El prefiltro NO referencia inputs, user.login
+    # ni labels del PR: solo campos probados en producción en régimen
+    # workflow_call (la cláusula labeled acumula successes desde el día uno).
     if: |
-      github.event.pull_request.head.repo.full_name == github.repository
-      && !contains(github.event.pull_request.labels.*.name, 'pause-agents')
-      && (
-        (github.event.action == 'opened' && (
-          github.event.pull_request.user.login == 'claude[bot]'
-          || startsWith(github.event.pull_request.head.ref, inputs.agent_branch_prefix)
-        ))
-        || (
-          github.event.action == 'labeled'
-          && github.event.label.name == 'needs-review'
-          && github.event.sender.login != 'claude[bot]'
-        )
-      )
+      github.event.action == 'opened'
+      || (github.event.action == 'labeled' && github.event.label.name == 'needs-review')
 
+    # v1.4: el gate vive como PRIMER STEP github-script, no como job-if.
+    # Motivo: el job-if saltaba sistemáticamente en `opened` en régimen
+    # workflow_call (ambas cláusulas; 10 skips vs 5 success en el primer
+    # consumidor desde el día uno) — la maquinaria se auto-curaba vía
+    # needs-review (coste: un tick de latencia por review, clase REDUNDANT
+    # del ledger). El step tiene contexto completo y es depurable: loguea
+    # cada campo y la razón de la decisión. Los steps restantes se
+    # condicionan a su output.
     steps:
+      - name: Gate (sustituye al job-if — v1.4)
+        id: gate
+        uses: actions/github-script@v7
+        env:
+          AGENT_BRANCH_PREFIX: ${{ inputs.agent_branch_prefix }}
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const action = context.payload.action;
+            const prefix = process.env.AGENT_BRANCH_PREFIX || 'claude/';
+            const author = pr.user?.login || '';
+            const authorType = pr.user?.type || '';
+            const headRef = pr.head?.ref || '';
+            const headRepo = pr.head?.repo?.full_name || '';
+            const labels = (pr.labels || []).map(l => l.name);
+            const eventLabel = context.payload.label?.name || '';
+            const sender = context.payload.sender?.login || '';
+
+            core.notice(`gate ctx: action=${action} author=${author}(${authorType}) headRef=${headRef} headRepo=${headRepo} label=${eventLabel} sender=${sender} labels=[${labels}] prefix=${prefix}`);
+
+            let run = false, reason = '';
+            if (headRepo !== `${context.repo.owner}/${context.repo.repo}`) {
+              reason = 'PR de fork (sin acceso a secrets)';
+            } else if (labels.includes('pause-agents')) {
+              reason = 'kill-switch pause-agents (ADR-063)';
+            } else if (action === 'opened') {
+              const isBot = author === 'claude[bot]' || (authorType === 'Bot' && author.startsWith('claude'));
+              const isAgentBranch = headRef.startsWith(prefix);
+              run = isBot || isAgentBranch;
+              reason = run ? (isBot ? 'opened por claude[bot]' : `opened con rama de agente (${prefix}*)`)
+                           : 'opened humano en rama no-agente';
+            } else if (action === 'labeled') {
+              run = eventLabel === 'needs-review' && sender !== 'claude[bot]';
+              reason = run ? 'label needs-review de actor no-bot'
+                           : `labeled irrelevante (label=${eventLabel}, sender=${sender})`;
+            } else {
+              reason = `action no cubierta: ${action}`;
+            }
+            core.notice(`gate: run=${run} — ${reason}`);
+            core.setOutput('run', run ? 'true' : 'false');
+
       # Patrón ADR-063: el agente disparado por una label la quita como
       # primer paso. Así el próximo add (del Creator tras responder a
       # los comentarios) vuelve a disparar el evento `labeled`. Sin
@@ -72,7 +110,8 @@ jobs:
       # Solo aplica cuando el trigger fue label (no en `opened`).
       - name: Remove needs-review trigger label
         if: |
-          github.event.action == 'labeled'
+          steps.gate.outputs.run == 'true'
+          && github.event.action == 'labeled'
           && github.event.label.name == 'needs-review'
         uses: actions/github-script@v7
         with:
@@ -92,6 +131,7 @@ jobs:
             }
 
       - name: Checkout
+        if: steps.gate.outputs.run == 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -111,6 +151,7 @@ jobs:
       # esperar `@claude` mention. El system prompt del Reviewer vive en
       # docs/agents/reviewer.md y se carga via el propio prompt aquí.
       - name: Run Reviewer
+        if: steps.gate.outputs.run == 'true'
         uses: anthropics/claude-code-action@v1
         env:
           # Blindaje OAuth-only: bloquea cualquier fallback silencioso a API
@@ -215,7 +256,7 @@ jobs:
       # el PAT: su evento `labeled` es el edge que le faltaba a epic-merge
       # cuando el LGTM llega después del CI (incidente PR #1205).
       - name: Materializar veredicto (label lgtm)
-        if: always()
+        if: always() && steps.gate.outputs.run == 'true'
         uses: actions/github-script@v7
         env:
           ARM_PAT: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
