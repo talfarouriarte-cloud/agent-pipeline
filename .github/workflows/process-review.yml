@@ -124,8 +124,11 @@ jobs:
                humano=workflows). Después comenta en el issue de auditoría
                la lista de propuestas creadas.
 
-            6. LOOP DE SKILLS (ADR-212 — lee el ADR antes de editar). Además
-               de (4-5), evalúa el bloque «## Patrones de fallo del Creator»
+            6. LOOP DE SKILLS (ADR-212 — lee el ADR antes de editar).
+               ENTRAS a este paso SOLO con los comentarios de (4-5) YA
+               publicados (propuesta #1258: publicar antes de commitear —
+               una muerte de sesión aquí no puede dejar la auditoría sin
+               revisión de proceso visible). Además de (4-5), evalúa el bloque «## Patrones de fallo del Creator»
                de las auditorías:
                - Si un TIPO de hallazgo recurre (≥3 en la épica o ≥2 épicas),
                  puedes ejecutar hasta 2 EDICIONES DE SKILL por épica,
@@ -133,13 +136,28 @@ jobs:
                  «## Heurísticas aprendidas (loop)» de las skills entrenables
                  listadas en ADR-212. Operaciones add/delete/replace acotadas;
                  cada add paga contexto del Creator: prefiere delete/replace.
-               - Ejecuta el commit TÚ MISMO vía Git Data (gh api, sobre
-                 la rama por defecto, mensaje `skill(loop): <tipo> — <resumen>`) con el
-                 marcador `<!-- skill-edit: <tipo> <fecha> -->` en cada línea
-                 añadida/sustituida.
-               - Publica en el issue de auditoría un comentario con el diff,
-                 el tipo que ataca y la evidencia citada, terminado en
-                 `<!-- autonomous-decision -->` (veto humano asíncrono).
+               - ORDEN OBLIGATORIO (2026-07-12, propuesta #1258 — el run
+                 29139108015 commiteó y murió sin publicar NADA: veto
+                 asíncrono puenteado en silencio). PRIMERO publica en el
+                 issue de auditoría el comentario con el diff INTENDIDO, el
+                 tipo que ataca y la evidencia citada, terminado en
+                 `<!-- autonomous-decision -->`. DESPUÉS ejecuta el commit
+                 vía Git Data (gh api, sobre la rama por defecto, mensaje
+                 `skill(loop): <tipo> — <resumen>`) con el marcador
+                 `<!-- skill-edit: <tipo> <fecha> -->` en cada línea
+                 añadida/sustituida. AL FINAL edita el comentario para
+                 añadir el SHA del commit. Via negativa: si mueres entre
+                 comentario y commit queda un anuncio sin ejecutar (visible,
+                 inocuo — un anuncio sin SHA final = edición no ejecutada);
+                 el orden inverso deja un commit sin anuncio (invisible,
+                 sin veto posible).
+               - INTEGRIDAD POST-COMMIT (misma propuesta — el commit
+                 de3ada2f corrompió un carácter FUERA de la sección loop,
+                 mojibake UTF-8): tras commitear, baja el diff del commit
+                 contra su parent (gh api) y verifica que SOLO toca líneas
+                 dentro de «## Heurísticas aprendidas (loop)». Si toca
+                 CUALQUIER otra cosa: revierte el commit (Git Data, mismo
+                 mecanismo) y repórtalo en el comentario.
                - REVERT por defecto: si una edición previa (marcador con ≥2
                  épicas) tiene su tipo aún recurriendo según el bloque del
                  Auditor, reviértela igual (commit + autonomous-decision).
@@ -158,3 +176,16 @@ jobs:
               ni el resto de una skill): fuera de ese perímetro propones, el
               humano decide, otros aplican.
             - Máximo 2 propuestas y 2 skill-edits. Sin evidencia ⇒ nada.
+
+      # Propuesta #1258 (2026-07-12): la muerte de sesión es un modo de
+      # fallo NORMAL de este agente (2 en ~5 ciclos). Este paso determinista
+      # (cero LLM) garantiza que el panel de la épica nunca queda vacío sin
+      # señal, y avisa del posible efecto sin publicar.
+      - name: Señal determinista de fallo
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+        run: |
+          gh issue comment "${{ github.event.issue.number }}" \
+            --repo "${{ github.repository }}" \
+            --body "**El run del process-reviewer falló** — ver ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Puede haber efectos sin publicar (commits \`skill(loop):\` en la rama por defecto posteriores a la última auditoría): verificar antes del siguiente ciclo."

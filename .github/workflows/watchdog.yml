@@ -395,6 +395,46 @@ jobs:
               const retries = prComments.filter(c => (c.body || '').includes(CI_RETRY_MARK)).length;
 
               if (retries === 0) {
+                // Fast-path de rojo ATRIBUIBLE (2026-07-12, propuesta #1268 del
+                // repo de origen): si TODOS los tests fallidos pertenecen a
+                // ficheros que el propio PR toca, el retry de flaky es coste
+                // puro y retrasa la escalada un ciclo de cron. Fuente: las
+                // anotaciones ::error del check run de CI (path del fichero).
+                // Fail-open: sin anotaciones legibles ⇒ comportamiento actual
+                // íntegro (retry + harvest).
+                const ATTR_MARK = '<!-- watchdog-ci-attributable -->';
+                let attributable = false, failedFiles = [];
+                try {
+                  const { data: jobs } = await github.rest.actions.listJobsForWorkflowRun({ ...O, run_id: ci.id, per_page: 50 });
+                  const anns = [];
+                  for (const j of jobs.jobs.filter(j => j.conclusion === 'failure')) {
+                    const { data: a } = await github.rest.checks.listAnnotations({ ...O, check_run_id: j.id, per_page: 100 }).catch(() => ({ data: [] }));
+                    anns.push(...a.filter(x => x.annotation_level === 'failure' && x.path && x.path !== '.github'));
+                  }
+                  failedFiles = [...new Set(anns.map(a => a.path))];
+                  if (failedFiles.length) {
+                    const prFiles = await github.paginate(github.rest.pulls.listFiles, { ...O, pull_number: pr.number, per_page: 100 });
+                    const touched = new Set(prFiles.map(f => f.filename));
+                    attributable = failedFiles.every(f => touched.has(f));
+                  }
+                } catch (e) { core.warning(`attr-check #${pr.number}: ${e.message} (fail-open a retry)`); }
+
+                if (attributable) {
+                  const attrPings = prComments.filter(c => (c.body || '').includes(ATTR_MARK)).length;
+                  if (attrPings === 0) {
+                    await github.rest.issues.createComment({
+                      ...O, issue_number: pr.number,
+                      body: `${ATTR_MARK}\n@claude CI en rojo (run ${ci.id}) con fallos ATRIBUIBLES a este PR — todos los tests fallidos viven en ficheros que el PR toca:\n\n${failedFiles.map(f => '- `' + f + '`').join('\n')}\n\nBaja el detalle con \`gh run view ${ci.id} --log-failed\`, corrige y pushea. (watchdog: fast-path sin retry de flaky — el rojo atribuible no se reintenta.) <!-- ping-creator -->`,
+                    });
+                    core.notice(`PR #${pr.number}: CI rojo ATRIBUIBLE (${failedFiles.length} ficheros del diff); escalado directo sin retry.`);
+                  } else {
+                    anomalies.push({ type: 'pr-ci-red-persistent', number: pr.number,
+                      branch: pr.head.ref, ci_run: ci.id, retries, attributable: true,
+                      labels: pr.labels.map(l => l.name) });
+                  }
+                  continue;
+                }
+
                 try {
                   await github.rest.actions.reRunWorkflowFailedJobs({ ...O, run_id: ci.id });
                   await github.rest.issues.createComment({
