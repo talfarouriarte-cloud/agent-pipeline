@@ -14,7 +14,6 @@ const usage = JSON.parse(readFileSync(`${DIR}/labels-usage.json`, 'utf8'));
 const wfs = readdirSync('.github/workflows').filter(f => /\.ya?ml$/.test(f));
 
 const errors = [];
-// 1. Toda label declarada existe en el template.
 let declared = 0;
 for (const [wf, labels] of Object.entries(usage)) {
   if (wf.startsWith('_')) continue;
@@ -23,9 +22,7 @@ for (const [wf, labels] of Object.entries(usage)) {
     if (!template.has(name)) errors.push(`${wf} usa \`${name}\` — ausente de labels.json (consumidor nuevo nacería sin ella)`);
   }
 }
-// 2. Todo workflow presente tiene entrada en el manifiesto (o se olvidó declararlo).
 for (const f of wfs) if (!(f in usage)) errors.push(`${f}: sin entrada en labels-usage.json (declara [] si no usa labels fijas)`);
-// 3. Entradas del manifiesto que ya no corresponden a un workflow.
 for (const wf of Object.keys(usage)) if (!wf.startsWith('_') && !wfs.includes(wf)) errors.push(`labels-usage.json declara ${wf} — ese workflow no existe`);
 
 if (errors.length) { console.error('CHECK-LABELS ROJO:'); errors.forEach(e => console.error('  - ' + e)); process.exit(1); }
