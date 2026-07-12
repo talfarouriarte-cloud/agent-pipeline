@@ -1,5 +1,5 @@
 {
-  "_comment": "Fuente de provisión: qué labels FIJAS usa cada workflow. check-labels.mjs verifica que todas existan en labels.json (2026-07-12, tras el drift de serial-*). Dinámicas (estado:*, rondas:N) se auto-crean via addLabels y NO se declaran aquí. Al añadir/quitar una label fija en un workflow, actualiza su lista aquí.",
+  "_comment": "Fuente de provisión: qué labels FIJAS usa cada workflow. check-labels.mjs verifica que todas existan en labels.json (2026-07-12, tras el drift de serial-*). Dinámicas (estado:*, rondas:N) se auto-crean via addLabels y NO se declaran aquí. Al añadir/quitar una label fija en un workflow, actualiza su lista aquí. El CI propio del central (ci.yml) no usa labels: declarado como [].",
   "claude-code.yml": [
     "auditoria-completa",
     "human-needed",
@@ -29,5 +29,7 @@
     "needs-review",
     "serial-activo",
     "stalled"
-  ]
+  ],
+  "ci.yml": [],
+  "agent-pipeline-ci.yml": []
 }
