@@ -1,0 +1,33 @@
+{
+  "_comment": "Fuente de provisión: qué labels FIJAS usa cada workflow. check-labels.mjs verifica que todas existan en labels.json (2026-07-12, tras el drift de serial-*). Dinámicas (estado:*, rondas:N) se auto-crean via addLabels y NO se declaran aquí. Al añadir/quitar una label fija en un workflow, actualiza su lista aquí.",
+  "claude-code.yml": [
+    "auditoria-completa",
+    "human-needed",
+    "needs-review",
+    "pause-agents",
+    "serial-activo",
+    "serial-ok",
+    "stalled"
+  ],
+  "epic-merge.yml": [
+    "auditoria",
+    "ci-verde",
+    "lgtm",
+    "needs-review",
+    "stalled"
+  ],
+  "process-review.yml": [
+    "auditoria",
+    "auditoria-completa"
+  ],
+  "reviewer.yml": [
+    "lgtm",
+    "needs-review"
+  ],
+  "watchdog.yml": [
+    "human-needed",
+    "needs-review",
+    "serial-activo",
+    "stalled"
+  ]
+}
