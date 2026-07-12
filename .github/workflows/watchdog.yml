@@ -526,6 +526,11 @@ jobs:
               // ningún run activo (gate 0). Candidato. El diagnóstico fino
               // (¿terminó de verdad? ¿murió a medias? ¿PR ya mergeada y el
               // issue quedó abierto?) es del Architect, no de este script.
+              if (issue.labels.some(l => l.name === 'serial-activo')) {
+                await github.rest.issues.removeLabel({
+                  ...O, issue_number: issue.number, name: 'serial-activo' }).catch(() => {});
+                core.notice(`serial-activo huérfano retirado de #${issue.number} (Creator sin PR).`);
+              }
               anomalies.push({
                 type: 'issue-armed-no-pr',
                 number: issue.number,
