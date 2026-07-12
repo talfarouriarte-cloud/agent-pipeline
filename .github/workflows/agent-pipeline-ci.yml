@@ -1,0 +1,29 @@
+# CI propio del repo central agent-pipeline (2026-07-12).
+# El central no tenía CI: sus otros workflows son workflow_call (sirven a
+# los consumidores). Este corre SOBRE el propio central en cada push/PR y
+# verifica la coherencia de las plantillas de provisión.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  templates:
+    name: Verificación de plantillas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      # Anti-drift de labels (2026-07-12): toda label fija declarada en
+      # labels-usage.json existe en labels.json; todo workflow está
+      # declarado; sin declaraciones huérfanas. Un consumidor nuevo se
+      # provisiona desde labels.json — si una label usada falta, nace roto.
+      - name: check-labels
+        run: node scripts/check-labels.mjs
