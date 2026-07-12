@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   call:
-    uses: talfarouriarte-cloud/agent-pipeline/.github/workflows/process-review.yml@v1
+    uses: talfarouriarte-cloud/agent-pipeline/.github/workflows/process-review.yml@main
     with:
       runner: ubuntu-latest
       default_branch: main

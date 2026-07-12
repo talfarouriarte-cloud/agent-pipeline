@@ -16,7 +16,7 @@ permissions:
   id-token: write
 jobs:
   call:
-    uses: talfarouriarte-cloud/agent-pipeline/.github/workflows/claude-code.yml@v1
+    uses: talfarouriarte-cloud/agent-pipeline/.github/workflows/claude-code.yml@main
     with:
       runner: ubuntu-latest
       default_branch: main

@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   call:
-    uses: talfarouriarte-cloud/agent-pipeline/.github/workflows/reviewer.yml@v1
+    uses: talfarouriarte-cloud/agent-pipeline/.github/workflows/reviewer.yml@main
     with:
       runner: ubuntu-latest
       reviewer_model: claude-opus-4-8
