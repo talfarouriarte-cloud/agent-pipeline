@@ -203,11 +203,64 @@ jobs:
               body: '**claude-code · guard de cadena**: la cadena alcanzable desde este issue via launch-next NO termina en un sentinel epic-audit (defecto de horneado). No se arma al Creator; escalado a architect-resolve via `stalled`.\n\n<!-- cadena-sin-auditoria -->' });
             core.setOutput('broken', 'true');
 
+      # GUARD de panel consumido (2026-07-12, 3ª recurrencia de la clase
+      # «limpieza de cola saltada en el lanzamiento»: R·5+R·6, proof-fase-b,
+      # G1/G2 — la limpieza dependía de que la sesión del Architect que lanza
+      # RECORDARA el protocolo, y las sesiones no comparten contexto). Antes
+      # de armar manualmente un issue `epica`, el panel de la épica anterior
+      # (auditorías y process-proposals abiertas) debe estar consumido: cada
+      # cierre con su línea de resolución. Exenciones mecánicas: arms de
+      # epic-merge (epic-auto-launch), correctivos de una auditoría viva (el
+      # body cita el nº de una auditoría abierta) y override explícito
+      # `<!-- panel-ok -->` en el comentario de arm. Solo issues, no PRs.
+      - name: Check panel consumed (issues only)
+        id: check_panel
+        if: |
+          steps.check_pause.outputs.paused != 'true'
+          && steps.check_iterations.outputs.cap_reached != 'true'
+          && steps.check_chain.outputs.broken != 'true'
+        uses: actions/github-script@v7
+        env:
+          IN_EPIC_LABEL: ${{ inputs.epic_label }}
+        with:
+          github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const isIssueCtx = !!context.payload.issue && !context.payload.issue.pull_request;
+            if (!isIssueCtx) { core.setOutput('blocked', 'false'); return; }
+            const issue = context.payload.issue;
+            const labels = (issue.labels || []).map(l => l.name);
+            if (!labels.includes(process.env.IN_EPIC_LABEL)) { core.setOutput('blocked', 'false'); return; }
+            const armBody = context.payload.comment?.body || '';
+            // Exención 1: arm mecánico de epic-merge (encadenado mid-épica)
+            if (armBody.includes('epic-auto-launch')) { core.setOutput('blocked', 'false'); return; }
+            // Exención 2: override explícito del que arma
+            if (/<!--\s*panel-ok\s*-->/.test(armBody)) { core.setOutput('blocked', 'false'); return; }
+            // Panel: auditorías y propuestas abiertas
+            const open = [];
+            for (const lbl of ['auditoria', 'process-proposal']) {
+              const res = await github.rest.issues.listForRepo({ owner, repo, state: 'open', labels: lbl, per_page: 50 });
+              open.push(...res.data.filter(i => !i.pull_request));
+            }
+            if (!open.length) { core.setOutput('blocked', 'false'); return; }
+            // Exención 3: correctivo de una auditoría viva — su body cita el nº
+            const body = issue.body || '';
+            const cited = new Set([...body.matchAll(/#(\d+)/g)].map(m => Number(m[1])));
+            const audits = open.filter(i => (i.labels || []).map(l => l.name).includes('auditoria'));
+            if (audits.some(a => cited.has(a.number))) { core.setOutput('blocked', 'false'); return; }
+            // BLOQUEO: panel sin consumir
+            const list = open.map(i => `- #${i.number} (${(i.labels||[]).map(l=>l.name).join(', ')}): ${i.title}`).join('\n');
+            await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['stalled'] });
+            await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
+              body: `**claude-code · guard de panel**: hay panel de la épica anterior SIN consumir — el protocolo exige cerrarlo con línea de resolución al lanzar (3 omisiones históricas motivaron este guard):\n\n${list}\n\nNo se arma al Creator. Opciones: consumir el panel y re-armar, o forzar con \`<!-- panel-ok -->\` en el comentario de arm si el lanzamiento debe preceder al cierre.\n\n<!-- panel-sin-consumir -->` });
+            core.setOutput('blocked', 'true');
+
       - name: Checkout repository
         if: |
           steps.check_pause.outputs.paused != 'true'
           && steps.check_iterations.outputs.cap_reached != 'true'
           && steps.check_chain.outputs.broken != 'true'
+          && steps.check_panel.outputs.blocked != 'true'
         uses: actions/checkout@v4
         with:
           # fetch-depth: 0 trae todo el historial. Necesario para que Claude
@@ -229,6 +282,7 @@ jobs:
           steps.check_pause.outputs.paused != 'true'
           && steps.check_iterations.outputs.cap_reached != 'true'
           && steps.check_chain.outputs.broken != 'true'
+          && steps.check_panel.outputs.blocked != 'true'
           && (
             (github.event_name == 'issue_comment' && !github.event.issue.pull_request)
             || github.event_name == 'issues'
@@ -246,6 +300,7 @@ jobs:
           steps.check_pause.outputs.paused != 'true'
           && steps.check_iterations.outputs.cap_reached != 'true'
           && steps.check_chain.outputs.broken != 'true'
+          && steps.check_panel.outputs.blocked != 'true'
         # Blindaje de auth: forzamos OAuth Max como única vía de auth para el
         # Creator. Razón: la action `anthropics/claude-code-action@v1` usa
         # internamente la SDK estándar de Anthropic, que lee
@@ -306,6 +361,7 @@ jobs:
           && steps.check_pause.outputs.paused != 'true'
           && steps.check_iterations.outputs.cap_reached != 'true'
           && steps.check_chain.outputs.broken != 'true'
+          && steps.check_panel.outputs.blocked != 'true'
           && (
             github.event_name == 'pull_request_review'
             || github.event_name == 'pull_request_review_comment'
@@ -445,6 +501,7 @@ jobs:
           && steps.check_pause.outputs.paused != 'true'
           && steps.check_iterations.outputs.cap_reached != 'true'
           && steps.check_chain.outputs.broken != 'true'
+          && steps.check_panel.outputs.blocked != 'true'
         uses: actions/github-script@v7
         with:
           # PAT, NO GITHUB_TOKEN: el @claude posteado debe disparar la
