@@ -1,577 +1,711 @@
-name: Claude Code
+name: Watchdog
 
-# Dispara cuando aparece @claude en:
-#  - el cuerpo o título de un issue (al abrirlo o editarlo)
-#  - un comentario de issue
-#  - un comentario de revisión sobre un PR
-#  - el cuerpo de una review de PR
+# Watchdog de colas de agentes (autorizado por el humano 2026-07-02: el
+# Architect gestiona colas y relanza salvo problema irresoluble).
 #
-# El workflow del Reviewer (reviewer.yml) sigue separado.
-# Loop Creator ↔ Reviewer post ADR-063: el Creator cierra con tag
-# ([READY-TO-MERGE], [NEEDS-HUMAN], o @reviewer) y este workflow
-# aplica las labels correspondientes. Cap de 3 comentarios de
-# claude[bot] en el PR para evitar espirales. Kill-switch vía label
-# `pause-agents`.
+# Arquitectura en dos etapas (via negativa en coste):
+#   1. `detect` — script barato cada 20 min. Consulta la API y decide si hay
+#      trabajo en vuelo aparentemente parado. Cero LLM.
+#   2. `architect` — Claude, SOLO si detect encuentra anomalías. Diagnostica
+#      con fineza (checklist del Creator, estado de la rama, labels) y actúa:
+#      re-arm "completa el trabajo", re-trigger del Reviewer, relanzar
+#      sentinel de épica. Rol vinculante en docs/agents/watchdog.md.
+#
+# Firma universal que dispara la etapa 2: hay trabajo armado (issue con
+# @claude reciente u open PR de rama claude/*) Y ningún run de Actions en
+# queued/in_progress Y silencio > STALL_MIN. Cubre los tres modos de fallo
+# observados:
+#   a) Creator termina con conclusion:success pero trabajo a medias, sin PR
+#      (caso A5 #949, run 28556901580: 10m29s, checklist sin marcar).
+#   b) Cadena del Reviewer rota antes del LGTM (CI verde, PR envejeciendo).
+#   c) Sentinel launch-next mergeado sin que el siguiente issue arranque.
+#   d) PR de rama claude/* con CI en rojo (2026-07-03, #997): retry mecánico
+#      del CI UNA vez desde detect (sin LLM — el retry es el detector
+#      empírico de flakiness); si reincide, el Architect hace ping-creator.
+#   e) Handoff Creator→Reviewer roto (2026-07-08, #1133): cierre `@reviewer`
+#      del Creator SIN label needs-review ni veredicto posterior. Firma
+#      DETERMINISTA sin envejecimiento (la label la pone un step mecánico
+#      en segundos; si a los 2 min no está, no aparecerá a los 30):
+#      re-aplicar needs-review desde detect CON EL PAT (el `labeled` del
+#      GITHUB_TOKEN no dispara reviewer.yml por el anti-loop). Cap 2 vía
+#      <!-- watchdog-handoff-fix -->; después, anomalía para el Architect.
+#
+# Kill-switches:
+#   - Items con label `pause-agents` se excluyen de la detección (ADR-063).
+#   - `stalled` YA NO excluye (régimen autónomo 2026-07-07): es la señal
+#     que dispara architect-resolve. El cortacircuito humano es `human-needed`
+#     (doble rebote), que SÍ excluye.
+#   - Desactivación global: Actions → Watchdog → Disable workflow.
+#
+# Cap de reintentos: 2 re-arms autónomos por item, contados por el marcador
+# `<!-- watchdog-rearm -->` en comentarios. Al tercero: label `stalled` +
+# comentario de diagnóstico SIN @claude. Lo aplica el Architect (etapa 2);
+# detect solo filtra los ya escalados.
 
-# CALLABLE (agent-pipeline): los triggers de evento viven en el stub del
-# repo consumidor; este workflow hereda el contexto github.event del caller.
+# CALLABLE (agent-pipeline): triggers (labeled, cron, workflow_run de los
+# workflows del pipeline del consumidor, workflow_dispatch) y concurrency
+# (group: watchdog, cancel-in-progress: false) viven en el stub. Los NOMBRES
+# de los workflows del pipeline se pasan como inputs: el detector compara
+# run.name contra ellos.
 on:
   workflow_call:
     inputs:
       runner:
-        description: Runner label (ej. ubuntu-latest, ubicloud-standard-2)
         type: string
         default: ubuntu-latest
       default_branch:
-        description: Rama por defecto del repo consumidor
         type: string
         default: main
-      creator_model:
-        description: Modelo del Creator
+      ci_workflow_name:
+        type: string
+        default: CI
+      creator_workflow_name:
+        description: Valor de name del stub del Creator en el consumidor
+        type: string
+        default: Claude Code
+      reviewer_workflow_name:
+        type: string
+        default: Opus Reviewer
+      epic_merge_workflow_name:
+        type: string
+        default: Epic Merge
+      extra_pipeline_workflows:
+        description: Nombres extra separados por coma (ej. Visual)
+        type: string
+        default: ""
+      epic_label:
+        type: string
+        default: epica
+      resolve_model:
         type: string
         default: claude-opus-4-8
-      creator_max_turns:
-        description: max-turns del Creator
+      resolve_max_turns:
         type: number
-        default: 200
-      bot_comment_cap:
-        description: Cap de comentarios de claude[bot] por PR antes de human-needed
+        default: 40
+      lookback_min:
         type: number
-        default: 8
+        default: 45
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
       REVIEWER_GITHUB_TOKEN:
         required: true
 
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+  actions: read
+
 jobs:
-  claude:
-    # Solo arranca si el evento contiene @claude. Esto reduce ruido y coste.
-    #
-    # FIX zero-width joiner (PR #205, 2026-05-23):
-    # El action emite ocasionalmente un U+200D (zero-width joiner)
-    # entre '@' y 'claude' al renderizar mentions del Reviewer. El
-    # substring literal '@claude' deja de aparecer en el body y
-    # contains() devuelve false. El Creator nunca arranca pese a que
-    # el Reviewer cree haberlo invocado. El sentinel HTML comment
-    # '<!-- ping-creator -->' es marca explícita de máquina, invisible
-    # en el render del comment, emitida por el Reviewer junto al
-    # '@claude' literal (que sigue visible para humanos). Convive con
-    # '@claude' literal: humanos pingean a mano con '@claude' simple
-    # y siguen disparando. Ver ADR-086.
-    # GATE author_association (agent-pipeline, repos públicos): solo OWNER/
-    # MEMBER/COLLABORATOR arman al Creator. Los pings de máquina (Reviewer,
-    # epic-merge, watchdog) salen con el PAT del propietario ⇒ OWNER.
-    if: |
-      (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association) || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association)) &&
-      ((github.event_name == 'issue_comment' && (contains(github.event.comment.body, '@claude') || contains(github.event.comment.body, '<!-- ping-creator -->'))) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
-      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude'))))
-
+  detect:
     runs-on: ${{ inputs.runner }}
-
-    # Permisos mínimos para que Claude pueda escribir archivos, abrir PRs
-    # y comentar issues. id-token sirve para OIDC si añadimos providers
-    # alternativos (Bedrock, Vertex) en el futuro; no estorba dejarlo.
+    timeout-minutes: 5
     permissions:
-      contents: write
+      contents: read
+      issues: read
+      statuses: write   # espejo watchdog/turno en checks (2026-07-10)
+      # Modo d): re-run de jobs fallidos del CI + comentario-marcador en el
+      # PR. El GITHUB_TOKEN basta (no necesita disparar otros workflows: la
+      # RE-EJECUCIÓN del CI emite su propio workflow_run al concluir, y
+      # epic-merge escucha ese evento — la cadena se reanuda sola si el
+      # retry sale verde). Watchdog NO escucha a CI ⇒ sin bucle.
+      actions: write
       pull-requests: write
-      issues: write
-      id-token: write
-
+    outputs:
+      found: ${{ steps.scan.outputs.found }}
+      anomalies: ${{ steps.scan.outputs.anomalies }}
     steps:
-      # Kill-switch: si el issue/PR tiene la label `pause-agents`,
-      # aborta sin correr el agente. ADR-063.
-      - name: Check pause-agents kill-switch
-        id: check_pause
+      - name: Settle (event-driven only)
+        # 90s para que los runs encadenados legítimos (p.ej. LGTM del
+        # Reviewer → run de merge del Creator) lleguen a queued antes del
+        # gate 0. Sin esto, detect ganaría la carrera y vería silencio.
+        if: github.event_name == 'workflow_run'
+        run: sleep 90
+
+      - name: Scan for stalled work
+        id: scan
         uses: actions/github-script@v7
+        env:
+          STATUS_TOKEN: ${{ github.token }}
+          # Modo e): la label needs-review debe salir con el PAT — un
+          # `labeled` emitido por el GITHUB_TOKEN no dispara reviewer.yml
+          # (anti-loop de GitHub). Solo se usa para esa llamada puntual;
+          # el resto del scan sigue con el GITHUB_TOKEN.
+          ARM_PAT: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          # Inputs al script vía env (2026-07-11, Fase C): el script rozaba el
+          # límite de 21000 chars por expresión (21.896) — misma clase que el
+          # fallo de arranque de epic-merge en el primer consumidor.
+          IN_CREATOR_WF: ${{ inputs.creator_workflow_name }}
+          IN_REVIEWER_WF: ${{ inputs.reviewer_workflow_name }}
+          IN_CI_WF: ${{ inputs.ci_workflow_name }}
+          IN_EPIC_MERGE_WF: ${{ inputs.epic_merge_workflow_name }}
+          IN_EXTRA_WFS: ${{ inputs.extra_pipeline_workflows }}
+          IN_LOOKBACK_MIN: ${{ inputs.lookback_min }}
+          IN_DEFAULT_BRANCH: ${{ inputs.default_branch }}
         with:
           script: |
-            const labels = context.payload.issue?.labels
-              || context.payload.pull_request?.labels
-              || [];
-            const paused = labels.some(l => l.name === 'pause-agents');
-            if (paused) {
-              core.notice('Label `pause-agents` presente. Abortando Creator.');
-            }
-            core.setOutput('paused', paused);
+            // Umbral de silencio por tipo de disparo: en workflow_run el
+            // evento ES la señal (un run acaba de concluir) — no hay que
+            // esperar envejecimiento. En cron, 30 min para no cazar
+            // trabajo simplemente lento.
+            const STALL_MIN = 5;  // ADR-217 §3: bound de liveness (física de materialización de runs), no envejecimiento heurístico — la detección es de estado, el tiempo solo evita carreras
+            const ARM_WINDOW_H = 72;       // ventana de arms relevantes
+            const now = Date.now();
+            const ageMin = iso => (now - new Date(iso).getTime()) / 60000;
+            const O = { owner: context.repo.owner, repo: context.repo.repo };
 
-      # Cap de iteraciones: si en este PR ya hay 3+ comentarios de
-      # claude[bot] y el disparo viene de un bot (Reviewer), asume
-      # loop runaway, añade label `human-needed` y para. Si el
-      # disparo viene de un humano, el cap NO aplica (override).
-      # ADR-063.
-      #
-      # Ajustar CAP empíricamente si tu agente añade un comentario
-      # de resumen al abrir el PR (en cuyo caso CAP-1 = iteraciones
-      # efectivas Reviewer↔Creator).
-      - name: Check iteration cap (PR contexts only)
-        id: check_iterations
-        if: steps.check_pause.outputs.paused != 'true'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            // CAP cuenta TODOS los comentarios de claude[bot] (Creator + Reviewer
-            // combinados). Una ronda completa Reviewer→Creator añade ~2 comentarios.
-            // CAP=8 permite ~3-4 rondas antes de escalar a humano. Si emergen loops
-            // bot↔bot patológicos, bajar; si el flow se atasca legítimamente, subir.
-            const CAP = ${{ inputs.bot_comment_cap }};
+            // ── Modo e) (2026-07-05, incidente PR #1091): fallo de ARRANQUE
+            // del agente. Un run de Claude Code / Opus Reviewer con
+            // conclusion=failure y duración <90s murió instalando infra
+            // (npm/tarball/red), sin llegar a trabajar. Señal determinista:
+            // re-run inmediato UNA vez (run_attempt dedupea), cero LLM.
+            // Va ANTES del gate 0: el run fallido ya concluyó, y otros runs
+            // activos no deben ocultarlo. Si falla también el 2º intento
+            // (run_attempt>=2), anomalía para la etapa architect.
+            try {
+              const AGENT_WFS = [process.env.IN_CREATOR_WF, process.env.IN_REVIEWER_WF];
+              const STARTUP_MAX_S = 90;
+              const LOOKBACK_MIN = Number(process.env.IN_LOOKBACK_MIN); // ~2 ticks de cron
+              const { data: recent } = await github.rest.actions.listWorkflowRunsForRepo({
+                ...O, status: 'failure', per_page: 30 });
+              for (const r of recent.workflow_runs) {
+                if (!AGENT_WFS.includes(r.name)) continue;
+                if (ageMin(r.created_at) > LOOKBACK_MIN) continue;
+                const durS = (new Date(r.updated_at) - new Date(r.run_started_at || r.created_at)) / 1000;
+                if (durS >= STARTUP_MAX_S) continue; // fallo tardío: no es arranque
+                if ((r.run_attempt || 1) >= 2) {
+                  anomalies.push({ type: 'agent-startup-failure-persistent',
+                    run_id: r.id, workflow: r.name, attempts: r.run_attempt });
+                  continue;
+                }
+                try {
+                  await github.rest.actions.reRunWorkflowFailedJobs({ ...O, run_id: r.id });
+                  core.notice(`Modo e: re-run del arranque fallido ${r.name} #${r.id} (${Math.round(durS)}s).`);
+                } catch (e) { core.warning(`Modo e re-run ${r.id}: ` + e.message); }
+              }
+            } catch (e) { core.warning('Modo e falló (no bloquea): ' + e.message); }
 
-            // Skip si sender es humano; cap solo aplica a loops bot↔bot.
-            if (context.payload.sender?.type === 'User') {
-              core.setOutput('cap_reached', false);
-              return;
-            }
-
-            // Resolver número del PR si el contexto es un PR.
-            const isPRComment =
-              context.eventName === 'issue_comment'
-              && !!context.payload.issue?.pull_request;
-            const isPRReviewEvent =
-              context.eventName === 'pull_request_review'
-              || context.eventName === 'pull_request_review_comment';
-            if (!isPRComment && !isPRReviewEvent) {
-              core.setOutput('cap_reached', false);
-              return;
-            }
-
-            const prNumber = context.payload.issue?.number
-              || context.payload.pull_request?.number;
-
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: prNumber,
-              per_page: 100,
-            });
-            const botComments = comments.filter(
-              c => c.user.login === 'claude[bot]'
-            );
-
-            if (botComments.length >= CAP) {
-              core.notice(
-                `Cap de ${CAP} comentarios de claude[bot] alcanzado `
-                + `(actual: ${botComments.length}). Añadiendo label `
-                + `\`human-needed\` y parando.`
-              );
-              await github.rest.issues.addLabels({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: prNumber,
-                labels: ['human-needed'],
+            // ── Gate 0: ¿hay algo moviéndose? Si hay CUALQUIER run activo
+            // de los workflows del pipeline, no hay cuelgue: salir.
+            //
+            // Filtro de edad: la API retiene runs fantasma en `queued`
+            // indefinidamente (observado: run 26447434898, encolado 37 días).
+            // Un run del pipeline no vive >6h de verdad (timeouts de job
+            // ≤ ~1h); todo lo más viejo se ignora o el gate quedaría
+            // bloqueado para siempre.
+            const PIPELINE = [process.env.IN_CREATOR_WF, process.env.IN_REVIEWER_WF, process.env.IN_CI_WF, process.env.IN_EPIC_MERGE_WF, ...((process.env.IN_EXTRA_WFS || '').split(',').map(s => s.trim()).filter(Boolean))];
+            const MAX_RUN_AGE_H = 6;
+            let inFlight = false;
+            for (const status of ['in_progress', 'queued']) {
+              const { data } = await github.rest.actions.listWorkflowRunsForRepo({
+                ...O, status, per_page: 50,
               });
-              core.setOutput('cap_reached', true);
+              if (data.workflow_runs.some(r =>
+                    PIPELINE.includes(r.name)
+                    && ageMin(r.created_at) < MAX_RUN_AGE_H * 60)) {
+                inFlight = true; break;
+              }
+            }
+            if (inFlight) {
+              core.notice('Runs del pipeline activos; nada que vigilar.');
+              core.setOutput('found', 'false');
+              core.setOutput('anomalies', '[]');
+              return;
+            }
+
+            const anomalies = [];
+
+            // ── Régimen autónomo: evento labeled=stalled ⇒ anomalía directa
+            // para architect-resolve (diagnostica, decide, des-stallea, re-arma).
+            // Doble rebote: si el ítem ya tiene 2+ <!-- autonomous-decision -->,
+            // label human-needed y NO anomalía (cortacircuito).
+            if ((context.eventName === 'issues' || context.eventName === 'pull_request')
+                && context.payload.action === 'labeled'
+                && context.payload.label?.name === 'stalled') {
+              const num = context.payload.issue?.number || context.payload.pull_request?.number;
+              try {
+                const { data: cs } = await github.rest.issues.listComments({ ...O, issue_number: num, per_page: 100 });
+                const autos = cs.filter(c => (c.body || '').includes('<!-- autonomous-decision -->')).length;
+                if (autos >= 2) {
+                  await github.rest.issues.addLabels({ ...O, issue_number: num, labels: ['human-needed'] });
+                  await github.rest.issues.createComment({ ...O, issue_number: num,
+                    body: 'Doble rebote tras recuperación autónoma: cortacircuito. Requiere decisión humana.\n\n<!-- watchdog-circuit-breaker -->' });
+                  core.notice(`#${num}: doble rebote ⇒ human-needed.`);
+                } else {
+                  anomalies.push({ type: 'stalled-autonomous-resolve', number: num });
+                }
+              } catch (e) { core.warning('stalled-resolve: ' + e.message); }
+            }
+            // Régimen autónomo: `stalled` ya no excluye (es la señal de
+            // architect-resolve); `human-needed` es el cortacircuito que sí.
+            const skip = labels =>
+              labels.some(l => ['pause-agents', 'human-needed',
+                // Paneles de época (fix 2026-07-12, propuesta #1287 finplan):
+                // quedan ABIERTOS por diseño con su arm en el body — para el
+                // detector issue-armed-no-pr eran stall eterno (churn de
+                // inspecciones + human-needed sobre trabajo terminado).
+                'auditoria', 'process-proposal', 'registro-decisiones'].includes(l.name));
+
+            // ── Dispatcher de TURNO (ADR-217, 2026-07-10, state-driven).
+            // Sustituye a pr-stalled (envejecimiento de 30 min) y absorbe el
+            // modo e. Invariante: todo ítem abierto tiene turno asignado.
+            // El gate 0 garantiza que al llegar aquí NADIE está activo ⇒
+            // turno-de-agente == zombi confirmado: relanzar la transición
+            // rota (mecánico, cap 2 vía TURN_MARK); turno de NADIE ⇒
+            // anomalía inmediata; gate humano declarado ⇒ sano (skip).
+            // El único tiempo es LIVENESS_MIN, anti-carrera. Regla de
+            // mantenimiento (ADR-217 §5): todo marcador/label nuevo en
+            // protocol.md actualiza esta función en el mismo cambio.
+            // Espejo en checks (2026-07-10): cada intervención del
+            // dispatcher deja un commit status `watchdog / turno` en el
+            // head SHA — visible junto a CI/Reviewer en la caja del PR.
+            const turnStatus = async (pr, state, desc) => {
+              try {
+                const res = await fetch(`https://api.github.com/repos/${O.owner}/${O.repo}/statuses/${pr.head.sha}`, {
+                  method: 'POST',
+                  headers: { Authorization: `Bearer ${process.env.STATUS_TOKEN}`, Accept: 'application/vnd.github+json' },
+                  body: JSON.stringify({ state, description: desc.slice(0, 140), context: 'watchdog / turno' }) });
+                if (!res.ok) core.info(`turnStatus HTTP ${res.status}`);
+              } catch (e) { core.info('turnStatus: ' + e.message); }
+            };
+            const TURN_MARK = '<!-- watchdog-turn-relaunch -->';
+            const HANDOFF_MARK = '<!-- watchdog-handoff-fix -->';   // histórico: cuenta para el cap
+            const LIVENESS_MIN = 5;
+            const patCall = async (method, path, body) => {
+              const res = await fetch(`https://api.github.com/repos/${O.owner}/${O.repo}${path}`,
+                { method, headers: { Authorization: `Bearer ${process.env.ARM_PAT}`,
+                                     Accept: 'application/vnd.github+json' },
+                  body: body ? JSON.stringify(body) : undefined });
+              if (!res.ok && res.status !== 404) throw new Error(`HTTP ${res.status} ${path}`);
+              return res;
+            };
+            const { data: prs } = await github.rest.pulls.list({ ...O, state: 'open', per_page: 50 });
+            const openAgentPRs = prs.filter(p => p.head.ref.startsWith('claude/'));
+            const verdictRe = /^\s*(LGTM|REVIEW|NITS)\b/;
+            for (const pr of openAgentPRs) {
+              if (skip(pr.labels)) continue;
+              if (ageMin(pr.updated_at) < LIVENESS_MIN) continue;   // anti-carrera
+              const labels = pr.labels.map(l => l.name);
+              const { data: hcs } = await github.rest.issues.listComments({ ...O, issue_number: pr.number, per_page: 100 });
+              const verdicts = hcs.filter(c => verdictRe.test((c.body || '').trim()));
+              const lastVerdict = verdicts[verdicts.length - 1] || null;
+              const lastV = lastVerdict ? (lastVerdict.body || '').trim().split(/\s/)[0].replace(':','') : null;
+              const bots = hcs.filter(c => c.user && c.user.type === 'Bot' && c.user.login.startsWith('claude'));
+              const lastBot = bots[bots.length - 1] || null;
+              const botAfterVerdict = !!lastBot && (!lastVerdict || new Date(lastBot.created_at) > new Date(lastVerdict.created_at));
+              const closesReviewer = !!lastBot && /^\s*@reviewer\b/im.test(lastBot.body || '');
+              const closesReady = !!lastBot && /^\s*\[READY-TO-MERGE\]/m.test(lastBot.body || '');
+              const relaunches = hcs.filter(c => { const b = c.body || ''; return b.includes(TURN_MARK) || b.includes(HANDOFF_MARK); }).length;
+
+              // turnoDe(pr): derivado de la tabla de protocol.md.
+              let turno = null, why = '', fix = null;   // fix devuelve true si ya publicó su comentario-marcador
+              if (labels.includes('needs-review')) {
+                turno = 'reviewer'; why = 'needs-review presente y ningún run del Reviewer nació';
+                fix = async () => {   // re-labeled FRESCO con PAT (anti-loop del GITHUB_TOKEN)
+                  await patCall('DELETE', `/issues/${pr.number}/labels/needs-review`);
+                  await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['needs-review'] });
+                  return false;
+                };
+              } else if (lastVerdict && !botAfterVerdict && (lastV === 'REVIEW' || lastV === 'NITS')) {
+                turno = 'creator'; why = `veredicto ${lastV} sin sesión posterior del Creator`;
+                fix = async () => {   // el @claude debe salir con PAT o no dispara (anti-loop)
+                  await patCall('POST', `/issues/${pr.number}/comments`,
+                    { body: `@claude\n\nRelanzamiento de turno (ADR-217): el veredicto ${lastV} de arriba quedó sin sesión. Aplica los puntos pendientes y cierra con @reviewer (a inicio de línea).\n\n<!-- watchdog-rearm -->\n${TURN_MARK}` });
+                  return true;
+                };
+              } else if (botAfterVerdict && (closesReviewer || (closesReady && lastVerdict && lastV !== 'LGTM'))) {
+                // ex-modo e, incluida la variante READY-TO-MERGE-sin-LGTM (#1201)
+                turno = 'auto-label→reviewer';
+                why = closesReviewer ? 'cierre @reviewer sin needs-review' : 'READY-TO-MERGE tras veredicto no-LGTM';
+                fix = async () => { await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['needs-review'] }); return false; };
+              } else if (lastV === 'LGTM') {
+                turno = 'epic-merge'; why = 'LGTM emitido y sin merge (epic-merge es workflow_run: sin relanzamiento mecánico)';
+              } else if (!lastVerdict) {
+                turno = 'reviewer'; why = 'PR sin veredicto ni needs-review (trigger opened perdido)';
+                fix = async () => { await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['needs-review'] }); return false; };
+              } else {
+                anomalies.push({ type: 'turno-de-nadie', number: pr.number, branch: pr.head.ref,
+                  labels, last_verdict: lastV,
+                  note: 'ningún estado conocido asigna turno — huérfano (ADR-217 lectura a)' });
+                await turnStatus(pr, 'failure', 'Turno de NADIE: estado huérfano — architect-resolve convocado');
+                continue;
+              }
+
+              if (!fix) { anomalies.push({ type: `turno-${turno}-zombie`, number: pr.number, why }); continue; }
+              if (relaunches >= 2) {
+                anomalies.push({ type: `turno-${turno}-zombie-persistent`, number: pr.number, why,
+                  note: 'relanzamiento mecánico agotado (cap 2)' });
+                continue;
+              }
+              try {
+                const selfCommented = await fix();
+                if (!selfCommented) {
+                  await github.rest.issues.createComment({ ...O, issue_number: pr.number,
+                    body: `**watchdog · relanzamiento de turno (ADR-217)**: ${why}; transición relanzada mecánicamente (${relaunches + 1}/2). ${TURN_MARK}` });
+                }
+                core.notice(`PR #${pr.number}: turno=${turno} zombi ⇒ relanzado (${why}).`);
+                await turnStatus(pr, 'pending', `Turno ${turno} zombi: transición relanzada (${relaunches + 1}/2) — ${why}`);
+              } catch (e) {
+                core.warning(`turn-relaunch #${pr.number}: ` + e.message);
+                anomalies.push({ type: `turno-${turno}-relaunch-failed`, number: pr.number, why, error: e.message });
+              }
+            }
+
+            // ── Modo d): PRs de agente con CI en ROJO. Retry mecánico una
+            // vez (flaky-detector empírico, cero LLM); si ya se reintentó y
+            // sigue rojo, anomalía para el Architect (ping-creator).
+            const CI_RETRY_MARK = '<!-- watchdog-ci-retry -->';
+            for (const pr of openAgentPRs) {
+              if (skip(pr.labels)) continue;
+
+              // Modo PR-dirty (incidente #1054, 2026-07-04): un PR en conflicto no
+              // tiene merge-ref => GitHub NO dispara NINGÚN check de pull_request
+              // (ni CI ni Reviewer). Sin este modo, un PR dirty sin sesión activa
+              // queda invisible para todo el pipeline para siempre.
+              const { data: prFull } = await github.rest.pulls.get({ ...O, pull_number: pr.number });
+              if (prFull.mergeable === false && prFull.mergeable_state === 'dirty') {
+                const { data: prCs } = await github.rest.issues.listComments({
+                  ...O, issue_number: pr.number, per_page: 100,
+                });
+                const REBASE_MARK = '<!-- watchdog-rebase -->';
+                const rebases = prCs.filter(c => (c.body || '').includes(REBASE_MARK)).length;
+                // Nota: el gate 0 (runs activos => no hacer nada) ya cubre la
+                // reparación en curso; aquí solo cap de reintentos via marca.
+                if (rebases < 2) {
+                  await github.rest.issues.createComment({
+                    ...O, issue_number: pr.number,
+                    body: `${REBASE_MARK}\n@claude rebasa esta rama sobre \`origin/${process.env.IN_DEFAULT_BRANCH}\` y resuelve los conflictos (watchdog: PR en conflicto sin checks posibles — sin merge-ref no corren CI ni Reviewer). Alcance intacto: solo rebase + resolución. <!-- ping-creator -->`,
+                  });
+                  core.notice(`PR #${pr.number}: dirty sin checks; ping de rebase ${rebases + 1}/2.`);
+                } else if (rebases >= 2) {
+                  anomalies.push({ type: 'pr-dirty-persistent', number: pr.number,
+                    branch: pr.head.ref, rebases, labels: pr.labels.map(l => l.name) });
+                }
+                continue; // dirty: la lógica de CI-rojo no aplica (no hay checks)
+              }
+
+              // Run de CI más reciente sobre el HEAD exacto del PR.
+              const { data: ciRuns } = await github.rest.actions.listWorkflowRunsForRepo({
+                ...O, head_sha: pr.head.sha, per_page: 20,
+              });
+              const ci = ciRuns.workflow_runs
+                .filter(r => r.name === process.env.IN_CI_WF)
+                .sort((x, y) => new Date(y.created_at) - new Date(x.created_at))[0];
+              if (!ci || ci.status !== 'completed' || ci.conclusion !== 'failure') continue;
+
+              const { data: prComments } = await github.rest.issues.listComments({
+                ...O, issue_number: pr.number, per_page: 100,
+              });
+              const retries = prComments.filter(c => (c.body || '').includes(CI_RETRY_MARK)).length;
+
+              if (retries === 0) {
+                // Fast-path de rojo ATRIBUIBLE (2026-07-12, propuesta #1268 del
+                // repo de origen): si TODOS los tests fallidos pertenecen a
+                // ficheros que el propio PR toca, el retry de flaky es coste
+                // puro y retrasa la escalada un ciclo de cron. Fuente: las
+                // anotaciones ::error del check run de CI (path del fichero).
+                // Fail-open: sin anotaciones legibles ⇒ comportamiento actual
+                // íntegro (retry + harvest).
+                const ATTR_MARK = '<!-- watchdog-ci-attributable -->';
+                let attributable = false, failedFiles = [];
+                try {
+                  const { data: jobs } = await github.rest.actions.listJobsForWorkflowRun({ ...O, run_id: ci.id, per_page: 50 });
+                  const anns = [];
+                  for (const j of jobs.jobs.filter(j => j.conclusion === 'failure')) {
+                    const { data: a } = await github.rest.checks.listAnnotations({ ...O, check_run_id: j.id, per_page: 100 }).catch(() => ({ data: [] }));
+                    anns.push(...a.filter(x => x.annotation_level === 'failure' && x.path && x.path !== '.github'));
+                  }
+                  failedFiles = [...new Set(anns.map(a => a.path))];
+                  if (failedFiles.length) {
+                    const prFiles = await github.paginate(github.rest.pulls.listFiles, { ...O, pull_number: pr.number, per_page: 100 });
+                    const touched = new Set(prFiles.map(f => f.filename));
+                    attributable = failedFiles.every(f => touched.has(f));
+                  }
+                } catch (e) { core.warning(`attr-check #${pr.number}: ${e.message} (fail-open a retry)`); }
+
+                if (attributable) {
+                  const attrPings = prComments.filter(c => (c.body || '').includes(ATTR_MARK)).length;
+                  if (attrPings === 0) {
+                    await github.rest.issues.createComment({
+                      ...O, issue_number: pr.number,
+                      body: `${ATTR_MARK}\n@claude CI en rojo (run ${ci.id}) con fallos ATRIBUIBLES a este PR — todos los tests fallidos viven en ficheros que el PR toca:\n\n${failedFiles.map(f => '- `' + f + '`').join('\n')}\n\nBaja el detalle con \`gh run view ${ci.id} --log-failed\`, corrige y pushea. (watchdog: fast-path sin retry de flaky — el rojo atribuible no se reintenta.) <!-- ping-creator -->`,
+                    });
+                    core.notice(`PR #${pr.number}: CI rojo ATRIBUIBLE (${failedFiles.length} ficheros del diff); escalado directo sin retry.`);
+                  } else {
+                    anomalies.push({ type: 'pr-ci-red-persistent', number: pr.number,
+                      branch: pr.head.ref, ci_run: ci.id, retries, attributable: true,
+                      labels: pr.labels.map(l => l.name) });
+                  }
+                  continue;
+                }
+
+                try {
+                  await github.rest.actions.reRunWorkflowFailedJobs({ ...O, run_id: ci.id });
+                  await github.rest.issues.createComment({
+                    ...O, issue_number: pr.number,
+                    body: `${CI_RETRY_MARK}\n**watchdog**: CI en rojo (run ${ci.id}); re-lanzados los jobs fallidos (retry 1/1, detector de flakiness). Si vuelve a rojo, se escala al Creator.`,
+                  });
+                  core.notice(`PR #${pr.number}: CI rojo, retry lanzado (run ${ci.id}).`);
+                  // Cosecha de flaky-candidatos (2026-07-10): el retry detecta
+                  // el flaky pero hasta hoy no lo REGISTRABA — el mismo test
+                  // puede flakear semanas autoresolviéndose sin que nadie lo
+                  // arregle. El step posterior baja el log del attempt 1 y
+                  // publica los tests fallidos; el Auditor los cuenta por
+                  // épica y el circuito correctivo obliga al fix.
+                  core.setOutput('flaky_run', String(ci.id));
+                  core.setOutput('flaky_pr', String(pr.number));
+                } catch (e) {
+                  core.warning(`PR #${pr.number}: no se pudo re-lanzar CI: ${e.message}`);
+                  anomalies.push({ type: 'pr-ci-red-persistent', number: pr.number,
+                    branch: pr.head.ref, ci_run: ci.id, retries, retry_error: e.message,
+                    labels: pr.labels.map(l => l.name) });
+                }
+                continue; // el retry en vuelo reabre el gate 0 en el próximo pase
+              }
+
+              anomalies.push({
+                type: 'pr-ci-red-persistent',
+                number: pr.number,
+                branch: pr.head.ref,
+                ci_run: ci.id,
+                retries,
+                labels: pr.labels.map(l => l.name),
+              });
+            }
+
+            // ── Issues abiertos armados con @claude sin PR abierta asociada
+            // y en silencio. La asociación PR↔issue usa el patrón de rama
+            // del Creator: claude/issue-<n>-*.
+            const { data: issues } = await github.rest.issues.listForRepo({
+              ...O, state: 'open', sort: 'updated', direction: 'desc', per_page: 50,
+            });
+            for (const issue of issues) {
+              if (issue.pull_request) continue;        // solo issues puros
+              if (skip(issue.labels)) continue;
+              if (ageMin(issue.updated_at) < STALL_MIN) continue;
+
+              // ¿Rama de PR abierta para este issue? Entonces el trabajo
+              // vive en la PR (cubierto arriba si está parada).
+              if (openAgentPRs.some(p =>
+                    p.head.ref.startsWith(`claude/issue-${issue.number}-`))) continue;
+
+              // Buscar el último arm humano (@claude o ping-creator) en
+              // los comentarios recientes.
+              const { data: comments } = await github.rest.issues.listComments({
+                ...O, issue_number: issue.number, per_page: 100,
+              });
+              let lastArm = null, lastBot = null, rearms = 0;
+              for (const c of comments) {
+                const body = c.body || '';
+                const isBot = c.user.login === 'claude[bot]';
+                // Los arms de bot también son arms (incidente #1048): con
+                // `!isBot`, un arm de claude[bot] rechazado por la action
+                // dejaba lastArm=null y el watchdog quedaba ciego.
+                if (body.includes('@claude') || body.includes('<!-- ping-creator -->'))
+                  lastArm = c;
+                if (isBot) lastBot = c;
+                if (body.includes('<!-- watchdog-rearm -->')) rearms++;
+              }
+              if (!lastArm) continue;
+              if (ageMin(lastArm.created_at) > ARM_WINDOW_H * 60) continue;
+
+              // Armado, sin PR abierta, todo en silencio > STALL_MIN, y
+              // ningún run activo (gate 0). Candidato. El diagnóstico fino
+              // (¿terminó de verdad? ¿murió a medias? ¿PR ya mergeada y el
+              // issue quedó abierto?) es del Architect, no de este script.
+              // Liberar el flag serial huérfano (2026-07-12): si el Creator
+              // murió sin abrir PR, `serial-activo` quedó puesto y congelaría
+              // TODOS los lanzamientos siguientes. El watchdog es la 3ª mano
+              // del flag (guard lo pone, Creator lo borra al abrir PR, watchdog
+              // lo borra si el Creator no llegó a abrirlo).
+              if (issue.labels.some(l => l.name === 'serial-activo')) {
+                await github.rest.issues.removeLabel({
+                  ...O, issue_number: issue.number, name: 'serial-activo' }).catch(() => {});
+                core.notice(`serial-activo huérfano retirado de #${issue.number} (Creator sin PR).`);
+              }
+              anomalies.push({
+                type: 'issue-armed-no-pr',
+                number: issue.number,
+                title: issue.title.slice(0, 80),
+                armed_at: lastArm.created_at,
+                last_bot_comment_at: lastBot ? lastBot.created_at : null,
+                watchdog_rearms_so_far: rearms,
+                labels: issue.labels.map(l => l.name),
+              });
+            }
+
+            const found = anomalies.length > 0;
+            core.setOutput('found', String(found));
+            core.setOutput('anomalies', JSON.stringify(anomalies));
+            if (found) {
+              core.notice(`Anomalías detectadas: ${anomalies.length}`);
+              core.info(JSON.stringify(anomalies, null, 2));
             } else {
-              core.setOutput('cap_reached', false);
+              core.notice('Sin anomalías.');
             }
 
-      # GUARD de integridad de cadena (v1.2, incidente wmcb 2026-07-11):
-      # antes de disparar al Creator sobre un issue `epica`, verificar que la
-      # cadena alcanzable via launch-next termina en epic-audit. Una cadena
-      # sin auditoría al final es defecto de horneado: se marca stalled y NO
-      # se quema una sesión de agente. Solo aplica al arm de issues (no PRs).
-      - name: Check epic chain integrity (issues only)
-        id: check_chain
-        if: |
-          steps.check_pause.outputs.paused != 'true'
-          && steps.check_iterations.outputs.cap_reached != 'true'
+      # RED de PR huérfano (v1.2, incidentes wmcb #7 y #6, 2026-07-11): el
+      # Creator termina success con el trabajo en rama pero SIN abrir el PR,
+      # dejando un enlace «Create PR» (quick-pull /compare/) como artefacto.
+      # Firma determinista ⇒ reparación mecánica: el watchdog crea el PR con
+      # la polaridad declarada en el comentario de cierre (default full-pr).
+      # Sale con el PAT: un PR creado con GITHUB_TOKEN no dispararía reviewer.
+      - name: Orphan PR net
+        id: orphan_net
         uses: actions/github-script@v7
         env:
           IN_EPIC_LABEL: ${{ inputs.epic_label }}
+          IN_DEFAULT_BRANCH: ${{ inputs.default_branch }}
         with:
           github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
           script: |
             const { owner, repo } = context.repo;
-            const isIssueCtx = !!context.payload.issue && !context.payload.issue.pull_request;
-            if (!isIssueCtx) { core.setOutput('broken', 'false'); return; }
-            const issue = context.payload.issue;
-            const labels = (issue.labels || []).map(l => l.name);
-            if (!labels.includes(process.env.IN_EPIC_LABEL)) { core.setOutput('broken', 'false'); return; }
-            // Traversal launch-next con cap 20
-            let body = issue.body || '';
-            let hops = 0;
-            while (hops++ < 20) {
-              if (/<!--\s*epic-audit:/.test(body)) { core.setOutput('broken', 'false'); return; }
-              const m = body.match(/<!--\s*launch-next:\s*#?(\d+)\s*-->/);
-              if (!m) break; // sin sentinel y sin epic-audit: cadena rota aquí
-              const next = await github.rest.issues.get({ owner, repo, issue_number: Number(m[1]) });
-              body = next.data.body || '';
+            const O = { owner, repo };
+            const MARK = '<!-- orphan-pr-fix -->';
+            const issues = await github.rest.issues.listForRepo({ ...O, state: 'open', labels: process.env.IN_EPIC_LABEL, per_page: 20 });
+            for (const issue of issues.data) {
+              if (issue.pull_request) continue;
+              const comments = await github.rest.issues.listComments({ ...O, issue_number: issue.number, per_page: 100 });
+              const cs = comments.data;
+              if (cs.some(c => (c.body || '').includes(MARK))) continue; // ya reparado una vez: no repetir
+              const last = [...cs].reverse().find(c => c.user && c.user.login === 'claude[bot]');
+              if (!last) continue;
+              // Artefacto del fallo: enlace quick-pull /compare/<branch> en el cierre
+              const m = (last.body || '').match(/\/compare\/([A-Za-z0-9._\/-]+)\?/);
+              if (!m) continue;
+              const branch = decodeURIComponent(m[1]);
+              // Envejecimiento: 10 min desde el cierre del Creator (evita carreras con un gh pr create lento)
+              if (Date.now() - new Date(last.created_at).getTime() < 10 * 60 * 1000) continue;
+              // Rama existe y va por delante de la base
+              let cmp;
+              try { cmp = await github.rest.repos.compareCommits({ ...O, base: process.env.IN_DEFAULT_BRANCH, head: branch }); }
+              catch (e) { continue; }
+              if (cmp.data.ahead_by === 0) continue;
+              // Cero PRs abiertos desde la rama
+              const prs = await github.rest.pulls.list({ ...O, state: 'open', head: `${owner}:${branch}`, per_page: 5 });
+              if (prs.data.length > 0) continue;
+              const polarity = /partial-pr/.test(last.body || '') ? 'partial-pr' : 'full-pr';
+              const pr = await github.rest.pulls.create({ ...O,
+                title: issue.title.replace(/\s*\[épica[^\]]*\]\s*$/, ''),
+                head: branch, base: process.env.IN_DEFAULT_BRANCH,
+                body: `Closes #${issue.number}\n\n<!-- ${polarity} -->\n\n_PR creado mecánicamente por el watchdog (red de PR huérfano v1.2): Creator terminó con el trabajo en \`${branch}\` sin abrir el PR. Cuerpo del trabajo: ver el comentario de cierre del Creator en #${issue.number}._` });
+              await github.rest.issues.addLabels({ ...O, issue_number: pr.data.number, labels: [process.env.IN_EPIC_LABEL] });
+              await github.rest.issues.createComment({ ...O, issue_number: issue.number,
+                body: `**watchdog · red de PR huérfano**: PR #${pr.data.number} creado mecánicamente desde \`${branch}\` (polaridad ${polarity}). ${MARK}` });
+              core.info(`orphan-pr-fix: #${issue.number} → PR #${pr.data.number}`);
+              break; // uno por scan
             }
-            await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['stalled'] });
-            await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
-              body: '**claude-code · guard de cadena**: la cadena alcanzable desde este issue via launch-next NO termina en un sentinel epic-audit (defecto de horneado). No se arma al Creator; escalado a architect-resolve via `stalled`.\n\n<!-- cadena-sin-auditoria -->' });
-            core.setOutput('broken', 'true');
 
-      # GUARD de panel consumido (2026-07-12, 3ª recurrencia de la clase
-      # «limpieza de cola saltada en el lanzamiento»: R·5+R·6, proof-fase-b,
-      # G1/G2 — la limpieza dependía de que la sesión del Architect que lanza
-      # RECORDARA el protocolo, y las sesiones no comparten contexto). Antes
-      # de armar manualmente un issue `epica`, el panel de la épica anterior
-      # (auditorías y process-proposals abiertas) debe estar consumido: cada
-      # cierre con su línea de resolución. Exenciones mecánicas: arms de
-      # epic-merge (epic-auto-launch), correctivos de una auditoría viva (el
-      # body cita el nº de una auditoría abierta) y override explícito
-      # `<!-- panel-ok -->` en el comentario de arm. Solo issues, no PRs.
-      - name: Check panel consumed (issues only)
-        id: check_panel
-        if: |
-          steps.check_pause.outputs.paused != 'true'
-          && steps.check_iterations.outputs.cap_reached != 'true'
-          && steps.check_chain.outputs.broken != 'true'
-        uses: actions/github-script@v7
+  architect:
+    needs: detect
+    if: needs.detect.outputs.found == 'true'
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+      actions: write   # ADR-217 §7: su prompt ordena relanzar CIs; read era un 403 latente
+      id-token: write
+    steps:
+      - name: Harvest flaky candidates (modo d)
+        if: steps.scan.outputs.flaky_run != ''
         env:
-          IN_EPIC_LABEL: ${{ inputs.epic_label }}
-        with:
-          github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
-          script: |
-            const { owner, repo } = context.repo;
-            const isIssueCtx = !!context.payload.issue && !context.payload.issue.pull_request;
-            if (!isIssueCtx) { core.setOutput('blocked', 'false'); return; }
-            const issue = context.payload.issue;
-            const labels = (issue.labels || []).map(l => l.name);
-            if (!labels.includes(process.env.IN_EPIC_LABEL)) { core.setOutput('blocked', 'false'); return; }
-            const armBody = context.payload.comment?.body || '';
-            // Exención 1: arm mecánico de epic-merge (encadenado mid-épica)
-            if (armBody.includes('epic-auto-launch')) { core.setOutput('blocked', 'false'); return; }
-            // Exención 2: override explícito del que arma
-            if (/<!--\s*panel-ok\s*-->/.test(armBody)) { core.setOutput('blocked', 'false'); return; }
-            // Panel: auditorías y propuestas abiertas
-            const open = [];
-            for (const lbl of ['auditoria', 'process-proposal']) {
-              const res = await github.rest.issues.listForRepo({ owner, repo, state: 'open', labels: lbl, per_page: 50 });
-              open.push(...res.data.filter(i => !i.pull_request));
-            }
-            if (!open.length) { core.setOutput('blocked', 'false'); return; }
-            // Exención 3: correctivo de una auditoría viva — su body cita el nº
-            const body = issue.body || '';
-            const cited = new Set([...body.matchAll(/#(\d+)/g)].map(m => Number(m[1])));
-            const audits = open.filter(i => (i.labels || []).map(l => l.name).includes('auditoria'));
-            if (audits.some(a => cited.has(a.number))) { core.setOutput('blocked', 'false'); return; }
-            // BLOQUEO: panel sin consumir
-            const list = open.map(i => `- #${i.number} (${(i.labels||[]).map(l=>l.name).join(', ')}): ${i.title}`).join('\n');
-            await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['stalled'] });
-            await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
-              body: `**claude-code · guard de panel**: hay panel de la épica anterior SIN consumir — el protocolo exige cerrarlo con línea de resolución al lanzar (3 omisiones históricas motivaron este guard):\n\n${list}\n\nNo se arma al Creator. Opciones: consumir el panel y re-armar, o forzar con \`<!-- panel-ok -->\` en el comentario de arm si el lanzamiento debe preceder al cierre.\n\n<!-- panel-sin-consumir -->` });
-            core.setOutput('blocked', 'true');
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUN="${{ steps.scan.outputs.flaky_run }}"
+          PR="${{ steps.scan.outputs.flaky_pr }}"
+          TMP=$(mktemp -d)
+          # Log del attempt fallido (el retry ya corre); best-effort: la
+          # cosecha jamás rompe el watchdog.
+          gh api "repos/${{ github.repository }}/actions/runs/${RUN}/attempts/1/logs" > "$TMP/l.zip" 2>/dev/null || exit 0
+          unzip -qo "$TMP/l.zip" -d "$TMP" 2>/dev/null || exit 0
+          # Anotaciones ::error de vitest: fichero + título, dedupe, cap 10
+          FAILS=$(grep -rhoE '::error file=[^,]*packages/[^,]+,title=[^,]+' "$TMP" \
+            | sed -E 's|::error file=[^,]*(packages/[^,]+),title=|\1 › |' \
+            | sort -u | head -10 || true)
+          [ -z "$FAILS" ] && exit 0
+          gh pr comment "$PR" --repo "${{ github.repository }}" --body "$(printf '**watchdog · cosecha de flaky-candidatos** (attempt 1 del run %s — confirmados como flaky si el re-run sale verde; el Auditor los cuenta por épica):\n\n~~~\n%s\n~~~\n\n<!-- flaky-harvest -->' "$RUN" "$FAILS")"
 
-      - name: Checkout repository
-        if: |
-          steps.check_pause.outputs.paused != 'true'
-          && steps.check_iterations.outputs.cap_reached != 'true'
-          && steps.check_chain.outputs.broken != 'true'
-          && steps.check_panel.outputs.blocked != 'true'
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          # fetch-depth: 0 trae todo el historial. Necesario para que Claude
-          # pueda razonar sobre commits previos cuando aplique.
           fetch-depth: 0
 
-      # ───────────────────────────────────────────────────────────────────
-      # Sync FORZADO a la rama base ACTUAL antes de que la acción ramifique.
-      # Causa raíz (PR #866 salió 12 commits por detrás → conflicto): en eventos
-      # `issue_comment`, actions/checkout hace checkout de `github.sha`, que puede
-      # venir rancio; `claude-code-action` ramifica la rama nueva desde ese HEAD
-      # local. Esto fuerza el HEAD local a `origin/develop` antes de la acción, de
-      # modo que la rama del Creator SIEMPRE salga del develop más reciente.
-      # SOLO en trabajo de issue nuevo: en eventos de PR el Creator debe quedarse
-      # en la rama del PR (p.ej. para resolver conflictos), así que NO reseteamos.
-      # ───────────────────────────────────────────────────────────────────
-      - name: Sync a la rama base actual antes de ramificar (solo issues, no PRs)
-        if: |
-          steps.check_pause.outputs.paused != 'true'
-          && steps.check_iterations.outputs.cap_reached != 'true'
-          && steps.check_chain.outputs.broken != 'true'
-          && steps.check_panel.outputs.blocked != 'true'
-          && (
-            (github.event_name == 'issue_comment' && !github.event.issue.pull_request)
-            || github.event_name == 'issues'
-          )
-        env:
-          BASE: ${{ inputs.default_branch }}
-        run: |
-          git fetch origin "$BASE"
-          git checkout -B "$BASE" "origin/$BASE"
-          git reset --hard "origin/$BASE"
-          echo "$BASE sincronizado a $(git rev-parse --short HEAD)"
-
-      - name: Run Claude Code
-        if: |
-          steps.check_pause.outputs.paused != 'true'
-          && steps.check_iterations.outputs.cap_reached != 'true'
-          && steps.check_chain.outputs.broken != 'true'
-          && steps.check_panel.outputs.blocked != 'true'
-        # Blindaje de auth: forzamos OAuth Max como única vía de auth para el
-        # Creator. Razón: la action `anthropics/claude-code-action@v1` usa
-        # internamente la SDK estándar de Anthropic, que lee
-        # `ANTHROPIC_API_KEY` del env automáticamente. Si está disponible,
-        # la SDK puede priorizarla sobre el `claude_code_oauth_token` (orden
-        # opaco, no documentado). Resultado empírico: PRs del Creator
-        # factuaban ~$11 contra la API key facturada en lugar de consumir el
-        # plan Max. (El Reviewer también usa claude-code-action@v1 desde
-        # 2026-05-19 con el mismo blindaje; ver reviewer.yml.)
-        #
-        # Con `ANTHROPIC_API_KEY: ""` aquí, la SDK no encuentra API key en
-        # env y queda solo el OAuth. Si OAuth Max falla por cualquier razón
-        # (token expirado, rate limit), el job falla con error de auth claro
-        # en lugar de facturar silenciosamente. Trade-off aceptado: pierdes
-        # el fallback transparente al Creator a cambio de garantía de
-        # que ningún PR del Creator se factura sin avisar. El Reviewer
-        # sigue conservando su fallback documentado por footer.
-        env:
-          ANTHROPIC_API_KEY: ""
-          # Auto-partición (CLAUDE.md): los arms de hijos deben salir como
-          # actor humano — claude-code-action rechaza actores bot y el token
-          # del agente aparece como claude[bot] (incidente #1048, 2026-07-04).
-          ARM_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+      - name: Run Architect watchdog
         uses: anthropics/claude-code-action@v1
+        env:
+          # Blindaje OAuth-only (mismo patrón que Creator y Reviewer): sin
+          # API key en env no hay fallback silencioso facturado.
+          ANTHROPIC_API_KEY: ""
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # claude-opus-4-8: modelo actual de mayor capacidad. Coherente
-          # con la decisión de usar el modelo más capaz para creación de
-          # código en el motor financiero. (Antes claude-opus-4-7; migrado
-          # a 4.8 — mismo precio, mejor tool-calling, mejor manejo de
-          # contexto largo/compactación, menos verbosidad de comentarios.)
-          # max-turns 100 razonable con OAuth Max (no hay coste por uso,
-          # solo cuota de bucket).
+          # allowed_bots (2026-07-11, repo de origen, incidente PR #1266): la
+          # acción rechaza actores bot por defecto (su anti-loop). Los runs del
+          # watchdog por workflow_run heredan el actor de la cadena
+          # (claude[bot] cuando el Creator empujó) y la etapa architect moría
+          # al nacer — las escaladas solo funcionaban desde cron/dispatch
+          # (actor humano). Seguro aquí: prompt interno fijo, etapa gateada
+          # por detect.
+          allowed_bots: "claude,github-actions"
+          # PAT, NO GITHUB_TOKEN: los comentarios y labels del watchdog
+          # DEBEN disparar los workflows del Creator/Reviewer. Eventos del
+          # GITHUB_TOKEN default no disparan otros workflows (anti-loop de
+          # GitHub) y además el @claude saldría de github-actions[bot].
+          # Con el PAT, el re-arm sale con autoría del humano — exactamente
+          # el mecanismo del rescate manual que este workflow automatiza.
+          github_token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
           claude_args: |
-            --model ${{ inputs.creator_model }}
-            --max-turns ${{ inputs.creator_max_turns }}
-            --permission-mode bypassPermissions
-            --allowedTools "Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr edit:*),Bash(gh pr checks:*),Bash(gh pr merge:*)"
+            --model ${{ inputs.resolve_model }}
+            --max-turns ${{ inputs.resolve_max_turns }}
+            --allowedTools "Read,Glob,Grep,Bash(gh issue view:*),Bash(gh issue comment:*),Bash(gh issue edit:*),Bash(gh issue create:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr checks:*),Bash(gh pr comment:*),Bash(gh pr edit:*),Bash(gh run list:*),Bash(gh run view:*),Bash(gh api repos/*)"
+          prompt: |
+            Eres el Architect en rol watchdog del repo ${{ github.repository }}.
+            Tu rol vinculante está en docs/agents/watchdog.md del checkout:
+            LÉELO ENTERO antes de actuar.
 
-      # Auto-labeling según tag de cierre del Creator. ADR-063.
-      # Solo en contextos de PR (los tags solo aplican en loop con Reviewer).
-      #
-      # FIX bucle silencioso (PR #180, 2026-05-21, ADR-064 amendment):
-      # El step solo re-aplica la label si el último comment de claude[bot]
-      # es POSTERIOR al comment que disparó el job. Razón: el trigger del
-      # workflow (if: contains(comment.body, '@claude')) hace substring
-      # match crudo y dispara también cuando otro agente (Reviewer)
-      # menciona el literal `@claude` en su cuerpo aunque sea entre
-      # backticks documentando convergencia. Si el step re-aplica label
-      # leyendo SIEMPRE el último comment de claude[bot] (que sigue siendo
-      # el del Creator de la ronda 1 con `@reviewer` al final), se genera
-      # un loop Reviewer↔Auto-label sin que el Creator produzca trabajo
-      # nuevo (14 rondas observadas en PR #180). El check de freshness
-      # rompe el bucle estructuralmente.
-      - name: Materializar auditoria-completa (post-step determinista)
-        # Fix 2026-07-12 (propuesta #1288 finplan): el informe del Auditor
-        # aparece cuando la acción reescribe el tracking comment AL TERMINAR
-        # la sesión; si la label (trigger de process-review) la aplica el
-        # propio agente por bash DURANTE la sesión, el orden efectivo es
-        # label→informe y process-review lee un panel a medias (medido:
-        # 59s-3m17s de ventana). El mismo patrón que el veredicto del
-        # Reviewer: el hecho lo materializa un paso determinista DESPUÉS.
-        # Sale con el PAT: su evento labeled es el trigger.
-        if: |
-          always()
-          && steps.check_pause.outputs.paused != 'true'
-          && contains(join(github.event.issue.labels.*.name, ','), 'auditoria')
-          && !contains(join(github.event.issue.labels.*.name, ','), 'auditoria-completa')
-          && github.event.issue.pull_request == null
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
-          script: |
-            const { owner, repo } = context.repo;
-            await github.rest.issues.addLabels({ owner, repo,
-              issue_number: context.payload.issue.number,
-              labels: ['auditoria-completa'] });
-            core.notice('auditoria-completa materializada post-sesión.');
+            El detector ha encontrado estas anomalías (trabajo aparentemente
+            parado, sin runs activos en el pipeline):
 
-      - name: Auto-label based on Creator's closing tag
-        if: |
-          success()
-          && steps.check_pause.outputs.paused != 'true'
-          && steps.check_iterations.outputs.cap_reached != 'true'
-          && steps.check_chain.outputs.broken != 'true'
-          && steps.check_panel.outputs.blocked != 'true'
-          && (
-            github.event_name == 'pull_request_review'
-            || github.event_name == 'pull_request_review_comment'
-            || (github.event_name == 'issue_comment'
-                && github.event.issue.pull_request)
-          )
-        uses: actions/github-script@v7
-        with:
-          # IMPORTANTE: usar el PAT (REVIEWER_GITHUB_TOKEN), NO el GITHUB_TOKEN
-          # default. Razón: este step aplica la label `needs-review` que DEBE
-          # disparar el workflow del Reviewer (reviewer.yml `on: pull_request:
-          # types: [labeled]`). Eventos generados por GITHUB_TOKEN default NO
-          # disparan otros workflows (protección anti-loop de GitHub). Con el
-          # PAT, el evento `labeled` sí se emite y el Reviewer dispara.
-          # Doc: https://docs.github.com/en/actions/using-workflows/triggering-a-workflow
-          github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
-          script: |
-            const prNumber = context.payload.issue?.number
-              || context.payload.pull_request?.number;
+            ```json
+            ${{ needs.detect.outputs.anomalies }}
+            ```
 
-            // Releer comentarios (el agente acaba de añadir el suyo).
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: prNumber,
-              per_page: 100,
-            });
-            const botComments = comments.filter(
-              c => c.user.login === 'claude[bot]'
-            );
-            if (botComments.length === 0) return;
+            Tipo `pr-ci-red-persistent` (CI rojo tras retry mecánico): baja
+            el log del fallo (`gh run view <ci_run> --log-failed`), identifica
+            el test y decide: si el fallo es atribuible al PR, ping-creator en
+            el PR con el log relevante citado y la instrucción de corregir;
+            si es un flaky ajeno al PR (pasa en local / falla intermitente en
+            runner), dilo en el comentario, re-lanza el CI una última vez con
+            `gh api -X POST repos/${{ github.repository }}/actions/runs/<ci_run>/rerun-failed-jobs`
+            y si reincide aplica label `stalled` + diagnóstico SIN @claude.
+            Cuenta como re-arm a efectos del cap.
 
-            const last = botComments[botComments.length - 1];
+            Tipo `stalled-autonomous-resolve` (régimen autónomo 2026-07-07,
+            docs/agents/watchdog.md § Régimen autónomo): NO esperes al humano.
+            (1) Diagnostica: informes/diags/checklists del ítem, y la skill
+            `epic-context-<ADR>` del checkout si existe. (2) Decide:
+            resolver-protocol primero; si no es derivable, decide con tu
+            mejor juicio y publica el racional completo con el marcador
+            `<!-- autonomous-decision -->`. (3) Actúa: si el stall es de
+            tamaño (cap de parciales), re-dimensiona el restante según la
+            heurística de partición de architect.md (issues nuevos con label
+            `${{ inputs.epic_label }}`, encadenados, heredando el sentinel del padre y cerrando
+            el padre con trazabilidad); quita la label `stalled`; ARMA la
+            continuación (comentario `@claude` + `<!-- watchdog-rearm -->`).
+            Excepciones absolutas (ahí sí humano): `.github/workflows/*`,
+            `prototype.css`, promoción de la rama por defecto a la de producción.
 
-            // FRESHNESS CHECK (PR #180 fix, ADR-064 amendment).
-            // El último comment de claude[bot] solo es señal válida de "el
-            // Creator acaba de cerrar trabajo en este run" si fue creado
-            // DESPUÉS del comment/review que disparó este job. Si es
-            // anterior, este job se disparó por un trigger espurio
-            // (típicamente: substring `@claude` en backticks dentro del
-            // body del Reviewer documentando convergencia) y NO debemos
-            // re-aplicar label porque desencadena un loop con el Reviewer.
-            const triggerCreatedAtRaw =
-              context.payload.comment?.created_at
-              || context.payload.review?.submitted_at
-              || null;
-            if (triggerCreatedAtRaw) {
-              const triggerCreatedAt = new Date(triggerCreatedAtRaw);
-              const lastBotCreatedAt = new Date(last.created_at);
-              if (lastBotCreatedAt <= triggerCreatedAt) {
-                core.notice(
-                  `Último comment de claude[bot] (${last.created_at}) es `
-                  + `anterior o igual al comment que disparó este job `
-                  + `(${triggerCreatedAtRaw}). Probablemente trigger espurio `
-                  + `(p.ej. substring \`@claude\` en backticks dentro de un `
-                  + `comment del Reviewer). NO re-aplico label para evitar `
-                  + `loop. Ver ADR-064 amendment.`
-                );
-                return;
-              }
-            }
+            IMPORTANTE: el log de Actions NO conserva los turnos de tu
+            sesión (solo init y resultado). Si necesitas entregar contenido
+            a otro agente o al humano (cuerpos de issues, comandos, diffs),
+            PUBLÍCALO en un comentario — jamás lo referencies "en el log"
+            (incidente #1120, 2026-07-08: cuerpos irrecuperables).
 
-            const body = last.body || '';
-
-            // Detectar tag exacto. Prioridad: NEEDS-HUMAN > READY-TO-MERGE > @reviewer.
-            // (Si por error el agente pone varios, escalar gana.)
-            // ANCLADO a inicio de línea (2026-07-08, PR #1133): el substring
-            // crudo disparó human-needed por una MENCIÓN del tag entre
-            // backticks en prosa del Creator («gatillo `[NEEDS-HUMAN]` en
-            // CLAUDE.md»), congelando el PR con CI rojo fuera del radar del
-            // watchdog. Mismo bug ya corregido para `@claude` (ADR-064) y
-            // documentado para `ping-creator` (watchdog.md): un tag de cierre
-            // es un tag solo si ABRE su línea. CLAUDE.md permite
-            // `[NEEDS-HUMAN]: <razón>` con texto detrás, así que el ancla es
-            // de inicio de línea, no de línea completa. Failure class #4:
-            // text belts forbidden — esto acerca los tags a marcadores.
-            let label = null;
-            if (/^\s*\[NEEDS-HUMAN\]/m.test(body)) {
-              label = 'human-needed';
-            } else if (/^\s*\[READY-TO-MERGE\]/m.test(body)) {
-              label = 'ready-to-merge';
-            } else if (/^\s*@reviewer\b/im.test(body)) {
-              label = 'needs-review';
-            }
-
-            if (!label) {
-              core.notice(
-                'El último comentario del Creator no contiene tag de cierre '
-                + '([READY-TO-MERGE], [NEEDS-HUMAN], o @reviewer). '
-                + 'Sin label automática aplicada.'
-              );
-              return;
-            }
-
-            // Para `needs-review`: quitar y re-añadir para forzar disparo
-            // del Reviewer. El Reviewer se autoborra como primer paso
-            // (ADR-063 self-remove pattern), así que en estado normal la
-            // label NO está aquí. El remove defensivo cubre fallos
-            // parciales donde el Reviewer no llegó a autoborrarse.
-            if (label === 'needs-review') {
-              try {
-                await github.rest.issues.removeLabel({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: prNumber,
-                  name: 'needs-review',
-                });
-              } catch (e) {
-                // La label puede no estar; no es error.
-              }
-            }
-
-            await github.rest.issues.addLabels({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: prNumber,
-              labels: [label],
-            });
-            core.notice(`Label aplicada: ${label}`);
-
-      # ───────────────────────────────────────────────────────────────────
-      # Auto-lanzamiento de épica (ADR-193). Espejo del step `Auto-label`:
-      # usa el PAT (REVIEWER_GITHUB_TOKEN) porque eventos del GITHUB_TOKEN
-      # default NO disparan otros workflows (anti-recursión de GitHub). El
-      # Creator cierra con `<!-- launch-next: #N -->` (o `<!-- epic-done -->`);
-      # este step postea `@claude` en el issue N, y ESE evento (al venir del
-      # PAT) arranca la siguiente corrida del Creator.
-      #
-      # ADR-193 opción A (elegida): el LGTM del Reviewer sobre un PR con
-      # label `epica` despierta al Creator, que verifica CI y mergea él mismo
-      # (gh pr merge en allowedTools) y emite el sentinel launch-next. Este step
-      # solo postea el @claude del siguiente issue desde ese sentinel.
-      # ───────────────────────────────────────────────────────────────────
-      - name: Launch next epic issue (Creator's closing sentinel)
-        if: |
-          success()
-          && steps.check_pause.outputs.paused != 'true'
-          && steps.check_iterations.outputs.cap_reached != 'true'
-          && steps.check_chain.outputs.broken != 'true'
-          && steps.check_panel.outputs.blocked != 'true'
-        uses: actions/github-script@v7
-        with:
-          # PAT, NO GITHUB_TOKEN: el @claude posteado debe disparar la
-          # siguiente corrida del Creator (ver step Auto-label para el motivo).
-          github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
-          script: |
-            const prNumber = context.payload.issue?.number
-              || context.payload.pull_request?.number;
-            if (!prNumber) return;
-
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: prNumber,
-              per_page: 100,
-            });
-            const botComments = comments.filter(c => c.user.login === 'claude[bot]');
-            if (botComments.length === 0) return;
-            const last = botComments[botComments.length - 1];
-
-            // FRESHNESS (igual que Auto-label): solo actuar si el cierre del
-            // Creator es POSTERIOR al evento que disparó este job.
-            const triggerAt = context.payload.comment?.created_at
-              || context.payload.review?.submitted_at || null;
-            if (triggerAt && new Date(last.created_at) <= new Date(triggerAt)) {
-              core.notice('Cierre del Creator no es fresco; no lanzo.');
-              return;
-            }
-
-            const body = last.body || '';
-
-            // epic-done ⇒ fin de la épica, no se lanza nada (el humano prueba).
-            if (/<!--\s*epic-done\s*-->/.test(body)) {
-              core.notice('Épica terminada; no hay siguiente issue.');
-              return;
-            }
-
-            const m = body.match(/<!--\s*launch-next:\s*#?(\d+)\s*-->/);
-            if (!m) return;
-            const nextIssue = Number(m[1]);
-
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: nextIssue,
-              body: '@claude',
-            });
-            core.notice(`Épica: lanzado el siguiente issue #${nextIssue}.`);
+            Para cada anomalía: diagnostica con `gh` (comentarios, checklist
+            del último comment de claude[bot], estado de ramas/PRs/checks/
+            labels, runs recientes) y ejecuta la acción mínima que reanude la
+            cadena, respetando el cap de reintentos y las prohibiciones del
+            rol. Si un item no necesita acción, dilo y no toques nada.
