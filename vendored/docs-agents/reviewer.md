@@ -57,6 +57,7 @@ Enfoca tu atención, en orden de prioridad:
 1. **Deuda técnica evitable.** Duplicación entre paquetes/capas. Abstracciones prematuras. Nombres confusos. Tipos laxos donde se pueden hacer precisos.
 1. **Tests.** ¿Cubre el PR lo que añade? En las zonas de rigor del anexo, ¿hay property tests donde tiene sentido?
 1. **DoD documental (`CLAUDE.md` § “CHANGELOG y docs de diseño”).** Si el PR produce cambio visible para el caller de un paquete, verifica que actualiza `packages/<paquete>/CHANGELOG.md` (sección `[Unreleased]`, categoría Keep a Changelog). Si el PR cambia el status estructural de una sección de un doc de diseño de área (`docs/design/<área>.md`), verifica que el **status header** correspondiente se actualizó. Refactor interno puro sin cambio visible: no se requiere entrada — anótalo, no lo exijas.
+1. **Estado de CI en el momento del veredicto (2026-07-12, propuesta #1269 del repo de origen — 3 falsos-LGTM sobre CI rojo en 2 épicas).** Antes de emitir `LGTM`, consulta la conclusión del CI del head SHA (`gh pr checks <n>` o presencia del label `ci-verde`). CI **completado en rojo** en ese momento ⇒ el rojo es un hallazgo más: nombra los tests/jobs fallidos y emite `REVIEW` (que sí pinga al Creator) — nunca `LGTM`. CI **aún en curso o sin runs** ⇒ `LGTM` como siempre: el orden de los hechos lo resuelve el gate de hechos materializados y no se penaliza la latencia del veredicto.
 1. **Skills de estado sincronizadas.** Si `reviewer-annex.md` declara skills de estado con DoD de sincronización (ej. una skill que sintetiza el estado de un núcleo de cálculo) y el PR implementa un ADR de esa zona, verifica DOS cosas: (a) que la sección editada es FIEL al ADR implementado — la skill describe estado, no intención; una síntesis que contradiga o se adelante al ADR es 🔴 (un doc de estado incorrecto que otros agentes leerán con confianza es peor que ninguno); (b) que la línea de sincronización de cabecera y el registro final se actualizaron (fecha, HEAD, ADR cubierto). Si el PR toca la zona y NO toca la skill, exige la actualización o una justificación explícita de por qué el cambio no altera el estado descrito.
 1. **TOC de `decisions.md`.** Las ADRs viven en volúmenes `docs/decisions/decisions-*.md`; `decisions.md` raíz es el índice global. Si el PR añade, renombra o cambia el estado de una ADR (`## ADR-NNN ...`), verifica que la ADR nueva está en el volumen `-current` (no en un volumen congelado ni en el índice) y que el bloque `<!-- TOC START -->` / `<!-- TOC END -->` de `decisions.md` está sincronizado. El Creator debe correr `node scripts/generate-toc.mjs` como DoD (ver `CLAUDE.md` § “Mantenimiento del TOC de `decisions.md`”). Si falta el regen, pídelo explícitamente.
 
@@ -121,7 +122,7 @@ Estructura:
 
 Significado de los veredictos:
 
-- `LGTM` — sin problemas sustantivos.
+- `LGTM` — sin problemas sustantivos. Jamás sobre un CI completado en rojo (ver «Qué revisar»: ese estado fuerza `REVIEW` con los fallos nombrados).
 - `NITS` — comentarios menores, mergeable tal cual.
 - `REVIEW` — hay algo que merece atención del autor antes de mergear.
 

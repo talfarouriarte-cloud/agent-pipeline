@@ -345,6 +345,10 @@ Cuando el job muere, el "(en curso)" marca exactamente la frontera de recuperaci
 
 ### Cuándo abrir el PR
 
+**Literales must-copy (2026-07-12, propuesta #1278 del repo de origen — un ciclo correctivo entero por UNA línea perdida en render):** si el issue especifica un literal a copiar (marcador de coordinación, cadena de invariante, mensaje exacto) y NO es legible en el contexto que has recibido, recupéralo del body RAW: `gh issue view <n> --json body` (los comentarios HTML sobreviven SIEMPRE en el raw; tu vista renderizada puede perderlos). Si tampoco aparece en el raw, escala al humano con el cierre correspondiente del loop protocol — JAMÁS improvises el literal de memoria.
+
+**Huella del pre-reviewer (2026-07-12, propuesta #1259 del repo de origen — sin rastro público el mecanismo es inevaluable):** el body de todo PR que abras incluye UNA línea obligatoria: `pre-reviewer: ejecutado · N hallazgos · M aplicados` (o `pre-reviewer: no ejecutado — <motivo>`). Solo la huella, no el informe: es texto informativo que ningún workflow parsea.
+
 El PR se abre al final, una vez todas las secciones están pusheadas. Verificaciones locales antes de abrir: el chequeo estático y **solo los ficheros de test que has tocado**, ambos con los comandos de tu ANEXO de rol. **NO abrir PR mid-flight** — un PR con secciones a medias dispara al Reviewer prematuramente.
 
 > **REGLA DURA — NUNCA corras la suite completa en tu sandbox.** NO ejecutes la suite completa, ni el runner sin rutas, ni la build global (comandos concretos: ANEXO de rol). La suite completa **te cuelga** (causa confirmada de parada repetida de épicas) y es **redundante**: CI corre la suite completa + typecheck + build sobre el PR como gate de merge. Tu trabajo: tocar solo lo tuyo, correr **solo tus ficheros de test afectados** (comando: ANEXO de rol), commit + push conforme avanzas (por sección/fichero), abrir PR. El conjunto lo valida CI, no tú. Nunca acumules trabajo sin commitear esperando a una verificación amplia.

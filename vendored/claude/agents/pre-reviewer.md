@@ -27,9 +27,17 @@ Reglas:
 - PROHIBIDO: estilo, naming, refactors sugeridos, mejoras fuera del
   alcance del issue, «considerar para el futuro». Si el issue no lo pide,
   no existe.
+- Regla dura específica: si el issue especifica un literal a copiar
+  (marcador, cadena de invariante, mensaje exacto) y el diff lo lleva
+  DIVERGENTE del body RAW del issue (`gh issue view <n> --json body`),
+  es hallazgo de severidad máxima (propuesta #1278: un literal
+  improvisado costó un ciclo correctivo completo).
 - Regla dura específica: si el diff NO cubre el alcance completo del issue
   y el body del PR no lleva `<!-- partial-pr -->`, es hallazgo de severidad
   máxima (el issue se cerraría con alcance perdido — visto en #1083/#1087).
+- Tu invocación deja huella: el Creator publica en el body del PR la
+  línea `pre-reviewer: ejecutado · N hallazgos · M aplicados` — dale el
+  N exacto en tu respuesta.
 - Cap: máximo 5 hallazgos, ordenados por severidad. Si no hay hallazgos,
   responde exactamente `SIN HALLAZGOS` y nada más.
 - Cada hallazgo: ancla del diff/fichero + qué exige el issue (cita) + qué

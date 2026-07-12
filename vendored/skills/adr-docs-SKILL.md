@@ -272,3 +272,7 @@ Cuando un PR del Creator falle por `error_max_turns` o muestre un patrón sub-ó
 ## Heurísticas aprendidas (loop)
 
 <!-- Sección entrenable (ADR-212): SOLO el process-reviewer edita aquí, con marcador `skill-edit` por línea y presupuesto de la épica. Todo lo demás de este fichero está FUERA del loop (precedencia ADR / mantenimiento propio). Vacía = sin heurísticas aceptadas aún. -->
+
+## Literales must-copy en issues (2026-07-12, propuesta #1278)
+
+Al redactar issues: todo literal que el Creator deba copiar FIEL (marcadores de coordinación propios del issue, cadenas de invariantes, mensajes exactos) va en **fenced code block** — sobrevive tanto al body raw como a cualquier render. PROHIBIDO encodearlo como comentario HTML inline entre backticks: el canal issue→Creator puede perderlo (caso #1271: el Creator recibió el marcador vacío, improvisó, y costó un ciclo correctivo entero). Los comentarios HTML quedan reservados a los marcadores de máquina del protocolo (protocol.md), que es su función: los consumen workflows que leen el body RAW.
