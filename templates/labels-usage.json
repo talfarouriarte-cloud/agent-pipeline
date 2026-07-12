@@ -30,6 +30,5 @@
     "serial-activo",
     "stalled"
   ],
-  "ci.yml": [],
-  "agent-pipeline-ci.yml": []
+  "ci.yml": []
 }
