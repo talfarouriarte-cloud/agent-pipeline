@@ -286,6 +286,18 @@ jobs:
             for (const pr of openAgentPRs) {
               if (skip(pr.labels)) continue;
               if (ageMin(pr.updated_at) < LIVENESS_MIN) continue;   // anti-carrera
+              // Cede ante PRs en conflicto (2026-07-12, incidente #1303): un PR
+              // `dirty` es propiedad del modo rebase de más abajo — no tiene
+              // merge-ref, luego no es evaluable por el Reviewer. Sin este
+              // guard, el dispatcher lo clasificaba «sin veredicto ⇒ turno del
+              // Reviewer» y le ponía `needs-review`, label que a su vez impedía
+              // convocar al Creator para el rebase (auto-bloqueo). Solo `dirty`
+              // (conflicto real); un PR `behind` sin conflicto SÍ es mergeable
+              // y no debe saltarse.
+              try {
+                const { data: pf } = await github.rest.pulls.get({ ...O, pull_number: pr.number });
+                if (pf.mergeable_state === 'dirty') continue;
+              } catch (e) { core.info(`turno/dirty-check #${pr.number}: ${e.message}`); }
               const labels = pr.labels.map(l => l.name);
               const { data: hcs } = await github.rest.issues.listComments({ ...O, issue_number: pr.number, per_page: 100 });
               const verdicts = hcs.filter(c => verdictRe.test((c.body || '').trim()));
