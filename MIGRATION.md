@@ -2,7 +2,7 @@
 
 Two paths: **A) new repo from scratch** and **B) existing repo already running a local copy of the pipeline** (the originating project is the documented case). Read README.md first — the three layers, the one-writer rule and the consumer contract are assumed known here.
 
-> **Operating-mode note (2026-07-12).** Single-operator mode is active (README §13): consumers pin `@main` and every human upload to the central IS the release. References to release tags below (§0, A5, B2, §4) describe multi-operator mode — valid again the day the framework gains consumers not operated by the owner. Historical tags `v1`…`v1.4` remain as immutable reference points.
+> **Operating-mode note (2026-07-12).** Single-operator mode is active (README §13): consumers pin `@main` and every human upload to the central IS the release. References to release tags below (§0, A5, B2, §4) describe multi-operator consumption — valid the day the framework gains consumers not operated by the owner; meanwhile tags are cut as documented milestones after real-traffic shakedown (README §13).
 
 > **Status note.** The per-workflow input reference (§4) is finalized during Phase A of the rollout (extraction of the five workflows to `workflow_call`). Until Phase A lands, input names in this guide are indicative; the extraction is the source of truth and this file is updated in the same commit.
 
