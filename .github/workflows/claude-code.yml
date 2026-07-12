@@ -355,6 +355,31 @@ jobs:
       # un loop Reviewer↔Auto-label sin que el Creator produzca trabajo
       # nuevo (14 rondas observadas en PR #180). El check de freshness
       # rompe el bucle estructuralmente.
+      - name: Materializar auditoria-completa (post-step determinista)
+        # Fix 2026-07-12 (propuesta #1288 finplan): el informe del Auditor
+        # aparece cuando la acción reescribe el tracking comment AL TERMINAR
+        # la sesión; si la label (trigger de process-review) la aplica el
+        # propio agente por bash DURANTE la sesión, el orden efectivo es
+        # label→informe y process-review lee un panel a medias (medido:
+        # 59s-3m17s de ventana). El mismo patrón que el veredicto del
+        # Reviewer: el hecho lo materializa un paso determinista DESPUÉS.
+        # Sale con el PAT: su evento labeled es el trigger.
+        if: |
+          always()
+          && steps.check_pause.outputs.paused != 'true'
+          && contains(join(github.event.issue.labels.*.name, ','), 'auditoria')
+          && !contains(join(github.event.issue.labels.*.name, ','), 'auditoria-completa')
+          && github.event.issue.pull_request == null
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            await github.rest.issues.addLabels({ owner, repo,
+              issue_number: context.payload.issue.number,
+              labels: ['auditoria-completa'] });
+            core.notice('auditoria-completa materializada post-sesión.');
+
       - name: Auto-label based on Creator's closing tag
         if: |
           success()

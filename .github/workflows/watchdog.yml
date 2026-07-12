@@ -240,7 +240,12 @@ jobs:
             // Régimen autónomo: `stalled` ya no excluye (es la señal de
             // architect-resolve); `human-needed` es el cortacircuito que sí.
             const skip = labels =>
-              labels.some(l => ['pause-agents', 'human-needed'].includes(l.name));
+              labels.some(l => ['pause-agents', 'human-needed',
+                // Paneles de época (fix 2026-07-12, propuesta #1287 finplan):
+                // quedan ABIERTOS por diseño con su arm en el body — para el
+                // detector issue-armed-no-pr eran stall eterno (churn de
+                // inspecciones + human-needed sobre trabajo terminado).
+                'auditoria', 'process-proposal', 'registro-decisiones'].includes(l.name));
 
             // ── Dispatcher de TURNO (ADR-217, 2026-07-10, state-driven).
             // Sustituye a pr-stalled (envejecimiento de 30 min) y absorbe el
