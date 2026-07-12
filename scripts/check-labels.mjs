@@ -11,7 +11,7 @@ import { readFileSync, readdirSync } from 'fs';
 const DIR = 'templates';
 const template = new Set(JSON.parse(readFileSync(`${DIR}/labels.json`, 'utf8')).map(l => l.name));
 const usage = JSON.parse(readFileSync(`${DIR}/labels-usage.json`, 'utf8'));
-const wfs = readdirSync('.github/workflows').filter(f => /\\.ya?ml$/.test(f));
+const wfs = readdirSync('.github/workflows').filter(f => /\.ya?ml$/.test(f));
 
 const errors = [];
 // 1. Toda label declarada existe en el template.
