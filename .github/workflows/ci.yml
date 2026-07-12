@@ -1,7 +1,10 @@
 # CI propio del repo central agent-pipeline (2026-07-12).
 # El central no tenía CI: sus otros workflows son workflow_call (sirven a
-# los consumidores). Este corre SOBRE el propio central en cada push/PR y
-# verifica la coherencia de las plantillas de provisión.
+# los consumidores). Este corre SOBRE el propio central en cada push/PR.
+# Job único "Verificación de plantillas" = required check de main (branch
+# protection). Verifica, en orden: contrato de reusables, validez YAML y
+# coherencia de labels. Añadir un check nuevo = un paso más en ESTE job,
+# para no tener que re-tocar la protección de rama.
 name: CI
 
 on:
@@ -21,9 +24,21 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      # Anti-drift de labels (2026-07-12): toda label fija declarada en
-      # labels-usage.json existe en labels.json; todo workflow está
-      # declarado; sin declaraciones huérfanas. Un consumidor nuevo se
-      # provisiona desde labels.json — si una label usada falta, nace roto.
+          cache: 'npm'
+      - name: install deps
+        run: npm ci
+      # Contrato de reusables (AP-003): romper la superficie workflow_call
+      # (quitar/renombrar input, pasarlo a required, quitarle default, volver
+      # un secret required) despliega a los dos consumidores — aquí se caza
+      # antes del merge y exige editar workflow-contracts.json a propósito.
+      - name: check-contracts
+        run: node scripts/check-contracts.mjs
+      # Validez YAML de los 6 workflows (caza corrupción smart-quotes al
+      # editar un workflow en la web).
+      - name: check-yaml
+        run: node scripts/check-yaml.mjs
+      # Anti-drift de labels: toda label fija declarada en labels-usage.json
+      # existe en labels.json; todo workflow declarado; sin huérfanas. Un
+      # consumidor nuevo se provisiona desde labels.json — si falta una, nace roto.
       - name: check-labels
         run: node scripts/check-labels.mjs
