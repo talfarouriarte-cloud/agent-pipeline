@@ -1,0 +1,178 @@
+{
+  "_comment": "Contrato PUBLICADO de los workflows reusables del central (workflow_call servidos a finplan y wmcb). check-contracts.mjs lo verifica contra los ficheros reales con semántica asimétrica: input nuevo con-default pasa en silencio; eliminar/renombrar un input, pasarlo a required, quitarle el default, o volver un secret required son ROTURAS y exigen editar este fichero a propósito (2026-07-12, AP-003). Al hacer un cambio ROMPEDOR en un reusable, actualiza su entrada aquí en el MISMO PR.",
+  "claude-code.yml": {
+    "inputs": {
+      "bot_comment_cap": {
+        "has_default": true,
+        "required": false
+      },
+      "creator_max_turns": {
+        "has_default": true,
+        "required": false
+      },
+      "creator_model": {
+        "has_default": true,
+        "required": false
+      },
+      "default_branch": {
+        "has_default": true,
+        "required": false
+      },
+      "runner": {
+        "has_default": true,
+        "required": false
+      }
+    },
+    "secrets_required": [
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "REVIEWER_GITHUB_TOKEN"
+    ]
+  },
+  "epic-merge.yml": {
+    "inputs": {
+      "ci_workflow_name": {
+        "has_default": true,
+        "required": false
+      },
+      "default_branch": {
+        "has_default": true,
+        "required": false
+      },
+      "epic_label": {
+        "has_default": true,
+        "required": false
+      },
+      "partial_lifetime_cap": {
+        "has_default": true,
+        "required": false
+      },
+      "partial_round_cap": {
+        "has_default": true,
+        "required": false
+      },
+      "runner": {
+        "has_default": true,
+        "required": false
+      }
+    },
+    "secrets_required": [
+      "REVIEWER_GITHUB_TOKEN"
+    ]
+  },
+  "process-review.yml": {
+    "inputs": {
+      "default_branch": {
+        "has_default": true,
+        "required": false
+      },
+      "process_fallback_model": {
+        "has_default": true,
+        "required": false
+      },
+      "process_max_turns": {
+        "has_default": true,
+        "required": false
+      },
+      "process_model": {
+        "has_default": true,
+        "required": false
+      },
+      "runner": {
+        "has_default": true,
+        "required": false
+      },
+      "timeout_minutes": {
+        "has_default": true,
+        "required": false
+      }
+    },
+    "secrets_required": [
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "REVIEWER_GITHUB_TOKEN"
+    ]
+  },
+  "reviewer.yml": {
+    "inputs": {
+      "agent_branch_prefix": {
+        "has_default": true,
+        "required": false
+      },
+      "review_context": {
+        "has_default": true,
+        "required": false
+      },
+      "reviewer_max_turns": {
+        "has_default": true,
+        "required": false
+      },
+      "reviewer_model": {
+        "has_default": true,
+        "required": false
+      },
+      "runner": {
+        "has_default": true,
+        "required": false
+      },
+      "timeout_minutes": {
+        "has_default": true,
+        "required": false
+      }
+    },
+    "secrets_required": [
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "REVIEWER_GITHUB_TOKEN"
+    ]
+  },
+  "watchdog.yml": {
+    "inputs": {
+      "ci_workflow_name": {
+        "has_default": true,
+        "required": false
+      },
+      "creator_workflow_name": {
+        "has_default": true,
+        "required": false
+      },
+      "default_branch": {
+        "has_default": true,
+        "required": false
+      },
+      "epic_label": {
+        "has_default": true,
+        "required": false
+      },
+      "epic_merge_workflow_name": {
+        "has_default": true,
+        "required": false
+      },
+      "extra_pipeline_workflows": {
+        "has_default": true,
+        "required": false
+      },
+      "lookback_min": {
+        "has_default": true,
+        "required": false
+      },
+      "resolve_max_turns": {
+        "has_default": true,
+        "required": false
+      },
+      "resolve_model": {
+        "has_default": true,
+        "required": false
+      },
+      "reviewer_workflow_name": {
+        "has_default": true,
+        "required": false
+      },
+      "runner": {
+        "has_default": true,
+        "required": false
+      }
+    },
+    "secrets_required": [
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "REVIEWER_GITHUB_TOKEN"
+    ]
+  }
+}
