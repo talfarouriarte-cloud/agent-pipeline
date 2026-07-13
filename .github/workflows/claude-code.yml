@@ -38,6 +38,13 @@ on:
         description: Cap de comentarios de claude[bot] por PR antes de human-needed
         type: number
         default: 8
+      epic_label:
+        # Label que marca los issues de cadena (2026-07-13, wmcb#20): los guards
+        # check_chain y check_panel la referenciaban SIN declararla — GitHub la
+        # resolvía a "" en silencio y ambos guards nacieron inertes. Mismo
+        # default que epic-merge y watchdog.
+        type: string
+        default: epica
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
@@ -186,6 +193,7 @@ jobs:
             const isIssueCtx = !!context.payload.issue && !context.payload.issue.pull_request;
             if (!isIssueCtx) { core.setOutput('broken', 'false'); return; }
             const issue = context.payload.issue;
+            if (!process.env.IN_EPIC_LABEL) { core.setFailed('guard de cadena: epic_label vacío — el guard no puede operar (wmcb#20: nunca bypass silencioso)'); return; }
             const labels = (issue.labels || []).map(l => l.name);
             if (!labels.includes(process.env.IN_EPIC_LABEL)) { core.setOutput('broken', 'false'); return; }
             // Traversal launch-next con cap 20
@@ -229,6 +237,7 @@ jobs:
             const isIssueCtx = !!context.payload.issue && !context.payload.issue.pull_request;
             if (!isIssueCtx) { core.setOutput('blocked', 'false'); return; }
             const issue = context.payload.issue;
+            if (!process.env.IN_EPIC_LABEL) { core.setFailed('guard de panel: epic_label vacío — el guard no puede operar (wmcb#20: nunca bypass silencioso)'); return; }
             const labels = (issue.labels || []).map(l => l.name);
             if (!labels.includes(process.env.IN_EPIC_LABEL)) { core.setOutput('blocked', 'false'); return; }
             const armBody = context.payload.comment?.body || '';
