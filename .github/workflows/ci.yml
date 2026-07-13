@@ -37,6 +37,12 @@ jobs:
       # editar un workflow en la web).
       - name: check-yaml
         run: node scripts/check-yaml.mjs
+      # Sintaxis de los scripts JS embebidos en github-script (2026-07-13):
+      # check-yaml valida el envoltorio, no el JS — una edición rompió el
+      # scan del watchdog en runtime con CI verde y las capas de vigilancia
+      # estuvieron caídas horas sin detector.
+      - name: check-embedded-js
+        run: node scripts/check-embedded-js.mjs
       # Anti-drift de labels: toda label fija declarada en labels-usage.json
       # existe en labels.json; todo workflow declarado; sin huérfanas. Un
       # consumidor nuevo se provisiona desde labels.json — si falta una, nace roto.

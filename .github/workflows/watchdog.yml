@@ -399,7 +399,7 @@ jobs:
                 if (rebases < 2) {
                   await github.rest.issues.createComment({
                     ...O, issue_number: pr.number,
-                    body: `${REBASE_MARK}\n@claude rebasa esta rama sobre \\n${CAPA}`origin/${process.env.IN_DEFAULT_BRANCH}\` y resuelve los conflictos (watchdog: PR en conflicto sin checks posibles — sin merge-ref no corren CI ni Reviewer). Alcance intacto: solo rebase + resolución. <!-- ping-creator -->`,
+                    body: `${REBASE_MARK}\n@claude rebasa esta rama sobre \`origin/${process.env.IN_DEFAULT_BRANCH}\` y resuelve los conflictos (watchdog: PR en conflicto sin checks posibles — sin merge-ref no corren CI ni Reviewer). Alcance intacto: solo rebase + resolución. <!-- ping-creator -->\n${CAPA}`,
                   });
                   core.notice(`PR #${pr.number}: dirty sin checks; ping de rebase ${rebases + 1}/2.`);
                 } else if (rebases >= 2) {

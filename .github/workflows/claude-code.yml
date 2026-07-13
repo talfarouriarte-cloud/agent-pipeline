@@ -564,8 +564,16 @@ jobs:
         # (incidente #1048) — es del watchdog o del humano, ahora con el
         # diagnóstico ya hecho. Las auditorías quedan fuera: su post-step
         # («Materializar auditoria-completa») ya cubre su modo de muerte.
+        # v2 (2026-07-13, incidente #1329): también cubre `success`-sin-PR —
+        # una sesión que COMMITEÓ trabajo en su rama y terminó «bien» según
+        # ella, sin abrir PR ni escalar, es el mismo fallo de transición que
+        # la muerte por max_turns (el Creator de #1329 dijo «implementadas y
+        # validadas» y dejó todo en silencio). Criterio anti-falso-positivo:
+        # en success solo materializa si la rama claude/issue-N-* EXISTE con
+        # commits ahead — una sesión success sin commits es conversacional
+        # legítima (escalada, respuesta) y su output es la conversación.
         if: |
-          always() && steps.creator.outcome == 'failure'
+          always() && steps.creator.outcome != 'skipped' && steps.creator.outcome != 'cancelled'
           && github.event.issue && !github.event.issue.pull_request
           && !contains(github.event.issue.labels.*.name, 'auditoria')
         uses: actions/github-script@v7
@@ -580,9 +588,11 @@ jobs:
               core.notice(`Creator de #${n} murió con PR ya abierto — flujo PR-driven gobierna; nada que materializar aquí.`);
               return;
             }
+            const outcome = '${{ steps.creator.outcome }}';
             // Estado de la rama huérfana (si existe): el diagnóstico que el
             // rearm necesita ("no rehagas nada").
             let branchInfo = 'sin rama creada (muerte temprana: no hay trabajo que conservar).';
+            let hasCommits = false;
             try {
               const { data: refs } = await github.rest.git.listMatchingRefs({ owner, repo, ref: `heads/claude/issue-${n}-` });
               if (refs.length) {
@@ -590,11 +600,16 @@ jobs:
                 const cmp = await github.rest.repos.compareCommits({ owner, repo,
                   base: '${{ inputs.default_branch }}', head: branch });
                 const last = cmp.data.commits.length ? cmp.data.commits[cmp.data.commits.length - 1].commit.message.split('\n')[0] : '(sin commits)';
+                hasCommits = cmp.data.ahead_by > 0;
                 branchInfo = `rama \`${branch}\`: **ahead ${cmp.data.ahead_by} / behind ${cmp.data.behind_by}** sobre \`${{ inputs.default_branch }}\`. Último commit: «${last}».`;
               }
             } catch (e) { branchInfo += ` (inspección de rama falló: ${e.message})`; }
+            if (outcome === 'success' && !hasCommits) {
+              core.notice(`sesión success sin commits en rama de #${n}: conversacional legítima (escalada/respuesta) — nada que materializar.`);
+              return;
+            }
             await github.rest.issues.createComment({ owner, repo, issue_number: n,
-              body: `**claude-code · post-step**: la sesión del Creator terminó en \`failure\` (típicamente \`error_max_turns\` o muerte de sesión) **sin PR abierto**. Estado materializado en el instante — sin esperar al tick del watchdog:\n\n- ${branchInfo}\n- \`serial-activo\` retirada (la serie queda libre; el arm de retoma no está bloqueado).\n- \`stalled\` aplicada (señal de architect-resolve).\n\n**Para el rearm** (watchdog o humano): si hay rama con commits, NO rehacer — retomar solo el cierre (verificar rama, typecheck/tests de los ficheros afectados, abrir el PR según «PR creation» de CLAUDE.md).\n\n<!-- creator-muerto-sin-pr -->` });
+              body: `**claude-code · post-step**: la sesión del Creator terminó en \`${outcome}\` **sin PR abierto** pese a tener trabajo commiteado (o murió sin abrirlo). Estado materializado en el instante — sin esperar al tick del watchdog:\n\n- ${branchInfo}\n- \`serial-activo\` retirada (la serie queda libre; el arm de retoma no está bloqueado).\n- \`stalled\` aplicada (señal de architect-resolve).\n\n**Para el rearm** (watchdog o humano): si hay rama con commits, NO rehacer — retomar solo el cierre (verificar rama, typecheck/tests de los ficheros afectados, abrir el PR según «PR creation» de CLAUDE.md).\n\n<!-- creator-muerto-sin-pr -->` });
             await github.rest.issues.addLabels({ owner, repo, issue_number: n, labels: ['stalled'] });
             await github.rest.issues.removeLabel({ owner, repo, issue_number: n, name: 'serial-activo' }).catch(() => {});
             core.warning(`Creator de #${n}: muerte sin PR materializada (stalled + serial-activo retirada).`);
