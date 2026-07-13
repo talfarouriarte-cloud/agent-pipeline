@@ -112,10 +112,22 @@ jobs:
                alza, stalls, intervenciones humanas que el sistema debería
                absorber, intervenciones repetidas del Watchdog por la misma
                causa.
-            4. Si NO hay regresión ni patrón ≥2 épicas: comenta en el issue
-               de auditoría exactamente `Sin propuestas.` con una línea de
-               métricas comparadas, y termina. NO inventes mejoras para
-               justificarte — un informe vacío es un resultado válido.
+            3b. REPESCAS = FIX OBLIGATORIO (2026-07-13, decisión del
+               propietario). Lee el bloque «## Análisis de repescas (5 whys)»
+               de las auditorías. Cada causa raíz de repesca (Watchdog,
+               creator-muerto-sin-pr, re-arm humano) exige una propuesta de
+               fix AUNQUE sea instancia única — el umbral de ≥2 épicas del
+               paso 3 NO aplica aquí: una repesca es el fallback trabajando,
+               y el fallback trabajando ES el failure del camino primario.
+               El fix ataca la causa raíz del 5-whys (materializar la
+               transición que faltó), no el síntoma. Si hay más causas raíz
+               que el cap de issues del paso 5, prioriza repescas y lista
+               las restantes en el comentario del issue de auditoría.
+            4. Si NO hay regresión, ni patrón ≥2 épicas, NI repescas sin fix
+               propuesto: comenta en el issue de auditoría exactamente
+               `Sin propuestas.` con una línea de métricas comparadas, y
+               termina. NO inventes mejoras para justificarte — un informe
+               vacío es un resultado válido.
             5. Si hay patrón: crea COMO MÁXIMO 2 issues con
                `gh issue create --label process-proposal`, cada uno con:
                título `process-proposal · <resumen>`; el patrón con evidencia

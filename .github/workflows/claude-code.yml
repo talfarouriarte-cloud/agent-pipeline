@@ -398,6 +398,24 @@ jobs:
           && steps.check_serial.outputs.blocked != 'true'
         uses: talfarouriarte-cloud/agent-pipeline/.github/actions/graft-vendored@main
 
+      - name: Capturar HEAD del PR (pre-sesión, contexto PR)
+        # Para el re-review por ESTADO (2026-07-13, finplan#1319): la re-audit
+        # tras nits no puede depender de que el Creator escriba `@reviewer`
+        # (prosa estocástica — hoy lo omitió racionalizando trivialidad,
+        # contra ADR-193). El hecho es el push: se captura el HEAD antes de
+        # la sesión y el post-step compara.
+        id: pr_head_before
+        if: |
+          github.event_name == 'issue_comment' && github.event.issue.pull_request
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const { data: pr } = await github.rest.pulls.get({ owner, repo,
+              pull_number: context.payload.issue.number });
+            core.setOutput('sha', pr.head.sha);
+            core.setOutput('ref', pr.head.ref);
+
       - name: Run Claude Code
         if: |
           steps.check_pause.outputs.paused != 'true'
@@ -722,6 +740,39 @@ jobs:
       # (gh pr merge en allowedTools) y emite el sentinel launch-next. Este step
       # solo postea el @claude del siguiente issue desde ese sentinel.
       # ───────────────────────────────────────────────────────────────────
+      - name: Re-review por estado de rama (post-step determinista)
+        # finplan#1319 (2026-07-13): el Creator aplicó nits y omitió el
+        # `@reviewer` de cierre — el Auto-label (gateado por prosa) no
+        # re-etiquetó y la cadena quedó muda hasta el fallback del watchdog.
+        # Regla materializada (AP-008): rama cambiada durante una sesión de
+        # PR ⇒ hay trabajo sin veredicto ⇒ re-review, leído del ESTADO
+        # (push), no de la prosa. Si el Auto-label ya actuó (el Creator SÍ
+        # cerró bien), needs-review ya está y este step no duplica. Sesión
+        # sin push (respondió una pregunta) ⇒ no quema al Reviewer. El
+        # watchdog queda como red de segunda línea, no como camino primario.
+        if: |
+          success() && steps.pr_head_before.outputs.sha != ''
+          && github.event_name == 'issue_comment' && github.event.issue.pull_request
+        uses: actions/github-script@v7
+        with:
+          # PAT: mismo motivo que el Auto-label — labeled de GITHUB_TOKEN no
+          # dispara reviewer.yml (anti-loop de GitHub).
+          github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const n = context.payload.issue.number;
+            const before = '${{ steps.pr_head_before.outputs.sha }}';
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: n });
+            if (pr.state !== 'open') { core.notice('PR no abierto — nada.'); return; }
+            if (!pr.head.ref.startsWith('claude/')) { core.notice('rama no-agente — nada.'); return; }
+            if (pr.head.sha === before) { core.notice('sin push en la sesión — no se re-dispara review.'); return; }
+            const labels = pr.labels.map(l => l.name);
+            if (labels.includes('needs-review')) { core.notice('needs-review ya presente (Auto-label actuó) — sin duplicar.'); return; }
+            // remove+add para forzar el evento labeled aunque hubiera restos
+            await github.rest.issues.removeLabel({ owner, repo, issue_number: n, name: 'needs-review' }).catch(() => {});
+            await github.rest.issues.addLabels({ owner, repo, issue_number: n, labels: ['needs-review'] });
+            core.notice(`re-review por estado: push detectado (${before.slice(0,7)} → ${pr.head.sha.slice(0,7)}) — needs-review aplicada.`);
+
       - name: Launch next epic issue (Creator's closing sentinel)
         if: |
           success()
