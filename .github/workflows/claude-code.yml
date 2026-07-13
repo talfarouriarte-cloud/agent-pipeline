@@ -196,11 +196,26 @@ jobs:
             if (!process.env.IN_EPIC_LABEL) { core.setFailed('guard de cadena: epic_label vacío — el guard no puede operar (wmcb#20: nunca bypass silencioso)'); return; }
             const labels = (issue.labels || []).map(l => l.name);
             if (!labels.includes(process.env.IN_EPIC_LABEL)) { core.setOutput('broken', 'false'); return; }
-            // Traversal launch-next con cap 20
+            // Traversal launch-next con cap 20. De paso (wmcb#21): ¿algún body
+            // de la cadena declara «Invariantes funcionales»? La casa canónica
+            // es el issue de épica (#14 fijó el lado lector; esto cubre el
+            // horneado: la omisión se ve AL ARMAR, cuando aún es editable).
             let body = issue.body || '';
             let hops = 0;
+            let hasInvariants = false;
             while (hops++ < 20) {
-              if (/<!--\s*epic-audit:/.test(body)) { core.setOutput('broken', 'false'); return; }
+              if (/invariantes funcionales/i.test(body)) hasInvariants = true;
+              if (/<!--\s*epic-audit:/.test(body)) {
+                if (!hasInvariants) {
+                  // AVISO no bloqueante (wmcb#21): NO stalled, NO abortar — hay
+                  // épicas legítimas sin superficie funcional (doc-only). El
+                  // Auditor ya degrada a la DoD como sustituto (post-#14); esto
+                  // lo hace visible cuando el Architect aún puede editar.
+                  await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
+                    body: '**claude-code · aviso de horneado**: ningún issue de la cadena declara el bloque `## Invariantes funcionales de la épica` (casa canónica: el issue de épica). Sin él, la verificación funcional de la auditoría degrada a la DoD del Creator como sustituto. El arm CONTINÚA (épicas doc-only son legítimas); si esta épica tiene superficie funcional, edita el issue y añade el bloque ahora.\n\n<!-- sin-invariantes -->' });
+                }
+                core.setOutput('broken', 'false'); return;
+              }
               const m = body.match(/<!--\s*launch-next:\s*#?(\d+)\s*-->/);
               if (!m) break; // sin sentinel y sin epic-audit: cadena rota aquí
               const next = await github.rest.issues.get({ owner, repo, issue_number: Number(m[1]) });
@@ -464,10 +479,29 @@ jobs:
           github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
           script: |
             const { owner, repo } = context.repo;
-            await github.rest.issues.addLabels({ owner, repo,
-              issue_number: context.payload.issue.number,
+            const issue_number = context.payload.issue.number;
+            // Verificación de estado materializado (2026-07-13, finplan#1296:
+            // el post-step etiquetaba a ciegas y una sesión `success` que no
+            // publicó informe consumó un panel fantasma en #1295 — 2ª instancia
+            // de la clase informe-no-publicado). El hecho que la label declara
+            // es «informe publicado»: se LEE (marcador grep-able del mandato
+            // del Auditor: bloque fijo «## Métricas de proceso»), no se infiere
+            // del resultado de la sesión. Cubre muerte de sesión Y
+            // success-sin-publicar (always() ya trae ambos aquí).
+            const HAS_REPORT = /##\s*Métricas de proceso/;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner, repo, issue_number, per_page: 100 });
+            const published = comments.some(c => HAS_REPORT.test(c.body || ''));
+            if (!published) {
+              await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['stalled'] });
+              await github.rest.issues.createComment({ owner, repo, issue_number,
+                body: '**claude-code · post-step de auditoría**: la sesión del Auditor terminó SIN informe publicado (ningún comentario contiene el bloque `## Métricas de proceso`). NO se aplica `auditoria-completa` — el process-review no debe correr contra un panel vacío (clase informe-no-publicado, finplan#1296/#1295). Escalado vía `stalled`.\n\n<!-- informe-no-publicado -->' });
+              core.warning(`auditoría #${issue_number}: sin informe publicado — auditoria-completa NO aplicada; stalled.`);
+              return;
+            }
+            await github.rest.issues.addLabels({ owner, repo, issue_number,
               labels: ['auditoria-completa'] });
-            core.notice('auditoria-completa materializada post-sesión.');
+            core.notice('auditoria-completa materializada post-sesión (informe verificado).');
 
       - name: Liberar serial-activo al existir PR (post-Creator)
         # El Creator abre su PR dentro de la sesión; este post-step retira el
