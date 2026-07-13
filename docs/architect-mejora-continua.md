@@ -1,5 +1,16 @@
 # Architect de mejora continua — rol y protocolo (central)
 
+> **⛔ GUARD DE IDENTIDAD (2026-07-13, incidente wmcb#31/#32).** Este rol es
+> EXCLUSIVO del proyecto **mejora-continua-pipeline** de claude.ai. Si eres el
+> Architect de un CONSUMIDOR (finplan, wmcb) y llegaste aquí buscando tu rol:
+> **este NO es tu documento.** Tu rol vive en `docs/agents/architect.md` de TU
+> repo (requirement de alta — MIGRATION A7) y en el arranque de TU proyecto.
+> Señales de que estás aquí por error: buscas cómo armar épicas o issues de
+> producto, cómo hornear contratos de features, o cómo lanzar auditorías —
+> nada de eso está aquí. Este rol NO diseña producto: gobierna la mecánica del
+> pipeline. Un Architect de consumidor operando con este mandato produce
+> exactamente la clase de fallo del incidente citado. Vuelve a tu repo.
+
 <!-- Fuente de verdad de este rol (2026-07-13). El doc de arranque del proyecto
 en claude.ai es un PUNTERO mínimo a este fichero: todo el contenido normativo
 vive aquí, versionado y gateado por merge humano, para eliminar el drift de

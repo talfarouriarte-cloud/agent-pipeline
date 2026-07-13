@@ -71,4 +71,10 @@ runs:
         rm -rf .graft-tmp
         note ".graft-tmp/"
 
+        # Requirements locales del consumidor (MIGRATION A7-bis, 2026-07-13):
+        # el graft es el único punto del central que pisa el workspace del
+        # consumidor en cada run — verifica aquí lo que el alta exige committear.
+        [ -f docs/agents/architect.md ] || echo "::warning title=Requirement A7-bis ausente::este consumidor NO tiene docs/agents/architect.md — su Architect no tiene rol local y puede adoptar el rol equivocado (incidente wmcb#31/#32). Créalo (MIGRATION A7-bis)."
+        [ -f CLAUDE.domain.md ] || echo "::warning title=CLAUDE.domain.md ausente::sin él, el graft no compone CLAUDE.md (modo transición) — el Creator corre sin loop+dominio compuesto."
+
         echo "graft: capa vendored injertada desde agent-pipeline@main"

@@ -26,6 +26,8 @@ Order matters: the pipeline cannot derive decisions until spec/ADRs exist (consu
 4. Copy `templates/role-annex.template.md` → one annex per role with repo-specific mandates (branch names, test commands, protected paths).
 5. Instantiate `templates/pipeline-map.template.md` → `.claude/skills/pipeline-map/SKILL.md`.
 
+**A7-bis · Architect role doc (2026-07-13, REQUIREMENT).** Every consumer MUST commit `docs/agents/architect.md`: the repo-local role of its (human-session) Architect — domain, protected files, issue/epic protocol, domain survival rules. A consumer without it leaves its Architect roleless; the observed failure mode (wmcb#31/#32) is that a roleless Architect climbs the dependency chain, finds the central's `architect-mejora-continua.md` and adopts the WRONG role. The graft action verifies presence on every run and emits a loud warning if missing.
+
 **A2. Vendored layer (2026-07-13, AP-009).** Do NOT copy `vendored/` into the consumer: the `graft-vendored` composite action injects it at runtime in every reusable run (mandates, subagents, hooks, settings, generic skills). The consumer commits only its own layer: `CLAUDE.domain.md`, `docs/agents/*-annex.md`, stubs, and — only if its local CI invokes it — `scripts/adr-lint.mjs`.
 
 **A3. CI.** Create the repo's own `ci.yml`: at minimum typecheck + the test command the stubs will pass as input, with a job name matching the merge-gate input, writing the `ci-verde` label on green. A repo with no test suite starts with typecheck-only CI — the gate still needs the green fact materialized.
