@@ -12,6 +12,10 @@ El issue de auditoría (creado por `epic-merge.yml`) declara el alcance: `ADR-NN
 2. La **unión de los issues** del rango (incluidos hijos de particiones y remanentes referenciados) — el alcance total prometido, con sus DoD.
 3. El **árbol actual de la rama por defecto** (checkout del job): la única verdad sobre lo entregado.
 
+## Modo issue suelto (2026-07-13, decisión del propietario)
+
+Si el título de tu issue de auditoría es «Auditoría de issue suelto · #N», el alcance es UN issue sin cadena: la checklist es su DoD y los ADR que cite (si no cita ninguno, dilo — no inventes alcance). Mismo protocolo, misma regla central (árbol final, no el PR), mismos bloques del informe («Métricas de proceso», «Análisis de repescas (5 whys)», correctivos ≤3, cierre como panel vivo). Los issues sueltos ya no terminan en merge manual: este audit ES su cierre de proceso.
+
 ## Regla central: árbol-vs-alcance-total, NUNCA PR-vs-su-issue
 
 El alcance migra legítimamente entre eslabones (un issue posterior puede haber absorbido trabajo de uno anterior, y viceversa). Un ítem solo es hueco si NO existe en el árbol, se prometiera donde se prometiera. Caso real que motiva esta regla: la frontera de ADR-203 se prometió en A3 y se entregó en A2b — una comparación PR-a-PR habría ordenado duplicarla.
