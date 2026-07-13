@@ -230,6 +230,33 @@ jobs:
               // ENCADENAR
               const body = issue.body || '';
 
+              // FINAL DE ISSUE SUELTO (2026-07-13, decisión del propietario):
+              // un issue sin label de épica no tiene sentinel horneado — su fin
+              // legítimo es la AUDITORÍA AUTOMÁTICA, igual que una épica. Va
+              // ANTES de sentinels y del guard cola-huérfana (que son de cadena).
+              const looseFinal = !(issue.labels || []).map(l => l.name).includes(process.env.IN_EPIC_LABEL);
+              if (looseFinal) {
+                try {
+                  const { data: audit } = await github.rest.issues.create({
+                    owner, repo,
+                    title: `Auditoría de issue suelto · #${issueNumber}`,
+                    labels: ['auditoria'],
+                    body: [
+                      `Auditoría post-merge de issue SUELTO (run único). Alcance: **issue #${issueNumber}** (título: ${issue.title}).`,
+                      ``,
+                      `Rol y protocolo: \`docs/agents/epic-auditor.md\` (vinculante; ver «Modo issue suelto»).`,
+                      `La checklist de alcance es la DoD del issue #${issueNumber} y los ADR que cite; el árbol de \`${process.env.IN_DEFAULT_BRANCH}\` es la única verdad sobre lo entregado. Los «Invariantes funcionales» — si el issue los declara — se EJECUTAN; su ausencia se visibiliza pero no bloquea (issues doc-only legítimos).`,
+                      ``,
+                      `@claude arranca la auditoría siguiendo docs/agents/epic-auditor.md.`,
+                    ].join('\n'),
+                  });
+                  await diag(prNumber, `MERGEADO (suelto) + auditoría lanzada en #${audit.number}.`);
+                } catch (e) {
+                  await diag(prNumber, `mergeado (suelto) pero crear/armar auditoría falló: ${e.message}`);
+                }
+                return;
+              }
+
               // AUDITORÍA DE ÉPICA (run único post-épica). El ÚLTIMO issue de la
               // cadena lleva `<!-- epic-audit: ADR-NNN, #first-#last -->` (lo hornea
               // el Architect al diseñar la épica). Al mergear ese issue: se crea el
@@ -330,7 +357,7 @@ jobs:
                 let mIssue = null;
                 try { mIssue = (await github.rest.issues.get({ owner, repo, issue_number: mIssueNumber })).data; }
                 catch (e) { await diag(prNumber, `manual: issues.get #${mIssueNumber} falló: ${e.message}`); return; }
-                if (!(mIssue.labels || []).map(l => l.name).includes(process.env.IN_EPIC_LABEL)) { core.info('manual: issue sin label de épica; no-op.'); return; }
+                // 2026-07-13: los sueltos también se procesan en el camino manual (auditoría al cierre).
                 await diag(prNumber, `merge MANUAL detectado: proceso sentinels de #${mIssueNumber}.`);
                 await postMerge(p, mIssueNumber, mIssue);
                 return;
@@ -365,7 +392,13 @@ jobs:
               try { issue = (await github.rest.issues.get({ owner, repo, issue_number: issueNumber })).data; }
               catch (e) { await diag(prNumber, `issues.get #${issueNumber} falló: ${e.message}`); return; }
               const issueLabels = (issue.labels || []).map(l => l.name);
-              if (!issueLabels.includes(process.env.IN_EPIC_LABEL)) { await diag(prNumber, `issue #${issueNumber} sin label de épica; no-op.`); return; }
+              // 2026-07-13 (decisión del propietario, caso PR #1319 de finplan):
+              // los issues SUELTOS (sin label de épica) ya NO son no-op — se
+              // mergean con los mismos gates (CI verde + LGTM) y terminan con
+              // auditoría automática (ver postMerge). Antes: merge manual
+              // humano + auditoría olvidada.
+              const isLooseIssue = !issueLabels.includes(process.env.IN_EPIC_LABEL);
+              if (isLooseIssue) await diag(prNumber, `issue #${issueNumber} sin label de épica: régimen de SUELTO (merge automático + auditoría al cierre).`);
 
               // GATE 1: CI verde. PRIMARIO = la `conclusion` del propio evento
               // workflow_run. RESPALDO (reescrito 2026-07-10, incidente PR #1205):
