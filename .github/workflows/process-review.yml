@@ -66,7 +66,29 @@ jobs:
       - name: Graft vendored (capa común servida desde el central — AP-009)
         uses: talfarouriarte-cloud/agent-pipeline/.github/actions/graft-vendored@main
 
+      # finplan#1326 (2026-07-13): el grupo de concurrencia global con
+      # cancel-in-progress:false ENCOLA un run por cada label de cualquier
+      # issue del repo. Este guard hace idempotentes los duplicados: si el
+      # panel ya tiene el marcador de resultado, el run sale verde sin
+      # quemar sesión (skill quota-tokens).
+      - name: Guard de idempotencia (¿revisión ya materializada?)
+        id: idem
+        env:
+          GH_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+        run: |
+          CUERPOS=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments" \
+               --paginate --jq '.[].body')
+          # No usar `gh | grep -q` con pipefail: el SIGPIPE del primer match
+          # da pipeline no-cero y un falso "no encontrado".
+          if grep -q 'process-review-done' <<< "$CUERPOS"; then
+            echo "done=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::El panel ya tiene revisión de proceso materializada (marcador presente) — run duplicado, salgo verde sin sesión."
+          else
+            echo "done=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Run process review
+        if: steps.idem.outputs.done != 'true'
         uses: anthropics/claude-code-action@v1
         env:
           # Blindaje OAuth-only (mismo patrón que reviewer.yml): si OAuth Max
@@ -127,7 +149,10 @@ jobs:
                propuesto: comenta en el issue de auditoría exactamente
                `Sin propuestas.` con una línea de métricas comparadas, y
                termina. NO inventes mejoras para justificarte — un informe
-               vacío es un resultado válido.
+               vacío es un resultado válido. El comentario TERMINA con la
+               línea `<!-- process-review-done -->` (marcador que consume
+               el fail-safe de presencia de este workflow; sin él, tu
+               revisión consta como NO hecha — protocol.md).
             5. Si hay patrón: crea COMO MÁXIMO 2 issues con
                `gh issue create --label process-proposal`, cada uno con:
                título `process-proposal · <resumen>`; el patrón con evidencia
@@ -137,7 +162,9 @@ jobs:
                pipeline — revisa «Known failure classes» del pipeline-map);
                y a quién toca aplicarla (Architect=docs/hooks,
                humano=workflows). Después comenta en el issue de auditoría
-               la lista de propuestas creadas.
+               la lista de propuestas creadas; ese comentario TERMINA con
+               la línea `<!-- process-review-done -->` (mismo marcador y
+               motivo que en el paso 4).
 
             6. LOOP DE SKILLS (ADR-212 — lee el ADR antes de editar).
                ENTRAS a este paso SOLO con los comentarios de (4-5) YA
@@ -192,15 +219,43 @@ jobs:
               humano decide, otros aplican.
             - Máximo 2 propuestas y 2 skill-edits. Sin evidencia ⇒ nada.
 
-      # Propuesta #1258 (2026-07-12): la muerte de sesión es un modo de
-      # fallo NORMAL de este agente (2 en ~5 ciclos). Este paso determinista
-      # (cero LLM) garantiza que el panel de la épica nunca queda vacío sin
-      # señal, y avisa del posible efecto sin publicar.
-      - name: Señal determinista de fallo
-        if: failure()
+      # finplan#1326 (2026-07-13, sustituye al `if: failure()` de #1258):
+      # el exit code del step de sesión MIENTE. Verificado en 4 paneles de
+      # 2 repos (finplan #1302/#1305/#1312, wmcb #27): la sesión muere en
+      # 1 turno (<1s, coste 0, `is_error: true` en el JSON de ejecución) y
+      # la action sale 0 ⇒ `failure()` nunca dispara. El timeout del job
+      # tampoco: la cancelación deja `failure()` en false (run 29257318998).
+      # Cierre: verificar el estado MATERIALIZADO (marcador en el panel),
+      # no el exit code — mismo principio que agent-pipeline#12 aplicó al
+      # post-step del Auditor. `always()` corre en éxito, fallo y
+      # cancelación por timeout.
+      - name: Verificación de presencia del resultado
+        if: always() && steps.idem.outputs.done != 'true'
         env:
           GH_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          gh issue comment "${{ github.event.issue.number }}" \
-            --repo "${{ github.repository }}" \
-            --body "**El run del process-reviewer falló** — ver ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Puede haber efectos sin publicar (commits \`skill(loop):\` en la rama por defecto posteriores a la última auditoría): verificar antes del siguiente ciclo."
+          CUERPOS=$(gh api "repos/${REPO}/issues/${ISSUE}/comments" \
+               --paginate --jq '.[].body')
+          if grep -q 'process-review-done' <<< "$CUERPOS"; then
+            echo "::notice::Revisión de proceso materializada en el panel (marcador presente)."
+            exit 0
+          fi
+          # Sin marcador: la revisión NO ocurrió, terminara como terminara
+          # el step de sesión. Diagnóstico desde el JSON de ejecución si
+          # sobrevive en el runner (muertes instantáneas: is_error/num_turns).
+          DIAG="sin JSON de ejecución (sesión no arrancó o timeout del job)"
+          EXEC="${RUNNER_TEMP}/claude-execution-output.json"
+          if [ -f "$EXEC" ]; then
+            DIAG=$(python3 -c "import json; d=json.load(open('${EXEC}')); d=d[-1] if isinstance(d,list) else d; print('is_error=%s num_turns=%s duration_ms=%s cost=%s' % (d.get('is_error'), d.get('num_turns'), d.get('duration_ms'), d.get('total_cost_usd')))" 2>/dev/null || echo "JSON de ejecución ilegible")
+          fi
+          BODY=$(printf '%s\n\n%s\n\n%s' \
+            "**process-review · resultado AUSENTE** — el run terminó sin materializar la revisión de proceso en este panel (ningún comentario con el marcador de resultado). Diagnóstico: ${DIAG}. Run: ${RUN_URL}." \
+            "Re-arme: retirar y re-aplicar \`auditoria-completa\` (con PAT — los eventos del token default no disparan workflows). Precaución antes del siguiente ciclo: puede haber efectos parciales sin publicar (commits \`skill(loop):\` en la rama por defecto posteriores a la última auditoría)." \
+            "<!-- process-review-pendiente -->")
+          gh issue comment "${ISSUE}" --repo "${REPO}" --body "$BODY"
+          gh api -X POST "repos/${REPO}/issues/${ISSUE}/labels" -f "labels[]=process-review-pendiente"
+          echo "::error::Revisión de proceso NO materializada — panel marcado process-review-pendiente."
+          exit 1

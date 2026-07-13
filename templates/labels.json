@@ -93,5 +93,10 @@
     "name": "serial-ok",
     "color": "fbca04",
     "description": "Override del guard serial: arma aunque haya otro Creator en vuelo"
+  },
+  {
+    "name": "process-review-pendiente",
+    "color": "d93f0b",
+    "description": "El process-review de este panel no se materializó; re-armar retirando y re-aplicando auditoria-completa (PAT)"
   }
 ]

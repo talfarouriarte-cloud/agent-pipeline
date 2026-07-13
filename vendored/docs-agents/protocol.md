@@ -45,6 +45,7 @@ El vocabulario de abajo existe para cumplir tres reglas. Un proceso que las viol
 | `<!-- watchdog-turn-relaunch -->` | Watchdog (dispatcher de turno, ADR-217) al relanzar mecánicamente una transición rota (re-labeled, re-arm) | Watchdog (contador, cap 2 — junto con `watchdog-handoff-fix` histórico) | Zombi persistente tras 2 relanzamientos ⇒ anomalía `turno-*-zombie-persistent` para architect-resolve | Comentario en el PR |
 | `<!-- watchdog-handoff-fix -->` | HISTÓRICO (modo e, absorbido por el dispatcher de turno de ADR-217; cuenta para el cap de relanzamientos) al re-aplicar `needs-review` con el PAT tras un handoff Creator→Reviewer roto | Watchdog (contador, cap 2) | Reincidencia (2 fixes sin veredicto) → anomalía `reviewer-handoff-broken-persistent` para la etapa architect | Comentario en el PR |
 | `<!-- visual-cases-start/end -->` | Reviewer (delimita casos visuales) | visual.yml (los extrae a `/tmp/visual-cases.txt`) | Alimenta la verificación visual dirigida | Comentario del Reviewer |
+| `<!-- process-review-done -->` | process-reviewer (línea final del comentario de resultado de su ciclo: lista de propuestas o `Sin propuestas.`) | process-review.yml (guard de idempotencia y fail-safe de presencia, finplan#1326 2026-07-13) | Materializa «revisión de proceso hecha»: sin él, el fail-safe marca el panel `process-review-pendiente` y pone el run en rojo — el exit code de la sesión no cuenta como resultado | Comentario en el issue de auditoría |
 
 ### Marcadores de decisión
 
