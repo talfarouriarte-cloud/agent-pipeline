@@ -351,6 +351,15 @@ jobs:
           git reset --hard "origin/$BASE"
           echo "$BASE sincronizado a $(git rev-parse --short HEAD)"
 
+      - name: Graft vendored (capa común servida desde el central — AP-009)
+        if: |
+          steps.check_pause.outputs.paused != 'true'
+          && steps.check_iterations.outputs.cap_reached != 'true'
+          && steps.check_chain.outputs.broken != 'true'
+          && steps.check_panel.outputs.blocked != 'true'
+          && steps.check_serial.outputs.blocked != 'true'
+        uses: talfarouriarte-cloud/agent-pipeline/.github/actions/graft-vendored@main
+
       - name: Run Claude Code
         if: |
           steps.check_pause.outputs.paused != 'true'
