@@ -641,6 +641,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Graft vendored (capa común servida desde el central — AP-009)
+        uses: talfarouriarte-cloud/agent-pipeline/.github/actions/graft-vendored@main
+
       - name: Run Architect watchdog
         uses: anthropics/claude-code-action@v1
         env:

@@ -150,6 +150,10 @@ jobs:
       # `prompt:` activa automation mode del action — corre directo sin
       # esperar `@claude` mention. El system prompt del Reviewer vive en
       # docs/agents/reviewer.md y se carga via el propio prompt aquí.
+      - name: Graft vendored (capa común servida desde el central — AP-009)
+        if: steps.gate.outputs.run == 'true'
+        uses: talfarouriarte-cloud/agent-pipeline/.github/actions/graft-vendored@main
+
       - name: Run Reviewer
         if: steps.gate.outputs.run == 'true'
         uses: anthropics/claude-code-action@v1
