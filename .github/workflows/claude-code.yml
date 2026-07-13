@@ -196,11 +196,26 @@ jobs:
             if (!process.env.IN_EPIC_LABEL) { core.setFailed('guard de cadena: epic_label vacío — el guard no puede operar (wmcb#20: nunca bypass silencioso)'); return; }
             const labels = (issue.labels || []).map(l => l.name);
             if (!labels.includes(process.env.IN_EPIC_LABEL)) { core.setOutput('broken', 'false'); return; }
-            // Traversal launch-next con cap 20
+            // Traversal launch-next con cap 20. De paso (wmcb#21): ¿algún body
+            // de la cadena declara «Invariantes funcionales»? La casa canónica
+            // es el issue de épica (#14 fijó el lado lector; esto cubre el
+            // horneado: la omisión se ve AL ARMAR, cuando aún es editable).
             let body = issue.body || '';
             let hops = 0;
+            let hasInvariants = false;
             while (hops++ < 20) {
-              if (/<!--\s*epic-audit:/.test(body)) { core.setOutput('broken', 'false'); return; }
+              if (/invariantes funcionales/i.test(body)) hasInvariants = true;
+              if (/<!--\s*epic-audit:/.test(body)) {
+                if (!hasInvariants) {
+                  // AVISO no bloqueante (wmcb#21): NO stalled, NO abortar — hay
+                  // épicas legítimas sin superficie funcional (doc-only). El
+                  // Auditor ya degrada a la DoD como sustituto (post-#14); esto
+                  // lo hace visible cuando el Architect aún puede editar.
+                  await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
+                    body: '**claude-code · aviso de horneado**: ningún issue de la cadena declara el bloque `## Invariantes funcionales de la épica` (casa canónica: el issue de épica). Sin él, la verificación funcional de la auditoría degrada a la DoD del Creator como sustituto. El arm CONTINÚA (épicas doc-only son legítimas); si esta épica tiene superficie funcional, edita el issue y añade el bloque ahora.\n\n<!-- sin-invariantes -->' });
+                }
+                core.setOutput('broken', 'false'); return;
+              }
               const m = body.match(/<!--\s*launch-next:\s*#?(\d+)\s*-->/);
               if (!m) break; // sin sentinel y sin epic-audit: cadena rota aquí
               const next = await github.rest.issues.get({ owner, repo, issue_number: Number(m[1]) });
