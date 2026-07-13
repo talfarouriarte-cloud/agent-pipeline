@@ -9,6 +9,14 @@ y **labels**. Un marcador olvidado falla en silencio (ADR-209 sin `epic-audit`;
 checklist antes de intervenir a mano. Append-only: si un workflow introduce un
 marcador o label nuevo, se añade aquí en el mismo cambio.
 
+## Principios de proceso
+
+El vocabulario de abajo existe para cumplir tres reglas. Un proceso que las viola es un defecto de diseño, no un bug suelto.
+
+1. **Estado materializado, no inferido.** Toda transición se declara con un marcador o label. Si el siguiente paso tiene que *inferir* el estado del contexto en vez de *leerlo* declarado, la costura está mal diseñada.
+2. **Accountability de avance.** Cada agente responde no solo de ejecutar su tarea, sino de **materializar el estado que habilita al siguiente paso**. Cerrar la tarea sin dejar el estado declarado es incumplir, aunque la tarea esté bien hecha.
+3. **El fallo vive en la costura.** Un marcador o label olvidado falla en silencio. Criterio de "arreglado": el estado queda declarado y verificable, no inferible. Un fix que solo hace **visible** la omisión a posteriori, sin **prevenirla** declarándola al armar, es parcial (patrón #14→#21).
+
 ## Marcadores
 
 | Marcador | Lo emite | Lo consume | Efecto | Dónde vive |
