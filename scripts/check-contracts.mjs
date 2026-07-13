@@ -87,6 +87,19 @@ for (const f of declared) {
   }
 }
 
+// Clase wmcb#20: un `inputs.X` referenciado pero NO declarado en workflow_call
+// se resuelve a "" en silencio — el mecanismo que lo usa nace inerte (así
+// murieron check_chain y check_panel el 2026-07-12). Toda referencia debe
+// estar declarada.
+for (const f of Object.keys(onDisk)) {
+  const raw = readFileSync(`${WFDIR}/${f}`, 'utf8');
+  const declared_inputs = new Set(Object.keys(onDisk[f].inputs || {}));
+  const referenced = new Set([...raw.matchAll(/inputs\.([A-Za-z_][A-Za-z0-9_]*)/g)].map(m => m[1]));
+  for (const name of referenced) {
+    if (!declared_inputs.has(name)) errors.push(`${f}: referencia \`inputs.${name}\` sin declararlo en workflow_call — se resuelve a "" en silencio (clase wmcb#20)`);
+  }
+}
+
 if (errors.length) {
   console.error('CHECK-CONTRACTS ROJO (rotura de contrato de reusable — desplegaría a los dos consumidores):');
   errors.forEach(e => console.error('  - ' + e));

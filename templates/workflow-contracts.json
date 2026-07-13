@@ -21,6 +21,10 @@
       "runner": {
         "has_default": true,
         "required": false
+      },
+      "epic_label": {
+        "required": false,
+        "has_default": true
       }
     },
     "secrets_required": [
