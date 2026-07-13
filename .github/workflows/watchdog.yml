@@ -116,12 +116,20 @@ jobs:
       found: ${{ steps.scan.outputs.found }}
       anomalies: ${{ steps.scan.outputs.anomalies }}
     steps:
-      - name: Settle (event-driven only)
-        # 90s para que los runs encadenados legítimos (p.ej. LGTM del
-        # Reviewer → run de merge del Creator) lleguen a queued antes del
-        # gate 0. Sin esto, detect ganaría la carrera y vería silencio.
+      - name: Settle (event-driven only) — capa 2 de vigilancia (AP-011)
+        # Era sleep 90 (que los runs encadenados lleguen a queued antes del
+        # gate 0). 2026-07-13, AP-011: sube al bound de liveness COMPLETO
+        # (330s > STALL_MIN=5min). Motivo (incidente finplan#1319): el tick
+        # event-driven llegaba DENTRO de la ventana de liveness, el scan
+        # saltaba los ítems por frescos y el tick moría en silencio — la
+        # evaluación quedaba en manos del cron (best-effort; observado 79
+        # min de hueco con cron */20). Con el settle al bound completo, cada
+        # fin de workflow de agente garantiza UNA evaluación EFECTIVA a los
+        # ~5.5 min del evento. El gate 0 sigue cazando lo que arrancó
+        # mientras dormía (sano). El cron queda como capa 3: red final para
+        # silencio total, no capa de latencia.
         if: github.event_name == 'workflow_run'
-        run: sleep 90
+        run: sleep 330
 
       - name: Scan for stalled work
         id: scan
@@ -149,6 +157,10 @@ jobs:
             // evento ES la señal (un run acaba de concluir) — no hay que
             // esperar envejecimiento. En cron, 30 min para no cazar
             // trabajo simplemente lento.
+            // AP-011: cada tick declara la CAPA que lo despertó, para que el
+            // 5-whys del Auditor atribuya el fallo a la capa correcta
+            // (workflow_run=capa 2; schedule=capa 3; workflow_dispatch=heartbeat/humano).
+            const CAPA = `<!-- watchdog-capa: ${context.eventName} -->`;
             const STALL_MIN = 5;  // ADR-217 §3: bound de liveness (física de materialización de runs), no envejecimiento heurístico — la detección es de estado, el tiempo solo evita carreras
             const ARM_WINDOW_H = 72;       // ventana de arms relevantes
             const now = Date.now();
@@ -230,7 +242,7 @@ jobs:
                 if (autos >= 2) {
                   await github.rest.issues.addLabels({ ...O, issue_number: num, labels: ['human-needed'] });
                   await github.rest.issues.createComment({ ...O, issue_number: num,
-                    body: 'Doble rebote tras recuperación autónoma: cortacircuito. Requiere decisión humana.\n\n<!-- watchdog-circuit-breaker -->' });
+                    body: `Doble rebote tras recuperación autónoma: cortacircuito. Requiere decisión humana.\n\n<!-- watchdog-circuit-breaker -->\n${CAPA}` });
                   core.notice(`#${num}: doble rebote ⇒ human-needed.`);
                 } else {
                   anomalies.push({ type: 'stalled-autonomous-resolve', number: num });
@@ -323,7 +335,7 @@ jobs:
                 turno = 'creator'; why = `veredicto ${lastV} sin sesión posterior del Creator`;
                 fix = async () => {   // el @claude debe salir con PAT o no dispara (anti-loop)
                   await patCall('POST', `/issues/${pr.number}/comments`,
-                    { body: `@claude\n\nRelanzamiento de turno (ADR-217): el veredicto ${lastV} de arriba quedó sin sesión. Aplica los puntos pendientes y cierra con @reviewer (a inicio de línea).\n\n<!-- watchdog-rearm -->\n${TURN_MARK}` });
+                    { body: `@claude\n\nRelanzamiento de turno (ADR-217): el veredicto ${lastV} de arriba quedó sin sesión. Aplica los puntos pendientes y cierra con @reviewer (a inicio de línea).\n\n<!-- watchdog-rearm -->\n${TURN_MARK}\n${CAPA}` });
                   return true;
                 };
               } else if (botAfterVerdict && (closesReviewer || (closesReady && lastVerdict && lastV !== 'LGTM'))) {
@@ -354,7 +366,7 @@ jobs:
                 const selfCommented = await fix();
                 if (!selfCommented) {
                   await github.rest.issues.createComment({ ...O, issue_number: pr.number,
-                    body: `**watchdog · relanzamiento de turno (ADR-217)**: ${why}; transición relanzada mecánicamente (${relaunches + 1}/2). ${TURN_MARK}` });
+                    body: `**watchdog · relanzamiento de turno (ADR-217)**: ${why}; transición relanzada mecánicamente (${relaunches + 1}/2). ${TURN_MARK}\n${CAPA}` });
                 }
                 core.notice(`PR #${pr.number}: turno=${turno} zombi ⇒ relanzado (${why}).`);
                 await turnStatus(pr, 'pending', `Turno ${turno} zombi: transición relanzada (${relaunches + 1}/2) — ${why}`);
@@ -387,7 +399,7 @@ jobs:
                 if (rebases < 2) {
                   await github.rest.issues.createComment({
                     ...O, issue_number: pr.number,
-                    body: `${REBASE_MARK}\n@claude rebasa esta rama sobre \`origin/${process.env.IN_DEFAULT_BRANCH}\` y resuelve los conflictos (watchdog: PR en conflicto sin checks posibles — sin merge-ref no corren CI ni Reviewer). Alcance intacto: solo rebase + resolución. <!-- ping-creator -->`,
+                    body: `${REBASE_MARK}\n@claude rebasa esta rama sobre \\n${CAPA}`origin/${process.env.IN_DEFAULT_BRANCH}\` y resuelve los conflictos (watchdog: PR en conflicto sin checks posibles — sin merge-ref no corren CI ni Reviewer). Alcance intacto: solo rebase + resolución. <!-- ping-creator -->`,
                   });
                   core.notice(`PR #${pr.number}: dirty sin checks; ping de rebase ${rebases + 1}/2.`);
                 } else if (rebases >= 2) {
@@ -441,7 +453,7 @@ jobs:
                   if (attrPings === 0) {
                     await github.rest.issues.createComment({
                       ...O, issue_number: pr.number,
-                      body: `${ATTR_MARK}\n@claude CI en rojo (run ${ci.id}) con fallos ATRIBUIBLES a este PR — todos los tests fallidos viven en ficheros que el PR toca:\n\n${failedFiles.map(f => '- `' + f + '`').join('\n')}\n\nBaja el detalle con \`gh run view ${ci.id} --log-failed\`, corrige y pushea. (watchdog: fast-path sin retry de flaky — el rojo atribuible no se reintenta.) <!-- ping-creator -->`,
+                      body: `${ATTR_MARK}\n@claude CI en rojo (run ${ci.id}) con fallos ATRIBUIBLES a este PR — todos los tests fallidos viven en ficheros que el PR toca:\n\n${failedFiles.map(f => '- \n${CAPA}`' + f + '`').join('\n')}\n\nBaja el detalle con \`gh run view ${ci.id} --log-failed\`, corrige y pushea. (watchdog: fast-path sin retry de flaky — el rojo atribuible no se reintenta.) <!-- ping-creator -->`,
                     });
                     core.notice(`PR #${pr.number}: CI rojo ATRIBUIBLE (${failedFiles.length} ficheros del diff); escalado directo sin retry.`);
                   } else {
@@ -456,7 +468,7 @@ jobs:
                   await github.rest.actions.reRunWorkflowFailedJobs({ ...O, run_id: ci.id });
                   await github.rest.issues.createComment({
                     ...O, issue_number: pr.number,
-                    body: `${CI_RETRY_MARK}\n**watchdog**: CI en rojo (run ${ci.id}); re-lanzados los jobs fallidos (retry 1/1, detector de flakiness). Si vuelve a rojo, se escala al Creator.`,
+                    body: `${CI_RETRY_MARK}\n**watchdog**: CI en rojo (run ${ci.id}); re-lanzados los jobs fallidos (retry 1/1, detector de flakiness). Si vuelve a rojo, se escala al Creator.\n${CAPA}`,
                   });
                   core.notice(`PR #${pr.number}: CI rojo, retry lanzado (run ${ci.id}).`);
                   // Cosecha de flaky-candidatos (2026-07-10): el retry detecta
@@ -709,6 +721,7 @@ jobs:
             `prototype.css`, promoción de la rama por defecto a la de producción.
 
             IMPORTANTE: el log de Actions NO conserva los turnos de tu
+            En CADA comentario que publiques incluye, al final, el marcador de capa `<!-- watchdog-capa: ${{ github.event_name }} -->` (AP-011: el Auditor atribuye el fallo a la capa de vigilancia que lo recogió).
             sesión (solo init y resultado). Si necesitas entregar contenido
             a otro agente o al humano (cuerpos de issues, comandos, diffs),
             PUBLÍCALO en un comentario — jamás lo referencies "en el log"
