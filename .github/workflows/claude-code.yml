@@ -284,7 +284,9 @@ jobs:
         # agente vivos ⇒ colisión de merge y rebase forzado). La serialidad
         # era regla dura de protocolo sin enforcement mecánico; esto lo
         # fuerza: si ya hay CUALQUIER PR de agente (claude/*) abierto, NO se
-        # arma otro Creator desde un issue. El loop Creator↔Reviewer (contexto
+        # arma otro Creator desde un issue. Arms de auditoría (label
+        # `auditoria`/`auditoria-completa`) quedan fuera del régimen: no
+        # producen PRs de código (2026-07-13, deadlock #1312). El loop Creator↔Reviewer (contexto
         # PR) no pasa por aquí. Override manual: label `serial-ok` en el issue.
         id: check_serial
         if: |
@@ -305,6 +307,18 @@ jobs:
             const issue = context.payload.issue;
             if ((issue.labels || []).some(l => l.name === 'serial-ok')) {
               core.notice('serial-ok presente: guard serial omitido.');
+              core.setOutput('blocked', 'false');
+              return;
+            }
+            // Exención por CLASE (2026-07-13, deadlock #1312): la serialidad
+            // existe por colisión de PRs de código (#1303). Un arm de
+            // auditoría no abre PRs claude/* — no puede colisionar — y además
+            // nunca retiraría serial-activo (el Auditor no abre PR, que es la
+            // ruta de retirada): dársela crea deadlock. Fuera del régimen
+            // serial: ni recibe la label, ni bloquea, ni es bloqueado.
+            const armLabels = (issue.labels || []).map(l => l.name);
+            if (['auditoria', 'auditoria-completa'].some(n => armLabels.includes(n))) {
+              core.notice('arm de auditoría: no produce PRs de código — exento del régimen serial.');
               core.setOutput('blocked', 'false');
               return;
             }
