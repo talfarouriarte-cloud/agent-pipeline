@@ -1,0 +1,74 @@
+name: graft-vendored
+description: >
+  Injerta la capa vendored del central (agent-pipeline@main) en el workspace
+  del consumidor en runtime: mandatos genéricos, subagentes, hooks, settings,
+  skills genéricas y adr-lint. Sustituye al vendoring por copia (sync PRs):
+  el consumidor solo commitea dominio y annexes; lo común se sirve en vivo.
+  AP-009. Todo lo injertado se registra en .git/info/exclude para que el
+  Creator no pueda re-commitearlo.
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout vendored del central
+      uses: actions/checkout@v4
+      with:
+        repository: talfarouriarte-cloud/agent-pipeline
+        ref: main
+        path: .graft-tmp
+        sparse-checkout: vendored
+        sparse-checkout-cone-mode: true
+
+    - name: Injertar capa vendored
+      shell: bash
+      run: |
+        set -euo pipefail
+        SRC=".graft-tmp/vendored"
+        [ -d "$SRC" ] || { echo "::error::graft: $SRC no existe en el checkout del central"; exit 1; }
+        EXCLUDE=".git/info/exclude"
+        mkdir -p "$(dirname "$EXCLUDE")"; touch "$EXCLUDE"
+        note() { grep -qxF "$1" "$EXCLUDE" || echo "$1" >> "$EXCLUDE"; }
+
+        # 1. Mandatos genéricos -> docs/agents/ (pisa copias si existen; annexes locales intactos)
+        mkdir -p docs/agents
+        for f in "$SRC"/docs-agents/*.md; do
+          b="$(basename "$f")"
+          cp -f "$f" "docs/agents/$b"
+          note "docs/agents/$b"
+        done
+
+        # 2. Subagentes, hooks y settings -> .claude/
+        mkdir -p .claude/agents .claude/hooks
+        for f in "$SRC"/claude/agents/*.md;  do cp -f "$f" ".claude/agents/$(basename "$f")";  note ".claude/agents/$(basename "$f")";  done
+        for f in "$SRC"/claude/hooks/*.sh;   do cp -f "$f" ".claude/hooks/$(basename "$f")"; chmod +x ".claude/hooks/$(basename "$f")"; note ".claude/hooks/$(basename "$f")"; done
+        cp -f "$SRC"/claude/settings.json .claude/settings.json
+        note ".claude/settings.json"
+
+        # 3. Skills genéricas: vendored/skills/<name>-SKILL.md -> .claude/skills/<name>/SKILL.md
+        for f in "$SRC"/skills/*-SKILL.md; do
+          name="$(basename "$f" -SKILL.md)"
+          mkdir -p ".claude/skills/$name"
+          cp -f "$f" ".claude/skills/$name/SKILL.md"
+          note ".claude/skills/$name/SKILL.md"
+        done
+
+        # 4. adr-lint (lo consume el CI del consumidor)
+        mkdir -p scripts
+        cp -f "$SRC"/scripts/adr-lint.mjs scripts/adr-lint.mjs
+        note "scripts/adr-lint.mjs"
+
+        # 5. CLAUDE.md = loop del central + dominio local (solo si el consumidor ya está partido).
+        #    Si no existe CLAUDE.domain.md, NO tocar CLAUDE.md (compatibilidad con el monolito
+        #    actual durante la transición; la partición llega en el PR de limpieza del consumidor).
+        if [ -f CLAUDE.domain.md ]; then
+          { cat "$SRC"/CLAUDE.loop.md; printf '\n\n'; cat CLAUDE.domain.md; } > CLAUDE.md
+          note "CLAUDE.md"
+        else
+          echo "graft: CLAUDE.domain.md no existe — CLAUDE.md local intacto (modo transición)"
+        fi
+
+        # 6. Limpiar el checkout temporal (que el Creator no lo vea ni lo commitee)
+        rm -rf .graft-tmp
+        note ".graft-tmp/"
+
+        echo "graft: capa vendored injertada desde agent-pipeline@main"
