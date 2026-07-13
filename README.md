@@ -99,7 +99,7 @@ The system separates three natures of knowledge with different lifecycles, write
 Nothing propagates automatically. Three mechanisms:
 
 1. **Workflows — `workflow_call` with pinned refs.** Consumers hold ~10-line stubs calling `agent-pipeline/.github/workflows/<name>.yml@<tag>`. Single-operator mode pins `@main` (§13); multi-operator mode pins tag/SHA, upgrading = editing the stub (human-execute). Exception: `watchdog-heartbeat` ships as a template, not callable — its function requires infrastructure independent of the consumer's runners.
-2. **Vendored files — physical copies with sync PRs.** Claude Code and hooks only read the checkout where they run, so `.claude/` contents, generic role mandates, protocol docs and `adr-lint.mjs` are copied into each consumer, headed `<!-- synced from agent-pipeline@<sha> — DO NOT EDIT locally -->`. Central changes propagate mechanically (Architect commit or auto-merged sync PR): the human gate lives at the CENTRAL commit, not at each consumer — a second per-repo merge adds clicks, not decisions (owner correction, 2026-07-11). A locally edited vendored file is a grep-detectable anomaly (candidate Auditor check).
+2. **Vendored layer — grafted at runtime (AP-009, 2026-07-13).** Claude Code and hooks only read the checkout where they run, so the `graft-vendored` composite action (a step in every agent-loading reusable) injects `vendored/` from `agent-pipeline@main` into the workspace before the agent starts: generic mandates, subagents, hooks, settings, generic skills. Everything grafted is registered in `.git/info/exclude` so the Creator cannot re-commit it. `CLAUDE.md` is composed at runtime: central `CLAUDE.loop.md` + the consumer's `CLAUDE.domain.md`. Consumers commit NO copies — a merged central PR IS the deployment (next run serves it). The human gate lives at the central merge. Physical copies with sync PRs (the previous mechanism) were retired: recurring per-change sync friction, plus real drift — owner edits landed in local copies and never reached the central.
 3. **Templates — copied once at onboarding, never synced.** Skeletons of spec/decisions/CLAUDE.md/annexes/pipeline-map/labels become layer-3 property on copy.
 
 Layer 2 needs no repo mechanism: the Architect reads it via PAT at session start (any project) and writes it at retros.
@@ -116,9 +116,10 @@ agent-pipeline/
 │   │                        # watchdog + protocol.md, resolver-protocol.md
 │   ├── skills/              # framework skills (§7, layer 1)
 │   └── scripts/             # adr-lint.mjs
+├── .github/actions/
+│   └── graft-vendored/      # runtime injection of vendored/ (AP-009)
 ├── templates/               # spec, decisions, CLAUDE.domain, role-annex,
 │                            # pipeline-map, watchdog-heartbeat.yml, labels.json
-├── sync/                    # sync-PR tooling
 ├── MIGRATION.md
 └── README.md
 ```
@@ -129,7 +130,7 @@ A repo can run the pipeline iff it provides:
 
 1. **`spec.md`** — vision, principles, stack, boundaries. Not a courtesy doc: the decision protocol defines derivability as a verbatim quote from ADR/spec; without it nothing derives and every decision escalates.
 2. **ADRs** in the format `adr-lint.mjs` enforces (unique numbering, mandatory sections, owner-verbatim decision blocks in rectifications, attributed quotes that grep-exist outside their own block).
-3. **`CLAUDE.md`** (vendored loop mechanics + domain layer), **role annexes**, **`docs/conventions.md`**.
+3. **`CLAUDE.domain.md`** (domain layer only — the loop half is grafted and `CLAUDE.md` composed at runtime, AP-009), **role annexes**, **`docs/conventions.md`**.
 4. **Own CI** with the job name the merge gate expects, materializing `ci-verde` on green.
 5. **Labels** from the template; **secrets**: Anthropic OAuth, `ARM_TOKEN`, fine-grained PAT.
 6. **Stubs** pinned per §13 (single-operator mode: `@main`; multi-operator: a release tag).
