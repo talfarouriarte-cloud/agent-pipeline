@@ -90,6 +90,21 @@ racionales extensos) se PUBLICA en un comentario; referenciarlo «en el
 log» lo pierde (incidente #1120, 2026-07-08: cuerpos redactados
 irrecuperables, re-redactados por el Architect desde la decisión).
 
+**Limpieza de panel — regla dura (finplan#1327, 2026-07-13):** antes de
+cerrar un issue de auditoría o `process-proposal` como «hueco»/«sin
+informe»/«no consumido», lectura mecánica FRESCA del panel en ese instante
+(`gh api repos/<repo>/issues/<n>/comments --paginate` + grep de
+`## Métricas de proceso` para el informe del Auditor y de
+`process-review-done` para la revisión de proceso), y la afirmación «sin
+informe» debe CITAR esa lectura — el estándar de cita-verbatim de
+resolver-protocol aplicado al ESTADO, nunca una lectura heredada de otro
+actor o de otro instante. Contradicción que obliga a re-leer, no a cerrar:
+`auditoria-completa` solo se aplica con informe presente
+(agent-pipeline#12), así que label presente + claim «hueco» es imposible
+por construcción. Incidente: 3 paneles válidos cerrados como «HUECOS» con
+sus informes publicados 5–8 h antes, sobre una afirmación heredada (clase
+fabricated-citation drift operando sobre el estado de los paneles).
+
 **Cap acumulado de parciales (`<!-- rounds-cap-reached -->`):** si el
 stall viene con este marcador (6 relanzamientos parciales en la VIDA del
 issue, contados por epic-merge sin reseteo), la partición es OBLIGATORIA:
