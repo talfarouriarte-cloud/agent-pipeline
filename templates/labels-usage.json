@@ -18,7 +18,8 @@
   ],
   "process-review.yml": [
     "auditoria",
-    "auditoria-completa"
+    "auditoria-completa",
+    "process-review-pendiente"
   ],
   "reviewer.yml": [
     "lgtm",
