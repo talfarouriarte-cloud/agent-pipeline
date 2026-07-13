@@ -428,6 +428,7 @@ jobs:
           # actor humano — claude-code-action rechaza actores bot y el token
           # del agente aparece como claude[bot] (incidente #1048, 2026-07-04).
           ARM_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+        id: creator
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -529,6 +530,56 @@ jobs:
             } else {
               core.notice(`serial-activo intacto en #${n}: sin PR aún (Creator en curso o caído — lo libera el watchdog si murió).`);
             }
+
+      - name: Materializar muerte del Creator sin PR (post-step determinista)
+        # 2026-07-13, incidente finplan#1318: el Creator murió por max_turns a
+        # las 11:42 tras commitear 9 commits y ANTES de abrir el PR. El
+        # detector issue-armed-no-pr del watchdog lo habría cazado en su
+        # siguiente tick (poll, 15-45 min de latencia); el propietario le ganó
+        # la carrera e hizo el diagnóstico a mano. Este post-step lo hace PUSH
+        # con latencia cero: el propio run sabe en el instante que la sesión
+        # concluyó mal. Materializa el estado (AP-008.1) — comentario
+        # diagnóstico con marcador, stalled (señal de architect-resolve; skip()
+        # del watchdog NO la excluye) y retirada de serial-activo (evita el
+        # deadlock clase #1312 en su variante Creator-muerto). El REARM no se
+        # hace aquí: comentarios de GITHUB_TOKEN no disparan workflows
+        # (incidente #1048) — es del watchdog o del humano, ahora con el
+        # diagnóstico ya hecho. Las auditorías quedan fuera: su post-step
+        # («Materializar auditoria-completa») ya cubre su modo de muerte.
+        if: |
+          always() && steps.creator.outcome == 'failure'
+          && github.event.issue && !github.event.issue.pull_request
+          && !contains(github.event.issue.labels.*.name, 'auditoria')
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const issue = context.payload.issue;
+            const n = issue.number;
+            // ¿Murió DESPUÉS de abrir su PR? Entonces gobierna el flujo PR-driven.
+            const { data: prs } = await github.rest.pulls.list({ owner, repo, state: 'open', per_page: 100 });
+            if (prs.some(p => p.head.ref.startsWith(`claude/issue-${n}-`))) {
+              core.notice(`Creator de #${n} murió con PR ya abierto — flujo PR-driven gobierna; nada que materializar aquí.`);
+              return;
+            }
+            // Estado de la rama huérfana (si existe): el diagnóstico que el
+            // rearm necesita ("no rehagas nada").
+            let branchInfo = 'sin rama creada (muerte temprana: no hay trabajo que conservar).';
+            try {
+              const { data: refs } = await github.rest.git.listMatchingRefs({ owner, repo, ref: `heads/claude/issue-${n}-` });
+              if (refs.length) {
+                const branch = refs[refs.length - 1].ref.replace('refs/heads/', '');
+                const cmp = await github.rest.repos.compareCommits({ owner, repo,
+                  base: '${{ inputs.default_branch }}', head: branch });
+                const last = cmp.data.commits.length ? cmp.data.commits[cmp.data.commits.length - 1].commit.message.split('\n')[0] : '(sin commits)';
+                branchInfo = `rama \`${branch}\`: **ahead ${cmp.data.ahead_by} / behind ${cmp.data.behind_by}** sobre \`${{ inputs.default_branch }}\`. Último commit: «${last}».`;
+              }
+            } catch (e) { branchInfo += ` (inspección de rama falló: ${e.message})`; }
+            await github.rest.issues.createComment({ owner, repo, issue_number: n,
+              body: `**claude-code · post-step**: la sesión del Creator terminó en \`failure\` (típicamente \`error_max_turns\` o muerte de sesión) **sin PR abierto**. Estado materializado en el instante — sin esperar al tick del watchdog:\n\n- ${branchInfo}\n- \`serial-activo\` retirada (la serie queda libre; el arm de retoma no está bloqueado).\n- \`stalled\` aplicada (señal de architect-resolve).\n\n**Para el rearm** (watchdog o humano): si hay rama con commits, NO rehacer — retomar solo el cierre (verificar rama, typecheck/tests de los ficheros afectados, abrir el PR según «PR creation» de CLAUDE.md).\n\n<!-- creator-muerto-sin-pr -->` });
+            await github.rest.issues.addLabels({ owner, repo, issue_number: n, labels: ['stalled'] });
+            await github.rest.issues.removeLabel({ owner, repo, issue_number: n, name: 'serial-activo' }).catch(() => {});
+            core.warning(`Creator de #${n}: muerte sin PR materializada (stalled + serial-activo retirada).`);
 
       - name: Auto-label based on Creator's closing tag
         if: |
