@@ -693,6 +693,71 @@ jobs:
             }
 
             if (!label) {
+              // turn-close-failsafe (finplan#1322, 2026-07-13 — capa 1 de
+              // AP-011 para la transición Creator→Reviewer). Incidente
+              // finplan PR #1319: el Creator aplicó los nits, pusheó,
+              // terminó `success`... sin tag de cierre. 84 min de stall
+              // hasta el dispatcher (capa 2/3, latencia de cron + cap 2).
+              // El estado «el Creator respondió al veredicto» ya está
+              // MATERIALIZADO (push al HEAD posterior al veredicto que
+              // disparó esta sesión) — este fail-safe lo consume en el
+              // MISMO job, latencia cero, en vez de colgar la transición
+              // de una cadena mágica en prosa. Condiciones:
+              //  (a) sesión `success` — la garantiza el `if:` del step
+              //      (las muertes por error son territorio del Watchdog:
+              //      trabajo potencialmente incompleto);
+              //  (b) el trigger fue un turno de PR-loop real: comentario
+              //      con marcador `ping-creator` (veredicto del Reviewer
+              //      o ping del Watchdog) — excluye comentarios humanos
+              //      arbitrarios;
+              //  (c) hay commits en el HEAD del PR posteriores al trigger;
+              //  (d) sin tag de cierre anclado (esta rama).
+              // NO es un re-trigger por push: evalúa UNA vez, al cierre de
+              // la sesión. La label la aplica el PAT (mismo mecanismo que
+              // la rama @reviewer): el guard anti-loop del Reviewer sobre
+              // `labeled` de claude[bot] no se toca.
+              const triggerBody = context.payload.comment?.body
+                || context.payload.review?.body || '';
+              if (triggerBody.includes('ping-creator') && triggerCreatedAtRaw) {
+                const { data: pr } = await github.rest.pulls.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: prNumber,
+                });
+                const { data: headCommit } = await github.rest.repos.getCommit({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: pr.head.sha,
+                });
+                const headDate = new Date(headCommit.commit.committer.date);
+                if (headDate > new Date(triggerCreatedAtRaw)) {
+                  try {
+                    await github.rest.issues.removeLabel({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: prNumber,
+                      name: 'needs-review',
+                    });
+                  } catch (e) { /* puede no estar */ }
+                  await github.rest.issues.addLabels({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: prNumber,
+                    labels: ['needs-review'],
+                  });
+                  await github.rest.issues.createComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: prNumber,
+                    body: '**claude-code · turn-close-failsafe**: la sesión del Creator terminó con éxito, con commits en el HEAD posteriores al veredicto que la convocó, pero SIN tag de cierre anclado. Transición Creator→Reviewer materializada por estado (push), no por prosa: `needs-review` re-aplicada en el mismo job (finplan#1322, capa 1 de AP-011).\n\n<!-- turn-close-failsafe -->',
+                  });
+                  core.warning(
+                    `PR #${prNumber}: cierre sin tag con push post-veredicto — `
+                    + 'needs-review aplicada por turn-close-failsafe.'
+                  );
+                  return;
+                }
+              }
               core.notice(
                 'El último comentario del Creator no contiene tag de cierre '
                 + '([READY-TO-MERGE], [NEEDS-HUMAN], o @reviewer). '
