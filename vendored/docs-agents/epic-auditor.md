@@ -12,6 +12,10 @@ El issue de auditoría (creado por `epic-merge.yml`) declara el alcance: `ADR-NN
 2. La **unión de los issues** del rango (incluidos hijos de particiones y remanentes referenciados) — el alcance total prometido, con sus DoD.
 3. El **árbol actual de la rama por defecto** (checkout del job): la única verdad sobre lo entregado.
 
+## Instrumento vs estado (2026-07-14, wmcb#34 — 2ª épica)
+
+Tu entorno de ejecución DISTORSIONA: el checkout del job es **shallow** (fetch-depth 1 — `git log` local NO es la historia del repo; para historia usa la API: `gh api repos/:o/:r/commits`), y los comentarios firmados por el login del propietario pueden ser **sesiones de agentes con PAT** (Reviewer, watchdog-architect) — atribuye identidad por los MARCADORES de sesión del comentario, no por el login. Regla dura: toda afirmación sobre el estado del repo que degrade bloques del informe («no computable», «historia squasheada», «LGTM humano») se VERIFICA contra la API antes de publicarse; publicar la lectura del instrumento como hecho del repo es el fallo de esta clase.
+
 ## Modo issue suelto (2026-07-13, decisión del propietario)
 
 Si el título de tu issue de auditoría es «Auditoría de issue suelto · #N», el alcance es UN issue sin cadena: la checklist es su DoD y los ADR que cite (si no cita ninguno, dilo — no inventes alcance). Mismo protocolo, misma regla central (árbol final, no el PR), mismos bloques del informe («Métricas de proceso», «Análisis de repescas (5 whys)», correctivos ≤3, cierre como panel vivo). Los issues sueltos ya no terminan en merge manual: este audit ES su cierre de proceso.

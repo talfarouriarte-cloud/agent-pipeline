@@ -66,6 +66,13 @@ Vocabulario: veredictos del Reviewer `LGTM` / `REVIEW` / `NITS` (primera palabra
 comentario); cierres del Creator `@reviewer` / `[READY-TO-MERGE]` / `[NEEDS-HUMAN]`.
 Mecánica completa: CLAUDE.md § «Loop protocol with Reviewer» (casa única, no se duplica aquí).
 
+**Transición Creator→Reviewer: el PUSH es la transición primaria (2026-07-14, wmcb#38).**
+El cierre de prosa (`@reviewer`) es cortesía legible y vía rápida, NO el mecanismo: la
+omisión observada es ~50% y el sistema no depende de ella. El post-step «Re-review por
+estado» de claude-code re-etiqueta `needs-review` mecánicamente cuando la sesión hizo
+push y el Auto-label no actuó. Un turno que empujó código YA transicionó; la prosa solo
+lo hace legible.
+
 ## Labels
 
 | Label | La pone | La consume | Efecto |
@@ -73,7 +80,7 @@ Mecánica completa: CLAUDE.md § «Loop protocol with Reviewer» (casa única, n
 | `epica` | Architect al publicar la cadena (issues) | epic-merge (gate de auto-merge); Reviewer (LGTM pinga al Creator) | Activa el régimen de épica |
 | `correctivo` | Auditor en sus issues | Convención (humano/Architect) | Identifica hijos de auditoría |
 | `auditoria` | epic-merge al crear la auditoría | Convención; búsqueda de informes (sensor de proceso) | Identifica issues de auditoría |
-| `needs-review` | Step Auto-label de claude-code (PAT) tras `@reviewer` | Reviewer (trigger `[opened, labeled]`; ignora `labeled` de `claude[bot]`) | Re-dispara la review. NUNCA ponerla como Creator |
+| `needs-review` | Steps de claude-code (PAT): Auto-label (tras `@reviewer`) y Re-review-por-estado (tras push sin tag — transición primaria) | Reviewer (trigger `[opened, labeled]`; ignora `labeled` de `claude[bot]`) | Re-dispara la review. NUNCA ponerla como Creator |
 | `estado:esperando-ci` / `-reviewer` / `-creator` | epic-merge en cada evaluación (quitadas al merge) | Humano | Estado de la cadena de un vistazo en la lista de PRs |
 | `stalled` | Watchdog/epic-merge al agotar caps | Etapa architect-resolve del Watchdog (régimen autónomo: diagnostica, decide, des-stallea y re-arma); el humano solo tras doble rebote (`human-needed`) | Cortacircuito de ronda, ya NO parada hasta humano |
 | `pause-agents` | Humano | Watchdog y epic-merge (kill-switch) | Congela el ítem para todo el pipeline |
