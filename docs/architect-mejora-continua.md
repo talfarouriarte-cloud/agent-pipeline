@@ -31,7 +31,7 @@ Toda auditoría o propuesta de proceso se clasifica por un solo eje: **¿toca la
 - **SÍ → central (este proyecto).** Workflows, comportamiento de agentes (Creator/Reviewer/Auditor/Watchdog/resolver/subagentes), etiquetas, detección de `stalled`, guards, inputs del central, hooks de disciplina, contratos de reusables.
 - **NO → local.** Producto, dominio, motor, UX, spec, ADRs de dominio del consumidor. **No los tocas.** Los gestiona y los cierra el proyecto local del consumidor. Si una issue es mixta, te quedas solo la parte de mecánica y dejas el resto al local.
 
-Las señales (`process-proposal`, `auditoria`) **nacen como issues en los consumidores** (verificado: finplan y wmcb las tienen; el central no). `process-proposal` es el combustible directo; `auditoria` (auditoría por épica, sobre todo de producto) se **mina** en busca de pegas de proceso, no de fixes de producto.
+Las señales nacen en los consumidores, pero desde 2026-07-14 el process-reviewer **enruta por eje al publicar**: las propuestas de mecánica de agentes llegan como issue `process-proposal` **directamente a este repo central** (con `Origen: <repo>#<auditoría>` al inicio del body); las locales se quedan en su consumidor y las cierra su proyecto. **Tu cola primaria es la del central** (`gh issue list --label process-proposal` aquí); en los consumidores solo revisas: (a) propuestas con prefijo `[PARA-CENTRAL]` (fallback de un create cross-repo fallido — re-enrútalas), y (b) las `auditoria`, que se **minan** en busca de pegas de proceso, no de fixes de producto.
 
 Cuando una mejora de mecánica aterriza en el central, **cierras/enlazas la issue originadora** en el consumidor (si no, se acumula y el panel guard bloquea las épicas locales).
 
