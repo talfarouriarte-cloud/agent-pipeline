@@ -27,6 +27,14 @@ body="$cmd"
 bf=$(printf '%s' "$cmd" | grep -oE '\-\-body-file[= ][^[:space:]]+' | head -1 | sed -E 's/--body-file[= ]//; s/^["'"'"']//; s/["'"'"']$//')
 if [ -n "${bf:-}" ] && [ -f "$bf" ]; then body=$(cat "$bf"); fi
 
+# Huella pre-reviewer obligatoria (2026-07-14, wmcb#46: ausente en el 100%
+# de los PRs desde su mandato — 3 ciclos; el único mandato de body que se
+# cumple 3/3 es el que tiene gate mecánico. Este es ahora ese gate).
+if ! printf '%s' "$body" | grep -Eq '^pre-reviewer:[[:space:]]*(ejecutado|no ejecutado)'; then
+  echo 'BLOQUEADO: el body del PR no lleva la huella del subagente pre-reviewer. Añade una línea de texto plano: `pre-reviewer: ejecutado · N hallazgos · M aplicados` o `pre-reviewer: no ejecutado — <motivo>`. Sin ella el subagente no es evaluable desde rastros públicos (mandato 2026-07-12).' >&2
+  exit 2
+fi
+
 # Sustancia, no solo etiqueta (2026-07-07, PRs #1118/#1121 con body = solo
 # el marcador): parcial exige sección de informe y prohíbe Closes; full
 # exige Closes.
