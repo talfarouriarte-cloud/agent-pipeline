@@ -578,6 +578,13 @@ jobs:
           && !contains(github.event.issue.labels.*.name, 'auditoria')
         uses: actions/github-script@v7
         with:
+          # PAT, no GITHUB_TOKEN default (2026-07-14, finplan#1350): la label
+          # `stalled` que aplica este step es el trigger por EVENTO de
+          # architect-resolve (watchdog `on: labeled`). Con el token default el
+          # evento no se emite (anti-loop de GitHub) y la señal degradaba al
+          # tick del cron — el push prometido en el encabezado era en realidad
+          # poll. Mismo patrón ya documentado para `needs-review` (abajo).
+          github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
           script: |
             const { owner, repo } = context.repo;
             const issue = context.payload.issue;
@@ -605,7 +612,29 @@ jobs:
               }
             } catch (e) { branchInfo += ` (inspección de rama falló: ${e.message})`; }
             if (outcome === 'success' && !hasCommits) {
-              core.notice(`sesión success sin commits en rama de #${n}: conversacional legítima (escalada/respuesta) — nada que materializar.`);
+              // v3 (2026-07-14, finplan#1350): un paro LIMPIO pre-código —
+              // informe de bloqueo/alcance sin rama ni PR — caía aquí como
+              // «conversacional legítima» y la señal quedaba huérfana hasta el
+              // tick del watchdog (el propietario le ganó la carrera, 2ª vez
+              // de la clase). El Creator lo declara con `<!-- creator-blocked -->`
+              // en su comentario de cierre (creator.md § escalado determinista);
+              // freshness: solo cuenta un comentario de claude[bot] POSTERIOR
+              // al que disparó este job (lección del bucle PR #180).
+              const trigTs = context.payload.comment ? new Date(context.payload.comment.created_at).getTime() : 0;
+              const { data: cs } = await github.rest.issues.listComments({ owner, repo, issue_number: n, per_page: 100 });
+              const lastBot = [...cs].reverse().find(c => c.user?.login === 'claude[bot]');
+              const blocked = !!lastBot
+                && new Date(lastBot.created_at).getTime() > trigTs
+                && /<!--\s*creator-blocked\s*-->/.test(lastBot.body || '');
+              if (!blocked) {
+                core.notice(`sesión success sin commits en rama de #${n}: conversacional legítima (escalada/respuesta) — nada que materializar.`);
+                return;
+              }
+              await github.rest.issues.createComment({ owner, repo, issue_number: n,
+                body: `**claude-code · post-step**: el Creator paró LIMPIO sin PR y declaró bloqueo (\`<!-- creator-blocked -->\`). Estado materializado en el instante — sin esperar al tick:\n\n- \`stalled\` aplicada con PAT ⇒ architect-resolve dispara POR EVENTO (diagnóstico con el informe del Creator + la skill \`epic-context-<ADR>\` si existe).\n- \`serial-activo\` retirada (el rearm de este mismo issue no queda bloqueado).\n\n<!-- creator-blocked-materializado -->` });
+              await github.rest.issues.addLabels({ owner, repo, issue_number: n, labels: ['stalled'] });
+              await github.rest.issues.removeLabel({ owner, repo, issue_number: n, name: 'serial-activo' }).catch(() => {});
+              core.warning(`Creator de #${n}: bloqueo declarado materializado (stalled por PAT, evento push).`);
               return;
             }
             await github.rest.issues.createComment({ owner, repo, issue_number: n,
