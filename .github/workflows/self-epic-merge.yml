@@ -1,0 +1,26 @@
+# STUB del CENTRAL (2026-07-14, AP-012): SIN automerge (el merge aquí es
+# SIEMPRE humano) y SIN auditoría de sueltos. Su función: post-merge — al
+# mergear el humano un PR de agente, cerrar el ciclo y ARMAR el siguiente
+# issue de la cola serial (en-cola, FIFO).
+name: Epic Merge
+on:
+  pull_request:
+    types: [closed, labeled]
+  workflow_run:
+    workflows: ["Opus Reviewer", "CI"]
+    types: [completed]
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+jobs:
+  call:
+    uses: talfarouriarte-cloud/agent-pipeline/.github/workflows/epic-merge.yml@main
+    with:
+      runner: ubicloud-standard-2
+      default_branch: main
+      ci_workflow_name: CI
+      automerge: false
+      loose_audit: false
+    secrets:
+      REVIEWER_GITHUB_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}

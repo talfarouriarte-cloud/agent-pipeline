@@ -57,6 +57,14 @@
       "runner": {
         "has_default": true,
         "required": false
+      },
+      "automerge": {
+        "required": false,
+        "has_default": true
+      },
+      "loose_audit": {
+        "required": false,
+        "has_default": true
       }
     },
     "secrets_required": [

@@ -7,14 +7,16 @@
     "pause-agents",
     "serial-activo",
     "serial-ok",
-    "stalled"
+    "stalled",
+    "en-cola"
   ],
   "epic-merge.yml": [
     "auditoria",
     "ci-verde",
     "lgtm",
     "needs-review",
-    "stalled"
+    "stalled",
+    "en-cola"
   ],
   "process-review.yml": [
     "auditoria",
@@ -34,5 +36,6 @@
   "ci.yml": [],
   "self-claude-code.yml": [],
   "self-reviewer.yml": [],
-  "signal-closer.yml": []
+  "signal-closer.yml": [],
+  "self-epic-merge.yml": []
 }

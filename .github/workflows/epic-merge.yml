@@ -45,6 +45,17 @@ on:
         description: Parciales acumulados de por vida antes de rounds-cap-reached
         type: number
         default: 6
+      automerge:
+        # AP-012 (2026-07-14): el CENTRAL usa este reusable con automerge=false
+        # — allí el merge es SIEMPRE humano; este workflow solo procesa el
+        # post-merge (cierre y cola). Consumidores: default true (sin cambios).
+        type: boolean
+        default: true
+      loose_audit:
+        # Auditoría automática al cerrar un issue suelto. El central la
+        # desactiva (volumen bajo, humano en el loop de cada merge).
+        type: boolean
+        default: true
     secrets:
       REVIEWER_GITHUB_TOKEN:
         required: true
@@ -68,6 +79,8 @@ jobs:
           # el límite de 21000 chars por expresión de Actions.
           IN_PARTIAL_LIFETIME_CAP: ${{ inputs.partial_lifetime_cap }}
           IN_PARTIAL_ROUND_CAP: ${{ inputs.partial_round_cap }}
+          IN_AUTOMERGE: ${{ inputs.automerge }}
+          IN_LOOSE_AUDIT: ${{ inputs.loose_audit }}
           IN_DEFAULT_BRANCH: ${{ inputs.default_branch }}
           IN_EPIC_LABEL: ${{ inputs.epic_label }}
           IN_CI_WORKFLOW_NAME: ${{ inputs.ci_workflow_name }}
@@ -95,6 +108,24 @@ jobs:
                   await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
                 }
               } catch (e) { core.warning('diag falló: ' + e.message); }
+            }
+
+            // Cola serial (2026-07-14, decisión del propietario): cuando un
+            // merge deja la serie LIBRE (sin sucesor de cadena ni re-arm
+            // parcial), se arma el issue EN COLA más antiguo — el que el
+            // guard serial bloqueó y etiquetó `en-cola`. FIFO por created_at.
+            async function armQueue(prNumber, why) {
+              try {
+                const { data: queued } = await github.rest.issues.listForRepo({
+                  owner, repo, state: 'open', labels: 'en-cola', sort: 'created', direction: 'asc', per_page: 5 });
+                const next = queued.filter(i => !i.pull_request)[0];
+                if (!next) return;
+                await github.rest.issues.removeLabel({ owner, repo, issue_number: next.number, name: 'en-cola' }).catch(() => {});
+                await github.rest.issues.removeLabel({ owner, repo, issue_number: next.number, name: 'stalled' }).catch(() => {});
+                await github.rest.issues.createComment({ owner, repo, issue_number: next.number,
+                  body: `@claude arranca — turno de cola: la serie quedó libre (${why}). Eras el más antiguo en \`en-cola\`.\n\n<!-- arm-de-cola -->` });
+                await diag(prNumber, `serie libre (${why}): armado el siguiente de la cola, #${next.number}.`);
+              } catch (e) { await diag(prNumber, `arm de cola falló: ${e.message}`); }
             }
 
             // Helper: label de estado única en el PR (estado:*) — legible de
@@ -236,6 +267,11 @@ jobs:
               // ANTES de sentinels y del guard cola-huérfana (que son de cadena).
               const looseFinal = !(issue.labels || []).map(l => l.name).includes(process.env.IN_EPIC_LABEL);
               if (looseFinal) {
+                if (process.env.IN_LOOSE_AUDIT !== 'true') {
+                  await diag(prNumber, `MERGEADO (suelto #${issueNumber}); auditoría automática desactivada en este repo (loose_audit=false).`);
+                  await armQueue(prNumber, `merge del suelto #${issueNumber}`);
+                  return;
+                }
                 try {
                   const { data: audit } = await github.rest.issues.create({
                     owner, repo,
@@ -254,6 +290,7 @@ jobs:
                 } catch (e) {
                   await diag(prNumber, `mergeado (suelto) pero crear/armar auditoría falló: ${e.message}`);
                 }
+                await armQueue(prNumber, `merge del suelto #${issueNumber}`);
                 return;
               }
 
@@ -286,13 +323,14 @@ jobs:
                     ].join('\n'),
                   });
                   await diag(prNumber, `MERGEADO + epic-audit: auditoría lanzada en #${audit.number}. Épica terminada.`);
+                  await armQueue(prNumber, 'épica terminada (epic-audit)');
                 } catch (e) {
                   await diag(prNumber, `mergeado pero crear/armar auditoría falló: ${e.message}`);
                 }
                 return; // epic-audit implica fin de cadena (no coexiste con launch-next)
               }
 
-              if (/<!--\s*epic-done\s*-->/.test(body)) { await diag(prNumber, 'MERGEADO + epic-done. Épica terminada.'); return; }
+              if (/<!--\s*epic-done\s*-->/.test(body)) { await diag(prNumber, 'MERGEADO + epic-done. Épica terminada.'); await armQueue(prNumber, 'épica terminada (epic-done)'); return; }
               const lm = body.match(/<!--\s*launch-next:\s*#?(\d+)\s*-->/);
               if (!lm) {
                 // GUARD cola huérfana (v1.2): un issue `epica` mergeado sin
@@ -458,6 +496,7 @@ jobs:
 
               // MERGE (directo; si ya estuviera cerrado/mergeado, el propio merge lo reporta).
               try {
+                if (process.env.IN_AUTOMERGE !== 'true') { await diag(prNumber, 'gates verdes, pero automerge=false en este repo: el merge es humano (AP-012). Esperando.'); return; }
                 await github.rest.pulls.merge({ owner, repo, pull_number: prNumber, merge_method: 'squash' });
               } catch (e) { await diag(prNumber, `MERGE FALLÓ: ${e.message} (¿ya mergeado / protección de rama / token sin contents:write?)`); return; }
               try { await github.rest.git.deleteRef({ owner, repo, ref: `heads/${headBranch}` }); } catch (e) {}
