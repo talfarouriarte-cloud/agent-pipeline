@@ -360,12 +360,13 @@ jobs:
             const inFlight = [...inFlightPRs, ...inFlightArms];
             if (inFlight.length > 0) {
               await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
-                body: `**claude-code · guard serial**: ya hay un Creator en vuelo (${inFlight.join(', ')}). La serialidad es regla dura — no se arma un segundo Creator en paralelo. Este issue NO se arma; re-arma cuando el Creator en vuelo cierre, o pon la label \`serial-ok\` para forzar (bajo tu responsabilidad).\n\n<!-- serial-guard -->` });
-              await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['stalled'] });
+                body: `**claude-code · guard serial**: ya hay un Creator en vuelo (${inFlight.join(', ')}). La serialidad es regla dura — no se arma un segundo Creator en paralelo. Este issue NO se arma; queda **EN COLA** (label \`en-cola\`): al liberarse la serie por un merge, epic-merge armará automáticamente el más antiguo de la cola (2026-07-14). Para forzar YA: \`serial-ok\`.\n\n<!-- serial-guard -->` });
+              await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['stalled', 'en-cola'] });
               core.setOutput('blocked', 'true');
               core.warning(`Guard serial: ${inFlight.length} en vuelo; no se arma #${issue.number}.`);
             } else {
               // Deja pasar: marca ATÓMICAMENTE este issue como Creator en vuelo.
+              await github.rest.issues.removeLabel({ owner, repo, issue_number: issue.number, name: 'en-cola' }).catch(() => {});
               await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['serial-activo'] });
               core.setOutput('blocked', 'false');
             }

@@ -98,5 +98,10 @@
     "name": "process-review-pendiente",
     "color": "d93f0b",
     "description": "El process-review de este panel no se materializó; re-armar retirando y re-aplicando auditoria-completa (PAT)"
+  },
+  {
+    "name": "en-cola",
+    "color": "bfdadc",
+    "description": "Arm bloqueado por la serie; epic-merge armará el más antiguo al liberarse (FIFO)"
   }
 ]
