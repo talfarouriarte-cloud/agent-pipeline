@@ -21,7 +21,8 @@
   "process-review.yml": [
     "auditoria",
     "auditoria-completa",
-    "process-review-pendiente"
+    "process-review-pendiente",
+    "auto-archivada"
   ],
   "reviewer.yml": [
     "lgtm",
