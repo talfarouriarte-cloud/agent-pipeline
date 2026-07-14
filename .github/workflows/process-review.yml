@@ -153,18 +153,34 @@ jobs:
                línea `<!-- process-review-done -->` (marcador que consume
                el fail-safe de presencia de este workflow; sin él, tu
                revisión consta como NO hecha — protocol.md).
-            5. Si hay patrón: crea COMO MÁXIMO 2 issues con
-               `gh issue create --label process-proposal`, cada uno con:
-               título `process-proposal · <resumen>`; el patrón con evidencia
-               citada (issue/PR/métrica concretos, ≥2 épicas); la propuesta
-               concreta (qué doc/hook/workflow cambiaría y cómo); coste y
-               riesgo (incluido el riesgo de la interacción con el resto del
-               pipeline — revisa «Known failure classes» del pipeline-map);
-               y a quién toca aplicarla (Architect=docs/hooks,
-               humano=workflows). Después comenta en el issue de auditoría
-               la lista de propuestas creadas; ese comentario TERMINA con
-               la línea `<!-- process-review-done -->` (mismo marcador y
-               motivo que en el paso 4).
+            5. Si hay patrón: crea COMO MÁXIMO 2 issues (cap total), cada
+               uno con: título `process-proposal · <resumen>`; el patrón con
+               evidencia citada (issue/PR/métrica concretos, ≥2 épicas); la
+               propuesta concreta (qué doc/hook/workflow cambiaría y cómo);
+               coste y riesgo (incluido el riesgo de la interacción con el
+               resto del pipeline — revisa «Known failure classes» del
+               pipeline-map); y a quién toca aplicarla.
+               **ROUTING POR EJE (2026-07-14, decisión del propietario —
+               la cola vive donde se arregla):**
+               - Si el fix cambiaría ficheros de `agent-pipeline` (mandatos
+                 `vendored/`, hooks, workflows reusables, composite actions,
+                 templates, guards/post-steps): la propuesta va AL CENTRAL —
+                 `gh issue create --repo talfarouriarte-cloud/agent-pipeline
+                 --label process-proposal`, y el body EMPIEZA con
+                 `Origen: <repo>#<auditoría>` (enlace a la evidencia; el
+                 cierre cross-repo lo usará).
+               - Si el fix cambiaría ficheros de ESTE repo (annexes, docs
+                 locales, `ci.yml` propio, skills del repo, dominio): issue
+                 LOCAL como siempre (`gh issue create --label
+                 process-proposal`).
+               - Si el create cross-repo FALLA (403/404: token sin alcance),
+                 NO lo pierdas en silencio: créala LOCAL con el prefijo
+                 `[PARA-CENTRAL]` en el título y anota el fallo en el
+                 comentario del issue de auditoría.
+               Después comenta en el issue de auditoría la lista de
+               propuestas creadas CON SU DESTINO (central/local); ese
+               comentario TERMINA con la línea `<!-- process-review-done -->`
+               (mismo marcador y motivo que en el paso 4).
 
             6. LOOP DE SKILLS (ADR-212 — lee el ADR antes de editar).
                ENTRAS a este paso SOLO con los comentarios de (4-5) YA
