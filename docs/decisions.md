@@ -253,3 +253,24 @@ no se persiguió por no justificar el coste frente a la molestia.
 
 **Fecha.** 2026-07-13.
 
+---
+
+## AP-012 — El central como consumidor de sí mismo: ciclo de mejora automatizado
+
+**Contexto.** El ciclo de mejora (señal → propuesta → implementación → despliegue → cierre) lo ejecutaba a mano el Architect de chat: inventario multi-repo, implementación, PRs, cierres cross-repo. La evidencia del 2026-07-14 (8 señales procesadas en una mañana, la mayoría con diseño ya hecho por los 5-whys) mostró que la parte rutinaria es trabajo de Creator con buen contrato.
+
+**Decisión (del propietario).** En tres fases, todas desplegadas:
+1. **Routing por eje al publicar**: el process-reviewer de cada consumidor abre las propuestas de mecánica directamente como issue del central (`Origen: <repo>#<n>` en el body); las locales quedan en su repo.
+2. **Agentes en el central** (stubs `self-claude-code`, `self-reviewer`): los issues del central los ejecuta su propio Creator y los revisa su propio Reviewer, con dominio y annexes propios. **Límites duros**: `.github/workflows/**` y `.github/actions/**` fuera del alcance del Creator (escala al Architect); **no existe automerge en el central** — el merge humano es el único gate y no se delega (los cambios al sistema que gobierna a los agentes son exactamente donde ese gate justifica su existencia).
+3. **Cierre cross-repo mecánico** (`signal-closer.yml`): issue del central cerrado como completado con `Origen:` ⇒ resolución comentada y señal de origen cerrada.
+
+**Redefinición del Reviewer en el central** (annex): prioridades = blast radius (vendored despliega a 2 consumidores sin gradualidad), coherencia normativa del corpus (agüar un AP registrado = 🔴 sin válvula), prosa-vs-mecanismo (mandato de memoria donde cabe gate = hallazgo, AP-008), contratos (semántica además del check). El mandato genérico del reviewer queda saneado de dominio finplan (movido a su annex).
+
+**El rol de chat** pasa de procesar la cola a: gatear diseño, atender escaladas (workflows), e incidentes.
+
+**Alternativas descartadas.** Automerge en el central con gates reforzados (el merge humano ES el régimen, AP-004/006). Watchdog propio del central (volumen bajo; humano en el loop de cada merge; reevaluar si crece).
+
+**Reversibilidad.** Alta: retirar stubs y signal-closer; el routing de Fase 1 revierte con un cambio de prompt.
+
+**Fecha.** 2026-07-14.
+
