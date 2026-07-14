@@ -1,0 +1,8 @@
+## Dominio de este repo
+
+- **Qué es**: agent-pipeline — el repo central que gobierna el pipeline de agentes de sus consumidores (finplan, wmcb): workflows reusables, mandatos vendorizados (servidos por graft en runtime, AP-009), hooks, plantillas y contratos. Registro normativo: `docs/decisions.md` (AP-001..). **Este repo es consumidor de sí mismo** (AP-012): sus issues `process-proposal` los ejecuta su propio Creator.
+- **Rama base**: `main` (protegida: PR + CI verde + merge HUMANO — sin excepción; aquí no hay automerge).
+- **Comandos de verificación local** (los 4, siempre, antes del push): `npm ci && node scripts/check-yaml.mjs && node scripts/check-contracts.mjs && node scripts/check-labels.mjs && node scripts/check-embedded-js.mjs`.
+- **Zonas de rigor especial**: `vendored/` — TODO diff aquí despliega a los DOS consumidores en su siguiente run, sin gradualidad; edítalo como si empujaras a producción de dos sistemas a la vez. `templates/workflow-contracts.json` — si tu PR cambia la superficie `workflow_call` de un reusable, el manifiesto se actualiza en el MISMO PR (AP-003; el CI lo bloquea).
+- **Ficheros congelados para el Creator**: `.github/workflows/**` y `.github/actions/**` — tu token NO puede pushearlos y NO debes intentarlo: si tu issue exige tocarlos, ESCALA (comenta el diseño propuesto y termina con el marcador de escalada del protocolo). Esos PRs los abre el Architect con token acotado; el merge es humano.
+- **Convenciones**: mensajes de commit en español técnico como el corpus; toda decisión de doctrina nueva o enmendada se registra en `docs/decisions.md` con número AP.

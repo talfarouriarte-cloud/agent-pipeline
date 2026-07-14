@@ -1,0 +1,38 @@
+# Fase 3 del ciclo de mejora (2026-07-14, AP-012): cierre cross-repo mecánico.
+# Cuando un issue del central se cierra (típicamente por el merge de su PR con
+# `Closes #N`), si su body declara `Origen: <owner/repo>#<n>`, comenta la
+# resolución en la señal de origen y la cierra. Lo que el Architect hacía a
+# mano tras cada merge, como post-merge determinista.
+name: Signal Closer
+on:
+  issues:
+    types: [closed]
+permissions:
+  issues: read
+concurrency:
+  group: signal-closer-${{ github.event.issue.number }}
+  cancel-in-progress: false
+jobs:
+  close-origin:
+    runs-on: ubuntu-latest
+    if: github.event.issue.state_reason == 'completed'
+    steps:
+      - name: Cerrar señal de origen
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          script: |
+            const body = context.payload.issue.body || '';
+            const m = body.match(/^Origen:\s*(?:https?:\/\/github\.com\/)?([\w.-]+\/[\w.-]+)#(\d+)/mi);
+            if (!m) { core.notice('sin línea Origen: — no es señal enrutada; nada.'); return; }
+            const [owner, repo] = m[1].split('/');
+            const origin = Number(m[2]);
+            const central = context.payload.issue;
+            try {
+              await github.rest.issues.createComment({ owner, repo, issue_number: origin,
+                body: `**Resolución (mecánica, signal-closer):** esta señal se procesó en el central como ${context.repo.owner}/${context.repo.repo}#${central.number} («${central.title}»), ya cerrado como completado — el fix está mergeado en \`main\` y el graft lo sirve a este repo en su siguiente run. Detalle y PRs: ${central.html_url}. Cierro.` });
+              await github.rest.issues.update({ owner, repo, issue_number: origin, state: 'closed', state_reason: 'completed' });
+              core.notice(`origen ${m[1]}#${origin} cerrado.`);
+            } catch (e) {
+              core.setFailed(`no pude cerrar el origen ${m[1]}#${origin}: ${e.message} (¿secret REVIEWER_GITHUB_TOKEN sin configurar en el central?)`);
+            }

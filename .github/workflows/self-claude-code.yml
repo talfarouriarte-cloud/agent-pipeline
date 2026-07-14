@@ -1,0 +1,31 @@
+# STUB del CENTRAL (2026-07-14, AP-012): agent-pipeline es consumidor de sí
+# mismo. El Creator del central procesa las process-proposal enrutadas por
+# eje (Fase 1) que NO toquen .github/workflows/** (su token no puede — y no
+# debe: esos PRs son del Architect con token acotado + merge humano).
+name: Claude Code
+on:
+  issues:
+    types: [opened, edited, assigned]
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+jobs:
+  call:
+    uses: talfarouriarte-cloud/agent-pipeline/.github/workflows/claude-code.yml@main
+    with:
+      runner: ubicloud-standard-2
+      default_branch: main
+      creator_model: claude-opus-4-8
+      creator_max_turns: 120
+      bot_comment_cap: 8
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      REVIEWER_GITHUB_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}

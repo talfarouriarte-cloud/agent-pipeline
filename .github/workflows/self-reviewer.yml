@@ -1,0 +1,28 @@
+# STUB del CENTRAL (2026-07-14, AP-012). cancel-in-progress: false (PR #1109).
+name: Opus Reviewer
+on:
+  pull_request:
+    types: [opened, labeled]
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+concurrency:
+  group: reviewer-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  call:
+    uses: talfarouriarte-cloud/agent-pipeline/.github/workflows/reviewer.yml@main
+    with:
+      runner: ubicloud-standard-2
+      reviewer_model: claude-opus-4-8
+      reviewer_max_turns: 50
+      timeout_minutes: 15
+      agent_branch_prefix: claude/
+      review_context: |
+        - `templates/workflow-contracts.json` si el PR toca la superficie `workflow_call` de un reusable (manifiesto en el MISMO PR, AP-003).
+        - `docs/decisions.md` si el PR toca doctrina — coherencia con los AP vigentes.
+        - Mandato completo del rol en este repo: `docs/agents/reviewer-annex.md` (blast radius, coherencia normativa, prosa-vs-mecanismo).
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      REVIEWER_GITHUB_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
