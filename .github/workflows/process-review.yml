@@ -149,8 +149,9 @@ jobs:
                propuesto: comenta en el issue de auditoría exactamente
                `Sin propuestas.` con una línea de métricas comparadas, y
                termina. NO inventes mejoras para justificarte — un informe
-               vacío es un resultado válido. El comentario TERMINA con la
-               línea `<!-- process-review-done -->` (marcador que consume
+               vacío es un resultado válido. El comentario TERMINA con DOS
+               líneas de marcador: `<!-- process-proposals: 0 -->` y
+               `<!-- process-review-done -->` (marcador que consume
                el fail-safe de presencia de este workflow; sin él, tu
                revisión consta como NO hecha — protocol.md).
             5. Si hay patrón: crea COMO MÁXIMO 2 issues (cap total), cada
@@ -179,7 +180,9 @@ jobs:
                  comentario del issue de auditoría.
                Después comenta en el issue de auditoría la lista de
                propuestas creadas CON SU DESTINO (central/local); ese
-               comentario TERMINA con la línea `<!-- process-review-done -->`
+               comentario TERMINA con DOS líneas de marcador:
+               `<!-- process-proposals: N -->` (N = propuestas escindidas,
+               links en el cuerpo) y `<!-- process-review-done -->`
                (mismo marcador y motivo que en el paso 4).
 
             6. LOOP DE SKILLS (ADR-212 — lee el ADR antes de editar).
@@ -275,3 +278,29 @@ jobs:
           gh api -X POST "repos/${REPO}/issues/${ISSUE}/labels" -f "labels[]=process-review-pendiente"
           echo "::error::Revisión de proceso NO materializada — panel marcado process-review-pendiente."
           exit 1
+
+      - name: Auto-archivo del panel de auditoría (2026-07-14, wmcb#53)
+        # El issue de auditoría es un ACTA: con el ciclo completo, mantenerlo
+        # abierto es un gate que no decide nada (las decisiones humanas viven
+        # en los process-proposal escindidos, que NO se auto-cierran). Cierre
+        # determinista por CO-PRESENCIA de marcadores: audit-verdict (Auditor)
+        # + process-proposals (process-reviewer). Sin ambos, queda abierto —
+        # el fallo silencioso clase wmcb#27 (pase omitido) se vuelve VISIBLE.
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const n = context.payload.issue.number;
+            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number: n, per_page: 100 });
+            const all = comments.map(c => c.body || '').join('\n');
+            const hasVerdict = /<!--\s*audit-verdict:\s*(clean|findings)\s*-->/.test(all);
+            const hasReview = /<!--\s*process-proposals:\s*\d+\s*-->/.test(all);
+            if (!hasVerdict || !hasReview) {
+              core.notice(`auditoría #${n}: ciclo incompleto (verdict=${hasVerdict}, review=${hasReview}) — queda abierta señalando la anomalía.`);
+              return;
+            }
+            await github.rest.issues.addLabels({ owner, repo, issue_number: n, labels: ['auto-archivada'] });
+            await github.rest.issues.update({ owner, repo, issue_number: n, state: 'closed', state_reason: 'completed' });
+            core.notice(`auditoría #${n}: ciclo completo — auto-archivada.`);

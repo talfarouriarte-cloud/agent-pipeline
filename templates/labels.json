@@ -103,5 +103,10 @@
     "name": "en-cola",
     "color": "bfdadc",
     "description": "Arm bloqueado por la serie; epic-merge armará el más antiguo al liberarse (FIFO)"
+  },
+  {
+    "name": "auto-archivada",
+    "color": "c5def5",
+    "description": "Panel de auditoría cerrado mecánicamente al completar su ciclo (audit-verdict + process-proposals)"
   }
 ]
