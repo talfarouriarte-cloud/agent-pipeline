@@ -732,3 +732,37 @@ jobs:
             labels, runs recientes) y ejecuta la acción mínima que reanude la
             cadena, respetando el cap de reintentos y las prohibiciones del
             rol. Si un item no necesita acción, dilo y no toques nada.
+
+      - name: Materializar arm en ping-creator huérfanos (post-architect)
+        # fp#1344 (repesca A, auditoría #1343): el architect-etapa escribió
+        # `<!-- ping-creator -->` SIN la mención de arm anclada → Trigger
+        # result: false → cadena parada 2h45m. La co-ocurrencia marcador↔
+        # mención no puede depender de la prosa del agente: este post-step
+        # escanea los comentarios recientes del repo; si el ÚLTIMO comentario
+        # de un issue/PR lleva ping-creator sin `@claude` anclado a inicio de
+        # línea, publica el arm mínimo (con PAT: debe disparar) referenciando
+        # el diagnóstico. Idempotente por marcador.
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const since = new Date(Date.now() - 40 * 60 * 1000).toISOString();
+            const { data: comments } = await github.rest.issues.listCommentsForRepo({
+              owner, repo, since, per_page: 100, sort: 'created', direction: 'asc' });
+            const byIssue = {};
+            for (const c of comments) {
+              const n = Number((c.issue_url || '').split('/').pop());
+              if (n) (byIssue[n] = byIssue[n] || []).push(c);
+            }
+            for (const [n, cs] of Object.entries(byIssue)) {
+              const last = cs[cs.length - 1];
+              const body = last.body || '';
+              if (!/<!--\s*ping-creator\s*-->/.test(body)) continue;
+              if (/^@claude/m.test(body)) continue;               // co-ocurre: sano
+              if (/ping-creator-materializado/.test(body)) continue; // ya materializado
+              await github.rest.issues.createComment({ owner, repo, issue_number: Number(n),
+                body: `@claude — retoma según el diagnóstico del comentario anterior del watchdog (ping-creator sin mención de arm: co-ocurrencia materializada mecánicamente, fp#1344).\n\n<!-- ping-creator-materializado -->\n<!-- watchdog-capa: ${context.eventName} -->` });
+              core.warning(`#${n}: ping-creator sin mención de arm — arm materializado.`);
+            }
