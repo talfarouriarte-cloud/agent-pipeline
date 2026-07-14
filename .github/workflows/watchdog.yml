@@ -100,7 +100,12 @@ permissions:
 jobs:
   detect:
     runs-on: ${{ inputs.runner }}
-    timeout-minutes: 5
+    # 12 y no 5 (2026-07-14, incidente fp#1350 — 31 min de re-arm humano):
+    # el settle de capa 2 (AP-011) dura 330s; con timeout 5 el job moría por
+    # timeout DENTRO del settle en todo tick event-driven, reportado como
+    # `cancelled` — la capa 2 nunca llegó a evaluar. Presupuesto: settle 5.5
+    # + scan/architect-dispatch ~3 + margen.
+    timeout-minutes: 12
     permissions:
       contents: read
       issues: read
