@@ -582,6 +582,32 @@ jobs:
       # Firma determinista ⇒ reparación mecánica: el watchdog crea el PR con
       # la polaridad declarada en el comentario de cierre (default full-pr).
       # Sale con el PAT: un PR creado con GITHUB_TOKEN no dispararía reviewer.
+      # Movido del job `architect` (2026-07-15, central#34 — sensor
+      # estructuralmente muerto desde 2026-07-10): `steps.scan` es job-scoped
+      # y en `architect` evaluaba siempre vacío ⇒ skipped en todo run; los
+      # outputs flaky_run/flaky_pr tampoco cruzaban la frontera del job; y el
+      # gating `found==true` impedía cosechar retries de flaky puro. Aquí los
+      # tres defectos desaparecen: mismo job que el scan, corre en todo tick.
+      - name: Harvest flaky candidates (modo d)
+        if: steps.scan.outputs.flaky_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUN="${{ steps.scan.outputs.flaky_run }}"
+          PR="${{ steps.scan.outputs.flaky_pr }}"
+          TMP=$(mktemp -d)
+          # Log del attempt fallido (el retry ya corre); best-effort: la
+          # cosecha jamás rompe el watchdog.
+          gh api "repos/${{ github.repository }}/actions/runs/${RUN}/attempts/1/logs" > "$TMP/l.zip" 2>/dev/null || exit 0
+          unzip -qo "$TMP/l.zip" -d "$TMP" 2>/dev/null || exit 0
+          # Anotaciones ::error de vitest: fichero + título, dedupe, cap 10
+          FAILS=$(grep -rhoE '::error file=[^,]*packages/[^,]+,title=[^,]+' "$TMP" \
+            | sed -E 's|::error file=[^,]*(packages/[^,]+),title=|\1 › |' \
+            | sort -u | head -10 || true)
+          [ -z "$FAILS" ] && exit 0
+          gh pr comment "$PR" --repo "${{ github.repository }}" --body "$(printf '**watchdog · cosecha de flaky-candidatos** (attempt 1 del run %s — confirmados como flaky si el re-run sale verde; el Auditor los cuenta por épica):\n\n~~~\n%s\n~~~\n\n<!-- flaky-harvest -->' "$RUN" "$FAILS")"
+
       - name: Orphan PR net
         id: orphan_net
         uses: actions/github-script@v7
@@ -640,26 +666,6 @@ jobs:
       actions: write   # ADR-217 §7: su prompt ordena relanzar CIs; read era un 403 latente
       id-token: write
     steps:
-      - name: Harvest flaky candidates (modo d)
-        if: steps.scan.outputs.flaky_run != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          RUN="${{ steps.scan.outputs.flaky_run }}"
-          PR="${{ steps.scan.outputs.flaky_pr }}"
-          TMP=$(mktemp -d)
-          # Log del attempt fallido (el retry ya corre); best-effort: la
-          # cosecha jamás rompe el watchdog.
-          gh api "repos/${{ github.repository }}/actions/runs/${RUN}/attempts/1/logs" > "$TMP/l.zip" 2>/dev/null || exit 0
-          unzip -qo "$TMP/l.zip" -d "$TMP" 2>/dev/null || exit 0
-          # Anotaciones ::error de vitest: fichero + título, dedupe, cap 10
-          FAILS=$(grep -rhoE '::error file=[^,]*packages/[^,]+,title=[^,]+' "$TMP" \
-            | sed -E 's|::error file=[^,]*(packages/[^,]+),title=|\1 › |' \
-            | sort -u | head -10 || true)
-          [ -z "$FAILS" ] && exit 0
-          gh pr comment "$PR" --repo "${{ github.repository }}" --body "$(printf '**watchdog · cosecha de flaky-candidatos** (attempt 1 del run %s — confirmados como flaky si el re-run sale verde; el Auditor los cuenta por épica):\n\n~~~\n%s\n~~~\n\n<!-- flaky-harvest -->' "$RUN" "$FAILS")"
-
       - name: Checkout
         uses: actions/checkout@v4
         with:
