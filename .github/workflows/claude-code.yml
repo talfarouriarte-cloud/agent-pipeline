@@ -508,6 +508,39 @@ jobs:
       # un loop Reviewer↔Auto-label sin que el Creator produzca trabajo
       # nuevo (14 rondas observadas en PR #180). El check de freshness
       # rompe el bucle estructuralmente.
+      - name: Push residual con token de workflows (post-sesión)
+        # 2026-07-15, central#46 (3 sesiones quemadas): claude-code-action
+        # re-inicializa `origin` con su credencial de App al preparar el
+        # entorno — el token del checkout queda pisado y el push de
+        # `.github/workflows/**` muere (la App no tiene ese permiso). El
+        # trabajo quedaba commiteado en LOCAL y se perdía con el runner.
+        # Este post-step rescata el push FUERA de la sesión: si la rama
+        # local claude/* tiene commits que no están en el remoto, empuja con
+        # la URL credencializada (inmune al credential helper de la action)
+        # y abre el PR si falta. Guard duro: SOLO ramas claude/*, jamás main.
+        # Sin el secret (consumidores): env vacío ⇒ step skipped.
+        if: always() && env.WF_PUSH != ''
+        env:
+          WF_PUSH: ${{ secrets.WORKFLOWS_PUSH_TOKEN }}
+          GH_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          BRANCH=$(git branch --show-current || true)
+          case "$BRANCH" in claude/*) ;; *) echo "rama '$BRANCH' fuera del patrón claude/*: nada que rescatar"; exit 0;; esac
+          git fetch -q origin "$BRANCH" 2>/dev/null || true
+          AHEAD=$(git rev-list --count "origin/$BRANCH..HEAD" 2>/dev/null || echo "1")
+          [ "$AHEAD" = "0" ] && { echo "sin commits residuales: nada que rescatar"; exit 0; }
+          echo "rescatando commits locales de $BRANCH con el token de workflows"
+          git push "https://x-access-token:${WF_PUSH}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/$BRANCH"
+          if ! gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json number --jq '.[0].number' | grep -q .; then
+            TITLE=$(git log -1 --pretty=%s)
+            BODY=$(git log -1 --pretty=%b)
+            gh pr create --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base "${{ inputs.default_branch }}" --title "$TITLE" --body "$BODY
+
+---
+_PR abierto por el post-step de rescate (push residual con token de workflows, central#46): la action no puede pushear workflows; el trabajo estaba commiteado en local._"
+          fi
+
       - name: Materializar auditoria-completa (post-step determinista)
         # Fix 2026-07-12 (propuesta #1288 finplan): el informe del Auditor
         # aparece cuando la acción reescribe el tracking comment AL TERMINAR
