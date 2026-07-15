@@ -25,6 +25,10 @@
       "epic_label": {
         "required": false,
         "has_default": true
+      },
+      "reviewer_workflow_name": {
+        "required": false,
+        "has_default": true
       }
     },
     "secrets_required": [
