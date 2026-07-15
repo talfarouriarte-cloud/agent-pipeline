@@ -744,10 +744,16 @@ jobs:
               return;
             }
             await github.rest.issues.createComment({ owner, repo, issue_number: n,
-              body: `**claude-code · post-step**: la sesión del Creator terminó en \`${outcome}\` **sin PR abierto** pese a tener trabajo commiteado (o murió sin abrirlo). Estado materializado en el instante — sin esperar al tick del watchdog:\n\n- ${branchInfo}\n- \`serial-activo\` retirada (la serie queda libre; el arm de retoma no está bloqueado).\n- \`stalled\` aplicada (señal de architect-resolve).\n\n**Para el rearm** (watchdog o humano): si hay rama con commits, NO rehacer — retomar solo el cierre (verificar rama, typecheck/tests de los ficheros afectados, abrir el PR según «PR creation» de CLAUDE.md).\n\n<!-- creator-muerto-sin-pr -->` });
+              body: `**claude-code · post-step**: la sesión del Creator terminó en \`${outcome}\` **sin PR abierto** pese a tener trabajo commiteado (o murió sin abrirlo). Estado materializado en el instante — sin esperar al tick del watchdog:\n\n- ${branchInfo}\n- \`serial-activo\` retirada y **turno pasado a la cola** (el arm de retoma de este issue no queda bloqueado).\n- \`stalled\` aplicada (señal de architect-resolve).\n\n**Para el rearm** (watchdog o humano): si hay rama con commits, NO rehacer — retomar solo el cierre (verificar rama, typecheck/tests de los ficheros afectados, abrir el PR según «PR creation» de CLAUDE.md).\n\n<!-- creator-muerto-sin-pr -->` });
             await github.rest.issues.addLabels({ owner, repo, issue_number: n, labels: ['stalled'] });
             await github.rest.issues.removeLabel({ owner, repo, issue_number: n, name: 'serial-activo' }).catch(() => {});
-            core.warning(`Creator de #${n}: muerte sin PR materializada (stalled + serial-activo retirada).`);
+            // AP-014 (2026-07-15, deadlock central#44/#46/#47): TODO camino que
+            // libera la serie hace pop de cola EN EL MISMO JOB. Este camino era
+            // el único de los tres que no lo hacía: liberaba sin armar y la
+            // cola quedaba muerta hasta un merge (armQueue de epic-merge) que
+            // podía no llegar nunca.
+            await popQueue(n, `muerte del Creator de #${n}`);
+            core.warning(`Creator de #${n}: muerte sin PR materializada (stalled + serial-activo retirada + pop de cola).`);
 
       - name: Auto-label based on Creator's closing tag
         if: |

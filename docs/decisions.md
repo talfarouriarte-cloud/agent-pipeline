@@ -295,3 +295,16 @@ no se persiguió por no justificar el coste frente a la molestia.
 
 **Fecha.** 2026-07-15.
 
+---
+
+## AP-014 — Invariante de la cola serial: todo camino que libera la serie hace pop de cola en el mismo job
+
+**Contexto.** Deadlock observado 2026-07-15 (central#44/#46/#47): el post-step `creator-muerto-sin-pr` liberó la serie (`serial-activo` retirada) a las 16:00 y la cola (#46, #47 `en-cola`) quedó muerta — serie libre, cero PRs, nadie armado. Causa: de los tres caminos del post-step de `claude-code.yml` que liberan la serie, dos hacían pop de cola (`escalada-materializada` y `creator-blocked`, central#34) y el tercero — `creator-muerto-sin-pr`, anterior a central#34 y no retrofitado — no. El único otro pop vivía en el `armQueue` de epic-merge, que solo dispara **por merge**: una liberación sin merge dejaba la cola esperando un evento que podía no llegar nunca. Clase de fallo: costura entre agentes (AP-008 §3), variante del deadlock AP-010 (estado retirado por un camino que no habilita el paso siguiente).
+
+**Decisión (del propietario).** Invariante mecánico: **liberar la serie ⇒ pop de cola (FIFO `en-cola` por `created_at`) en el MISMO job que la libera**, sin excepciones por camino. Implementación: añadir la llamada a `popQueue` en el camino `creator-muerto-sin-pr` (los otros dos ya cumplían). `armQueue` de epic-merge se mantiene como está (es el pop del camino merge y sigue el mismo contrato); la nota «si tocas uno, toca el otro» sigue vigente.
+
+**Alternativas descartadas.** Rearmar automáticamente el MISMO issue muerto (retomar el cierre): cambia la doctrina de rearm (watchdog/humano con diagnóstico hecho) e introduce riesgo de bucle de reintentos; el pop de cola no lo excluye — el rearm del issue muerto hará cola por el guard serial como cualquier otro. Un watchdog que vigile «serie libre + cola no vacía»: poll con latencia frente a push con latencia cero desde el job que ya sabe que liberó (misma razón que AP-008.1).
+
+**Reversibilidad.** Alta: una llamada en un camino del post-step.
+
+**Fecha.** 2026-07-15.
