@@ -328,3 +328,21 @@ no se persiguió por no justificar el coste frente a la molestia.
 **Reversibilidad.** Alta: un helper y una clave de concurrency de job; los `create` originales se recuperan revirtiendo el refactor.
 
 **Fecha.** 2026-07-15.
+
+---
+
+## AP-016 — Materialización por estado de la transición Creator→Reviewer en la APERTURA del PR (open-review-failsafe)
+
+**Contexto.** El evento `opened` que auto-dispara `reviewer.yml` al nacer un PR es el ÚLTIMO edge single-shot del camino crítico Creator→Reviewer. Es un disparo ÚNICO y NO idempotente de GitHub Actions: si el evento no se entrega, no hay run, no hay veredicto y la transición queda colgada. Evidencia (finplan#1382, 2026-07-15): PR abierto por `claude[bot]` a las 13:04:12Z, el `opened` no produjo run — sin veredicto ni `needs-review` durante ~19 min; el dispatcher de turno del watchdog (ADR-217) relanzó la transición a las 13:23:39Z (`<!-- watchdog-turn-relaunch -->`, «PR sin veredicto ni needs-review (trigger opened perdido)»). Convergió sin humano, pero **el fallback trabajando ES el failure del camino primario** (doctrina del propietario, 2026-07-13). La doctrina push-primario (AP-013, wmcb#38) ya había materializado POR ESTADO todas las demás aristas Creator→Reviewer del loop — cierre sin tag (turn-close-failsafe), push sin relabel (re-review-por-estado), `lgtm`/`ci-verde` como hechos (ADR-218) — y el nacimiento del PR era el único edge que seguía colgado de un solo disparo. Clase de fallo: *transición crítica dependiente de un evento único no idempotente* (protocol.md §1).
+
+**Decisión (del propietario, ejecutada por el Creator del central).** Añadir un post-step al reusable `claude-code.yml` (open-review-failsafe), gemelo por estado del turn-close-failsafe pero en la apertura. En cuanto el post-step detecta el nacimiento del PR (misma detección que la liberación de `serial-activo`), tras un settle al bound de liveness (~90s, física de materialización de runs — ADR-217 §3) consulta los runs de `reviewer.yml` asociados al head SHA del PR (`listWorkflowRunsForRepo({head_sha})`, identificados por `name` vía el input nuevo `reviewer_workflow_name`, default `Opus Reviewer`, idéntico contrato que watchdog.yml); si NO existe ninguno, aplica `needs-review` con el PAT (`REVIEWER_GITHUB_TOKEN`) — el mismo mecanismo y actor que el turn-close-failsafe: el `labeled` del PAT dispara al Reviewer, y su guard ya ignora `labeled` de `claude[bot]`. El **DEDUPE (consulta previa de runs) es la CONDICIÓN DE APLICABILIDAD, no un extra**: sin él, el belt doblaría una review Opus completa en CADA PR. Idempotente: si el `opened` disparó (caso común), el run existe y el step no toca nada. El desdoble de tokens (lectura de runs con el GITHUB_TOKEN default —`actions: read` añadido a los permisos del job—, escritura con el PAT) es el mismo del modo e) del watchdog.
+
+**Alternativas descartadas.** Dejar el rescate al dispatcher de turno del watchdog (ADR-217): es poll con latencia (~19 min medidos) y, sobre todo, hace primario a un fallback — contra la doctrina push-primario. Aplicar `needs-review` SIN dedupe: doblaría una review Opus en cada PR (coste sistémico, no puntual). Reintentar el `opened` (no es reintetable — es un evento de plataforma). Filtrar los runs por fichero de stub en vez de por `name`: el nombre de fichero del stub difiere por consumidor; el `name` («Opus Reviewer») es la convención estable ya usada por el watchdog.
+
+**Riesgo residual.** Carrera settle-vs-arranque: si el run del `opened` se materializa DESPUÉS del check de 90s, el belt aplica `needs-review` y nacen 2 runs una vez (`reviewer.yml` tiene concurrency por PR con `cancel-in-progress:false` — corren ambas). Coste puntual, no sistémico. Métrica de verificación: los relanzamientos del dispatcher de turno por `opened` perdido deben caer a ~0 en la próxima auditoría de cada consumidor (ADR-217 queda como red, caps intactos).
+
+**Contrato `workflow_call`.** Input nuevo `reviewer_workflow_name` CON default (no-romper — «pasa en silencio», AP-003); publicado igualmente en `templates/workflow-contracts.json` por higiene, como hace watchdog.yml.
+
+**Reversibilidad.** Alta: un post-step, un input con default y un permiso de lectura; se revierte quitando el step.
+
+**Fecha.** 2026-07-15.

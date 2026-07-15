@@ -45,6 +45,13 @@ on:
         # default que epic-merge y watchdog.
         type: string
         default: epica
+      reviewer_workflow_name:
+        # Valor de `name:` del stub del Reviewer en el consumidor. Lo usa el
+        # dedupe del open-review-failsafe (AP-016) para identificar los runs del
+        # Reviewer por su `name` (el run pertenece al stub caller). Mismo default
+        # e idéntico contrato que watchdog.yml (reviewer_workflow_name).
+        type: string
+        default: Opus Reviewer
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
@@ -95,6 +102,10 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
+      # actions: read — el open-review-failsafe (AP-016) consulta los runs de
+      # `reviewer.yml` (listWorkflowRunsForRepo) para el dedupe. Con permissions
+      # explícito, GitHub concede solo lo listado; sin esto la consulta daría 403.
+      actions: read
 
     steps:
       # Kill-switch: si el issue/PR tiene la label `pause-agents`,
@@ -666,6 +677,89 @@ jobs:
             } else {
               core.notice(`serial-activo intacto en #${n}: sin PR aún (Creator en curso o caído — lo libera el watchdog si murió).`);
             }
+
+      - name: Materializar review en la apertura del PR (open-review-failsafe)
+        # Repesca finplan#1382 (AP-016, 2026-07-15): el evento `opened` que
+        # auto-dispara al Reviewer al NACER el PR es ÚNICO y NO idempotente — si
+        # GitHub no lo entrega (finplan#1382: PR abierto por claude[bot] a las
+        # 13:04, sin run ni veredicto ~19 min, rescatado por el dispatcher de
+        # turno del watchdog ADR-217 a las 13:23), la transición Creator→Reviewer
+        # queda colgada del fallback, y «el fallback trabajando ES el failure del
+        # camino primario». La doctrina estado-primario (AP-013, wmcb#38) ya
+        # materializó POR ESTADO las demás aristas Creator→Reviewer
+        # (turn-close-failsafe para cierres sin tag, re-review-por-estado para
+        # push sin relabel, lgtm/ci-verde ADR-218); el nacimiento del PR era la
+        # ÚLTIMA arista single-shot del camino crítico. Este belt la cierra: tras
+        # un settle al bound de liveness (~90s, física de materialización de runs
+        # — ADR-217 §3), si NINGÚN run del Reviewer nació para el head SHA del PR,
+        # aplica `needs-review` con el PAT (mismo actor/mecanismo que el
+        # turn-close-failsafe: el `labeled` del PAT dispara al Reviewer; su guard
+        # ignora `labeled` de claude[bot]). El DEDUPE (consulta previa de runs) es
+        # la CONDICIÓN DE APLICABILIDAD, no un extra: sin él, doblaría una review
+        # Opus completa en CADA PR. Idempotente: si el `opened` disparó (caso
+        # común), el run existe y el step no toca nada. El dispatcher del watchdog
+        # (ADR-217) queda como red; sus relanzamientos por `opened` perdido deben
+        # caer a ~0 (métrica de la próxima auditoría de cada consumidor).
+        if: |
+          always()
+          && steps.check_serial.outputs.blocked != 'true'
+          && (
+            (github.event_name == 'issue_comment' && !github.event.issue.pull_request)
+            || github.event_name == 'issues'
+          )
+        uses: actions/github-script@v7
+        env:
+          # Desdoble de tokens (mismo patrón que el modo e) del watchdog):
+          # lectura de runs con el GITHUB_TOKEN default (requiere `actions: read`
+          # en el job); escritura de `needs-review` con el PAT — un `labeled`
+          # emitido por el GITHUB_TOKEN no dispara reviewer.yml (anti-loop de
+          # GitHub).
+          ARM_PAT: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          IN_REVIEWER_WF: ${{ inputs.reviewer_workflow_name }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const { owner, repo } = context.repo;
+            const n = context.payload.issue.number;
+            // ¿Nació un PR de este Creator? (misma detección que el step de
+            // liberación de serial-activo). Sin PR ⇒ nada que materializar aquí:
+            // la muerte sin PR la cubre su propio post-step.
+            const { data: prs } = await github.rest.pulls.list({ owner, repo, state: 'open', per_page: 100 });
+            const pr = prs.find(p => p.head.ref.startsWith(`claude/issue-${n}-`));
+            if (!pr) { core.notice(`open-review-failsafe: sin PR de #${n} — nada que materializar.`); return; }
+            // Settle al bound de liveness: dar tiempo a que el run del `opened`
+            // se materialice antes de consultar. Consultar demasiado pronto sería
+            // un falso negativo ⇒ review duplicada (ADR-217 §3: física de runs,
+            // no envejecimiento heurístico).
+            await new Promise(r => setTimeout(r, 90000));
+            // DEDUPE (condición de aplicabilidad): ¿algún run del Reviewer para el
+            // head SHA del PR? El run pertenece al stub caller; se identifica por
+            // su `name` (mismo criterio que el watchdog, input reviewer_workflow_name).
+            const REVIEWER_WF = process.env.IN_REVIEWER_WF || 'Opus Reviewer';
+            const { data: runs } = await github.rest.actions.listWorkflowRunsForRepo({
+              owner, repo, head_sha: pr.head.sha, per_page: 50 });
+            const reviewerRuns = runs.workflow_runs.filter(r => r.name === REVIEWER_WF);
+            if (reviewerRuns.length > 0) {
+              core.notice(`open-review-failsafe: ${reviewerRuns.length} run(s) del Reviewer ya nacieron para ${pr.head.sha.slice(0,7)} (trigger opened OK) — no se duplica.`);
+              return;
+            }
+            // Ningún run: el `opened` se perdió. Materializar la transición por
+            // ESTADO — needs-review con el PAT (remove+add para forzar el evento
+            // labeled aunque hubiera un resto). Raw fetch con ARM_PAT: github-script
+            // corre con el GITHUB_TOKEN default, cuyo `labeled` no dispara al Reviewer.
+            const patCall = async (method, path, body) => {
+              const res = await fetch(`https://api.github.com/repos/${owner}/${repo}${path}`, {
+                method,
+                headers: { Authorization: `Bearer ${process.env.ARM_PAT}`, Accept: 'application/vnd.github+json' },
+                body: body ? JSON.stringify(body) : undefined });
+              if (!res.ok && res.status !== 404) throw new Error(`HTTP ${res.status} ${path}`);
+              return res;
+            };
+            await patCall('DELETE', `/issues/${pr.number}/labels/needs-review`);
+            await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['needs-review'] });
+            await github.rest.issues.createComment({ owner, repo, issue_number: pr.number,
+              body: '**claude-code · open-review-failsafe**: el evento `opened` que auto-dispara al Reviewer al nacer el PR no produjo ningún run tras el settle de liveness (~90s). Transición Creator→Reviewer materializada por ESTADO: `needs-review` aplicada con el PAT en el mismo job (repesca finplan#1382, AP-016). Idempotente por dedupe: si el `opened` hubiera disparado, este step no habría tocado nada.\n\n<!-- open-review-failsafe -->' });
+            core.warning(`open-review-failsafe: PR #${pr.number} sin run del Reviewer para ${pr.head.sha.slice(0,7)} — needs-review aplicada por PAT (opened perdido).`);
 
       - name: Materializar muerte del Creator sin PR (post-step determinista)
         # 2026-07-13, incidente finplan#1318: el Creator murió por max_turns a
