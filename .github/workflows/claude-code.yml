@@ -998,6 +998,20 @@ jobs:
             }
 
             if (!label) {
+              // Cede a la escalada CON PR (creator-escalated, AP-017): si el
+              // cierre lleva `<!-- creator-escalated -->`, el turno es del
+              // Architect, NO del Reviewer. El Creator pudo pushear trabajo
+              // parcial y LUEGO escalar; sin este guard el turn-close-failsafe
+              // de abajo re-aplicaría `needs-review` (convoca al Reviewer por
+              // evento) mientras el post-step creator-escalated aplica `stalled`
+              // + `estado:esperando-architect` — el PR quedaría con DOS dueños a
+              // la vez. La transición la materializa el post-step creator-escalated
+              // (gemelo con-PR del Re-review-por-estado, que también cede). ANCLADO
+              // como HTML (clase PR #1133), jamás substring de prosa.
+              if (/<!--\s*creator-escalated\s*-->/.test(body)) {
+                core.notice('Cierre del Creator es una escalada al Architect (creator-escalated) — turn-close-failsafe cede; lo materializa su post-step.');
+                return;
+              }
               // turn-close-failsafe (finplan#1322, 2026-07-13 — capa 1 de
               // AP-011 para la transición Creator→Reviewer). Incidente
               // finplan PR #1319: el Creator aplicó los nits, pusheó,
