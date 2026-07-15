@@ -221,9 +221,24 @@ jobs:
               const next = await github.rest.issues.get({ owner, repo, issue_number: Number(m[1]) });
               body = next.data.body || '';
             }
+            // Caso DEGENERADO vs multi-eslabón roto (2026-07-15, central#36 —
+            // 5-whys de wmcb#61: la «épica 1/1» sin sentinels ES un suelto
+            // disfrazado; la única salida era la escalada aunque la remediación
+            // es derivable — 1h21m de intervención humana que esto mecaniza).
+            // Degenerado = el PROPIO issue no tiene launch-next (hops==1 y sin
+            // sentinel alguno): degradar a régimen suelto y CONTINUAR el arm.
+            // Multi-eslabón roto = la cadena se rompe aguas abajo: re-hornear
+            // es decisión del Architect, NO derivable — escalada como hoy.
+            if (hops === 1) {
+              await github.rest.issues.removeLabel({ owner, repo, issue_number: issue.number, name: process.env.IN_EPIC_LABEL }).catch(() => {});
+              await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
+                body: `**claude-code · guard de cadena**: este issue lleva la label \`${process.env.IN_EPIC_LABEL}\` pero no forma cadena (sin \`launch-next\` ni \`epic-audit\`): «épica de un eslabón» = issue SUELTO. Degradado al régimen de sueltos (label retirada) — el arm CONTINÚA; el pipeline hará PR → review → merge → auditoría automática al cierre.\n\n<!-- cadena-degradada-a-suelto -->` });
+              core.setOutput('broken', 'false');
+              return;
+            }
             await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['stalled'] });
             await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
-              body: '**claude-code · guard de cadena**: la cadena alcanzable desde este issue via launch-next NO termina en un sentinel epic-audit (defecto de horneado). No se arma al Creator; escalado a architect-resolve via `stalled`.\n\n<!-- cadena-sin-auditoria -->' });
+              body: '**claude-code · guard de cadena**: la cadena alcanzable desde este issue via launch-next NO termina en un sentinel epic-audit (defecto de horneado multi-eslabón: re-hornear es decisión del Architect). No se arma al Creator; escalado via `stalled`.\n\n<!-- cadena-sin-auditoria -->' });
             core.setOutput('broken', 'true');
 
       # GUARD de panel consumido (2026-07-12, 3ª recurrencia de la clase
