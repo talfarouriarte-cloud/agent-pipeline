@@ -14,12 +14,24 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write   # labels de estado ci-verde (ADR-218, 2026-07-15)
 
 jobs:
   templates:
     name: Verificación de plantillas
     runs-on: ubuntu-latest
     steps:
+      # ── Estado materializado (ADR-218, replicado del patrón de consumidores
+      # 2026-07-15): código nuevo invalida hechos previos — attempt 1 de PR
+      # retira ci-verde y lgtm; al acabar verde, este CI escribe ci-verde.
+      - name: Invalidar estado (código nuevo)
+        if: github.event_name == 'pull_request' && github.run_attempt == 1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for L in ci-verde lgtm; do
+            gh api -X DELETE "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels/$L" 2>/dev/null || true
+          done
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
@@ -48,3 +60,10 @@ jobs:
       # consumidor nuevo se provisiona desde labels.json — si falta una, nace roto.
       - name: check-labels
         run: node scripts/check-labels.mjs
+
+      - name: Marcar ci-verde
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api -X POST "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels" -f "labels[]=ci-verde"

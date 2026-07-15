@@ -34,7 +34,10 @@
     "serial-activo",
     "stalled"
   ],
-  "ci.yml": [],
+  "ci.yml": [
+    "ci-verde",
+    "lgtm"
+  ],
   "self-claude-code.yml": [],
   "self-reviewer.yml": [],
   "signal-closer.yml": [],
