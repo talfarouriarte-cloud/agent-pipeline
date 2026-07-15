@@ -20,6 +20,14 @@ name: Epic Merge
 # concurrency del stub DEBE serializar por rama y llevar
 # cancel-in-progress: false. El nombre del workflow de CI del consumidor se
 # pasa como input `ci_workflow_name` (el gate lo compara contra run.name).
+#
+# Serialización de refuerzo (AP-015, issue #46): además de la del stub, el
+# JOB de este reusable declara su propia concurrency por rama con
+# cancel-in-progress:false. Viaja por graft (AP-009) sin tocar los stubs de
+# los consumidores y garantiza que dos evaluaciones del MISMO merge se
+# ordenen — de modo que el 2º run vea el claim de auditoría que dejó el 1º.
+# No es el fix por sí sola (con cancel:false ambos runs ejecutan): la pieza
+# portante es la creación idempotente de auditoría (ver createAuditIdempotent).
 on:
   workflow_call:
     inputs:
@@ -63,6 +71,14 @@ on:
 jobs:
   epic-merge:
     runs-on: ${{ inputs.runner }}
+    # Serialización por rama a nivel de job (AP-015, issue #46): ordena las
+    # evaluaciones concurrentes del MISMO merge (varios eventos
+    # workflow_run/pull_request) para que el 2º run observe el claim de
+    # auditoría del 1º. Clave por rama ⇒ merges de PRs DISTINTOS no se
+    # serializan entre sí. cancel-in-progress:false ⇒ ningún run se pierde.
+    concurrency:
+      group: epic-merge-${{ github.repository }}-${{ github.event.workflow_run.head_branch || github.event.pull_request.head.ref || github.ref }}
+      cancel-in-progress: false
     permissions:
       statuses: write     # espejo del gate en la caja de checks del PR (2026-07-10)
       contents: read
@@ -164,6 +180,90 @@ jobs:
                   await github.rest.issues.addLabels({ owner, repo, issue_number: prNum, labels: [label] });
               } catch (e) { core.info('setStatus: ' + e.message); }
               await mirrorStatus(prNum, statusKey || label);
+            }
+
+            // ── Creación IDEMPOTENTE de auditoría (AP-015, issue #46). Los dos
+            // `create` de auditoría de postMerge eran incondicionales y sufrían
+            // carreras: dos runs de Epic Merge del MISMO merge → dos auditorías
+            // byte-idénticas (wmcb#65/#66). El dedupe previo (camino manual) se
+            // apoyaba en el search index de GitHub (eventualmente consistente),
+            // así que dejaba pasar duplicados en ventanas de lag del índice.
+            // Aquí el guard es FUERTEMENTE consistente y determinista:
+            //  1) Claim materializado en el PR mergeado (listComments = lectura
+            //     por-issue, NO search index) con marcador por alcance exacto.
+            //  2) Cinturón por label vía REST Issues API (listForRepo, NO search)
+            //     filtrando por TÍTULO exacto = scopeKey (frontera de ciclo, no
+            //     solo label ⇒ no suprime un panel nuevo legítimo).
+            //  3) Cinturón post-create: si la carrera coló ≥2, sobrevive la de
+            //     número MENOR (resolución idéntica en todo run, sin humano).
+            const AUDIT_CLAIM = t => `<!-- audit-claim: ${t} -->`;
+            async function openAuditsByTitle(title) {
+              const { data: issues } = await github.rest.issues.listForRepo({
+                owner, repo, state: 'open', labels: 'auditoria', per_page: 100 });
+              return issues.filter(i => !i.pull_request && i.title === title)
+                .sort((a, b) => a.number - b.number);
+            }
+            async function writeAuditClaim(prNumber, title, auditNumber) {
+              try {
+                const marker = AUDIT_CLAIM(title);
+                const body = `${marker}\n**epic-merge**: auditoría «${title}» reclamada → #${auditNumber}.`;
+                const { data: cs } = await github.rest.issues.listComments({
+                  owner, repo, issue_number: prNumber, per_page: 100 });
+                const mine = cs.find(c => (c.body || '').includes(marker));
+                if (mine) await github.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body });
+                else await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+              } catch (e) { core.warning('writeAuditClaim: ' + e.message); }
+            }
+            // Devuelve el nº de la auditoría vigente para este alcance (creada,
+            // adoptada o superviviente) o null si la creación falló.
+            async function createAuditIdempotent(prNumber, { title, labels, body }) {
+              const marker = AUDIT_CLAIM(title);
+              // 1) Claim materializado en el PR (fuertemente consistente).
+              try {
+                const { data: cs } = await github.rest.issues.listComments({
+                  owner, repo, issue_number: prNumber, per_page: 100 });
+                const claimed = cs.find(c => (c.body || '').includes(marker));
+                if (claimed) {
+                  const m = (claimed.body || '').match(/→\s*#(\d+)/);
+                  await diag(prNumber, `auditoría «${title}» ya reclamada${m ? ' (#' + m[1] + ')' : ''}; no creo duplicado.`);
+                  return m ? Number(m[1]) : null;
+                }
+              } catch (e) { core.warning('claim read: ' + e.message); }
+              // 2) Cinturón por label (REST Issues API, no search index): título exacto abierto.
+              try {
+                const existing = (await openAuditsByTitle(title))[0];
+                if (existing) {
+                  await writeAuditClaim(prNumber, title, existing.number);
+                  await diag(prNumber, `auditoría abierta existente #${existing.number} para «${title}»; la adopto, no creo duplicado.`);
+                  return existing.number;
+                }
+              } catch (e) { core.warning('belt list: ' + e.message); }
+              // 3) Crear + reclamar de inmediato (claim antes de ceder el turno).
+              let created = null;
+              try {
+                created = (await github.rest.issues.create({ owner, repo, title, labels, body })).data;
+                await writeAuditClaim(prNumber, title, created.number);
+              } catch (e) {
+                await diag(prNumber, `crear auditoría «${title}» falló: ${e.message}`);
+                return null;
+              }
+              // 4) Cinturón post-create determinista: min-número sobrevive.
+              try {
+                const dups = await openAuditsByTitle(title);
+                if (dups.length >= 2) {
+                  const survivor = dups[0];
+                  for (const loser of dups.slice(1)) {
+                    await github.rest.issues.update({ owner, repo, issue_number: loser.number,
+                      state: 'closed', state_reason: 'not_planned' }).catch(() => {});
+                    await github.rest.issues.createComment({ owner, repo, issue_number: loser.number,
+                      body: `Auditoría duplicada por creación concurrente en epic-merge (issue #46). Superviviente determinista: #${survivor.number} (menor número). Cerrada automáticamente.\n\n<!-- audit-dup-closed -->` }).catch(() => {});
+                  }
+                  await writeAuditClaim(prNumber, title, survivor.number);
+                  await diag(prNumber, `carrera de auditoría resuelta: sobrevive #${survivor.number}; cerradas ${dups.slice(1).map(x => '#' + x.number).join(', ')}.`);
+                  return survivor.number;
+                }
+              } catch (e) { core.warning('post-create belt: ' + e.message); }
+              return created ? created.number : null;
             }
 
             // ── Post-merge: parcial / cierre de issue / sentinels. Camino único
@@ -273,8 +373,7 @@ jobs:
                   return;
                 }
                 try {
-                  const { data: audit } = await github.rest.issues.create({
-                    owner, repo,
+                  const auditNumber = await createAuditIdempotent(prNumber, {
                     title: `Auditoría de issue suelto · #${issueNumber}`,
                     labels: ['auditoria'],
                     body: [
@@ -286,7 +385,7 @@ jobs:
                       `@claude arranca la auditoría siguiendo docs/agents/epic-auditor.md.`,
                     ].join('\n'),
                   });
-                  await diag(prNumber, `MERGEADO (suelto) + auditoría lanzada en #${audit.number}.`);
+                  if (auditNumber) await diag(prNumber, `MERGEADO (suelto) + auditoría en #${auditNumber}.`);
                 } catch (e) {
                   await diag(prNumber, `mergeado (suelto) pero crear/armar auditoría falló: ${e.message}`);
                 }
@@ -307,8 +406,7 @@ jobs:
               if (am) {
                 const scope = am[1].trim();
                 try {
-                  const { data: audit } = await github.rest.issues.create({
-                    owner, repo,
+                  const auditNumber = await createAuditIdempotent(prNumber, {
                     title: `Auditoría de épica · ${scope}`,
                     labels: ['auditoria'],
                     body: [
@@ -322,7 +420,7 @@ jobs:
                       `@claude arranca la auditoría siguiendo docs/agents/epic-auditor.md.`,
                     ].join('\n'),
                   });
-                  await diag(prNumber, `MERGEADO + epic-audit: auditoría lanzada en #${audit.number}. Épica terminada.`);
+                  if (auditNumber) await diag(prNumber, `MERGEADO + epic-audit: auditoría en #${auditNumber}. Épica terminada.`);
                   await armQueue(prNumber, 'épica terminada (epic-audit)');
                 } catch (e) {
                   await diag(prNumber, `mergeado pero crear/armar auditoría falló: ${e.message}`);
