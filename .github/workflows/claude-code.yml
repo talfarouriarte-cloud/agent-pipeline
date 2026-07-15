@@ -612,6 +612,21 @@ jobs:
               return;
             }
             const outcome = '${{ steps.creator.outcome }}';
+            // Pop de la cola serial (espejo del armQueue de epic-merge — si
+            // tocas uno, toca el otro): arma el en-cola más antiguo (FIFO).
+            async function popQueue(fromIssue, why) {
+              try {
+                const { data: queued } = await github.rest.issues.listForRepo({
+                  owner, repo, state: 'open', labels: 'en-cola', sort: 'created', direction: 'asc', per_page: 5 });
+                const next = queued.filter(i => !i.pull_request)[0];
+                if (!next) return;
+                await github.rest.issues.removeLabel({ owner, repo, issue_number: next.number, name: 'en-cola' }).catch(() => {});
+                await github.rest.issues.removeLabel({ owner, repo, issue_number: next.number, name: 'stalled' }).catch(() => {});
+                await github.rest.issues.createComment({ owner, repo, issue_number: next.number,
+                  body: `@claude arranca — turno de cola: la serie quedó libre (${why}). Eras el más antiguo en \`en-cola\`.\n\n<!-- arm-de-cola -->` });
+                core.notice(`cola: #${next.number} armado (${why}).`);
+              } catch (e) { core.warning(`pop de cola falló: ${e.message}`); }
+            }
             // Estado de la rama huérfana (si existe): el diagnóstico que el
             // rearm necesita ("no rehagas nada").
             let branchInfo = 'sin rama creada (muerte temprana: no hay trabajo que conservar).';
@@ -643,11 +658,26 @@ jobs:
                 && new Date(lastBot.created_at).getTime() > trigTs
                 && /<!--\s*creator-blocked\s*-->/.test(lastBot.body || '');
               if (!blocked) {
-                core.notice(`sesión success sin commits en rama de #${n}: conversacional legítima (escalada/respuesta) — nada que materializar.`);
+                // v4 (2026-07-15, central#34): el Creator escaló SIN el marcador
+                // (mandato de prosa: 0/1 — misma clase que audit-verdict). Si la
+                // SERIE está ocupada por esta sesión, el silencio es un cerrojo:
+                // el siguiente en-cola esperaría para siempre. Mecánico: serie
+                // ocupada + sin commits + sin PR ⇒ escalada no-declarada.
+                const labs = (context.payload.issue.labels || []).map(l => l.name);
+                if (!labs.includes('serial-activo')) {
+                  core.notice(`sesión success sin commits en #${n}: conversacional sin serie — nada que materializar.`);
+                  return;
+                }
+                await github.rest.issues.removeLabel({ owner, repo, issue_number: n, name: 'serial-activo' }).catch(() => {});
+                await github.rest.issues.addLabels({ owner, repo, issue_number: n, labels: ['human-needed'] });
+                await github.rest.issues.createComment({ owner, repo, issue_number: n,
+                  body: `**claude-code · post-step**: la sesión terminó sin PR ni commits con la serie ocupada y SIN declarar bloqueo (falta \`<!-- creator-blocked -->\` — creator.md § escalado determinista). Tratado como ESCALADA no-declarada: serie liberada, \`human-needed\`, turno pasado a la cola.\n\n<!-- escalada-materializada -->` });
+                await popQueue(n, `escalada de #${n}`);
                 return;
               }
               await github.rest.issues.createComment({ owner, repo, issue_number: n,
                 body: `**claude-code · post-step**: el Creator paró LIMPIO sin PR y declaró bloqueo (\`<!-- creator-blocked -->\`). Estado materializado en el instante — sin esperar al tick:\n\n- \`stalled\` aplicada con PAT ⇒ architect-resolve dispara POR EVENTO (diagnóstico con el informe del Creator + la skill \`epic-context-<ADR>\` si existe).\n- \`serial-activo\` retirada (el rearm de este mismo issue no queda bloqueado).\n\n<!-- creator-blocked-materializado -->` });
+              await popQueue(n, `bloqueo declarado de #${n}`);
               await github.rest.issues.addLabels({ owner, repo, issue_number: n, labels: ['stalled'] });
               await github.rest.issues.removeLabel({ owner, repo, issue_number: n, name: 'serial-activo' }).catch(() => {});
               core.warning(`Creator de #${n}: bloqueo declarado materializado (stalled por PAT, evento push).`);
