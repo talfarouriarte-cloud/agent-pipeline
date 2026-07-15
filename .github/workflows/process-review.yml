@@ -169,11 +169,16 @@ jobs:
                  `gh issue create --repo talfarouriarte-cloud/agent-pipeline
                  --label process-proposal`, y el body EMPIEZA con
                  `Origen: <repo>#<auditoría>` (enlace a la evidencia; el
-                 cierre cross-repo lo usará).
+                 cierre cross-repo lo usará) seguido de `@claude` en su
+                 propia línea — **el issue nace ARMADO** (2026-07-15,
+                 decisión del propietario): su Creator lo ejecuta al
+                 instante, o el guard serial lo encola (`en-cola`) si hay
+                 serie ocupada y el merge humano armará el siguiente (FIFO).
                - Si el fix cambiaría ficheros de ESTE repo (annexes, docs
                  locales, `ci.yml` propio, skills del repo, dominio): issue
-                 LOCAL como siempre (`gh issue create --label
-                 process-proposal`).
+                 LOCAL (`gh issue create --label process-proposal`), también
+                 con `@claude` en su propia línea al inicio del body — nace
+                 ARMADO igual; mismo régimen de cola serial.
                - Si el create cross-repo FALLA (403/404: token sin alcance),
                  NO lo pierdas en silencio: créala LOCAL con el prefijo
                  `[PARA-CENTRAL]` en el título y anota el fallo en el
