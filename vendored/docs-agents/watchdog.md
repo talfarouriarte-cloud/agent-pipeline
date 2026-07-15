@@ -79,6 +79,19 @@ igualmente con su mejor juicio, publicando el racional con
 Después ACTÚA: re-dimensiona según la heurística de partición si el stall
 es de tamaño, quita `stalled`, arma la continuación y sigue la cadena.
 
+**Escalada del Creator CON PR abierto (`creator-escalated`, AP-017).** Si el
+`stalled` viene de un PR que lleva `estado:esperando-architect` (el Creator
+escaló una decisión derivable-por-Architect DESDE DENTRO del loop de PR — gate
+numérico de ADR tipo A3′, ambigüedad de diseño; el post-step de `claude-code.yml`
+lo materializó), aplica resolver-protocol sobre la decisión concreta (derivable ⇒
+`<!-- derived-decision -->`; no derivable ⇒ `<!-- autonomous-decision -->` en
+régimen autónomo) y RE-ARMA al Creator sobre el MISMO PR para que continúe con el
+ruling. Al re-armar, RETIRA `estado:esperando-architect` además de `stalled`
+(mientras `estado:esperando-architect` siga puesto el dispatcher de turno cede y
+no vigila el PR — dejarlo puesto tras el ruling lo volvería invisible). Es el
+complemento con-PR de `creator-blocked` (paro sin PR); no confundir con
+`[NEEDS-HUMAN]`, que sí para hasta humano.
+
 **Herramientas de re-dimensionado:** la etapa architect dispone de
 `gh issue create` en su allowedTools (añadido 2026-07-08 tras el
 incidente #1120: el régimen exigía crear issues hijos y la herramienta
