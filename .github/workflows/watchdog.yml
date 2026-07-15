@@ -524,7 +524,14 @@ jobs:
               const { data: comments } = await github.rest.issues.listComments({
                 ...O, issue_number: issue.number, per_page: 100,
               });
-              let lastArm = null, lastBot = null, rearms = 0;
+              // El arm puede vivir en el BODY del issue, no solo en comentarios
+              // (2026-07-15, wmcb#59: issue armado por body, bloqueado por el
+              // guard de cadena, e INVISIBLE para este detector en cada scan —
+              // lastArm=null => continue => 77 min de stall sin rescate). El
+              // body cuenta como arm-base con la fecha de creación del issue.
+              let lastArm = (issue.body || '').includes('@claude')
+                ? { created_at: issue.created_at } : null;
+              let lastBot = null, rearms = 0;
               for (const c of comments) {
                 const body = c.body || '';
                 const isBot = c.user.login === 'claude[bot]';
