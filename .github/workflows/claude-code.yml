@@ -102,10 +102,6 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
-      # actions: read — el open-review-failsafe (AP-016) consulta los runs de
-      # `reviewer.yml` (listWorkflowRunsForRepo) para el dedupe. Con permissions
-      # explícito, GitHub concede solo lo listado; sin esto la consulta daría 403.
-      actions: read
 
     steps:
       # Kill-switch: si el issue/PR tiene la label `pause-agents`,
@@ -709,11 +705,13 @@ jobs:
           )
         uses: actions/github-script@v7
         env:
-          # Desdoble de tokens (mismo patrón que el modo e) del watchdog):
-          # lectura de runs con el GITHUB_TOKEN default (requiere `actions: read`
-          # en el job); escritura de `needs-review` con el PAT — un `labeled`
-          # emitido por el GITHUB_TOKEN no dispara reviewer.yml (anti-loop de
-          # GitHub).
+          # Lectura Y escritura con el PAT. La lectura con el GITHUB_TOKEN default
+          # exigía `actions: read` en el job del reusable, y el callee no puede
+          # pedir más permisos que su caller: todo stub con bloque `permissions`
+          # explícito sin `actions` ⇒ startup_failure de flota (incidente
+          # 2026-07-15, central+finplan). El anti-loop solo concierne a la
+          # ESCRITURA del label (un `labeled` del GITHUB_TOKEN no dispararía
+          # reviewer.yml); leer runs con el PAT es inocuo y no toca ningún stub.
           ARM_PAT: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
           IN_REVIEWER_WF: ${{ inputs.reviewer_workflow_name }}
         with:
@@ -731,15 +729,21 @@ jobs:
             // head SHA del PR? El run pertenece al stub caller; se identifica por
             // su `name` (mismo criterio que el watchdog, input reviewer_workflow_name).
             const REVIEWER_WF = process.env.IN_REVIEWER_WF || 'Opus Reviewer';
-            const found = async () => (await github.rest.actions.listWorkflowRunsForRepo({
-              owner, repo, head_sha: pr.head.sha, per_page: 50 }))
-              .data.workflow_runs.filter(r => r.name === REVIEWER_WF).length > 0;
+            // null = lectura no fiable (p.ej. PAT sin actions:read): NO decidir —
+            // materializar sobre lectura fallida doblaría reviews; queda el watchdog.
+            const found = async () => {
+              const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/actions/runs?head_sha=${pr.head.sha}&per_page=50`, {
+                headers: { Authorization: `Bearer ${process.env.ARM_PAT}`, Accept: 'application/vnd.github+json' } });
+              if (!res.ok) { core.warning(`open-review-failsafe: HTTP ${res.status} listando runs — no se decide.`); return null; }
+              return (await res.json()).workflow_runs.filter(r => r.name === REVIEWER_WF).length > 0;
+            };
             // Camino sano: este post-step corre minutos después del `opened`, así
             // que el run ya existe y el corto-circuito ahorra el settle. Un match
             // POSITIVO nunca es falso negativo ⇒ el corto-circuito no reintroduce
             // el riesgo que el settle cubre (nit de la review de PR #57).
-            if (await found()) {
-              core.notice(`open-review-failsafe: run del Reviewer ya existe para ${pr.head.sha.slice(0,7)} (trigger opened OK) — no se duplica.`);
+            const first = await found();
+            if (first !== false) {
+              if (first) core.notice(`open-review-failsafe: run del Reviewer ya existe para ${pr.head.sha.slice(0,7)} (trigger opened OK) — no se duplica.`);
               return;
             }
             // Sólo el caso dudoso (run ausente) paga el settle al bound de liveness
@@ -747,8 +751,9 @@ jobs:
             // decidir. Decidir demasiado pronto sería un falso negativo ⇒ review
             // duplicada (ADR-217 §3: física de runs, no envejecimiento heurístico).
             await new Promise(r => setTimeout(r, 90000));
-            if (await found()) {
-              core.notice(`open-review-failsafe: run del Reviewer apareció en el settle para ${pr.head.sha.slice(0,7)} — no se duplica.`);
+            const second = await found();
+            if (second !== false) {
+              if (second) core.notice(`open-review-failsafe: run del Reviewer apareció en el settle para ${pr.head.sha.slice(0,7)} — no se duplica.`);
               return;
             }
             // Ningún run: el `opened` se perdió. Materializar la transición por
