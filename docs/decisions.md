@@ -278,3 +278,20 @@ no se persiguió por no justificar el coste frente a la molestia.
 
 **Fecha.** 2026-07-14.
 
+---
+
+## AP-013 — El veredicto de auditoría se materializa por ESTADO, no por prosa del tracking comment
+
+**Contexto.** El marcador `<!-- audit-verdict: (clean|findings) -->` del Auditor (wmcb#53) es la mitad-Auditor de la condición de auto-archivo del panel (co-presencia con `process-proposals`, `process-review.yml`). El mandato pedía escribirlo como línea final del informe, pero el informe se materializa cuando la action REESCRIBE el tracking comment de `claude[bot]` («Claude finished…»), y **ese canal elimina todos los comentarios HTML**: el marcador nunca sobrevive. Evidencia empírica dura: 5/5 hilos de auditoría sin marcador y 4/4 re-arms humanos ESTÉRILES (wmcb#55/#58/#65/#66/#68; finplan#1381/#1383/#1386). El re-arm no puede arreglarlo por construcción — la prosa del tracking comment ni siquiera PUEDE portar el estado. Con el auto-archivo (central#30) condicionado a ese marcador, todos los paneles quedaban abiertos señalando falso «ciclo incompleto» y rebotando arms aguas abajo (finplan#1378 `panel-sin-consumir`). Clase de fallo: *transición-por-prosa-no-verificada* agravada — el canal primario es incapaz de portar el estado.
+
+**Decisión (del propietario).** Dos capas, doctrina estado-primario (protocol.md §Principios: estado materializado, no inferido; un fix que solo visibiliza la omisión a posteriori es parcial — el estado se materializa en el mismo job):
+
+1. **Post-step determinista en el workflow del Auditor** (reusable `claude-code.yml`, step «Materializar auditoria-completa»). El `verdict-rearm` (que pedía prosa y era estéril por construcción) se sustituye por DERIVACIÓN POR ESTADO cuando el informe está publicado sin `audit-verdict`: correctivos vinculados al panel (issues `correctivo` por cross-reference del timeline) ≥ 1 ⇒ `findings`; 0 correctivos y sin escalada (`human-needed`) ⇒ `clean`; el post-step publica ÉL el marcador por canal PAT (que conserva HTML) y aplica `auditoria-completa`. **Ambigüedad ⇒ NO deriva:** 0 correctivos con escalada presente (hallazgo/escalado sin correctivo materializado) es fail-safe VISIBLE (run rojo + panel abierto), simétrico a finplan#1326 — un `clean` mal derivado archivaría un panel con hallazgos, por eso `clean` exige ausencia total de señal de hallazgo.
+2. **Mandato `epic-auditor.md`** (vendored + `docs/agents/`): el Auditor publica el marcador como comentario SEPARADO vía `gh api` (canal que demostradamente conserva HTML), nunca como línea final del tracking comment; nota general de la limitación del canal para cualquier marcador de agente publicado por tracking comment. Cada correctivo incluye un back-ref al panel de auditoría que lo origina, para que la derivación por estado del post-step pueda contarlos.
+
+**Alternativas descartadas.** Insistir con el re-arm humano/automático del marcador (4/4 estéril — el canal, no el modelo, es la causa; ADR-008/AP-008). Parsear la prosa del informe para el veredicto (sigue siendo transición-por-prosa; el estado — correctivos, escalada — es la verdad materializada). Derivar siempre `findings` en ausencia de marcador (perdería la señal `clean` legítima que el auto-archivo necesita).
+
+**Reversibilidad.** Alta: la derivación es una rama del post-step; el mandato revierte a texto.
+
+**Fecha.** 2026-07-15.
+
