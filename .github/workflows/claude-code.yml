@@ -50,6 +50,15 @@ on:
         required: true
       REVIEWER_GITHUB_TOKEN:
         required: true
+      WORKFLOWS_PUSH_TOKEN:
+        # Opcional (2026-07-15, decisión del propietario, enmienda AP-012):
+        # PAT mínimo Contents+Workflows SIN Pull requests. Entra SOLO en el
+        # checkout del job creator: los `git push` de la sesión pueden incluir
+        # `.github/workflows/**` EN RAMA. Mergear le es imposible por
+        # construcción (el PAT no tiene PRs; la App no mergea; main protegida
+        # con enforce_admins). Sin el secret: comportamiento previo intacto
+        # (consumidores sin cambios).
+        required: false
 
 jobs:
   claude:
@@ -306,6 +315,11 @@ jobs:
           # fetch-depth: 0 trae todo el historial. Necesario para que Claude
           # pueda razonar sobre commits previos cuando aplique.
           fetch-depth: 0
+          # Si el repo provee WORKFLOWS_PUSH_TOKEN (central, AP-012 enmienda
+          # 2026-07-15), los push del workspace salen con él: el Creator puede
+          # empujar workflows A SU RAMA. La API (PR, comentarios) sigue vía la
+          # App. Vacío ⇒ token por defecto (comportamiento previo).
+          token: ${{ secrets.WORKFLOWS_PUSH_TOKEN != '' && secrets.WORKFLOWS_PUSH_TOKEN || github.token }}
 
       # ───────────────────────────────────────────────────────────────────
       # Sync FORZADO a la rama base ACTUAL antes de que la acción ramifique.

@@ -268,6 +268,8 @@ no se persiguió por no justificar el coste frente a la molestia.
 
 **Cola serial con arm automático (enmienda mismo día).** La serialidad (un Creator en vuelo, AP-010) aplica en el central como en todo repo — y el hueco «arm bloqueado = evento perdido» se cierra en el reusable, para los tres repos: el guard serial etiqueta `en-cola` al bloquear (estado materializado); al liberarse la serie por un merge sin sucesor (suelto, epic-audit, epic-done), `epic-merge` arma el issue en cola MÁS ANTIGUO (FIFO, `@claude` con PAT, marcador `arm-de-cola`). En el central: stub `self-epic-merge` con `automerge: false` (el merge sigue siendo humano; el stub solo procesa el post-merge) y `loose_audit: false`.
 
+**Enmienda (2026-07-15, decisión del propietario): el Creator del central puede empujar workflows a rama.** La experiencia del primer día del régimen (2 de 3 propuestas escaladas por perímetro; ~70% de las señales de mecánica tocan workflows) mostró que el veto de push convertía al Architect de chat en cuello de botella sin añadir seguridad real: el gate es el merge humano + branch protection, no el push a rama. Implementación estructural, no de prosa: PAT dedicado mínimo (Contents+Workflows, SIN Pull requests) que entra SOLO en el checkout del job creator — **mergear le es materialmente imposible** (sin permiso de PRs; la App no mergea; `enforce_admins`). La escalada queda reservada a decisiones de diseño no derivables.
+
 **El rol de chat** pasa de procesar la cola a: gatear diseño, atender escaladas (workflows), e incidentes.
 
 **Alternativas descartadas.** Automerge en el central con gates reforzados (el merge humano ES el régimen, AP-004/006). Watchdog propio del central (volumen bajo; humano en el loop de cada merge; reevaluar si crece).

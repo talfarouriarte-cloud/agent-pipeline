@@ -32,3 +32,4 @@ jobs:
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       REVIEWER_GITHUB_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+      WORKFLOWS_PUSH_TOKEN: ${{ secrets.WORKFLOWS_PUSH_TOKEN }}
