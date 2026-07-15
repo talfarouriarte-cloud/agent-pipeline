@@ -308,3 +308,23 @@ no se persiguió por no justificar el coste frente a la molestia.
 **Reversibilidad.** Alta: una llamada en un camino del post-step.
 
 **Fecha.** 2026-07-15.
+
+---
+
+## AP-015 — Creación idempotente del issue de auditoría en epic-merge: dedupe fuertemente consistente
+
+**Contexto.** Duplicados observados 2026-07-15 (wmcb#65/#66): DOS runs de Epic Merge del MISMO merge (evento `pull_request`, 12 s de gap) alcanzaron `postMerge` y ambos ejecutaron `issues.create` incondicional → dos issues de auditoría byte-idénticos para el mismo alcance. Coste aguas abajo: dos sesiones de Auditor, dos re-arms humanos, y panel dividido (la revisión de proceso corrió sobre uno mientras el otro quedó abierto sin revisar). El «dedupe» que en otras ventanas (wmcb#67→#68) sí colapsó a UNA auditoría no vivía en el `create` sino en el guard de reproceso del camino manual, que se apoya en el **search index de GitHub** (eventualmente consistente): en ventanas de lag del índice el duplicado pasa. Clase de fallo: costura rota por lectura no fuertemente consistente (protocol.md §1 y §3).
+
+**Decisión (del propietario, ejecutada por el Creator del central).** Hacer idempotente de verdad la creación en el reusable central `epic-merge.yml`, en tres cinturones fuertemente consistentes y deterministas (helper `createAuditIdempotent`, aplicado a los DOS caminos — suelto y épica):
+
+1. **Serialización por rama a nivel de JOB** (`concurrency: epic-merge-<repo>-<rama>`, `cancel-in-progress:false`). Viaja por graft (AP-009) sin tocar los stubs de los consumidores. Ordena las evaluaciones del mismo merge para que el 2º run observe el claim del 1º; necesaria pero no suficiente (con `cancel:false` ambos runs ejecutan).
+2. **Claim materializado en el PR mergeado** (protocol.md §1, estado materializado no inferido): un comentario dedicado con marcador `<!-- audit-claim: <título> -->`, leído con `listComments` (lectura por-issue = fuertemente consistente, NO el search index). Comentario SEPARADO del `epic-merge-diag` a propósito: `diag()` reescribe el cuerpo COMPLETO de su comentario en cada llamada, así que un claim embebido allí lo borraría el siguiente `diag()`, reabriendo la carrera.
+3. **Cinturón por label** (`listForRepo` REST, NO search) filtrando por **título exacto** = scopeKey (frontera de ciclo exacta, no solo label ⇒ no suprime un panel nuevo legítimo del mismo issue), y **cinturón post-create determinista**: si la carrera coló ≥2 auditorías abiertas con el mismo título, sobrevive la de número MENOR (resolución idéntica en todo run, sin humano); las mayores se cierran `not_planned` apuntando a la superviviente.
+
+**Alternativas descartadas.** Solo `concurrency` (no basta con `cancel:false`). Dedupe por search index (la causa raíz del racy). Embeber el claim en `epic-merge-diag` (lo borra el siguiente `diag()`). Dedupe solo por label sin título exacto (demasiado agresivo: suprimiría un panel nuevo legítimo del mismo issue).
+
+**Contrato `workflow_call`.** Sin cambios (no añade inputs/secrets) ⇒ `templates/workflow-contracts.json` intacto (AP-003).
+
+**Reversibilidad.** Alta: un helper y una clave de concurrency de job; los `create` originales se recuperan revirtiendo el refactor.
+
+**Fecha.** 2026-07-15.
