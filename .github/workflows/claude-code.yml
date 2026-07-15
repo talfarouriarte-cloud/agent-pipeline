@@ -519,9 +519,24 @@ jobs:
               core.warning(`auditoría #${issue_number}: sin informe publicado — auditoria-completa NO aplicada; stalled.`);
               return;
             }
+            // Gate del veredicto (2026-07-15, wmcb#58/#61: el mandato de prosa
+            // del marcador salió 0/2 — la clase AP-008 sobre nuestro propio
+            // diseño; el process-reviewer, cuyo marcador vive en el workflow,
+            // salió 1/1). La label es el gate: sin audit-verdict NO hay
+            // auditoria-completa; se pide al Auditor SOLO la línea que falta
+            // (rearm dirigido de coste mínimo — el arm de auditoría está
+            // exento del régimen serial, AP-010).
+            const HAS_VERDICT = /<!--\s*audit-verdict:\s*(clean|findings)\s*-->/;
+            const hasVerdict = comments.some(c => HAS_VERDICT.test(c.body || ''));
+            if (!hasVerdict) {
+              await github.rest.issues.createComment({ owner, repo, issue_number,
+                body: '@claude tu informe de auditoría está publicado pero le falta el marcador de veredicto obligatorio (epic-auditor.md § marcador de veredicto). Publica UN comentario que contenga únicamente la línea que corresponda a tu informe: `<!-- audit-verdict: clean -->` (sin hallazgos) o `<!-- audit-verdict: findings -->` (con hallazgos/correctivos). Nada más.\n\n<!-- verdict-rearm -->' });
+              core.warning(`auditoría #${issue_number}: informe sin audit-verdict — auditoria-completa NO aplicada; veredicto re-pedido.`);
+              return;
+            }
             await github.rest.issues.addLabels({ owner, repo, issue_number,
               labels: ['auditoria-completa'] });
-            core.notice('auditoria-completa materializada post-sesión (informe verificado).');
+            core.notice('auditoria-completa materializada post-sesión (informe y veredicto verificados).');
 
       - name: Liberar serial-activo al existir PR (post-Creator)
         # El Creator abre su PR dentro de la sesión; este post-step retira el
