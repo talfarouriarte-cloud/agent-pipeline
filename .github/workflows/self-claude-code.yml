@@ -21,7 +21,10 @@ jobs:
   call:
     uses: talfarouriarte-cloud/agent-pipeline/.github/workflows/claude-code.yml@main
     with:
-      runner: ubicloud-standard-2
+      # ubuntu-latest y no ubicloud (2026-07-15): la integración Ubicloud no
+      # cubre este repo — los jobs quedaban `queued` sin runner para siempre
+      # (Reviewer >1h). El repo es público: GitHub-hosted es gratis.
+      runner: ubuntu-latest
       default_branch: main
       creator_model: claude-opus-4-8
       creator_max_turns: 120
