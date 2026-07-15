@@ -727,20 +727,28 @@ jobs:
             const { data: prs } = await github.rest.pulls.list({ owner, repo, state: 'open', per_page: 100 });
             const pr = prs.find(p => p.head.ref.startsWith(`claude/issue-${n}-`));
             if (!pr) { core.notice(`open-review-failsafe: sin PR de #${n} — nada que materializar.`); return; }
-            // Settle al bound de liveness: dar tiempo a que el run del `opened`
-            // se materialice antes de consultar. Consultar demasiado pronto sería
-            // un falso negativo ⇒ review duplicada (ADR-217 §3: física de runs,
-            // no envejecimiento heurístico).
-            await new Promise(r => setTimeout(r, 90000));
             // DEDUPE (condición de aplicabilidad): ¿algún run del Reviewer para el
             // head SHA del PR? El run pertenece al stub caller; se identifica por
             // su `name` (mismo criterio que el watchdog, input reviewer_workflow_name).
             const REVIEWER_WF = process.env.IN_REVIEWER_WF || 'Opus Reviewer';
-            const { data: runs } = await github.rest.actions.listWorkflowRunsForRepo({
-              owner, repo, head_sha: pr.head.sha, per_page: 50 });
-            const reviewerRuns = runs.workflow_runs.filter(r => r.name === REVIEWER_WF);
-            if (reviewerRuns.length > 0) {
-              core.notice(`open-review-failsafe: ${reviewerRuns.length} run(s) del Reviewer ya nacieron para ${pr.head.sha.slice(0,7)} (trigger opened OK) — no se duplica.`);
+            const found = async () => (await github.rest.actions.listWorkflowRunsForRepo({
+              owner, repo, head_sha: pr.head.sha, per_page: 50 }))
+              .data.workflow_runs.filter(r => r.name === REVIEWER_WF).length > 0;
+            // Camino sano: este post-step corre minutos después del `opened`, así
+            // que el run ya existe y el corto-circuito ahorra el settle. Un match
+            // POSITIVO nunca es falso negativo ⇒ el corto-circuito no reintroduce
+            // el riesgo que el settle cubre (nit de la review de PR #57).
+            if (await found()) {
+              core.notice(`open-review-failsafe: run del Reviewer ya existe para ${pr.head.sha.slice(0,7)} (trigger opened OK) — no se duplica.`);
+              return;
+            }
+            // Sólo el caso dudoso (run ausente) paga el settle al bound de liveness
+            // (~90s): dar tiempo a que el run del `opened` se materialice antes de
+            // decidir. Decidir demasiado pronto sería un falso negativo ⇒ review
+            // duplicada (ADR-217 §3: física de runs, no envejecimiento heurístico).
+            await new Promise(r => setTimeout(r, 90000));
+            if (await found()) {
+              core.notice(`open-review-failsafe: run del Reviewer apareció en el settle para ${pr.head.sha.slice(0,7)} — no se duplica.`);
               return;
             }
             // Ningún run: el `opened` se perdió. Materializar la transición por
