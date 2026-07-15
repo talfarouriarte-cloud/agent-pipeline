@@ -13,6 +13,10 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
+  # statuses: el job del reusable lo declara (espejo del gate en la caja de
+  # checks) y GitHub exige que el caller sea SUPERCONJUNTO — sin esta línea,
+  # startup_failure inmediato (36 runs, 2026-07-15).
+  statuses: write
 jobs:
   call:
     uses: talfarouriarte-cloud/agent-pipeline/.github/workflows/epic-merge.yml@main
