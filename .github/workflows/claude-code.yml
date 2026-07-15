@@ -535,10 +535,8 @@ jobs:
           if ! gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json number --jq '.[0].number' | grep -q .; then
             TITLE=$(git log -1 --pretty=%s)
             BODY=$(git log -1 --pretty=%b)
-            gh pr create --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base "${{ inputs.default_branch }}" --title "$TITLE" --body "$BODY
-
----
-_PR abierto por el post-step de rescate (push residual con token de workflows, central#46): la action no puede pushear workflows; el trabajo estaba commiteado en local._"
+            FULLBODY=$(printf '%s\n\n---\n_PR abierto por el post-step de rescate (push residual con token de workflows, central#46): la action no puede pushear workflows; el trabajo estaba commiteado en local._' "$BODY")
+            gh pr create --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base "${{ inputs.default_branch }}" --title "$TITLE" --body "$FULLBODY"
           fi
 
       - name: Materializar auditoria-completa (post-step determinista)
