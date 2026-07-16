@@ -904,6 +904,38 @@ jobs:
                 core.notice(`cola: #${next.number} armado (${why}).`);
               } catch (e) { core.warning(`pop de cola falló: ${e.message}`); }
             }
+            // AP-020 v5 + enmienda v5.1 (central#56, criterio 1 «success O
+            // muerte»): materializa el veredicto terminal legítimo «alcance ya
+            // completo en la rama base, sin PR que abrir». Extraído a helper
+            // para COMPARTIR el mismo efecto entre el camino `success`-sin-PR y
+            // el de MUERTE-sin-PR: una sesión que posteó su veredicto y murió
+            // después (max_turns) es igual de terminal-legítima que el cierre
+            // limpio — el criterio 1 del issue lo dice literal. Antes el ramal
+            // vivía solo en el bloque `success` y la muerte post-veredicto caía
+            // en `creator-muerto-sin-pr` (`stalled`), misclasificando el
+            // veredicto correcto como stall.
+            async function materializeScopeComplete() {
+              const labs = (context.payload.issue.labels || []).map(l => l.name);
+              const held = labs.includes('serial-activo');
+              if (held) await github.rest.issues.removeLabel({ owner, repo, issue_number: n, name: 'serial-activo' }).catch(() => {});
+              await github.rest.issues.addLabels({ owner, repo, issue_number: n, labels: ['estado:cierre-pendiente-humano'] });
+              await github.rest.issues.createComment({ owner, repo, issue_number: n,
+                body: `**claude-code · post-step**: el Creator concluyó con veredicto **alcance ya COMPLETO en la rama base, sin PR que abrir** (\`<!-- creator-alcance-completo -->\`). Estado terminal legítimo materializado en el instante — **NO es escalada** ⇒ sin \`human-needed\` ni \`stalled\`:\n\n- ${held ? '`serial-activo` retirada y **turno pasado a la cola** — la serie se libera por el fin de turno del agente, no solo por merge (AP-014/AP-020).' : 'la serie no estaba ocupada por este issue: nada que liberar ni que armar.'}\n- \`estado:cierre-pendiente-humano\` aplicada: el cierre del issue en el central es HUMANO (merge/cierre no se delega, AP-019). El humano verifica el veredicto y cierra.\n\n<!-- creator-alcance-completo-materializado -->` });
+              if (held) await popQueue(n, `alcance completo verificado de #${n}`);
+              core.notice(`Creator de #${n}: alcance-completo materializado (serie ${held ? 'liberada + cola armada' : 'no ocupada'}, cierre-pendiente-humano).`);
+            }
+            // Detección del marcador fresco `creator-alcance-completo` (freshness
+            // vs comentario disparador — lección del bucle PR #180), reutilizada
+            // por ambos caminos terminales. `scoped` sólo es true si el último
+            // comentario de claude[bot] es POSTERIOR al disparador y lleva el
+            // marcador HTML anclado (nunca substring de prosa — clase PR #1133).
+            async function freshScopeComplete() {
+              const trigTs = context.payload.comment ? new Date(context.payload.comment.created_at).getTime() : 0;
+              const { data: cs } = await github.rest.issues.listComments({ owner, repo, issue_number: n, per_page: 100 });
+              const lastBot = [...cs].reverse().find(c => c.user?.login === 'claude[bot]');
+              const fresh = !!lastBot && new Date(lastBot.created_at).getTime() > trigTs;
+              return { lastBot, fresh, scoped: fresh && /<!--\s*creator-alcance-completo\s*-->/.test(lastBot?.body || '') };
+            }
             // Estado de la rama huérfana (si existe): el diagnóstico que el
             // rearm necesita ("no rehagas nada").
             let branchInfo = 'sin rama creada (muerte temprana: no hay trabajo que conservar).';
@@ -928,27 +960,13 @@ jobs:
               // en su comentario de cierre (creator.md § escalado determinista);
               // freshness: solo cuenta un comentario de claude[bot] POSTERIOR
               // al que disparó este job (lección del bucle PR #180).
-              const trigTs = context.payload.comment ? new Date(context.payload.comment.created_at).getTime() : 0;
-              const { data: cs } = await github.rest.issues.listComments({ owner, repo, issue_number: n, per_page: 100 });
-              const lastBot = [...cs].reverse().find(c => c.user?.login === 'claude[bot]');
-              const fresh = !!lastBot && new Date(lastBot.created_at).getTime() > trigTs;
-              const blocked = fresh && /<!--\s*creator-blocked\s*-->/.test(lastBot.body || '');
+              const { lastBot, fresh, scoped } = await freshScopeComplete();
+              const blocked = fresh && /<!--\s*creator-blocked\s*-->/.test(lastBot?.body || '');
               // AP-020 (2026-07-16, central#46): veredicto terminal LEGÍTIMO
               // «alcance ya completo en la rama base, sin PR que abrir». Se
               // chequea ANTES de la clasificación v4 (escalada no-declarada):
               // sin este ramal, un cierre correcto degradaba a `human-needed`.
-              const scopeComplete = fresh && /<!--\s*creator-alcance-completo\s*-->/.test(lastBot.body || '');
-              if (scopeComplete) {
-                const labs = (context.payload.issue.labels || []).map(l => l.name);
-                const held = labs.includes('serial-activo');
-                if (held) await github.rest.issues.removeLabel({ owner, repo, issue_number: n, name: 'serial-activo' }).catch(() => {});
-                await github.rest.issues.addLabels({ owner, repo, issue_number: n, labels: ['estado:cierre-pendiente-humano'] });
-                await github.rest.issues.createComment({ owner, repo, issue_number: n,
-                  body: `**claude-code · post-step**: el Creator concluyó \`success\` con veredicto **alcance ya COMPLETO en la rama base, sin PR que abrir** (\`<!-- creator-alcance-completo -->\`). Estado terminal legítimo materializado en el instante — **NO es escalada** ⇒ sin \`human-needed\` ni \`stalled\`:\n\n- ${held ? '`serial-activo` retirada y **turno pasado a la cola** — la serie se libera por el fin de turno del agente, no solo por merge (AP-014/AP-020).' : 'la serie no estaba ocupada por este issue: nada que liberar ni que armar.'}\n- \`estado:cierre-pendiente-humano\` aplicada: el cierre del issue en el central es HUMANO (merge/cierre no se delega, AP-019). El humano verifica el veredicto y cierra.\n\n<!-- creator-alcance-completo-materializado -->` });
-                if (held) await popQueue(n, `alcance completo verificado de #${n}`);
-                core.notice(`Creator de #${n}: alcance-completo materializado (serie ${held ? 'liberada + cola armada' : 'no ocupada'}, cierre-pendiente-humano).`);
-                return;
-              }
+              if (scoped) { await materializeScopeComplete(); return; }
               if (!blocked) {
                 // v4 (2026-07-15, central#34): el Creator escaló SIN el marcador
                 // (mandato de prosa: 0/1 — misma clase que audit-verdict). Si la
@@ -974,6 +992,19 @@ jobs:
               await github.rest.issues.removeLabel({ owner, repo, issue_number: n, name: 'serial-activo' }).catch(() => {});
               core.warning(`Creator de #${n}: bloqueo declarado materializado (stalled por PAT, evento push).`);
               return;
+            }
+            // Enmienda v5.1 (2026-07-16, central#56, criterio 1 «success O
+            // muerte»): se llega aquí cuando NO fue `success`-sin-commits (murió,
+            // o terminó con commits ahead). Si MURIÓ sin commits ahead pero dejó
+            // fresco su veredicto `creator-alcance-completo`, es el mismo estado
+            // terminal legítimo que el cierre `success` — materialízalo igual
+            // (libera serie + arma cola + `cierre-pendiente-humano`), NO como
+            // `stalled`. Con commits ahead NO aplica: el marcador sería
+            // contradictorio (hay trabajo sin PR) ⇒ cae en `creator-muerto-sin-pr`,
+            // que ordena abrir el PR. Freshness idéntica al camino `success`.
+            if (!hasCommits) {
+              const { scoped } = await freshScopeComplete();
+              if (scoped) { await materializeScopeComplete(); return; }
             }
             await github.rest.issues.createComment({ owner, repo, issue_number: n,
               body: `**claude-code · post-step**: la sesión del Creator terminó en \`${outcome}\` **sin PR abierto** pese a tener trabajo commiteado (o murió sin abrirlo). Estado materializado en el instante — sin esperar al tick del watchdog:\n\n- ${branchInfo}\n- \`serial-activo\` retirada y **turno pasado a la cola** (el arm de retoma de este issue no queda bloqueado).\n- \`stalled\` aplicada (señal de architect-resolve).\n\n**Para el rearm** (watchdog o humano): si hay rama con commits, NO rehacer — retomar solo el cierre (verificar rama, typecheck/tests de los ficheros afectados, abrir el PR según «PR creation» de CLAUDE.md).\n\n<!-- creator-muerto-sin-pr -->` });
