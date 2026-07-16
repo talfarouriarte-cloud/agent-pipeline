@@ -249,6 +249,8 @@ no se persiguió por no justificar el coste frente a la molestia.
 
 **Alternativas descartadas.** Densificar el cron (best-effort documentado; no es capa de latencia). Scheduler externo (pieza nueva fuera de GitHub). Scan de dos fases con re-evaluación (más complejo que subir el settle al bound; mismo resultado).
 
+**Enmienda (2026-07-16): medición de capas en la transición Creator→Reviewer + regla de encabezado.** Muestreo de los últimos 12 PRs de agente por repo (36): arista de nacimiento, 8/36 reviews llegaron por `open-review-failsafe` (~22% — el `opened` de GitHub se pierde con regularidad en los tres repos; sustrato, sin fix de nuestro lado, coste ~90s de settle); arista de rondas, `turn-close-failsafe` en 11/36 (~31% — el Creator omite el tag de cierre, 7/7 casos inspeccionados sin `@reviewer` en el comentario final). Dato conductual: los mismos cierres sin tag llevan todos su footer formulario de rama — el Creator cumple reglas posicionales/de plantilla e incumple pasos-finales-sueltos. Fix de prosa dirigido: CLAUDE.loop.md pasa el tag de paso final a **encabezado del comentario de cierre** (primera línea). Reduce la tasa; no la lleva a 0 — el belt se queda, y su coste hoy es solo el comentario diagnóstico (la label aterriza en el mismo job, latencia cero). Línea base para la próxima auditoría: 22% / 31%.
+
 **Reversibilidad.** Alta (valor del settle + marcador).
 
 **Fecha.** 2026-07-13.

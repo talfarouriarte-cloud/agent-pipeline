@@ -135,6 +135,17 @@ with **exactly one** of these closing markers:
   (see criteria below). The workflow adds label `human-needed` and
   stops the loop.
 
+**The closing tag is the HEADER, not a footnote** (2026-07-16, measured:
+11/36 recent agent PRs across the fleet closed WITHOUT the tag despite
+this section — the `turn-close-failsafe` absorbed every one). In your
+FINAL comment update, the tag opens the comment — first line, before the
+summary and the branch footer. Do not leave it as a last step of your
+flow: sessions that summarize first and tag last omit it at ~31%; the
+same sessions never omit their branch footer, so positional/template
+rules are the compliance channel that works. The post-session scan reads
+the final comment once, so an early header never re-triggers anything
+prematurely. One tag only, per the priority above.
+
 **Closing tags must OPEN their own line.** The Auto-label step anchors
 detection to line start (`/^\s*TAG/m`) — a tag mentioned mid-sentence
 or in backticks does NOT count as a closing tag, and conversely: never
