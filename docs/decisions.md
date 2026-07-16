@@ -421,3 +421,29 @@ El predicado de `check_panel` era: bloquea el arm si hay auditorías/process-pro
 **Reversibilidad.** Alta: una lectura de marcador + filtro en un solo step y una fila de doc; se revierte quitando el `Set` `consumed` y su filtro.
 
 **Fecha.** 2026-07-16.
+
+---
+
+## AP-020 — El estado terminal «alcance completo, sin PR» libera la serie y arma la cola (cierra la clase AP-010)
+
+**Contexto.** Deadlock/degradación observada 2026-07-15 (central#46): la sesión final del Creator (18:35Z) concluyó con veredicto verificado «alcance COMPLETO en la rama base, no queda PR que abrir» — el fix del issue había llegado por otro PR (#53, cuyo marcador `partial-pr` fue falso positivo de polaridad). El post-step success-sin-PR de `claude-code.yml` ya libera la serie por tres caminos (v3 `creator-blocked`, v4 escalada no-declarada, `creator-muerto-sin-pr` + pop de cola AP-014), pero NINGUNO clasifica correctamente el veredicto terminal legítimo: una sesión `success` sin commits ahead, sin marcador de bloqueo y con la serie ocupada caía en la clasificación **v4 «escalada no-declarada» ⇒ `human-needed`** — un falso positivo que trata como fallo lo que fue el cierre CORRECTO de la serie (el Creator hizo lo debido: re-verificó y encontró el alcance íntegro). Resultado: #46 quedó `serial-activo`+`human-needed` y la cola (#47/#54) retenida. Clase de fallo: misma familia que AP-010 (la serie solo se liberaba por caminos que la MATERIALIZAN como fallo o como merge) — todo estado terminal legítimo que no desemboca en merge dejaba el veredicto mal materializado. Coherente con protocol.md §Principios: cada agente habilita el paso siguiente; el fin de turno del agente —no solo el merge— es un liberador de la serie (AP-014 lo estableció para la muerte; esta instancia lo extiende al cierre limpio sin PR).
+
+**Decisión (del propietario, ejecutada por el Creator del central).** Cerrar la clase con un ramal propio, no un post-step ad hoc, doctrina estado-primario:
+
+1. **Marcador nuevo `<!-- creator-alcance-completo -->`** (vendored `protocol.md` + `docs/agents/`): lo emite el Creator en su comentario de cierre en el ISSUE al concluir, tras re-verificación, que el alcance está completo en la rama base y no queda PR que abrir. HTML anclado, jamás substring de prosa (clase PR #1133). **Tabla de decisión en `creator.md`** actualizada: distingue `creator-alcance-completo` (veredicto terminal, no escalada) de `creator-blocked` (hueco a resolver), `creator-muerto-sin-pr` (commits ahead sin PR) y `[NEEDS-HUMAN]` (decisión humana).
+2. **Ramal v5 en el post-step success-sin-PR de `claude-code.yml`** (chequeado ANTES de la clasificación v4, freshness vs comentario disparador — lección #180): si el marcador está fresco ⇒ retira `serial-activo` si el issue la tenía + **pop de cola** (`popQueue`, espejo del `armQueue` de epic-merge — AP-014: todo camino que libera la serie hace pop en el mismo job) + aplica `estado:cierre-pendiente-humano`, y publica `<!-- creator-alcance-completo-materializado -->`. **NO** aplica `human-needed` ni `stalled` (no es fallo ni escalada). El pop de cola SOLO ocurre si la serie estaba ocupada por este issue (no doble-arma si otro la tenía).
+3. **El cierre del issue sigue siendo HUMANO** en el central (merge/cierre no se delega — es el gate que justifica su existencia, AP-004/006/012; coherente con AP-019, que rehusó dar `close` a los agentes y eligió estado declarado): el post-step materializa el estado declarado `estado:cierre-pendiente-humano`, no un `close` de agente. El humano verifica el veredicto y cierra.
+
+**El merge deja de ser el único liberador legítimo por-valor:** epic-merge conserva su rol (pop del camino merge), pero el fin de turno del agente con veredicto alcance-completo es ahora un liberador más — como ya lo eran la muerte (AP-014) y el bloqueo declarado (v3/v4).
+
+**Fail-safe conservado.** Sin el marcador, una sesión success-sin-PR-sin-commits con la serie ocupada sigue cayendo en v4 (`human-needed` + libera + pop): la serie NUNCA queda colgada (no reintroduce el deadlock); el marcador solo distingue el cierre limpio del que necesita humano. La ausencia de marcador es fail-safe VISIBLE (humano mira), simétrico a la doctrina de AP-013.
+
+**Riesgos (contrastados con Known failure classes).** *Regex polarity blindness* (PR #1133): marcador HTML anclado, nunca substring. *Falso positivo del propio marcador:* el ramal exige `!hasCommits` (una sesión con commits ahead sin PR va a `creator-muerto-sin-pr`, que abre el PR — no se pierde trabajo); la tabla de decisión en `creator.md` acota cuándo emitirlo. *Mandate/actor drift:* el post-step usa el PAT (`REVIEWER_GITHUB_TOKEN`) ya presente en el step; `estado:cierre-pendiente-humano` es label dinámica (`estado:*`, auto-creada por addLabels — fuera de `labels.json`/`labels-usage.json`, mismo trato que `estado:esperando-architect` en AP-017).
+
+**Contrato `workflow_call`.** Sin cambios (no añade inputs/secrets; reusa el PAT ya required) ⇒ `templates/workflow-contracts.json` intacto (AP-003).
+
+**Alternativas descartadas.** Otro post-step ad hoc para la instancia 3 (parchea la instancia, no cierra la clase — el propietario lo excluyó explícitamente). Auto-cerrar el issue desde el post-step (añade acción destructiva de ciclo de vida al agente, contra AP-019 y el gate de cierre humano del central). Derivar «alcance completo» por estado sin marcador (ambiguo frente a la escalada no-declarada: ambas son success-sin-PR-sin-commits — solo el Creator sabe cuál es; sin señal declarada se pierde la distinción, exactamente el error que este ADR corrige).
+
+**Reversibilidad.** Alta: un ramal en un post-step, un marcador, filas de doc y una label dinámica; se revierte quitando el bloque `if (scopeComplete)`.
+
+**Fecha.** 2026-07-16.

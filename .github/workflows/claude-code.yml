@@ -855,6 +855,16 @@ jobs:
         # en success solo materializa si la rama claude/issue-N-* EXISTE con
         # commits ahead — una sesión success sin commits es conversacional
         # legítima (escalada, respuesta) y su output es la conversación.
+        # v5 (2026-07-16, central#46, AP-020): cierra la clase «terminal
+        # completo-sin-PR no libera la serie ni arma la cola». Una sesión
+        # success cuyo veredicto verificado es «alcance YA completo en la rama
+        # base, sin PR que abrir» (marcador `creator-alcance-completo`) es un
+        # estado terminal LEGÍTIMO, no una escalada: sin ramal propio caía en
+        # la clasificación v4 («escalada no-declarada» ⇒ `human-needed`), falso
+        # positivo que trató como fallo el cierre correcto de la serie (#46).
+        # La serie se libera por el FIN DE TURNO del agente, no solo por merge
+        # (AP-014); el cierre del issue sigue siendo HUMANO en el central
+        # (merge/cierre no se delega, AP-019) ⇒ estado declarado, no `close`.
         if: |
           always() && steps.creator.outcome != 'skipped' && steps.creator.outcome != 'cancelled'
           && github.event.issue && !github.event.issue.pull_request
@@ -921,9 +931,24 @@ jobs:
               const trigTs = context.payload.comment ? new Date(context.payload.comment.created_at).getTime() : 0;
               const { data: cs } = await github.rest.issues.listComments({ owner, repo, issue_number: n, per_page: 100 });
               const lastBot = [...cs].reverse().find(c => c.user?.login === 'claude[bot]');
-              const blocked = !!lastBot
-                && new Date(lastBot.created_at).getTime() > trigTs
-                && /<!--\s*creator-blocked\s*-->/.test(lastBot.body || '');
+              const fresh = !!lastBot && new Date(lastBot.created_at).getTime() > trigTs;
+              const blocked = fresh && /<!--\s*creator-blocked\s*-->/.test(lastBot.body || '');
+              // AP-020 (2026-07-16, central#46): veredicto terminal LEGÍTIMO
+              // «alcance ya completo en la rama base, sin PR que abrir». Se
+              // chequea ANTES de la clasificación v4 (escalada no-declarada):
+              // sin este ramal, un cierre correcto degradaba a `human-needed`.
+              const scopeComplete = fresh && /<!--\s*creator-alcance-completo\s*-->/.test(lastBot.body || '');
+              if (scopeComplete) {
+                const labs = (context.payload.issue.labels || []).map(l => l.name);
+                const held = labs.includes('serial-activo');
+                if (held) await github.rest.issues.removeLabel({ owner, repo, issue_number: n, name: 'serial-activo' }).catch(() => {});
+                await github.rest.issues.addLabels({ owner, repo, issue_number: n, labels: ['estado:cierre-pendiente-humano'] });
+                await github.rest.issues.createComment({ owner, repo, issue_number: n,
+                  body: `**claude-code · post-step**: el Creator concluyó \`success\` con veredicto **alcance ya COMPLETO en la rama base, sin PR que abrir** (\`<!-- creator-alcance-completo -->\`). Estado terminal legítimo materializado en el instante — **NO es escalada** ⇒ sin \`human-needed\` ni \`stalled\`:\n\n- ${held ? '`serial-activo` retirada y **turno pasado a la cola** — la serie se libera por el fin de turno del agente, no solo por merge (AP-014/AP-020).' : 'la serie no estaba ocupada por este issue: nada que liberar ni que armar.'}\n- \`estado:cierre-pendiente-humano\` aplicada: el cierre del issue en el central es HUMANO (merge/cierre no se delega, AP-019). El humano verifica el veredicto y cierra.\n\n<!-- creator-alcance-completo-materializado -->` });
+                if (held) await popQueue(n, `alcance completo verificado de #${n}`);
+                core.notice(`Creator de #${n}: alcance-completo materializado (serie ${held ? 'liberada + cola armada' : 'no ocupada'}, cierre-pendiente-humano).`);
+                return;
+              }
               if (!blocked) {
                 // v4 (2026-07-15, central#34): el Creator escaló SIN el marcador
                 // (mandato de prosa: 0/1 — misma clase que audit-verdict). Si la
