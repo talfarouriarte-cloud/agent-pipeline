@@ -120,6 +120,19 @@ Lo que **NO incluir**:
 
 Si topas con una decisión de diseño no cerrada, ANTES de declarar escalada aplica `docs/agents/resolver-protocol.md`: si es derivable (cita verbatim de ADR/spec que la implica), resuélvela publicando el bloque `<!-- derived-decision -->` y continúa; si no lo es —contrato del motor, semántica, ADR nuevo, conflicto entre ADRs— escala como hasta ahora. Cap 2 por issue.
 
+### Materializar la escalada: tabla de decisión (blocked vs escalated vs NEEDS-HUMAN)
+
+Cuando NO puedes resolver por resolver-protocol y tienes que ESCALAR, el marcador de cierre que emites depende de DÓNDE estás y de QUIÉN debe resolver. Emitir el equivocado degrada la escalada a anomalía o la manda al dueño incorrecto. **La escalada NO vive en prosa: sin el marcador correcto ningún estado de despacho se materializa** (causa raíz de finplan#1391, AP-017: escalada correcta en prosa ⇒ `turno-de-nadie` ⇒ rescatada por fallback 22 min tarde).
+
+| Situación | Marcador de cierre | Qué materializa el post-step | Dónde lo emites |
+|---|---|---|---|
+| Paras **SIN PR abierto**, decisión derivable-por-Architect (serie/emisión ausente del estado derivado, hueco de dimensionado, ambigüedad de ADR que un `autonomous-decision` cierra) | `<!-- creator-blocked -->` (HTML) | `stalled` (PAT ⇒ architect-resolve por evento) + retira `serial-activo` + pop de cola | Comentario de cierre en el **ISSUE** |
+| Paras **CON PR abierto**, decisión derivable-por-Architect desde dentro del loop (gate numérico de ADR tipo A3′, ambigüedad de diseño) | `<!-- creator-escalated -->` (HTML) | `stalled` (PAT ⇒ architect-resolve por evento) + `estado:esperando-architect` (el dispatcher de turno cede) | Comentario de cierre en el **PR** |
+| Decisión genuinamente **HUMANA** (contrato público exportado, semántica numérica/precisión, ruta security-sensitive, ambigüedad del Reviewer) | `[NEEDS-HUMAN]: <razón>` (texto, ABRIENDO su línea) | `human-needed`, para el loop hasta humano | Comentario de cierre |
+| Respuesta conversacional normal (converger con el Reviewer, contestar una pregunta) | ninguno (o `@reviewer` según CLAUDE.md § Loop protocol) | — | — |
+
+Reglas duras: `creator-escalated` es el complemento EXACTO de `creator-blocked` — **JAMÁS emitas `creator-escalated` sin PR abierto** (usa `creator-blocked`) ni **`creator-blocked` con PR abierto** (usa `creator-escalated`); **JAMÁS uses ninguno de los dos para una decisión humana** (eso es `[NEEDS-HUMAN]`, intacto). Ambos marcadores son **HTML anclado** — el post-step los detecta como comentario, nunca como substring de prosa (clase PR #1133): escríbelos en su propia línea. La decisión concreta que escalas va en la PROSA del mismo comentario (qué gate, qué ADR, qué ambigüedad) para que architect-resolve rule sin re-derivarla.
+
 ## Subagentes (contexto separado — úsalo para no quemar el tuyo)
 
 Tienes dos subagentes en `.claude/agents/`. Cuándo invocarlos:
@@ -386,7 +399,7 @@ Trocear un issue de épica en varios PRs está permitido, con tres reglas duras 
 1. Todo PR que NO cubra el alcance completo del issue lleva **`<!-- partial-pr -->`** en su body, más la lista explícita de lo que queda pendiente. El epic-merge, al ver el marcador, mergea SIN cerrar el issue y te re-arma en el mismo issue para el alcance restante.
 2. Un PR parcial **nunca** lleva `Closes #N` ni "cierra" el issue en su texto de forma que GitHub lo interprete.
 3. **No dejes preguntas de diseño como bloqueo silencioso de la siguiente slice.** Si el issue trae las decisiones (p.ej. una sección "Decisiones confirmadas"), ejecútalas. Si de verdad falta una decisión humana, termina con **`[NEEDS-HUMAN]`** explícito en tu comentario de cierre — nunca un PR parcial + espera muda.
-4. **Escalado determinista al Architect (2026-07-14, finplan#1350).** Si paras SIN abrir PR por un hueco que el Architect puede resolver — serie/emisión ausente del estado derivado, hueco de dimensionado del issue, ambigüedad de ADR que un `autonomous-decision` puede cerrar — tu comentario de cierre termina con el marcador **`<!-- creator-blocked -->`** (además del informe de alcance restante). Un post-step determinista materializa `stalled` con PAT en el instante ⇒ architect-resolve dispara POR EVENTO, sin esperar al cron. Reglas: JAMÁS lo uses si abriste PR (gobierna el flujo PR-driven); JAMÁS para decisiones genuinamente humanas (eso sigue siendo `[NEEDS-HUMAN]`); una respuesta conversacional normal (contestar una pregunta, converger con el Reviewer) NO lleva el marcador.
+4. **Escalado determinista al Architect (2026-07-14, finplan#1350).** Si paras SIN abrir PR por un hueco que el Architect puede resolver — serie/emisión ausente del estado derivado, hueco de dimensionado del issue, ambigüedad de ADR que un `autonomous-decision` puede cerrar — tu comentario de cierre termina con el marcador **`<!-- creator-blocked -->`** (además del informe de alcance restante). Un post-step determinista materializa `stalled` con PAT en el instante ⇒ architect-resolve dispara POR EVENTO, sin esperar al cron. Reglas: JAMÁS lo uses si abriste PR (con PR abierto el complemento es **`<!-- creator-escalated -->`** — ver § «Materializar la escalada: tabla de decisión», AP-017); JAMÁS para decisiones genuinamente humanas (eso sigue siendo `[NEEDS-HUMAN]`); una respuesta conversacional normal (contestar una pregunta, converger con el Reviewer) NO lleva el marcador.
 
 ## Cuándo NO dividir
 

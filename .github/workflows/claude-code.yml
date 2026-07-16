@@ -998,6 +998,20 @@ jobs:
             }
 
             if (!label) {
+              // Cede a la escalada CON PR (creator-escalated, AP-017): si el
+              // cierre lleva `<!-- creator-escalated -->`, el turno es del
+              // Architect, NO del Reviewer. El Creator pudo pushear trabajo
+              // parcial y LUEGO escalar; sin este guard el turn-close-failsafe
+              // de abajo re-aplicaría `needs-review` (convoca al Reviewer por
+              // evento) mientras el post-step creator-escalated aplica `stalled`
+              // + `estado:esperando-architect` — el PR quedaría con DOS dueños a
+              // la vez. La transición la materializa el post-step creator-escalated
+              // (gemelo con-PR del Re-review-por-estado, que también cede). ANCLADO
+              // como HTML (clase PR #1133), jamás substring de prosa.
+              if (/<!--\s*creator-escalated\s*-->/.test(body)) {
+                core.notice('Cierre del Creator es una escalada al Architect (creator-escalated) — turn-close-failsafe cede; lo materializa su post-step.');
+                return;
+              }
               // turn-close-failsafe (finplan#1322, 2026-07-13 — capa 1 de
               // AP-011 para la transición Creator→Reviewer). Incidente
               // finplan PR #1319: el Creator aplicó los nits, pusheó,
@@ -1097,6 +1111,97 @@ jobs:
             });
             core.notice(`Label aplicada: ${label}`);
 
+      - name: Materializar escalada del Creator con PR abierto (creator-escalated)
+        # Repesca finplan#1391 (AP-017, 2026-07-15): el Creator escaló al
+        # Architect el 🔴(b) del gate A3′ (ADR-210, «PARAR y escalar» del propio
+        # ADR) EN PROSA (comentario del PR), pero NINGÚN estado de despacho se
+        # materializó: el PR quedó `estado:esperando-creator`, el dispatcher de
+        # turno (ADR-217) lo declaró `turno-de-nadie`, y architect-resolve solo
+        # llegó vía el caza-anomalías del watchdog ~22 min después — una escalada
+        # CORRECTA degradada a anomalía, rescatada por FALLBACK en vez de por
+        # HANDOFF (violación del principio 1 de protocol.md: estado materializado,
+        # no inferido). Complemento EXACTO de creator-blocked (finplan#1350), que
+        # gobierna el paro limpio PRE-código SIN PR y se excluye «jamás con PR
+        # abierto»: este belt cubre la escalada derivable-por-Architect DESDE
+        # DENTRO del loop de PR (gate numérico de ADR tipo A3′, ambigüedad de
+        # diseño). NUNCA una decisión humana (eso sigue siendo [NEEDS-HUMAN]).
+        # Materializa por ESTADO en el instante: `stalled` con el PAT (⇒
+        # architect-resolve POR EVENTO — watchdog `pull_request labeled stalled`,
+        # sin esperar al cron) + `estado:esperando-architect` visible (el
+        # dispatcher de turno cede sobre él en vez de declarar turno-de-nadie;
+        # architect-resolve lo limpia al rular/re-armar). Detección ANCLADA como
+        # HTML, jamás substring de prosa (clase PR #1133). Freshness-checked vs el
+        # comentario disparador (lección #180): solo cuenta el cierre del Creator
+        # POSTERIOR al trigger — un `@claude` en backticks en prosa del Reviewer
+        # no debe materializar nada. Self-contained (mismo patrón que los demás
+        # post-steps: open-review-failsafe, creator-muerto) para no destabilizar
+        # el path crítico Creator→Reviewer del Auto-label.
+        if: |
+          success()
+          && steps.check_pause.outputs.paused != 'true'
+          && steps.check_iterations.outputs.cap_reached != 'true'
+          && steps.check_chain.outputs.broken != 'true'
+          && steps.check_panel.outputs.blocked != 'true'
+          && steps.check_serial.outputs.blocked != 'true'
+          && (
+            github.event_name == 'pull_request_review'
+            || github.event_name == 'pull_request_review_comment'
+            || (github.event_name == 'issue_comment'
+                && github.event.issue.pull_request)
+          )
+        uses: actions/github-script@v7
+        with:
+          # PAT (REVIEWER_GITHUB_TOKEN), NO el GITHUB_TOKEN default: la label
+          # `stalled` que aplica este step ES el trigger por EVENTO de
+          # architect-resolve (watchdog `on: labeled`, rama stalled-autonomous-
+          # resolve del scan). Con el token default el `labeled` no se emite
+          # (anti-loop de GitHub) y la señal degradaría al cron — justo la latencia
+          # que este belt elimina. Mismo actor/mecanismo que el creator-blocked.
+          github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.issue?.number
+              || context.payload.pull_request?.number;
+            if (!prNumber) return;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner, repo, issue_number: prNumber, per_page: 100 });
+            const botComments = comments.filter(c => c.user?.login === 'claude[bot]');
+            if (botComments.length === 0) return;
+            const last = botComments[botComments.length - 1];
+            // FRESHNESS CHECK (lección #180): el último comment del Creator solo
+            // es cierre válido de ESTE run si fue creado DESPUÉS del comment/review
+            // que lo disparó. Si es anterior, trigger espurio (típ. substring
+            // `@claude` en backticks en prosa del Reviewer) ⇒ no materializar.
+            const trigRaw = context.payload.comment?.created_at
+              || context.payload.review?.submitted_at || null;
+            if (trigRaw && new Date(last.created_at) <= new Date(trigRaw)) {
+              core.notice('creator-escalated: último comment del Creator anterior/igual '
+                + 'al trigger — probable trigger espurio, no materializo.');
+              return;
+            }
+            // Detección ANCLADA como HTML (clase PR #1133): jamás substring de prosa.
+            if (!/<!--\s*creator-escalated\s*-->/.test(last.body || '')) return;
+            // Materializa por ESTADO. Estado visible PRIMERO, `stalled` DESPUÉS:
+            // así el `labeled=stalled` (con PAT) convoca a architect-resolve con
+            // el `estado:esperando-architect` ya presente. `estado:*` es dinámica
+            // (addLabels la auto-crea, como el resto de estados de cadena).
+            await github.rest.issues.addLabels({ owner, repo, issue_number: prNumber,
+              labels: ['estado:esperando-architect'] });
+            await github.rest.issues.addLabels({ owner, repo, issue_number: prNumber,
+              labels: ['stalled'] });
+            await github.rest.issues.createComment({ owner, repo, issue_number: prNumber,
+              body: '**claude-code · creator-escalated**: el Creator escaló al Architect '
+                + 'una decisión derivable desde dentro del loop de PR (gate numérico de '
+                + 'ADR / ambigüedad de diseño; jamás una decisión humana). Estado '
+                + 'materializado por PAT en el mismo job (doctrina estado-primario, '
+                + 'protocol.md §1): `stalled` ⇒ architect-resolve por evento (sin esperar '
+                + 'al cron) + `estado:esperando-architect` ⇒ el dispatcher de turno del '
+                + 'watchdog cede en vez de declarar `turno-de-nadie`. architect-resolve '
+                + 'publica su ruling y limpia el estado al re-armar (repesca finplan#1391, '
+                + 'AP-017).\n\n<!-- creator-escalated-materializado -->' });
+            core.warning(`PR #${prNumber}: escalada del Creator materializada por estado `
+              + `— stalled + estado:esperando-architect (creator-escalated).`);
+
       # ───────────────────────────────────────────────────────────────────
       # Auto-lanzamiento de épica (ADR-193). Espejo del step `Auto-label`:
       # usa el PAT (REVIEWER_GITHUB_TOKEN) porque eventos del GITHUB_TOKEN
@@ -1137,6 +1242,12 @@ jobs:
             if (!pr.head.ref.startsWith('claude/')) { core.notice('rama no-agente — nada.'); return; }
             if (pr.head.sha === before) { core.notice('sin push en la sesión — no se re-dispara review.'); return; }
             const labels = pr.labels.map(l => l.name);
+            // Cede a la escalada: si el Creator pusheó trabajo parcial y LUEGO
+            // escaló (creator-escalated ya materializó `estado:esperando-architect`
+            // en el step anterior), el turno es del Architect, no del Reviewer —
+            // re-etiquetar needs-review aquí competiría con `stalled` y mandaría el
+            // PR a dos dueños a la vez (AP-017).
+            if (labels.includes('estado:esperando-architect')) { core.notice('PR escalado a architect-resolve (creator-escalated) — no re-review por estado.'); return; }
             if (labels.includes('needs-review')) { core.notice('needs-review ya presente (Auto-label actuó) — sin duplicar.'); return; }
             // remove+add para forzar el evento labeled aunque hubiera restos
             await github.rest.issues.removeLabel({ owner, repo, issue_number: n, name: 'needs-review' }).catch(() => {});

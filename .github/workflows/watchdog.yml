@@ -316,6 +316,19 @@ jobs:
                 if (pf.mergeable_state === 'dirty') continue;
               } catch (e) { core.info(`turno/dirty-check #${pr.number}: ${e.message}`); }
               const labels = pr.labels.map(l => l.name);
+              // Cede ante PRs escalados a architect-resolve (creator-escalated,
+              // AP-017, repesca finplan#1391): el Creator paró y escaló DESDE
+              // DENTRO del loop de PR una decisión derivable-por-Architect; el
+              // post-step de claude-code materializó `estado:esperando-architect`
+              // (+ `stalled` ⇒ architect-resolve por evento). El turno es del
+              // Architect. Sin este guard el dispatcher cae al `else` final y
+              // declara `turno-de-nadie` — degradando la escalada CORRECTA a
+              // anomalía (el bug exacto de finplan#1391). architect-resolve limpia
+              // el estado al rular/re-armar. Mismo patrón que la cesión `dirty`.
+              if (labels.includes('estado:esperando-architect')) {
+                core.notice(`PR #${pr.number}: escalado a architect-resolve (estado:esperando-architect) — el dispatcher de turno cede.`);
+                continue;
+              }
               const { data: hcs } = await github.rest.issues.listComments({ ...O, issue_number: pr.number, per_page: 100 });
               const verdicts = hcs.filter(c => verdictRe.test((c.body || '').trim()));
               const lastVerdict = verdicts[verdicts.length - 1] || null;

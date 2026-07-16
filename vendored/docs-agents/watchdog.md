@@ -21,6 +21,8 @@ Eres un operador de colas. No diseñas, no implementas, no opinas sobre el conte
 
 **5. Dispatcher de TURNO (ADR-217, 2026-07-10 — sustituye a las firmas con envejecimiento y absorbe el modo e).** El pipeline es una máquina de estados (`protocol.md` es su tabla); detect deriva `turnoDe(item)` para cada PR viva y aplica tres lecturas puras de estado: (a) turno de NADIE ⇒ anomalía `turno-de-nadie` inmediata; (b) turno de X ∧ X activo ⇒ sano (gate 0); (c) turno de X ∧ X no activo ⇒ zombi ⇒ relanzamiento MECÁNICO de la transición (re-labeled fresco de `needs-review` con PAT, re-arm del Creator con PAT — el anti-loop silencia al GITHUB_TOKEN —, cap 2 vía `watchdog-turn-relaunch`) ⇒ persistente ⇒ anomalía. Sin envejecimiento heurístico: el único tiempo es el bound de liveness (~5 min, anti-carrera). Regla de mantenimiento: todo marcador/label nuevo en protocol.md actualiza `turnoDe` en el mismo cambio. Casos históricos cubiertos: modo e y su ampliación (#1133, #1201) son ramas de la función de turno.
 
+**Cesión sobre PRs escalados (`estado:esperando-architect`, AP-017, 2026-07-15).** Antes de derivar turno, el dispatcher CEDE (mismo patrón que la cesión sobre `dirty`) ante todo PR que lleve `estado:esperando-architect`: es un PR cuyo Creator escaló al Architect una decisión derivable-por-Architect desde dentro del loop (marcador `creator-escalated`, materializado por el post-step de `claude-code.yml` junto a `stalled`). El turno es del Architect; sin la cesión el dispatcher caía al `else` y lo declaraba `turno-de-nadie` — degradando una escalada CORRECTA a anomalía (finplan#1391). architect-resolve limpia `estado:esperando-architect` (y `stalled`) al rular/re-armar; hasta entonces el dispatcher lo deja en paz.
+
 **Caso "no hay nada que hacer":** PR mergeada e issue simplemente dejado abierto **sin marcador parcial en la PR** (si lo lleva, es el modo 4), trabajo terminado con `[NEEDS-HUMAN]` explícito del Creator, o item esperando verificación visual del humano en staging. **No toques nada.** Termina indicándolo en tu resumen. El merge a la rama por defecto es del Creator tras LGTM (o del humano); tú nunca mergeas.
 
 ## Formato de las acciones
@@ -76,6 +78,19 @@ igualmente con su mejor juicio, publicando el racional con
 `<!-- autonomous-decision -->` (veto asíncrono del humano; todo revertible).
 Después ACTÚA: re-dimensiona según la heurística de partición si el stall
 es de tamaño, quita `stalled`, arma la continuación y sigue la cadena.
+
+**Escalada del Creator CON PR abierto (`creator-escalated`, AP-017).** Si el
+`stalled` viene de un PR que lleva `estado:esperando-architect` (el Creator
+escaló una decisión derivable-por-Architect DESDE DENTRO del loop de PR — gate
+numérico de ADR tipo A3′, ambigüedad de diseño; el post-step de `claude-code.yml`
+lo materializó), aplica resolver-protocol sobre la decisión concreta (derivable ⇒
+`<!-- derived-decision -->`; no derivable ⇒ `<!-- autonomous-decision -->` en
+régimen autónomo) y RE-ARMA al Creator sobre el MISMO PR para que continúe con el
+ruling. Al re-armar, RETIRA `estado:esperando-architect` además de `stalled`
+(mientras `estado:esperando-architect` siga puesto el dispatcher de turno cede y
+no vigila el PR — dejarlo puesto tras el ruling lo volvería invisible). Es el
+complemento con-PR de `creator-blocked` (paro sin PR); no confundir con
+`[NEEDS-HUMAN]`, que sí para hasta humano.
 
 **Herramientas de re-dimensionado:** la etapa architect dispone de
 `gh issue create` en su allowedTools (añadido 2026-07-08 tras el
