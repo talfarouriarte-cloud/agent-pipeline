@@ -369,3 +369,31 @@ no se persiguió por no justificar el coste frente a la molestia.
 **Reversibilidad.** Alta: un post-step, una cesión de un `continue`, filas de doc y un marcador; se revierte quitando el step y la cesión.
 
 **Fecha.** 2026-07-15.
+
+---
+
+## AP-018 — Guards de auditoría idempotentes: dedup por marcador y force pegajoso (estado materializado, no inferido)
+
+**Contexto.** Los dos guards de arm de `claude-code.yml` (`check_chain` → `sin-invariantes`, no bloqueante; `check_panel` → `panel-sin-consumir`, bloqueante) depositaban ruido y bloqueaban arms legítimos por tres defectos independientes de la MISMA clase raíz: violación de AP-008 §1 (estado materializado, no inferido). Evidencia (finplan#1394, 2026-07-15, épica nodo-bit-exacto): en ~1h15 los guards depositaron **8 comentarios automáticos** — `sin-invariantes` ×5 (byte-idénticos) y `panel-sin-consumir` ×3.
+
+1. **Doble disparo por evento de arm.** El primer arm produjo el par de avisos DOS veces con ~25 s de diferencia (20:55:55/57 y 20:56:20/22): dos triggers del stub (`issues` + `issue_comment`) reaccionando al mismo arm, cada run corriendo los guards y comentando.
+2. **Aviso informativo sin estado materializado.** `sin-invariantes` no bloquea (el arm CONTINÚA) pero se reposteaba íntegro en cada re-arm aunque nada cambiara: el estado «ya avisé» no existía en ningún sitio.
+3. **Force del guard bloqueante no pegajoso.** `panel-sin-consumir` se forzó con `<!-- panel-ok -->` a las 21:09Z; el re-arm de 21:53Z fue abortado por el mismo guard (run 29453493296, 11 s) porque ese comentario concreto omitía el marcador. El force era por-comentario, pero el hecho que certifica («el panel X está consumido») es por-issue/por-panel.
+
+**Decisión (del propietario, ejecutada por el Creator del central).** Un solo remedio homogéneo, coherente con la doctrina estado-primario (AP-008/AP-013): **materializar el estado leyéndolo por-issue (fuertemente consistente, NO el search index — clase AP-015) en vez de inferirlo o re-emitirlo**. Sin tocar los triggers del stub (cambiarlos rompería el arm humano por body y por comentario) — la costura correcta es la idempotencia del guard, no el número de disparos.
+
+1. **`sin-invariantes` idempotente (§1+§2):** antes de comentar, `listComments` y saltar si el marcador `<!-- sin-invariantes -->` ya existe. Cubre el repost en re-arm (§2) y el doble disparo del mismo arm cuando el gap supera la propagación (§1).
+2. **`panel-sin-consumir` dedup (§1):** el `stalled` se re-asegura (idempotente), pero el comentario de bloqueo solo se emite si el marcador no está ya presente en el issue.
+3. **Force `panel-ok` PEGAJOSO (§3):** el guard lee el marcador de CUALQUIER comentario de confianza del issue (`author_association` ∈ {OWNER, MEMBER, COLLABORATOR} — mismo gate de actor que el arm; en repo público un comentario ajeno no debe forzar), no solo del comentario de arm actual. Un re-arm posterior sin repetir el marcador ya no reabre el bloqueo.
+
+**Doc vendorizado.** `protocol.md`: registro retroactivo de `<!-- sin-invariantes -->` (marcador previo sin fila — misma violación append-only ya corregida para `creator-muerto-sin-pr`), y actualización de las filas `panel-sin-consumir`/`panel-ok` a la mecánica idempotente/pegajosa.
+
+**Riesgo residual.** Carrera del dedup en el doble disparo verdaderamente simultáneo (<propagación de `listComments`): dos runs podrían leer «sin marcador» antes de que cualquiera comente y doblar UNA vez. Coste puntual, no sistémico (los ~25 s medidos bastan para la consistencia por-issue); el lock por evento-arm se descartó por complejidad frente a un fallo puntual raro. La doble EJECUCIÓN del Creator sigue cubierta por el guard serial (`serial-activo`), independiente de este cambio.
+
+**Alcance NO incluido (para el Architect).** El agravante estructural del panel (un guard cuyo predicado depende de una acción — `close` de #1381 — fuera del allowlist de TODOS los agentes es un guard que solo un humano puede apagar) exige una decisión de diseño no tomada: si la resolución del panel entra en el allowlist del watchdog o si el guard acepta el estado declarado (`consumido` materializado) en vez del estado `open/closed`. Derivarlo aquí sería inventar alcance (separación de poderes). Queda listado como restante.
+
+**Contrato `workflow_call`.** Sin cambios (no añade inputs/secrets) ⇒ `templates/workflow-contracts.json` intacto (AP-003).
+
+**Reversibilidad.** Alta: tres dedup/lecturas por-issue y filas de doc; se revierte quitando los `listComments` de guarda.
+
+**Fecha.** 2026-07-16.

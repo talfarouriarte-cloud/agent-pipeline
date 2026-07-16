@@ -227,8 +227,21 @@ jobs:
                   // épicas legítimas sin superficie funcional (doc-only). El
                   // Auditor ya degrada a la DoD como sustituto (post-#14); esto
                   // lo hace visible cuando el Architect aún puede editar.
-                  await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
-                    body: '**claude-code · aviso de horneado**: ningún issue de la cadena declara el bloque `## Invariantes funcionales de la épica` (casa canónica: el issue de épica). Sin él, la verificación funcional de la auditoría degrada a la DoD del Creator como sustituto. El arm CONTINÚA (épicas doc-only son legítimas); si esta épica tiene superficie funcional, edita el issue y añade el bloque ahora.\n\n<!-- sin-invariantes -->' });
+                  // AP-018 §1+§2 (central#55): estado materializado, no inferido.
+                  // El aviso es informativo (el arm CONTINÚA) pero se reposteaba
+                  // ÍNTEGRO en cada re-arm y por partida DOBLE cuando el mismo arm
+                  // dispara `issues`+`issue_comment` (8 comentarios en ~1h15,
+                  // finplan#1394). El hecho «ya avisé» no vivía en ningún sitio:
+                  // se LEE el marcador en los comentarios del issue (listComments
+                  // = lectura por-issue fuertemente consistente, NO el search
+                  // index) y si ya existe se salta. Cubre re-arm (§2) y el doble
+                  // disparo del mismo arm cuando el gap supera la propagación (§1).
+                  const { data: existing } = await github.rest.issues.listComments({ owner, repo, issue_number: issue.number, per_page: 100 });
+                  const alreadyWarned = existing.some(c => /<!--\s*sin-invariantes\s*-->/.test(c.body || ''));
+                  if (!alreadyWarned) {
+                    await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
+                      body: '**claude-code · aviso de horneado**: ningún issue de la cadena declara el bloque `## Invariantes funcionales de la épica` (casa canónica: el issue de épica). Sin él, la verificación funcional de la auditoría degrada a la DoD del Creator como sustituto. El arm CONTINÚA (épicas doc-only son legítimas); si esta épica tiene superficie funcional, edita el issue y añade el bloque ahora.\n\n<!-- sin-invariantes -->' });
+                  }
                 }
                 core.setOutput('broken', 'false'); return;
               }
@@ -289,8 +302,23 @@ jobs:
             const armBody = context.payload.comment?.body || '';
             // Exención 1: arm mecánico de epic-merge (encadenado mid-épica)
             if (armBody.includes('epic-auto-launch')) { core.setOutput('blocked', 'false'); return; }
-            // Exención 2: override explícito del que arma
-            if (/<!--\s*panel-ok\s*-->/.test(armBody)) { core.setOutput('blocked', 'false'); return; }
+            // Comentarios del issue: base del force PEGAJOSO (§3) y del dedup del
+            // bloqueo (§1). listComments = lectura por-issue fuertemente
+            // consistente (NO el search index). Una sola lectura, reusada.
+            const { data: issueComments } = await github.rest.issues.listComments({ owner, repo, issue_number: issue.number, per_page: 100 });
+            // Exención 2: override explícito `panel-ok`. AP-018 §3 (central#55): el
+            // force es PEGAJOSO. El hecho que certifica («el panel está
+            // consumido») es por-ISSUE, no por-comentario; exigirlo en CADA arm
+            // hacía que un re-arm posterior sin repetir el marcador reabriera el
+            // bloqueo (finplan run 29453493296, arm de 21:53Z abortado por el
+            // mismo guard tras el force de 21:09Z). Se lee de CUALQUIER comentario
+            // de confianza del issue (OWNER/MEMBER/COLLABORATOR — mismo gate de
+            // actor que el arm; en repo público un comentario ajeno no debe
+            // forzar) o del comentario de arm actual.
+            const TRUSTED = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+            const panelOk = /<!--\s*panel-ok\s*-->/.test(armBody)
+              || issueComments.some(c => /<!--\s*panel-ok\s*-->/.test(c.body || '') && TRUSTED.has(c.author_association));
+            if (panelOk) { core.setOutput('blocked', 'false'); return; }
             // Panel: auditorías y propuestas abiertas
             const open = [];
             for (const lbl of ['auditoria', 'process-proposal']) {
@@ -303,11 +331,19 @@ jobs:
             const cited = new Set([...body.matchAll(/#(\d+)/g)].map(m => Number(m[1])));
             const audits = open.filter(i => (i.labels || []).map(l => l.name).includes('auditoria'));
             if (audits.some(a => cited.has(a.number))) { core.setOutput('blocked', 'false'); return; }
-            // BLOQUEO: panel sin consumir
+            // BLOQUEO: panel sin consumir. AP-018 §1 (central#55): dedup por
+            // marcador. El bloqueo se materializa UNA vez; el doble disparo
+            // (issues+issue_comment del mismo arm) y los re-arms con el panel aún
+            // sin consumir NO reposteaban el bloqueo (`panel-sin-consumir` ×3 en
+            // finplan#1394). El `stalled` se re-asegura (idempotente) pero el
+            // comentario solo se emite si el marcador no está ya presente.
             const list = open.map(i => `- #${i.number} (${(i.labels||[]).map(l=>l.name).join(', ')}): ${i.title}`).join('\n');
             await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['stalled'] });
-            await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
-              body: `**claude-code · guard de panel**: hay panel de la épica anterior SIN consumir — el protocolo exige cerrarlo con línea de resolución al lanzar (3 omisiones históricas motivaron este guard):\n\n${list}\n\nNo se arma al Creator. Opciones: consumir el panel y re-armar, o forzar con \`<!-- panel-ok -->\` en el comentario de arm si el lanzamiento debe preceder al cierre.\n\n<!-- panel-sin-consumir -->` });
+            const alreadyBlocked = issueComments.some(c => /<!--\s*panel-sin-consumir\s*-->/.test(c.body || ''));
+            if (!alreadyBlocked) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
+                body: `**claude-code · guard de panel**: hay panel de la épica anterior SIN consumir — el protocolo exige cerrarlo con línea de resolución al lanzar (3 omisiones históricas motivaron este guard):\n\n${list}\n\nNo se arma al Creator. Opciones: consumir el panel y re-armar, o forzar con \`<!-- panel-ok -->\` en CUALQUIER comentario de confianza del issue (force pegajoso, AP-018 §3) si el lanzamiento debe preceder al cierre.\n\n<!-- panel-sin-consumir -->` });
+            }
             core.setOutput('blocked', 'true');
 
       - name: Checkout repository
