@@ -390,10 +390,34 @@ no se persiguió por no justificar el coste frente a la molestia.
 
 **Riesgo residual.** Carrera del dedup en el doble disparo verdaderamente simultáneo (<propagación de `listComments`): dos runs podrían leer «sin marcador» antes de que cualquiera comente y doblar UNA vez. Coste puntual, no sistémico (los ~25 s medidos bastan para la consistencia por-issue); el lock por evento-arm se descartó por complejidad frente a un fallo puntual raro. La doble EJECUCIÓN del Creator sigue cubierta por el guard serial (`serial-activo`), independiente de este cambio.
 
-**Alcance NO incluido (para el Architect).** El agravante estructural del panel (un guard cuyo predicado depende de una acción — `close` de #1381 — fuera del allowlist de TODOS los agentes es un guard que solo un humano puede apagar) exige una decisión de diseño no tomada: si la resolución del panel entra en el allowlist del watchdog o si el guard acepta el estado declarado (`consumido` materializado) en vez del estado `open/closed`. Derivarlo aquí sería inventar alcance (separación de poderes). Queda listado como restante.
+**Alcance del agravante estructural.** El agravante estructural del panel (un guard cuyo predicado depende de una acción — `close` de #1381 — fuera del allowlist de TODOS los agentes es un guard que solo un humano puede apagar) se dejó fuera de este ADR por ser un fork de diseño. **Resuelto en AP-019** (opción B del fork: estado declarado `consumido`) tras instrucción explícita del propietario.
 
 **Contrato `workflow_call`.** Sin cambios (no añade inputs/secrets) ⇒ `templates/workflow-contracts.json` intacto (AP-003).
 
 **Reversibilidad.** Alta: tres dedup/lecturas por-issue y filas de doc; se revierte quitando los `listComments` de guarda.
+
+**Fecha.** 2026-07-16.
+
+---
+
+## AP-019 — Guard de panel: estado DECLARADO de consumo (cierra la clase «guard que solo un humano puede apagar»)
+
+**Contexto.** AP-018 dejó explícitamente fuera el agravante ESTRUCTURAL del guard `check_panel`, por ser un fork de diseño no derivable en aquella sesión. Este ADR lo resuelve tras instrucción explícita del propietario (arm de central#55, 2026-07-16: «continúa con el alcance restante; si completa el issue, no lo marques parcial»).
+
+El predicado de `check_panel` era: bloquea el arm si hay auditorías/process-proposals **`open`**. «Consumir» el panel significaba CERRARLO con línea de resolución. Pero `close` está fuera del allowlist de TODOS los agentes (Creator, Reviewer, Watchdog — el watchdog solo tiene `gh issue view/comment/edit/create`, nunca `close`). Consecuencia: **un guard cuyo predicado depende de una acción que ningún agente puede ejecutar solo lo puede apagar un humano.** Evidencia (finplan#1381, 2026-07-15): el panel se declaró consumido TRES veces y el guard siguió bloqueando porque el issue seguía `open`; lo cerró el propietario a mano.
+
+**Fork del issue (central#55).** *(A)* meter `close` en el allowlist del watchdog; *(B)* que el guard acepte el estado DECLARADO (`consumido` materializado) en vez de `open/closed`.
+
+**Decisión: opción (B).** Es la derivable por la doctrina que este mismo hilo estableció — **estado materializado, no inferido** (AP-008 §1, AP-018): el guard lee el marcador `<!-- panel-consumido: #N -->` de CUALQUIER comentario de confianza (OWNER/MEMBER/COLLABORATOR — mismo gate de actor que `panel-ok`) del issue armado y excluye ese panel de la lista de bloqueo aunque siga `open`. **Declarar consumo es un comentario, DENTRO del allowlist de todo agente** ⇒ la clase «solo un humano lo apaga» queda cerrada. La opción (A) se descarta: añade una capacidad DESTRUCTIVA (`close` del ciclo de vida del issue) al watchdog, con blast radius mayor y sin necesidad — es reestructura de allowlist, alcance del Architect.
+
+**Diferencia con `panel-ok`.** `panel-ok` es bypass TOTAL del guard (arma con panel abierto porque el lanzamiento debe preceder al cierre). `panel-consumido: #N` es per-panel: resuelve panels UNO a UNO y el guard pasa verde solo cuando TODOS están consumidos o cerrados — es el estado declarado que faltaba, no un override. El cierre real del panel puede seguir ocurriendo después (signal-closer, epic-merge, humano); el guard ya no depende HARD de él.
+
+**Implementación.** `check_panel` reusa la lectura `issueComments` de AP-018 (sin API extra): recoge los `panel-consumido: #N` de comentarios de confianza a un `Set`, dedup del panel por nº y filtra la lista `open`. El comentario de bloqueo `panel-sin-consumir` enumera las tres salidas (consumir/declarar/forzar).
+
+**Doc vendorizado.** `protocol.md`: alta de la fila `<!-- panel-consumido: #N -->` y actualización de la fila `panel-sin-consumir`.
+
+**Contrato `workflow_call`.** Sin cambios (no añade inputs/secrets) ⇒ `templates/workflow-contracts.json` intacto (AP-003).
+
+**Reversibilidad.** Alta: una lectura de marcador + filtro en un solo step y una fila de doc; se revierte quitando el `Set` `consumed` y su filtro.
 
 **Fecha.** 2026-07-16.
