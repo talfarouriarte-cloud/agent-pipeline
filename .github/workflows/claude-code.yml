@@ -593,10 +593,24 @@ jobs:
           BRANCH=$(git branch --show-current || true)
           case "$BRANCH" in claude/*) ;; *) echo "rama '$BRANCH' fuera del patrón claude/*: nada que rescatar"; exit 0;; esac
           git fetch -q origin "$BRANCH" 2>/dev/null || true
-          AHEAD=$(git rev-list --count "origin/$BRANCH..HEAD" 2>/dev/null || echo "1")
-          [ "$AHEAD" = "0" ] && { echo "sin commits residuales: nada que rescatar"; exit 0; }
+          BASE="${{ inputs.default_branch }}"
+          git fetch -q origin "$BASE" 2>/dev/null || true
+          # Referencia contra la que medir residuales: la rama remota si existe;
+          # si la rama es VIRGEN (nunca pusheada), la base. Incidente central#59:
+          # el fallback `|| echo "1"` inventaba AHEAD=1 sobre rama virgen SIN
+          # commits (rev-list contra un origin/BRANCH inexistente falla),
+          # empujaba una rama vacía y `gh pr create` moría («No commits
+          # between…») — job rojo por un no-op.
+          if git rev-parse -q --verify "origin/$BRANCH" >/dev/null 2>&1; then REF="origin/$BRANCH"
+          elif git rev-parse -q --verify "origin/$BASE" >/dev/null 2>&1; then REF="origin/$BASE"
+          else echo "sin referencia remota verificable (ni $BRANCH ni $BASE): no puedo medir residuales"; exit 0; fi
+          AHEAD=$(git rev-list --count "$REF..HEAD")
+          [ "$AHEAD" = "0" ] && { echo "sin commits residuales contra $REF: nada que rescatar"; exit 0; }
           echo "rescatando commits locales de $BRANCH con el token de workflows"
           git push "https://x-access-token:${WF_PUSH}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/$BRANCH"
+          # Guard anti-PR-vacío: PR solo si hay diff real contra la base.
+          if git rev-parse -q --verify "origin/$BASE" >/dev/null 2>&1 && [ "$(git rev-list --count "origin/$BASE..HEAD")" = "0" ]; then
+            echo "rama sin diff contra $BASE tras el push: sin PR que abrir"; exit 0; fi
           if ! gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json number --jq '.[0].number' | grep -q .; then
             TITLE=$(git log -1 --pretty=%s)
             BODY=$(git log -1 --pretty=%b)
@@ -889,6 +903,15 @@ jobs:
               return;
             }
             const outcome = '${{ steps.creator.outcome }}';
+            // Labels VIVAS, no del payload (incidente central#59): el snapshot
+            // del evento de rearm PRECEDE a la re-aplicación de `serial-activo`
+            // por epic-merge — el guard veía «sin serie» con la serie ocupada y
+            // la cerraba en silencio. Toda lectura de labels en este post-step
+            // pasa por aquí.
+            async function liveLabels() {
+              const { data: li } = await github.rest.issues.get({ owner, repo, issue_number: n });
+              return (li.labels || []).map(l => (typeof l === 'string' ? l : l.name));
+            }
             // Pop de la cola serial (espejo del armQueue de epic-merge — si
             // tocas uno, toca el otro): arma el en-cola más antiguo (FIFO).
             async function popQueue(fromIssue, why) {
@@ -915,8 +938,7 @@ jobs:
             // en `creator-muerto-sin-pr` (`stalled`), misclasificando el
             // veredicto correcto como stall.
             async function materializeScopeComplete() {
-              const labs = (context.payload.issue.labels || []).map(l => l.name);
-              const held = labs.includes('serial-activo');
+              const held = (await liveLabels()).includes('serial-activo');
               if (held) await github.rest.issues.removeLabel({ owner, repo, issue_number: n, name: 'serial-activo' }).catch(() => {});
               await github.rest.issues.addLabels({ owner, repo, issue_number: n, labels: ['estado:cierre-pendiente-humano'] });
               await github.rest.issues.createComment({ owner, repo, issue_number: n,
@@ -973,7 +995,7 @@ jobs:
                 // SERIE está ocupada por esta sesión, el silencio es un cerrojo:
                 // el siguiente en-cola esperaría para siempre. Mecánico: serie
                 // ocupada + sin commits + sin PR ⇒ escalada no-declarada.
-                const labs = (context.payload.issue.labels || []).map(l => l.name);
+                const labs = await liveLabels();
                 if (!labs.includes('serial-activo')) {
                   core.notice(`sesión success sin commits en #${n}: conversacional sin serie — nada que materializar.`);
                   return;
