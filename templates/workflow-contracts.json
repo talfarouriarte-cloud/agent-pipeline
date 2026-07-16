@@ -1,5 +1,6 @@
 {
   "_comment": "Contrato PUBLICADO de los workflows reusables del central (workflow_call servidos a finplan y wmcb). check-contracts.mjs lo verifica contra los ficheros reales con semántica asimétrica: input nuevo con-default pasa en silencio; eliminar/renombrar un input, pasarlo a required, quitarle el default, o volver un secret required son ROTURAS y exigen editar este fichero a propósito (2026-07-12, AP-003). Al hacer un cambio ROMPEDOR en un reusable, actualiza su entrada aquí en el MISMO PR.",
+  "_comment_permissions": "`permissions_required` (AP-022, incidente #57) modela el bloque `permissions` del job del reusable como superficie de contrato: es la unión (máximo scope por clave) de los permisos que sus jobs piden al caller. check-contracts exige FIDELIDAD exacta reusable↔contrato (cualquier permiso nuevo en el job del reusable rompe la flota con startup_failure si un stub no lo concede — GitHub obliga callee ⊆ caller) y que cada stub del central conceda ⊇ este set. Congelado por doctrina (AP-022 prop.2): capacidad nueva que requiera permisos ⇒ PAT-en-env o migración de flota explícita (stubs primero), NUNCA un permiso nuevo aquí sin migración.",
   "claude-code.yml": {
     "inputs": {
       "bot_comment_cap": {
@@ -34,7 +35,13 @@
     "secrets_required": [
       "CLAUDE_CODE_OAUTH_TOKEN",
       "REVIEWER_GITHUB_TOKEN"
-    ]
+    ],
+    "permissions_required": {
+      "contents": "write",
+      "pull-requests": "write",
+      "issues": "write",
+      "id-token": "write"
+    }
   },
   "epic-merge.yml": {
     "inputs": {
@@ -73,7 +80,11 @@
     },
     "secrets_required": [
       "REVIEWER_GITHUB_TOKEN"
-    ]
+    ],
+    "permissions_required": {
+      "statuses": "write",
+      "contents": "read"
+    }
   },
   "process-review.yml": {
     "inputs": {
@@ -105,7 +116,11 @@
     "secrets_required": [
       "CLAUDE_CODE_OAUTH_TOKEN",
       "REVIEWER_GITHUB_TOKEN"
-    ]
+    ],
+    "permissions_required": {
+      "contents": "read",
+      "issues": "write"
+    }
   },
   "reviewer.yml": {
     "inputs": {
@@ -137,7 +152,12 @@
     "secrets_required": [
       "CLAUDE_CODE_OAUTH_TOKEN",
       "REVIEWER_GITHUB_TOKEN"
-    ]
+    ],
+    "permissions_required": {
+      "contents": "read",
+      "pull-requests": "write",
+      "issues": "write"
+    }
   },
   "watchdog.yml": {
     "inputs": {
@@ -189,6 +209,14 @@
     "secrets_required": [
       "CLAUDE_CODE_OAUTH_TOKEN",
       "REVIEWER_GITHUB_TOKEN"
-    ]
+    ],
+    "permissions_required": {
+      "contents": "read",
+      "issues": "write",
+      "pull-requests": "write",
+      "statuses": "write",
+      "actions": "write",
+      "id-token": "write"
+    }
   }
 }
