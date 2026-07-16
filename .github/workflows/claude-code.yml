@@ -319,12 +319,34 @@ jobs:
             const panelOk = /<!--\s*panel-ok\s*-->/.test(armBody)
               || issueComments.some(c => /<!--\s*panel-ok\s*-->/.test(c.body || '') && TRUSTED.has(c.author_association));
             if (panelOk) { core.setOutput('blocked', 'false'); return; }
-            // Panel: auditorías y propuestas abiertas
-            const open = [];
+            // Panel: auditorías y propuestas abiertas (dedup por nº — un issue con
+            // ambas labels aparecería dos veces).
+            const openByNum = new Map();
             for (const lbl of ['auditoria', 'process-proposal']) {
               const res = await github.rest.issues.listForRepo({ owner, repo, state: 'open', labels: lbl, per_page: 50 });
-              open.push(...res.data.filter(i => !i.pull_request));
+              for (const i of res.data) if (!i.pull_request) openByNum.set(i.number, i);
             }
+            // AP-019 (central#55, agravante ESTRUCTURAL): estado DECLARADO de
+            // consumo. La clase raíz era que «panel consumido» solo se podía
+            // materializar CERRANDO el panel, y `close` está fuera del allowlist de
+            // TODOS los agentes ⇒ un guard que solo un humano podía apagar
+            // (finplan#1381: consumo declarado 3× e ignorado por el guard porque el
+            // issue seguía `open`). Doctrina estado-materializado (AP-008/AP-018):
+            // el guard acepta el estado DECLARADO `<!-- panel-consumido: #N -->` de
+            // CUALQUIER comentario de confianza del issue (mismo gate de actor que
+            // `panel-ok`; reusa la lectura `issueComments`, sin API extra) —
+            // declarar es un comentario, DENTRO del allowlist de todo agente. NO se
+            // expande el allowlist destructivo del watchdog con `close` (opción A
+            // del fork: más blast radius sobre el ciclo de vida del issue,
+            // reestructura del Architect). El cierre real del panel puede seguir
+            // ocurriendo después (signal-closer, epic-merge, humano); el guard ya
+            // no depende HARD de él.
+            const consumed = new Set();
+            for (const c of issueComments) {
+              if (!TRUSTED.has(c.author_association)) continue;
+              for (const m of (c.body || '').matchAll(/<!--\s*panel-consumido:\s*#?(\d+)\s*-->/g)) consumed.add(Number(m[1]));
+            }
+            const open = [...openByNum.values()].filter(i => !consumed.has(i.number));
             if (!open.length) { core.setOutput('blocked', 'false'); return; }
             // Exención 3: correctivo de una auditoría viva — su body cita el nº
             const body = issue.body || '';
@@ -342,7 +364,7 @@ jobs:
             const alreadyBlocked = issueComments.some(c => /<!--\s*panel-sin-consumir\s*-->/.test(c.body || ''));
             if (!alreadyBlocked) {
               await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
-                body: `**claude-code · guard de panel**: hay panel de la épica anterior SIN consumir — el protocolo exige cerrarlo con línea de resolución al lanzar (3 omisiones históricas motivaron este guard):\n\n${list}\n\nNo se arma al Creator. Opciones: consumir el panel y re-armar, o forzar con \`<!-- panel-ok -->\` en CUALQUIER comentario de confianza del issue (force pegajoso, AP-018 §3) si el lanzamiento debe preceder al cierre.\n\n<!-- panel-sin-consumir -->` });
+                body: `**claude-code · guard de panel**: hay panel de la épica anterior SIN consumir — el protocolo exige cerrarlo con línea de resolución al lanzar (3 omisiones históricas motivaron este guard):\n\n${list}\n\nNo se arma al Creator. Opciones: (a) consumir el panel (cerrar con línea de resolución) y re-armar; (b) declarar consumido un panel concreto con \`<!-- panel-consumido: #N -->\` en CUALQUIER comentario de confianza del issue (estado materializado, AP-019) — no requiere \`close\` (fuera del allowlist de los agentes); (c) forzar el arm completo con \`<!-- panel-ok -->\` (force pegajoso, AP-018 §3) si el lanzamiento debe preceder al cierre.\n\n<!-- panel-sin-consumir -->` });
             }
             core.setOutput('blocked', 'true');
 
