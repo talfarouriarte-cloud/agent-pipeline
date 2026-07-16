@@ -39,6 +39,13 @@ const MANIFEST = 'templates/workflow-contracts.json';
 // merge, sin canario por el modelo graft/@main). Este check lo modela.
 const RANK = { none: 0, read: 1, write: 2 };
 const permRank = v => RANK[v] ?? 0;
+// Normaliza un valor `permissions` a un mapa {clave:nivel}. Ojo: `typeof null
+// === 'object'` en JS, así que un bloque `permissions:` BARE (YAML → null; en
+// GitHub = concede/pide `none` a todo) hay que colapsarlo a {} explícitamente,
+// o `perms[k]` revienta con TypeError más abajo. Una forma `read-all`/`write-all`
+// (string) también cae a {} — sin-mínimo, límite conocido (AP-022, ningún
+// workflow del repo la usa).
+const asPerms = p => (p && typeof p === 'object') ? p : {};
 
 // Permisos EFECTIVOS que el reusable pide al caller: unión (máximo scope por
 // clave) de los permisos de cada job. El nivel de job REEMPLAZA al de workflow
@@ -46,12 +53,16 @@ const permRank = v => RANK[v] ?? 0;
 // workflow; si ninguno declara, el job hereda lo que conceda el caller y no
 // impone mínimo. `none` no impone mínimo. El caller debe conceder ⊇ esta unión.
 function requiredPermissions(doc) {
-  const wfPerm = (doc && typeof doc.permissions === 'object' && doc.permissions) || null;
+  const has = (o, k) => !!o && Object.prototype.hasOwnProperty.call(o, k);
+  const wfPerm = has(doc, 'permissions') ? asPerms(doc.permissions) : null;
   const jobs = (doc && doc.jobs) || {};
   const req = {};
   for (const jb of Object.values(jobs)) {
     if (!jb || typeof jb !== 'object') continue;
-    const eff = (typeof jb.permissions === 'object' && jb.permissions) ? jb.permissions : (wfPerm || {});
+    // El job DECLARA `permissions` (aunque sea bare/null ⇒ `none`) REEMPLAZA al
+    // workflow-level; si no lo declara, HEREDA. Distinguir "declarado a null" de
+    // "ausente" exige mirar la PRESENCIA de la clave, no `typeof` (null es object).
+    const eff = has(jb, 'permissions') ? asPerms(jb.permissions) : (wfPerm || {});
     for (const [k, v] of Object.entries(eff)) {
       if (permRank(v) === 0) continue;
       if (permRank(v) > permRank(req[k])) req[k] = v;
@@ -61,13 +72,17 @@ function requiredPermissions(doc) {
 }
 
 // Permisos que un stub (caller) CONCEDE al reusable: bloque explícito del job
-// `call` si lo redefine, o el de workflow. Un stub SIN bloque explícito hereda
-// el default del repo (no razonable estáticamente) ⇒ { explicit:false } y se
-// omite del check ⊇ (el consumidor debe conceder ⊇ igualmente).
+// `call` si lo redefine, o el de workflow. Un bloque `permissions:` BARE (null)
+// es EXPLÍCITO y concede `none` a todo (⇒ asPerms lo colapsa a {}, y el ⊇ emite
+// el diagnóstico accionable "concede X:none pero exige X:write" en vez de
+// reventar). Un stub SIN bloque explícito hereda el default del repo (no
+// razonable estáticamente) ⇒ { explicit:false } y se omite del check ⊇ (el
+// consumidor debe conceder ⊇ igualmente).
 function grantedPermissions(doc, callJobName) {
+  const has = (o, k) => !!o && Object.prototype.hasOwnProperty.call(o, k);
   const job = ((doc.jobs || {})[callJobName]) || {};
-  if (typeof job.permissions === 'object') return { explicit: true, perms: job.permissions };
-  if (doc && typeof doc.permissions === 'object') return { explicit: true, perms: doc.permissions };
+  if (has(job, 'permissions')) return { explicit: true, perms: asPerms(job.permissions) };
+  if (has(doc, 'permissions')) return { explicit: true, perms: asPerms(doc.permissions) };
   return { explicit: false, perms: {} };
 }
 
