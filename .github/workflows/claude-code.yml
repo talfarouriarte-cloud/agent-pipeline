@@ -240,13 +240,26 @@ jobs:
                   // el search index); reusada para el dedup del stall y el force
                   // pegajoso `invariantes-na`.
                   const armBody = context.payload.comment?.body || '';
-                  // Eslabón aguas ABAJO (epic-merge encadena con
-                  // `epic-auto-launch`): la decisión de PRIMER eslabón ya se tomó
-                  // y la casa canónica del bloque (el issue de épica) queda
-                  // AGUAS ARRIBA — invisible al traversal forward desde aquí.
-                  // Sin esta exención se re-stallearía la cadena a mitad de
-                  // vuelo. El stall es solo para el primer eslabón (issue #59).
-                  const isAutoLaunch = armBody.includes('epic-auto-launch');
+                  // El stall es SOLO para el arm inicial GENUINO de la raíz — el
+                  // `@claude` del Auditor/humano (ARM_TOKEN) que NO trae marcador
+                  // de encadenado ni de re-arm. Un eslabón NO-raíz se (re)arma por
+                  // DOS vías, no una (central#59 review): (1) epic-merge encadena
+                  // con `epic-auto-launch`; (2) el watchdog re-arma con
+                  // `watchdog-rearm` cuando el Creator de un eslabón intermedio
+                  // muere sin PR — el caso para el que existe el watchdog, y el
+                  // camino de muerte-y-relanzamiento más común. En AMBAS la casa
+                  // canónica del bloque (el issue de épica) queda AGUAS ARRIBA,
+                  // invisible al traversal forward desde el eslabón intermedio; sin
+                  // eximirlas se re-stallearía la cadena a mitad de vuelo (falso
+                  // stall de un eslabón legítimo en vuelo). Un `watchdog-rearm`
+                  // SIEMPRE implica que el eslabón ya superó el guard una vez (con
+                  // bloque, con `invariantes-na`, o por ser aguas abajo) — el arm
+                  // inicial sin bloque aborta ANTES de armar Creator, así que nunca
+                  // hay un Creator que muera y dispare un `watchdog-rearm` inicial:
+                  // eximirlo no oculta ninguna omisión real. La premisa
+                  // «downstream ⟺ epic-auto-launch» era incompleta; el proxy
+                  // correcto es «trae CUALQUIER marcador de re-arm de cadena».
+                  const isChainRearm = armBody.includes('epic-auto-launch') || armBody.includes('watchdog-rearm');
                   const { data: existing } = await github.rest.issues.listComments({ owner, repo, issue_number: issue.number, per_page: 100 });
                   const TRUSTED = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
                   // Force PEGAJOSO doc-only (AP-021, mismo criterio que `panel-ok`
@@ -254,9 +267,11 @@ jobs:
                   // superficie funcional. Vale en CUALQUIER comentario de
                   // confianza del issue — un re-arm posterior no lo pierde.
                   const naDeclared = existing.some(c => /<!--\s*invariantes-na\s*-->/.test(c.body || '') && TRUSTED.has(c.author_association));
-                  if (naDeclared || isAutoLaunch) {
-                    // Doc-only declarado (pegajoso) o eslabón encadenado: pasa en
-                    // SILENCIO, cero re-avisos (converge con el dedup de AP-018 §2).
+                  if (naDeclared || isChainRearm) {
+                    // Doc-only declarado (pegajoso) o (re)arm de un eslabón NO-raíz
+                    // (`epic-auto-launch` de epic-merge / `watchdog-rearm` del
+                    // watchdog): pasa en SILENCIO, cero re-avisos y cero re-stalls
+                    // (converge con el dedup de AP-018 §2).
                     core.setOutput('broken', 'false'); return;
                   }
                   // MATERIALIZA el despacho: `stalled` (⇒ architect-resolve POR
