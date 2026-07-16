@@ -930,14 +930,6 @@ jobs:
           && github.event.issue && !github.event.issue.pull_request
           && !contains(github.event.issue.labels.*.name, 'auditoria')
         uses: actions/github-script@v7
-        env:
-          # AP-023: el `github` de este step usa el PAT (sus eventos disparan
-          # workflows). Para ABRIR el PR desde el estado necesitamos lo
-          # CONTRARIO: el GITHUB_TOKEN default, cuyo `opened` NO dispara al
-          # Reviewer — así `needs-review` (PAT, abajo) queda como única arista
-          # de review y no se dobla la sesión Opus. Expuesto como env para el
-          # raw fetch de `pulls.create`.
-          DEFAULT_TOKEN: ${{ github.token }}
         with:
           # PAT, no GITHUB_TOKEN default (2026-07-14, finplan#1350): la label
           # `stalled` que aplica este step es el trigger por EVENTO de
@@ -1084,29 +1076,37 @@ jobs:
               const { scoped } = await freshScopeComplete();
               if (scoped) { await materializeScopeComplete(); return; }
             }
-            // AP-023 (2026-07-16, repesca finplan#1404): con rama UTILIZABLE
-            // (claude/* con commits ahead, sin PR) la transición Creator→PR ya
-            // está DETERMINADA por el estado. Antes se declaraba `stalled` y se
-            // re-armaba OTRA sesión-agente cuyo único Δ era este acto mecánico
-            // — «el fallback trabajando ES el failure del primario» (wmcb#38;
-            // AP-016 aplicó el mismo cierre al edge `opened`). El post-step lo
-            // EJECUTA: abre el PR desde el estado. Se abre con el GITHUB_TOKEN
-            // default (raw fetch, no el PAT de `github`): así el `opened` NO
-            // dispara al Reviewer (anti-loop de GitHub), y `needs-review` por
-            // PAT queda como ÚNICA arista determinista de review — sin doblar
-            // la sesión Opus que el `opened` de un PR con rama claude/*
-            // dispararía igual (gate `isAgentBranch` de reviewer.yml; auditado
-            // en Riesgo 1 de la propuesta). Polaridad PARCIAL forzada: el
-            // post-step no puede juzgar full/partial ⇒ `Refs #N` + `partial-pr`
-            // + «Alcance restante» de texto fijo (mismo default del protocolo:
-            // sin declaración = parcial). Fail-safe: si mergea, epic-merge
-            // re-arma el parcial (cap 3/6) o un alcance realmente completo
-            // termina en `creator-alcance-completo` (AP-020) o cierre humano.
+            // AP-023 (2026-07-16, repesca finplan#1404) + fix review #73:
+            // con rama UTILIZABLE (claude/* con commits ahead, sin PR) la
+            // transición Creator→PR ya está DETERMINADA por el estado. Antes
+            // se declaraba `stalled` y se re-armaba OTRA sesión-agente cuyo
+            // único Δ era este acto mecánico — «el fallback trabajando ES el
+            // failure del primario» (wmcb#38; AP-016 aplicó el mismo cierre al
+            // edge `opened`). El post-step lo EJECUTA: abre el PR desde el
+            // estado con el PAT (`github` de este step), IGUAL que el rescate
+            // de push normal (`gh pr create` con REVIEWER_GITHUB_TOKEN). Abrir
+            // con el PAT — NO el GITHUB_TOKEN default — es OBLIGATORIO: el
+            // `opened` de un PR con rama claude/* es la ÚNICA arista que
+            // dispara (a) CI (`ci.yml on: pull_request` ⇒ label `ci-verde`, sin
+            // la cual epic-merge queda en `esperando-ci` y el required-check
+            // nunca corre) y (b) la review (gate `opened` + `isAgentBranch` de
+            // reviewer.yml). Un evento del token default NO dispara NINGÚN
+            // workflow (anti-loop de GitHub) ⇒ mataría CI y dejaría el PR
+            // inmergeable (fix review #73; el análisis previo del Riesgo 1 solo
+            // consideró el edge del Reviewer, no el de CI). Por eso NO se aplica
+            // `needs-review`: el `opened` ya arma la review — añadir la label
+            // DOBLARÍA la sesión Opus (labeled + opened). Polaridad PARCIAL
+            // forzada: el post-step no puede juzgar full/partial ⇒ `Refs #N` +
+            // `partial-pr` + «Alcance restante» de texto fijo (mismo default del
+            // protocolo: sin declaración = parcial). Fail-safe: si mergea,
+            // epic-merge re-arma el parcial (cap 3/6) o un alcance realmente
+            // completo termina en `creator-alcance-completo` (AP-020) o cierre
+            // humano.
             if (hasCommits && branchRef) {
               const prBody = [
                 `Refs #${n}`,
                 '',
-                `PR **abierto por el post-step desde el ESTADO** (\`<!-- pr-abierto-por-estado -->\`): la sesión del Creator terminó en \`${outcome}\` con el trabajo commiteado en verde y SIN abrir el PR. La transición Creator→PR está determinada por el estado (rama \`${branchRef}\` con commits ahead + issue referenciado); el post-step la EJECUTA en vez de re-armar otra sesión (repesca finplan#1404, AP-023).`,
+                `PR **abierto por el post-step desde el ESTADO** (\`<!-- pr-abierto-por-estado -->\`): la sesión del Creator terminó en \`${outcome}\` con el trabajo commiteado en verde y SIN abrir el PR. La transición Creator→PR está determinada por el estado (rama \`${branchRef}\` con commits ahead + issue referenciado); el post-step la EJECUTA con el PAT en vez de re-armar otra sesión (repesca finplan#1404, AP-023). Abierto con el PAT ⇒ el evento \`opened\` dispara CI y la review (rama de agente) como cualquier PR normal.`,
                 '',
                 'pre-reviewer: no ejecutado — PR abierto por post-step desde estado',
                 '',
@@ -1120,12 +1120,11 @@ jobs:
               ].join('\n');
               let prNum = null;
               try {
-                const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls`, {
-                  method: 'POST',
-                  headers: { Authorization: `Bearer ${process.env.DEFAULT_TOKEN}`, Accept: 'application/vnd.github+json' },
-                  body: JSON.stringify({ title: `Cierre desde estado de #${n} (Creator muerto sin PR): ${branchRef}`, head: branchRef, base: '${{ inputs.default_branch }}', body: prBody }) });
-                if (!res.ok) throw new Error(`HTTP ${res.status} ${(await res.text()).slice(0, 200)}`);
-                prNum = (await res.json()).number;
+                const { data: created } = await github.rest.pulls.create({
+                  owner, repo,
+                  title: `Cierre desde estado de #${n} (Creator terminó en ${outcome} sin abrir el PR): ${branchRef}`,
+                  head: branchRef, base: '${{ inputs.default_branch }}', body: prBody });
+                prNum = created.number;
               } catch (e) {
                 // Apertura imposible (rama sin diff mergeable, conflicto, carrera
                 // con otra apertura): NO se pudo ejecutar la transición ⇒ cae al
@@ -1133,22 +1132,20 @@ jobs:
                 core.warning(`AP-023: apertura de PR desde estado falló para #${n}: ${e.message} — cae a residual (stalled + re-arm).`);
               }
               if (prNum) {
-                // Review por ESTADO: `needs-review` con el PAT (`github` de este
-                // step). El `opened` quedó suprimido (PR abierto por el default
-                // token) ⇒ es la única arista y no se dobla. remove+add fuerza
-                // el `labeled` aunque hubiera un resto (patrón ADR-063/AP-016).
-                await github.rest.issues.removeLabel({ owner, repo, issue_number: prNum, name: 'needs-review' }).catch(() => {});
-                await github.rest.issues.addLabels({ owner, repo, issue_number: prNum, labels: ['needs-review'] });
-                // Serie: el Creator murió y ya NO retirará `serial-activo` al
-                // abrir su PR; lo hace este step al NACER el PR (espejo del
-                // post-step «Liberar serial-activo al existir PR»). NO pop de
-                // cola: el PR abierto ES ahora la señal de vuelo (el guard serial
-                // bloquea con PR claude/* abierto) — la serie la libera el MERGE
-                // y ahí epic-merge arma la cola, como cualquier PR normal.
+                // Review + CI por el `opened` del PAT (arriba). NO se aplica
+                // `needs-review`: el `opened` de un PR con rama claude/* ya arma
+                // la review (gate reviewer.yml, `isAgentBranch`) — la label
+                // DOBLARÍA la sesión Opus (labeled + opened). Serie: el Creator
+                // murió y ya NO retirará `serial-activo` al abrir su PR; lo hace
+                // este step al NACER el PR (espejo del post-step «Liberar
+                // serial-activo al existir PR»). NO pop de cola: el PR abierto ES
+                // ahora la señal de vuelo (el guard serial bloquea con PR
+                // claude/* abierto) — la serie la libera el MERGE y ahí
+                // epic-merge arma la cola, como cualquier PR normal.
                 await github.rest.issues.removeLabel({ owner, repo, issue_number: n, name: 'serial-activo' }).catch(() => {});
                 await github.rest.issues.createComment({ owner, repo, issue_number: n,
-                  body: `**claude-code · post-step**: la sesión del Creator terminó en \`${outcome}\` con el trabajo COMMITEADO en verde y SIN abrir el PR, pero con rama utilizable. La transición Creator→PR está DETERMINADA por el estado ⇒ el post-step la EJECUTA — **NO** re-arma otra sesión ni declara \`stalled\` (repesca finplan#1404, AP-023):\n\n- ${branchInfo}\n- **PR #${prNum} abierto desde el estado** (polaridad \`partial-pr\` forzada, \`Refs #${n}\`, «Alcance restante» de texto fijo).\n- \`needs-review\` aplicada con PAT ⇒ Reviewer por estado; el \`opened\` queda suprimido a propósito (PR abierto por el GITHUB_TOKEN default) para no doblar la review.\n- \`serial-activo\` retirada al nacer el PR (el PR abierto ES la señal de vuelo; la serie la libera el MERGE + arma la cola, como cualquier PR).\n\n<!-- creator-muerto-sin-pr-abierto-por-estado -->` });
-                core.warning(`Creator de #${n}: muerte sin PR RESUELTA por estado — PR #${prNum} abierto (partial) + needs-review por PAT, sin stalled ni re-arm.`);
+                  body: `**claude-code · post-step**: la sesión del Creator terminó en \`${outcome}\` con el trabajo COMMITEADO en verde y SIN abrir el PR, pero con rama utilizable. La transición Creator→PR está DETERMINADA por el estado ⇒ el post-step la EJECUTA con el PAT — **NO** re-arma otra sesión ni declara \`stalled\` (repesca finplan#1404, AP-023):\n\n- ${branchInfo}\n- **PR #${prNum} abierto desde el estado** (polaridad \`partial-pr\` forzada, \`Refs #${n}\`, «Alcance restante» de texto fijo).\n- Abierto con el **PAT** ⇒ el \`opened\` dispara **CI** (\`ci-verde\`) y la **review** (rama de agente) como cualquier PR normal; por eso NO se aplica \`needs-review\` (doblaría la sesión Opus).\n- \`serial-activo\` retirada al nacer el PR (el PR abierto ES la señal de vuelo; la serie la libera el MERGE + arma la cola, como cualquier PR).\n\n<!-- creator-muerto-sin-pr-abierto-por-estado -->` });
+                core.warning(`Creator de #${n}: muerte sin PR RESUELTA por estado — PR #${prNum} abierto (partial) por PAT; CI+review por \`opened\`, sin needs-review, sin stalled ni re-arm.`);
                 return;
               }
               // La apertura falló. Antes de caer al residual (stalled + pop),
