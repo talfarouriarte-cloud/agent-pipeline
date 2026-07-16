@@ -92,6 +92,23 @@ no vigila el PR — dejarlo puesto tras el ruling lo volvería invisible). Es el
 complemento con-PR de `creator-blocked` (paro sin PR); no confundir con
 `[NEEDS-HUMAN]`, que sí para hasta humano.
 
+**Épica sin bloque de invariantes (`sin-invariantes-stall`, AP-021).** Si el
+`stalled` viene del guard de horneado (`claude-code.yml` materializó el marcador
+`<!-- sin-invariantes-stall -->`: se armó el primer eslabón de una `epica` cuya
+cadena no declara `## Invariantes funcionales de la épica`), resuelve en ESTE run
+y des-stallea/re-arma. Dos salidas, mutuamente excluyentes: **(a) la épica TIENE
+superficie funcional** (fix de motor/consumidor, gate de UI, formato persistido)
+⇒ edita el issue de épica (`gh issue edit`) añadiendo el bloque
+`## Invariantes funcionales de la épica` con 2-4 invariantes EJECUTABLES derivados
+verbatim del ADR citado (regla de cita del resolver-protocol: copia textual, jamás
+paráfrasis) — es la superficie que el Auditor verificará, no un sustituto; **(b) es
+doc-only** (sin superficie funcional observable) ⇒ publica el marcador
+`<!-- invariantes-na -->` (force pegajoso que el guard honra para toda la cadena)
+con el racional `<!-- autonomous-decision -->`. En ambos casos quita `stalled` y
+RE-ARMA (`@claude` + `<!-- watchdog-rearm -->`). Si añadir el bloque exige una
+decisión de DISEÑO no tomada en el ADR (no derivable), NO lo inventes: escala al
+Architect dejando el `stalled` puesto.
+
 **Herramientas de re-dimensionado:** la etapa architect dispone de
 `gh issue create` en su allowedTools (añadido 2026-07-08 tras el
 incidente #1120: el régimen exigía crear issues hijos y la herramienta
