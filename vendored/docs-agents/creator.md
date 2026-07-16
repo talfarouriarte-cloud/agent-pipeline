@@ -92,9 +92,13 @@ Si falta cualquiera, el flujo falla (caso histórico abajo).
 
 - **Variante rama del humano, falta directiva 2** ("tras el push, abre PR"): el Creator commitea y pushea, deja link "Create PR ➔". Humano abre PR a mano o reinvoca. Caso histórico: PR3-bis (mayo 2026) tercer turno. Coste: round-trip humano evitable.
 
-### Workflows files: NO los toca el Creator
+### Workflows files: régimen por repo
 
-Por ADR-020 + permisos de la GitHub App, el Creator NO puede modificar `.github/workflows/*`. Si el PR requiere tocar un workflow, lo hace el humano a mano. El issue debe indicarlo explícitamente.
+- **Consumidores (finplan, wmcb):** el Creator NO modifica `.github/workflows/*` (ADR-020 + freeze de workflows de consumidor). Si el PR requiere tocar un workflow, lo hace el humano a mano; el issue debe indicarlo explícitamente.
+- **Central (`agent-pipeline`, AP-012 enmiendas 2026-07-15/16):** el Creator SÍ trabaja workflows, con una mecánica en dos tiempos que DEBE conocer para no mal-clasificar su cierre:
+  1. **Commitea en local TODO el trabajo** (workflows incluidos) — persistencia incremental normal.
+  2. **Su `git push` en sesión SERÁ RECHAZADO** si el diff toca `.github/workflows/**`: la action pisa las credenciales del checkout (`configureGitAuth` borra el extraheader y re-autentica `origin` con su token de App, sin permiso `workflows`). Esto NO es un blocker: el post-step «Push residual con token de workflows (post-sesión)» publica la rama con el PAT del secret y abre el PR si falta.
+  3. **Cierre correcto:** informa «commits locales listos; la rama y el PR los publica el post-step de rescate». **JAMÁS** emitas `[NEEDS-HUMAN]`, pidas al humano aplicar un parche, ni vuelques el diff como comentario por «falta de permiso de push a workflows» — es el flujo NORMAL del central, no una escalada (falso positivo observado: central#56, run 29480172647, que pidió parche manual mientras el rescate abría el PR #66 dos minutos después).
 
 ## Estructura recomendada del issue body
 
@@ -275,7 +279,7 @@ La cadena es autocontenida frente a señales objetivas (CI, Reviewer, nits) y es
 
 - **Convenciones de dominio obligatorias**: viven en `docs/agents/creator-annex.md` del repo (i18n, rutas canónicas, zonas de rigor). LÉELO junto a este doc; el Reviewer marca sus violaciones como 🔴.
 - **Trigger phrase**: cada issue debe contener `@claude` literal.
-- **Workflows files**: el Creator no toca `.github/workflows/*` por ADR-020. El humano lo hace a mano.
+- **Workflows files**: en los consumidores el Creator no los toca (ADR-020; el humano a mano). En el central los trabaja y commitea; la rama la publica el post-step de rescate — ver § "Workflows files: régimen por repo". La falta de push en sesión NO es `[NEEDS-HUMAN]` ni blocker.
 - **Persistencia incremental**: commit + push tras cada sección con estado verde (typecheck + tests del área OK). NO acumular en working tree esperando "tener todo listo". Detalle en § "Persistencia incremental" abajo.
 - **TOC de decisions.md**: las ADRs viven en volúmenes `docs/decisions/decisions-*.md` (las nuevas van SIEMPRE al volumen `-current`); `decisions.md` raíz es el índice global. Si el PR añade/renombra/cambia estado de un ADR → ejecutar `node scripts/generate-toc.mjs` antes de commitear (CLAUDE.md § "Mantenimiento del TOC").
 - **CHANGELOG**: si el PR produce cambio visible para el caller del paquete → entrada en `packages/<paquete>/CHANGELOG.md` (CLAUDE.md § "CHANGELOG y docs de diseño"). Refactor interno puro: no requiere.
