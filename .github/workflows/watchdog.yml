@@ -746,7 +746,10 @@ jobs:
             tamaño (cap de parciales), re-dimensiona el restante según la
             heurística de partición de architect.md (issues nuevos con label
             `${{ inputs.epic_label }}`, encadenados, heredando el sentinel del padre y cerrando
-            el padre con trazabilidad); quita la label `stalled`; ARMA la
+            el padre con trazabilidad); quita la label `stalled` (y
+            `estado:esperando-architect` si está presente — AP-017: dejarla 
+             puesta tras el ruling mantiene al dispatcher de turno cediendo
+             sobre el PR y lo vuelve invisible al detector de zombis); ARMA la
             continuación (comentario `@claude` + `<!-- watchdog-rearm -->`).
             Excepciones absolutas (ahí sí humano): `.github/workflows/*`,
             `prototype.css`, promoción de la rama por defecto a la de producción.
