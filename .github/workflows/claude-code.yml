@@ -216,6 +216,9 @@ jobs:
             // de la cadena declara «Invariantes funcionales»? La casa canónica
             // es el issue de épica (#14 fijó el lado lector; esto cubre el
             // horneado: la omisión se ve AL ARMAR, cuando aún es editable).
+            // AP-021 (central#59): la omisión ya no solo se AVISA — se
+            // MATERIALIZA como stall con dueño (architect-resolve); ver el
+            // bloque `if (!hasInvariants)` bajo el sentinel epic-audit.
             let body = issue.body || '';
             let hops = 0;
             let hasInvariants = false;
@@ -223,25 +226,68 @@ jobs:
               if (/invariantes funcionales/i.test(body)) hasInvariants = true;
               if (/<!--\s*epic-audit:/.test(body)) {
                 if (!hasInvariants) {
-                  // AVISO no bloqueante (wmcb#21): NO stalled, NO abortar — hay
-                  // épicas legítimas sin superficie funcional (doc-only). El
-                  // Auditor ya degrada a la DoD como sustituto (post-#14); esto
-                  // lo hace visible cuando el Architect aún puede editar.
+                  // AP-021 (central#59): el aviso `sin-invariantes` era
+                  // INFORMATIVO SIN CONSUMIDOR — disparaba, el arm CONTINUABA y
+                  // nadie tenía en su mandato responderlo. En las DOS únicas
+                  // épicas con superficie funcional desde que existe el aviso
+                  // (finplan#1378, #1394) recurrió ignorado y la verificación
+                  // funcional del Auditor degradó a la DoD del Creator como
+                  // sustituto, época tras época. Un aviso que el sistema puede
+                  // ignorar indefinidamente es ruido, no una costura
+                  // (protocol.md §1-2): se MATERIALIZA como transición con dueño.
                   // AP-018 §1+§2 (central#55): estado materializado, no inferido.
-                  // El aviso es informativo (el arm CONTINÚA) pero se reposteaba
-                  // ÍNTEGRO en cada re-arm y por partida DOBLE cuando el mismo arm
-                  // dispara `issues`+`issue_comment` (8 comentarios en ~1h15,
-                  // finplan#1394). El hecho «ya avisé» no vivía en ningún sitio:
-                  // se LEE el marcador en los comentarios del issue (listComments
-                  // = lectura por-issue fuertemente consistente, NO el search
-                  // index) y si ya existe se salta. Cubre re-arm (§2) y el doble
-                  // disparo del mismo arm cuando el gap supera la propagación (§1).
+                  // Se LEE por-issue (listComments = fuertemente consistente, NO
+                  // el search index); reusada para el dedup del stall y el force
+                  // pegajoso `invariantes-na`.
+                  const armBody = context.payload.comment?.body || '';
+                  // El stall es SOLO para el arm inicial GENUINO de la raíz — el
+                  // `@claude` del Auditor/humano (ARM_TOKEN) que NO trae marcador
+                  // de encadenado ni de re-arm. Un eslabón NO-raíz se (re)arma por
+                  // DOS vías, no una (central#59 review): (1) epic-merge encadena
+                  // con `epic-auto-launch`; (2) el watchdog re-arma con
+                  // `watchdog-rearm` cuando el Creator de un eslabón intermedio
+                  // muere sin PR — el caso para el que existe el watchdog, y el
+                  // camino de muerte-y-relanzamiento más común. En AMBAS la casa
+                  // canónica del bloque (el issue de épica) queda AGUAS ARRIBA,
+                  // invisible al traversal forward desde el eslabón intermedio; sin
+                  // eximirlas se re-stallearía la cadena a mitad de vuelo (falso
+                  // stall de un eslabón legítimo en vuelo). Un `watchdog-rearm`
+                  // SIEMPRE implica que el eslabón ya superó el guard una vez (con
+                  // bloque, con `invariantes-na`, o por ser aguas abajo) — el arm
+                  // inicial sin bloque aborta ANTES de armar Creator, así que nunca
+                  // hay un Creator que muera y dispare un `watchdog-rearm` inicial:
+                  // eximirlo no oculta ninguna omisión real. La premisa
+                  // «downstream ⟺ epic-auto-launch» era incompleta; el proxy
+                  // correcto es «trae CUALQUIER marcador de re-arm de cadena».
+                  const isChainRearm = armBody.includes('epic-auto-launch') || armBody.includes('watchdog-rearm');
                   const { data: existing } = await github.rest.issues.listComments({ owner, repo, issue_number: issue.number, per_page: 100 });
-                  const alreadyWarned = existing.some(c => /<!--\s*sin-invariantes\s*-->/.test(c.body || ''));
-                  if (!alreadyWarned) {
-                    await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
-                      body: '**claude-code · aviso de horneado**: ningún issue de la cadena declara el bloque `## Invariantes funcionales de la épica` (casa canónica: el issue de épica). Sin él, la verificación funcional de la auditoría degrada a la DoD del Creator como sustituto. El arm CONTINÚA (épicas doc-only son legítimas); si esta épica tiene superficie funcional, edita el issue y añade el bloque ahora.\n\n<!-- sin-invariantes -->' });
+                  const TRUSTED = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+                  // Force PEGAJOSO doc-only (AP-021, mismo criterio que `panel-ok`
+                  // AP-018 §3): architect-resolve declaró que la épica no tiene
+                  // superficie funcional. Vale en CUALQUIER comentario de
+                  // confianza del issue — un re-arm posterior no lo pierde.
+                  const naDeclared = existing.some(c => /<!--\s*invariantes-na\s*-->/.test(c.body || '') && TRUSTED.has(c.author_association));
+                  if (naDeclared || isChainRearm) {
+                    // Doc-only declarado (pegajoso) o (re)arm de un eslabón NO-raíz
+                    // (`epic-auto-launch` de epic-merge / `watchdog-rearm` del
+                    // watchdog): pasa en SILENCIO, cero re-avisos y cero re-stalls
+                    // (converge con el dedup de AP-018 §2).
+                    core.setOutput('broken', 'false'); return;
                   }
+                  // MATERIALIZA el despacho: `stalled` (⇒ architect-resolve POR
+                  // EVENTO — el step usa el PAT REVIEWER_GITHUB_TOKEN, así el
+                  // `labeled=stalled` dispara el watchdog; patrón `creator-blocked`
+                  // /finplan#1350) + diagnóstico dedupeado por marcador. El arm NO
+                  // continúa (broken='true'): los steps de abajo lo gatean, así
+                  // que check_serial NO corre y NO cuelga `serial-activo` (riesgo 2
+                  // del issue — el orden check_chain→check_serial ya lo garantiza).
+                  await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['stalled'] });
+                  const alreadyStalled = existing.some(c => /<!--\s*sin-invariantes-stall\s*-->/.test(c.body || ''));
+                  if (!alreadyStalled) {
+                    await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
+                      body: '**claude-code · guard de horneado**: ningún issue de la cadena declara el bloque `## Invariantes funcionales de la épica` (casa canónica: el issue de épica). Sin él, la verificación funcional de la auditoría degrada a la DoD del Creator como sustituto — coste que el Auditor paga época tras época (finplan#1378, #1394). El arm NO continúa: se materializa como transición con dueño (`stalled` ⇒ architect-resolve por evento). Resolución en un run de architect-resolve: (a) la épica TIENE superficie funcional ⇒ edita el issue de épica añadiendo 2-4 invariantes ejecutables derivados del ADR citado bajo `## Invariantes funcionales de la épica`, y des-stallea/re-arma; o (b) es doc-only ⇒ declara `<!-- invariantes-na -->` (force pegajoso para toda la cadena) y des-stallea/re-arma.\n\n<!-- sin-invariantes-stall -->' });
+                  }
+                  core.setOutput('broken', 'true'); return;
                 }
                 core.setOutput('broken', 'false'); return;
               }
