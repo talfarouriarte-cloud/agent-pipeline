@@ -991,14 +991,31 @@ jobs:
             // vivía solo en el bloque `success` y la muerte post-veredicto caía
             // en `creator-muerto-sin-pr` (`stalled`), misclasificando el
             // veredicto correcto como stall.
-            async function materializeScopeComplete() {
+            async function materializeScopeComplete(opts = {}) {
+              const viaState = !!opts.viaState;
               const held = (await liveLabels()).includes('serial-activo');
               if (held) await github.rest.issues.removeLabel({ owner, repo, issue_number: n, name: 'serial-activo' }).catch(() => {});
               await github.rest.issues.addLabels({ owner, repo, issue_number: n, labels: ['estado:cierre-pendiente-humano'] });
+              // AP-026 (2026-07-17, repesca finplan#1466): el terminal
+              // alcance-completo se materializa por DOS vías con el MISMO efecto
+              // mecánico — (a) el marcador `creator-alcance-completo` del Creator
+              // (vía normal, AP-020); (b) el BELT por estado del re-arm de un
+              // parcial fantasma (`viaState`), cuando la sesión re-verificó en
+              // verde pero no emitió el marcador (el modo exacto del incidente:
+              // recomendó cierre manual en prosa). El comentario y el marcador de
+              // rastro difieren para que la auditoría/5-whys distinga
+              // marcador-emitido de estado-derivado.
+              const preamble = viaState
+                ? `**claude-code · post-step**: sesión de **re-arm de un parcial fantasma** (\`pr-abierto-por-estado\` mergeado ⇒ \`epic-partial-relaunch-por-estado\`) terminó \`success\` sin PR, sin commits y SIN emitir \`creator-alcance-completo\`. El "resto" de un parcial forzado era \`desconocido\` (placeholder, no alcance real): la re-verificación en verde que no encuentra nada ES el terminal **alcance ya COMPLETO** — **NO es escalada** ⇒ el estado lo DERIVA en vez de degradar a \`human-needed\` (cola fantasma, AP-026). Sin \`human-needed\` ni \`stalled\`:`
+                : `**claude-code · post-step**: el Creator concluyó con veredicto **alcance ya COMPLETO en la rama base, sin PR que abrir** (\`<!-- creator-alcance-completo -->\`). Estado terminal legítimo materializado en el instante — **NO es escalada** ⇒ sin \`human-needed\` ni \`stalled\`:`;
+              const traceMarker = viaState ? 'creator-alcance-completo-materializado-por-estado' : 'creator-alcance-completo-materializado';
+              const humanNote = viaState
+                ? '\n- **Derivado por ESTADO, no por marcador**: el humano DEBE re-verificar contra el HEAD antes de cerrar (mitigación del riesgo «cerrar-como-completo sobre veredicto equivocado», AP-026).'
+                : '';
               await github.rest.issues.createComment({ owner, repo, issue_number: n,
-                body: `**claude-code · post-step**: el Creator concluyó con veredicto **alcance ya COMPLETO en la rama base, sin PR que abrir** (\`<!-- creator-alcance-completo -->\`). Estado terminal legítimo materializado en el instante — **NO es escalada** ⇒ sin \`human-needed\` ni \`stalled\`:\n\n- ${held ? '`serial-activo` retirada y **turno pasado a la cola** — la serie se libera por el fin de turno del agente, no solo por merge (AP-014/AP-020).' : 'la serie no estaba ocupada por este issue: nada que liberar ni que armar.'}\n- \`estado:cierre-pendiente-humano\` aplicada: el cierre del issue en el central es HUMANO (merge/cierre no se delega, AP-019). El humano verifica el veredicto y cierra.\n\n<!-- creator-alcance-completo-materializado -->` });
-              if (held) await popQueue(n, `alcance completo verificado de #${n}`);
-              core.notice(`Creator de #${n}: alcance-completo materializado (serie ${held ? 'liberada + cola armada' : 'no ocupada'}, cierre-pendiente-humano).`);
+                body: `${preamble}\n\n- ${held ? '`serial-activo` retirada y **turno pasado a la cola** — la serie se libera por el fin de turno del agente, no solo por merge (AP-014/AP-020).' : 'la serie no estaba ocupada por este issue: nada que liberar ni que armar.'}\n- \`estado:cierre-pendiente-humano\` aplicada: el cierre del issue en el central es HUMANO (merge/cierre no se delega, AP-019). El humano verifica el veredicto y cierra.${humanNote}\n\n<!-- ${traceMarker} -->` });
+              if (held) await popQueue(n, `alcance completo ${viaState ? 'derivado por estado' : 'verificado'} de #${n}`);
+              core.notice(`Creator de #${n}: alcance-completo materializado (${viaState ? 'BELT por estado' : 'marcador'}, serie ${held ? 'liberada + cola armada' : 'no ocupada'}, cierre-pendiente-humano).`);
             }
             // Detección del marcador fresco `creator-alcance-completo` (freshness
             // vs comentario disparador — lección del bucle PR #180), reutilizada
@@ -1054,6 +1071,31 @@ jobs:
                 const labs = await liveLabels();
                 if (!labs.includes('serial-activo')) {
                   core.notice(`sesión success sin commits en #${n}: conversacional sin serie — nada que materializar.`);
+                  return;
+                }
+                // AP-026 (2026-07-17, repesca finplan#1466): BELT por estado del
+                // desenlace «resto vacío ⇒ alcance completo». Esta sesión fue
+                // re-armada por `epic-partial-relaunch` de un parcial ABIERTO POR
+                // ESTADO (marcador `epic-partial-relaunch-por-estado` en el
+                // comentario disparador, estampado por epic-merge) y terminó
+                // `success` sin PR, sin commits y SIN emitir
+                // `creator-alcance-completo` (el modo EXACTO del incidente: la
+                // sesión recomendó cierre manual en prosa). El "resto" de un
+                // parcial forzado era `desconocido` — un placeholder, no alcance
+                // real; una re-verificación en verde que no encuentra nada ES el
+                // terminal legítimo, NO una escalada no-declarada. Se materializa
+                // alcance-completo por ESTADO (mismo efecto que el marcador:
+                // serie liberada + cola armada + `estado:cierre-pendiente-humano`)
+                // en vez de `human-needed`. Detección por marcador HTML anclado
+                // del disparador, jamás substring de prosa (clase PR #1133).
+                // Riesgo (veredicto de sesión equivocado que saltaría alcance
+                // real): mitigado — degrada a `cierre-pendiente-humano`, NO cierra
+                // el issue (el humano re-verifica contra HEAD antes de cerrar;
+                // central no delega cierre, AP-019), y el parcial fantasma ya
+                // consumió su slot del cap de rondas.
+                const trigBody = context.payload.comment?.body || '';
+                if (/<!--\s*epic-partial-relaunch-por-estado\s*-->/.test(trigBody)) {
+                  await materializeScopeComplete({ viaState: true });
                   return;
                 }
                 await github.rest.issues.removeLabel({ owner, repo, issue_number: n, name: 'serial-activo' }).catch(() => {});
@@ -1122,7 +1164,7 @@ jobs:
                 '',
                 '### Alcance restante (para el Architect)',
                 '',
-                'desconocido: PR abierto desde estado, la sesión murió antes de declarar alcance.',
+                '**desconocido — parcial FORZADO por estado, NO un parcial de contenido real.** El post-step no juzga full/partial: marca `partial-pr` por seguridad porque la sesión murió antes de declarar alcance. Semántica del "resto" (AP-026): si esto mergea, `epic-merge` re-arma el issue con el marcador `epic-partial-relaunch-por-estado` y la sesión re-armada DEBE re-verificar contra el HEAD y declarar el TERMINAL — si NADA queda, emite `<!-- creator-alcance-completo -->` (no cierre manual en prosa); si queda alcance real, lo cubre y abre un PR full. **epic-merge y el Auditor NO deben leer este "desconocido" como una laguna de contenido real** — es un placeholder con desenlace determinista, no trabajo pendiente identificado.',
                 '',
                 '<!-- pr-abierto-por-estado -->',
               ].join('\n');

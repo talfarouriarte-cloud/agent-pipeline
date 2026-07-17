@@ -341,10 +341,24 @@ jobs:
                   await diag(prNumber, `MERGEADO parcial, pero ya hubo ${relaunches} relanzamientos en esta ronda (cap ${process.env.IN_PARTIAL_ROUND_CAP}): issue #${issueNumber} marcado stalled, NO re-armo. Escala a humano.`);
                   return;
                 }
+                // Parcial FORZADO por estado (AP-023): el PR lo abrió el post-step
+                // desde la rama viva con polaridad parcial forzada y «Alcance
+                // restante: desconocido» (el post-step no juzga full/partial). Su
+                // "resto" NO es contenido real pendiente: es un placeholder. El
+                // re-arm de un parcial así DEBE tener un desenlace DETERMINISTA
+                // «resto vacío ⇒ alcance completo» — el comentario lo instruye
+                // explícito y estampa el marcador belt `epic-partial-relaunch-por-
+                // estado` que el post-step de claude-code consume para materializar
+                // el terminal por estado si la sesión no emite el marcador
+                // (repesca finplan#1466, AP-026 — cola fantasma sin terminal
+                // mecánico ⇒ `human-needed` + cirugía humana).
+                const porEstado = /<!--\s*pr-abierto-por-estado\s*-->/.test(prBody);
+                const relaunchBody = porEstado
+                  ? `@claude\n\nPR parcial #${prNumber} mergeado. Este parcial fue **abierto por estado** (\`pr-abierto-por-estado\`): su «Alcance restante» era \`desconocido\` — un placeholder, NO contenido real pendiente.\n\n**Desenlace determinista obligatorio:** re-verifica contra el HEAD actual qué criterios de aceptación del issue siguen SIN cubrir.\n- Si **NO queda alcance** sin cubrir ⇒ cierra tu turno con el terminal **\`<!-- creator-alcance-completo -->\`** (HTML anclado, en su propia línea, en el ISSUE). NO recomiendes cierre manual en prosa: el post-step no lee prosa y sin el marcador tu turno degradaría a \`human-needed\` (cola fantasma, AP-026).\n- Si **queda alcance real** ⇒ cúbrelo y abre un PR; si lo completa, márcalo \`full-pr\`.\n\n<!-- epic-partial-relaunch -->\n<!-- epic-partial-relaunch-por-estado -->`
+                  : `@claude\n\nPR parcial #${prNumber} mergeado. Continúa con el ALCANCE RESTANTE de este issue: re-verifica contra el HEAD actual qué criterios de aceptación siguen sin cubrir y cúbrelos. Si tu próximo PR completa el issue, NO lo marques parcial.\n\n<!-- epic-partial-relaunch -->`;
                 try {
-                  await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber,
-                    body: `@claude\n\nPR parcial #${prNumber} mergeado. Continúa con el ALCANCE RESTANTE de este issue: re-verifica contra el HEAD actual qué criterios de aceptación siguen sin cubrir y cúbrelos. Si tu próximo PR completa el issue, NO lo marques parcial.\n\n<!-- epic-partial-relaunch -->` });
-                  await diag(prNumber, `MERGEADO parcial: issue #${issueNumber} SIGUE ABIERTO, re-armado para el alcance restante (${relaunches + 1}/${process.env.IN_PARTIAL_ROUND_CAP}).`);
+                  await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body: relaunchBody });
+                  await diag(prNumber, `MERGEADO parcial${porEstado ? ' (abierto-por-estado)' : ''}: issue #${issueNumber} SIGUE ABIERTO, re-armado para el alcance restante (${relaunches + 1}/${process.env.IN_PARTIAL_ROUND_CAP}).`);
                 } catch (e) { await diag(prNumber, `mergeado parcial pero re-armar #${issueNumber} falló: ${e.message}`); }
                 return;
               }
