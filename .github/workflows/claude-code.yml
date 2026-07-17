@@ -938,6 +938,14 @@ jobs:
           && github.event.issue && !github.event.issue.pull_request
           && !contains(github.event.issue.labels.*.name, 'auditoria')
         uses: actions/github-script@v7
+        env:
+          # AP-027: CERO `${{ }}` dentro del script — el bloque supera los
+          # 21000 chars y con una sola expresión Actions lo evalúa entero como
+          # plantilla y rechaza el workflow al parsear (fichero inválido, runs
+          # con 0 jobs; incidente 2026-07-17, PR #86). Mismo saneado que
+          # epic-merge (Fase C): inputs y outputs de steps via env.
+          STEP_CREATOR_OUTCOME: ${{ steps.creator.outcome }}
+          IN_DEFAULT_BRANCH: ${{ inputs.default_branch }}
         with:
           # PAT, no GITHUB_TOKEN default (2026-07-14, finplan#1350): la label
           # `stalled` que aplica este step es el trigger por EVENTO de
@@ -956,7 +964,7 @@ jobs:
               core.notice(`Creator de #${n} murió con PR ya abierto — flujo PR-driven gobierna; nada que materializar aquí.`);
               return;
             }
-            const outcome = '${{ steps.creator.outcome }}';
+            const outcome = process.env.STEP_CREATOR_OUTCOME;
             // Labels VIVAS, no del payload (incidente central#59): el snapshot
             // del evento de rearm PRECEDE a la re-aplicación de `serial-activo`
             // por epic-merge — el guard veía «sin serie» con la serie ocupada y
@@ -1040,10 +1048,10 @@ jobs:
                 const branch = refs[refs.length - 1].ref.replace('refs/heads/', '');
                 branchRef = branch;
                 const cmp = await github.rest.repos.compareCommits({ owner, repo,
-                  base: '${{ inputs.default_branch }}', head: branch });
+                  base: process.env.IN_DEFAULT_BRANCH, head: branch });
                 const last = cmp.data.commits.length ? cmp.data.commits[cmp.data.commits.length - 1].commit.message.split('\n')[0] : '(sin commits)';
                 hasCommits = cmp.data.ahead_by > 0;
-                branchInfo = `rama \`${branch}\`: **ahead ${cmp.data.ahead_by} / behind ${cmp.data.behind_by}** sobre \`${{ inputs.default_branch }}\`. Último commit: «${last}».`;
+                branchInfo = `rama \`${branch}\`: **ahead ${cmp.data.ahead_by} / behind ${cmp.data.behind_by}** sobre \`${process.env.IN_DEFAULT_BRANCH}\`. Último commit: «${last}».`;
               }
             } catch (e) { branchInfo += ` (inspección de rama falló: ${e.message})`; }
             if (outcome === 'success' && !hasCommits) {
@@ -1173,7 +1181,7 @@ jobs:
                 const { data: created } = await github.rest.pulls.create({
                   owner, repo,
                   title: `Cierre desde estado de #${n} (Creator terminó en ${outcome} sin abrir el PR): ${branchRef}`,
-                  head: branchRef, base: '${{ inputs.default_branch }}', body: prBody });
+                  head: branchRef, base: process.env.IN_DEFAULT_BRANCH, body: prBody });
                 prNum = created.number;
               } catch (e) {
                 // Apertura imposible (rama sin diff mergeable, conflicto, carrera

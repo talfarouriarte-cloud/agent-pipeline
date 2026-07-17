@@ -632,3 +632,23 @@ Clase de fallo: **el bloque `permissions` del stub/job del reusable es superfici
 **Reversibilidad.** Alta: (1) es una rama `porEstado ? … : …` en el texto del re-arm; (2) es un bloque `if (/…epic-partial-relaunch-por-estado…/.test(trigBody)) { … return; }` antes del `human-needed` ya existente + un parámetro `opts.viaState` en `materializeScopeComplete`; (3) es texto del body. Se revierte dejando caer todo al camino previo (`human-needed`).
 
 **Fecha.** 2026-07-17.
+
+## AP-027 — El límite de 21000 chars por plantilla de Actions rompió `claude-code.yml` en `main` (clase conocida de Fase C, reincidente): saneado a `env:` + check determinista en el CI
+
+**Contexto.** Incidente 2026-07-17 ~19:54 UTC, merge de PR #86 (AP-026, commit `87b3912a`). Sus +47 líneas al bloque `script: |` del post-step de terminales de `claude-code.yml` llevaron el escalar de ~20.1k a ~24.5k chars **conteniendo expresiones `${{ }}`** (`steps.creator.outcome`, 3× `inputs.default_branch`). Con UNA sola expresión, Actions evalúa el bloque ENTERO como plantilla, y sobre 21000 chars rechaza el workflow al parsearlo: **fichero inválido, runs con nombre = ruta del fichero y 0 jobs** (runs 29609273460 push, 29609288055 issue_comment). Consecuencias: el re-arm de #84 murió al nacer, #85 quedó `en-cola` sin serie posible, y por la referencia `@main` la rotura era **fleet-wide** (el reusable roto lo consumen finplan y wmcb, sin canary — riesgo AP registrado, materializado). Dos agujeros de control: (a) `check-yaml` (CI required) pasó en verde — el fichero ES YAML válido; lo inválido es la plantilla de Actions (YAML-válido ≠ Actions-válido); (b) la clase era CONOCIDA: Fase C (2026-07-11) la documentó y saneó en `epic-merge.yml` («inputs al script vía env… revienta el límite de 21000 chars»), pero el saneado no se aplicó como invariante del repo — `claude-code.yml` siguió acumulando bloque con expresiones hasta el acantilado. Reincidencia de clase cerrada: señal negativa para la ventana de convergencia (semana 2026-07-16/23).
+
+**Decisión (del propietario, ejecutada por el Architect).**
+
+1. **Saneado (`claude-code.yml`).** CERO `${{ }}` dentro del bloque del post-step: `STEP_CREATOR_OUTCOME` e `IN_DEFAULT_BRANCH` pasan por `env:` del step (mismo patrón que `epic-merge.yml`, que se verificó limpio: 38k chars y cero expresiones). Sin expresiones el bloque viaja verbatim y el límite no aplica.
+
+2. **Control determinista (`scripts/check-yaml.mjs`, job required del CI).** El check recorre TODOS los escalares string de cada workflow: si uno contiene `${{` y supera 21000 chars ⇒ ROJO con la ruta exacta y la instrucción de saneado; sobre 19000 ⇒ aviso (margen antes del acantilado). Verificado rojo contra el `main` roto y verde contra el fix. El control es del CI, NO del Reviewer LLM: la clase es mecánica y medible — pedirle a un agente que vigile un límite numérico es exactamente la clase de regla procedimental que los agentes dejan caer (lección AP-011: el canal efectivo es el formato/chequeo, no la instrucción).
+
+**Riesgo — divergencia entre lo que mide el check (escalar YAML parseado) y lo que mide GitHub.** El valor parseado difiere del crudo (la indentación no cuenta); empíricamente el `main` roto da 21223 chars parseados y GitHub lo rechaza — el umbral 21000 sobre el parseado reproduce el comportamiento observado, y el aviso a 19000 absorbe la incertidumbre del margen. Falso negativo residual posible muy cerca del límite; el saneado (1) lo hace irrelevante para el bloque conocido (cero expresiones ⇒ exento).
+
+**Contrato `workflow_call`.** Sin cambios de superficie: `env:` del step es interno al job; sin inputs/secrets/labels nuevos ⇒ `templates/workflow-contracts.json` y `templates/labels-usage.json` intactos (AP-003, AP-022).
+
+**Alternativas descartadas.** Encargar la vigilancia al Reviewer (regla procedimental sobre un límite numérico: clase que los agentes dejan caer, AP-011; además el Reviewer no corre en todos los caminos que tocan workflows). Trocear el bloque en varios steps (más superficie de costura por estado compartido entre trozos; el saneado a env es más barato y ya es el patrón del repo). No hacer nada y confiar en la memoria (es exactamente lo que falló entre Fase C y hoy).
+
+**Reversibilidad.** Alta: (1) es un bloque `env:` + 4 sustituciones `process.env.*`; (2) es una función y dos umbrales en un script existente.
+
+**Fecha.** 2026-07-17.
