@@ -288,6 +288,7 @@ jobs:
             };
             const TURN_MARK = '<!-- watchdog-turn-relaunch -->';
             const HANDOFF_MARK = '<!-- watchdog-handoff-fix -->';   // histórico: cuenta para el cap
+            const LGTM_REMAT_MARK = '<!-- watchdog-lgtm-rematerialize -->';  // AP-024: cap 1 propio, no cuenta para el cap 2 de relanzamiento
             const LIVENESS_MIN = 5;
             const patCall = async (method, path, body) => {
               const res = await fetch(`https://api.github.com/repos/${O.owner}/${O.repo}${path}`,
@@ -362,7 +363,43 @@ jobs:
                 why = closesReviewer ? 'cierre @reviewer sin needs-review' : 'READY-TO-MERGE tras veredicto no-LGTM';
                 fix = async () => { await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['needs-review'] }); return false; };
               } else if (lastV === 'LGTM') {
-                turno = 'epic-merge'; why = 'LGTM emitido y sin merge (epic-merge es workflow_run: sin relanzamiento mecánico)';
+                turno = 'epic-merge';
+                // ── Re-materialización de `lgtm` por estado (repesca finplan#1438,
+                // AP-024). El post-step determinista del Reviewer (reviewer.yml,
+                // ADR-218) puede morir en la costura prosa→label: el veredicto
+                // LGTM queda PUBLICADO pero su label `lgtm` nunca se materializa;
+                // como el edge de epic-merge es el evento `labeled`, el crash mata
+                // la label Y su evento y el gate de merge se orfana sin que nada
+                // lo re-dispare. Firma DETERMINISTA de rastro-mecánico-ausente
+                // (sin aging, regla del pipeline-map): último veredicto LGTM +
+                // label `lgtm` ausente + head SIN commits posteriores al veredicto
+                // ⇒ re-aplicar `lgtm` con el PAT (su `labeled` re-dispara
+                // epic-merge, mismo edge de ADR-218). Cap 1 vía LGTM_REMAT_MARK.
+                const hasLgtm = labels.includes('lgtm');
+                const remats = hcs.filter(c => (c.body || '').includes(LGTM_REMAT_MARK)).length;
+                // Riesgo 1 (merge de código no revisado): si hay commits DESPUÉS
+                // del veredicto, ci.yml ya retiró `ci-verde`+`lgtm` (attempt 1) y
+                // re-materializar saltaría esa invalidación. Misma comprobación
+                // que el turn-close-failsafe: committer.date del head vs el
+                // created_at del comentario del veredicto. Fail-closed: si la
+                // consulta falla se asume commit posterior y NO se re-materializa.
+                let headAfterVerdict = true;
+                try {
+                  const { data: headCommit } = await github.rest.repos.getCommit({ ...O, ref: pr.head.sha });
+                  headAfterVerdict = new Date(headCommit.commit.committer.date) > new Date(lastVerdict.created_at);
+                } catch (e) { core.info(`lgtm-remat/head-check #${pr.number}: ${e.message}`); }
+
+                if (!hasLgtm && !headAfterVerdict && remats < 1) {
+                  why = 'veredicto LGTM en prosa sin label `lgtm` y sin commits posteriores (ventana de crash del post-step del Reviewer)';
+                  fix = async () => {   // la label DEBE salir con PAT o su `labeled` no dispara epic-merge (anti-loop)
+                    await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['lgtm'] });
+                    await github.rest.issues.createComment({ ...O, issue_number: pr.number,
+                      body: `**watchdog · re-materialización de \`lgtm\` por estado (AP-024)**: el último veredicto del Reviewer es LGTM (cabecera ADR-063) y el head no tiene commits posteriores, pero la label \`lgtm\` no se materializó — ventana de crash del post-step del Reviewer (repesca finplan#1438). Label re-aplicada con el PAT: su \`labeled\` re-dispara epic-merge (edge ADR-218). Cap 1 por PR.\n\n${LGTM_REMAT_MARK}\n${CAPA}` });
+                    return true;   // self-comment: marcador propio, no consume el cap 2 de relanzamiento
+                  };
+                } else {
+                  why = 'LGTM emitido y sin merge (epic-merge es workflow_run: sin relanzamiento mecánico)';
+                }
               } else if (!lastVerdict) {
                 turno = 'reviewer'; why = 'PR sin veredicto ni needs-review (trigger opened perdido)';
                 fix = async () => { await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['needs-review'] }); return false; };
