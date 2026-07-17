@@ -401,7 +401,23 @@ jobs:
                   why = 'LGTM emitido y sin merge (epic-merge es workflow_run: sin relanzamiento mecánico)';
                 }
               } else if (!lastVerdict) {
-                turno = 'reviewer'; why = 'PR sin veredicto ni needs-review (trigger opened perdido)';
+                turno = 'reviewer';
+                // Rotular el ESTADO observado, NO una causa inferida (AP-025 §4,
+                // repesca finplan#1450). «trigger opened perdido» era una
+                // atribución que sembró un 5-whys erróneo del Auditor
+                // (finplan#1454): la causa real de esa instancia fue una muerte
+                // por presupuesto del Reviewer, no un webhook perdido. Se anota la
+                // conclusión del último run del Reviewer para el head — un
+                // `failure` sin veredicto lo delata. Puramente cosmético: el fix
+                // (re-aplicar needs-review) es idéntico.
+                let lastRvConcl = 'ninguno';
+                try {
+                  const { data: rv } = await github.rest.actions.listWorkflowRunsForRepo({ ...O, head_sha: pr.head.sha, per_page: 20 });
+                  const last = rv.workflow_runs.filter(r => r.name === process.env.IN_REVIEWER_WF)
+                    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+                  if (last) lastRvConcl = last.status === 'completed' ? (last.conclusion || 'completed') : last.status;
+                } catch (e) { core.info(`reviewer-run-lookup #${pr.number}: ${e.message}`); }
+                why = `PR sin veredicto ni needs-review; último run del Reviewer para el head: ${lastRvConcl}`;
                 fix = async () => { await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['needs-review'] }); return false; };
               } else {
                 anomalies.push({ type: 'turno-de-nadie', number: pr.number, branch: pr.head.ref,

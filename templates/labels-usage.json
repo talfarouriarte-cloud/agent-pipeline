@@ -26,7 +26,8 @@
   ],
   "reviewer.yml": [
     "lgtm",
-    "needs-review"
+    "needs-review",
+    "stalled"
   ],
   "watchdog.yml": [
     "human-needed",
