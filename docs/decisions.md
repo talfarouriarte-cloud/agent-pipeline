@@ -583,7 +583,7 @@ Clase de fallo: **el bloque `permissions` del stub/job del reusable es superfici
 
 **Riesgo 1 — regex polarity blindness (clase conocida del pipeline-map).** Detección de veredicto anclada a la primera palabra del comentario (`/^\s*(LGTM|REVIEW|NITS)\b/`, cabecera ADR-063), nunca substring — mismo parser que AP-024 y el dispatcher.
 
-**Riesgo 2 — loop de relabels.** Cap 1 por head SHA vía marcador; reincidencia va a architect-resolve (`stalled`), no a otra sesión Opus. El `cancel-in-progress: false` del stub garantiza que el relabel (post-conclusión) no mata reviews en vuelo.
+**Riesgo 2 — loop de relabels.** Cap 1 por head SHA vía marcador; reincidencia va a architect-resolve (`stalled`), no a otra sesión Opus. El `cancel-in-progress: false` del stub garantiza que el relabel (post-conclusión) no mata reviews en vuelo. **El cap depende de PAGINAR los comentarios**: la API de issue-comments devuelve orden ascendente (los 100 más antiguos en la página 1), así que en un PR de épica multironda (>100 comentarios — la clase exacta de finplan#1450) el marcador recién posteado y los veredictos recientes viven en páginas 2+; sin `github.paginate` el cap contaría 0 (loop) y `vs` saldría vacío (relanzamiento espurio de un PR ya revisado). Con el `if (!vs.length) return;` previo esa limitación de paginación era benigna; la rama sin-veredicto la vuelve dañina, por eso el step pagina completo (hallazgo del pre-reviewer).
 
 **Riesgo 3 — guard anti-recursión del Reviewer.** El relabel sale con el PAT, no con el GITHUB_TOKEN (su `labeled` no dispararía `reviewer.yml`); el guard del Reviewer ignora `labeled` de `claude[bot]` — el sender del PAT es el usuario del propietario (no-bot), así que dispara.
 

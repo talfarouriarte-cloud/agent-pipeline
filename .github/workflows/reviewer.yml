@@ -296,7 +296,15 @@ jobs:
             const O = { owner: context.repo.owner, repo: context.repo.repo };
             const n = context.payload.pull_request.number;
             const headSha = context.payload.pull_request.head.sha;
-            const { data: cs } = await github.rest.issues.listComments({ ...O, issue_number: n, per_page: 100 });
+            // Paginación COMPLETA (no `per_page: 100` a secas): la API de
+            // issue-comments devuelve orden ASCENDENTE (los 100 más ANTIGUOS en la
+            // página 1). En un PR de épica multironda (>100 comentarios — la clase
+            // exacta que motiva AP-025) el marcador que ESTE step acaba de postear
+            // y los veredictos recientes viven en páginas 2+; sin paginar, el cap 1
+            // por head SHA contaría 0 (loop de relanzamientos) y `vs` saldría vacío
+            // en PRs ya revisados (relanzamiento espurio). Con el `return` previo
+            // esta limitación era benigna; la rama sin-veredicto la vuelve dañina.
+            const cs = await github.paginate(github.rest.issues.listComments, { ...O, issue_number: n, per_page: 100 });
             // Veredicto anclado a la PRIMERA palabra del comentario (cabecera
             // ADR-063), jamás substring (clase regex-polarity, PR #1133).
             const vs = cs.filter(c => /^\s*(LGTM|REVIEW|NITS)\b/.test((c.body || '').trim()));
