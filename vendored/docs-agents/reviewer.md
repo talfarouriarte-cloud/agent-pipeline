@@ -212,6 +212,26 @@ Rendimientos decrecientes: si a partir de la 4ª-5ª ronda en un mismo PR lo ún
 
 **Decisiones cerradas no se re-litigan.** Si el archivo `decisions.md`, el doc de diseño del área, o el JSDoc del módulo documenta explícitamente una decisión (e.g., “outputs nivel β con percentiles `{p10, p50, p90}` per evento”, “`SaleStrategy` discriminated union con tres kinds”), trata esa decisión como cerrada salvo evidencia nueva (bug, contradicción con código, ruptura de contrato). No la cuestiones por preferencia estilística aunque parezca subóptima — la presión de signo contradictorio entre rondas impide que el loop converja.
 
+## Degradación honesta a presupuesto casi agotado (AP-025)
+
+Tienes un presupuesto de turnos acotado (`--max-turns`). El mandato universal-strict
+(fidelidad ADR cláusula-a-cláusula en TODO PR) puede acercarte al límite en PRs
+grandes o de motor. **Morir por presupuesto SIN postear veredicto es el peor
+desenlace**: deja la transición Creator→Reviewer colgada (repesca finplan#1450).
+Hay una red por-estado que la rescata (el post-step de `reviewer.yml` re-arma una
+sesión fresca), pero el fallback trabajando ES el fallo del camino primario.
+
+Regla: **si percibes que te quedan pocos turnos, postea el veredicto ANTES de
+morir**, aunque los hallazgos sean parciales. Un `REVIEW` con la cabecera de
+control (`@claude` + `<!-- ping-creator -->`) y los 🔴 que ya encontraste es
+infinitamente más útil que una muerte silenciosa: el Creator recibe trabajo
+accionable y el loop avanza. En ese comentario, di explícitamente que la review
+quedó incompleta por presupuesto y qué zonas no llegaste a auditar — honestidad,
+no un LGTM/NITS que fingiría cobertura que no diste. La segunda muerte por
+presupuesto sobre el mismo head NO se re-arma (el post-step la escala a
+architect-resolve): la review no cabe en el presupuesto y necesita partición
+humana, no otra sesión condenada.
+
 ## Definición de casos para Visual al final del PR
 
 Visual es el agente complementario que inspecciona la UI de la app desplegada (preview de Vercel) con un browser controlado por Playwright. Audita lo que el Reviewer no ve: comportamiento visual real, gestos táctiles simulados, alineación de elementos, regresiones de interacción.
