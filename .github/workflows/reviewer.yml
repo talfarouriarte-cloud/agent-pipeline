@@ -13,11 +13,21 @@ on:
         type: string
         default: claude-opus-4-8
       reviewer_max_turns:
+        # 80 y no 50 (AP-025, repesca finplan#1450): el mandato universal-strict
+        # (2026-07-12, fidelidad ADR cláusula-a-cláusula en TODO PR) expandió el
+        # trabajo por sesión y provocó la 1ª muerte por presupuesto observada del
+        # Reviewer (ronda 1 de un PR de motor, sin veredicto posteado). Sólo se
+        # paga si se usa. La red por-estado (post-step rama sin-veredicto) cubre
+        # CUALQUIER muerte; este bump ataca la FRECUENCIA.
         type: number
-        default: 50
+        default: 80
       timeout_minutes:
+        # 22 y no 15 (AP-025): el timeout de wall-clock debe escalar con el bump
+        # de turns o el bump es inerte — a 50 turns la muerte por presupuesto de
+        # finplan#1450 llegó a los ~9 min; 80 turns rozarían los 15 min y el
+        # timeout se volvería el nuevo modo de muerte, dejando el bump sin efecto.
         type: number
-        default: 15
+        default: 22
       agent_branch_prefix:
         description: Prefijo de ramas del agente que auto-disparan review
         type: string
@@ -254,12 +264,29 @@ jobs:
             - Respeta el formato y los criterios de severidad definidos
               en `docs/agents/reviewer.md` exactamente.
 
-      # ── Estado materializado (ADR-218): el veredicto que la sesión acaba
-      # de publicar se escribe como label por un paso DETERMINISTA (la
-      # disciplina de un LLM es olvidable; el mecanismo no). `lgtm` sale con
-      # el PAT: su evento `labeled` es el edge que le faltaba a epic-merge
-      # cuando el LGTM llega después del CI (incidente PR #1205).
-      - name: Materializar veredicto (label lgtm)
+      # ── Estado materializado (ADR-218 + AP-025): un paso DETERMINISTA (cero
+      # LLM) cierra la costura «sesión del Reviewer → estado» (la disciplina de
+      # un LLM es olvidable; el mecanismo no). DOS ramas DISJUNTAS por «¿existe
+      # veredicto VIGENTE para el head SHA actual?»:
+      #   · CON veredicto (ADR-218) ⇒ materializa la label `lgtm` (escribe si el
+      #     último es LGTM; retira si REVIEW/NITS). `lgtm` sale con el PAT: su
+      #     `labeled` es el edge que le faltaba a epic-merge cuando el LGTM llega
+      #     después del CI (incidente PR #1205).
+      #   · SIN veredicto (AP-025, repesca finplan#1450) ⇒ la sesión concluyó
+      #     (cualquier outcome — este step corre `if: always()`) sin postear un
+      #     veredicto anclado para el head: muerte por presupuesto (max-turns/
+      #     timeout) o crash antes de postear. El terminal «Reviewer muerto sin
+      #     veredicto» NO tenía materialización — la transición quedaba colgada
+      #     hasta el paso del Watchdog (~9-18 min + un slot de su cap). Aquí se
+      #     re-aplica `needs-review` con el PAT ⇒ sesión FRESCA por evento,
+      #     latencia cero. Cap 1 por head SHA vía marcador; reincidencia sobre el
+      #     mismo head ⇒ NO re-etiquetar (una 2ª muerte por presupuesto = la
+      #     review no cabe en el presupuesto, no un flake — evita el loop de
+      #     sesiones Opus muertas) ⇒ `stalled` para architect-resolve.
+      # Disjunción con central#76: aquella rama materializa la label cuando SÍ
+      # hay veredicto en prosa; ésta relanza cuando NO lo hay. Se separan por la
+      # misma pregunta (¿veredicto vigente para el head?), sin carrera.
+      - name: Materializar estado del Reviewer (label lgtm / rama sin-veredicto AP-025)
         if: always() && steps.gate.outputs.run == 'true'
         uses: actions/github-script@v7
         env:
@@ -268,10 +295,55 @@ jobs:
           script: |
             const O = { owner: context.repo.owner, repo: context.repo.repo };
             const n = context.payload.pull_request.number;
+            const headSha = context.payload.pull_request.head.sha;
             const { data: cs } = await github.rest.issues.listComments({ ...O, issue_number: n, per_page: 100 });
+            // Veredicto anclado a la PRIMERA palabra del comentario (cabecera
+            // ADR-063), jamás substring (clase regex-polarity, PR #1133).
             const vs = cs.filter(c => /^\s*(LGTM|REVIEW|NITS)\b/.test((c.body || '').trim()));
-            if (!vs.length) return;
-            const lastV = (vs[vs.length - 1].body || '').trim().split(/\s/)[0].replace(':','');
+            const lastVc = vs[vs.length - 1] || null;
+            // ¿El último veredicto es VIGENTE para el head actual? Vigente si se
+            // posteó DESPUÉS del commit del head (committer.date vs created_at —
+            // misma comprobación que el lgtm-remat del watchdog y el
+            // turn-close-failsafe). Cubre el caso multironda: un REVIEW de una
+            // ronda previa NO cuenta como veredicto del head nuevo. Fail-closed a
+            // «hay veredicto» si getCommit falla: no relanzar sobre incertidumbre.
+            // Sin veredicto alguno (lastVc null) ⇒ directamente rama sin-veredicto.
+            let verdictForHead = !!lastVc;
+            if (lastVc) {
+              try {
+                const { data: hc } = await github.rest.repos.getCommit({ ...O, ref: headSha });
+                verdictForHead = new Date(lastVc.created_at) > new Date(hc.commit.committer.date);
+              } catch (e) { core.info(`AP-025 head-check: ${e.message} (fail-closed a veredicto presente)`); verdictForHead = true; }
+            }
+            const patCall = async (method, path, body) => {
+              const res = await fetch(`https://api.github.com/repos/${O.owner}/${O.repo}${path}`, {
+                method, headers: { Authorization: `Bearer ${process.env.ARM_PAT}`, Accept: 'application/vnd.github+json' },
+                body: body ? JSON.stringify(body) : undefined });
+              if (!res.ok && res.status !== 404) core.warning(`AP-025 ${method} ${path}: HTTP ${res.status}`);
+              return res;
+            };
+            // ── Rama SIN-VEREDICTO (AP-025): cap 1 por head SHA; reincidencia ⇒ escalada.
+            if (!verdictForHead) {
+              const MARK = `<!-- reviewer-no-verdict-relaunch: ${headSha} -->`;
+              const prior = cs.filter(c => (c.body || '').includes(MARK)).length;
+              if (prior >= 1) {
+                await patCall('POST', `/issues/${n}/labels`, { labels: ['stalled'] });
+                await github.rest.issues.createComment({ ...O, issue_number: n,
+                  body: `**reviewer · rama sin-veredicto (AP-025)**: 2ª conclusión del Reviewer SIN veredicto para el head \`${headSha.slice(0,7)}\` — no se re-etiqueta. Una 2ª muerte por presupuesto sobre el mismo head indica que la review no cabe en el presupuesto (no un flake): anomalía para architect-resolve (\`stalled\`).\n\n<!-- reviewer-no-verdict-persistent -->` });
+                core.warning(`AP-025: 2ª muerte sin veredicto para ${headSha.slice(0,7)} — escalado a architect-resolve.`);
+                return;
+              }
+              // remove+add fuerza el evento `labeled` aunque hubiera un resto; con
+              // el PAT porque un `labeled` del GITHUB_TOKEN no dispara reviewer.yml.
+              await patCall('DELETE', `/issues/${n}/labels/needs-review`);
+              await patCall('POST', `/issues/${n}/labels`, { labels: ['needs-review'] });
+              await github.rest.issues.createComment({ ...O, issue_number: n,
+                body: `**reviewer · rama sin-veredicto (AP-025)**: la sesión del Reviewer concluyó sin veredicto anclado (LGTM/REVIEW/NITS, cabecera ADR-063) para el head \`${headSha.slice(0,7)}\` — muerte por presupuesto/crash antes de postear. Transición materializada por ESTADO: \`needs-review\` re-aplicada con el PAT (sesión fresca por evento, latencia cero). Cap 1 por head SHA.\n\n${MARK}` });
+              core.notice(`AP-025: needs-review re-aplicada para ${headSha.slice(0,7)} (relanzamiento por evento).`);
+              return;
+            }
+            // ── Rama CON veredicto (ADR-218): materializa la label lgtm.
+            const lastV = (lastVc.body || '').trim().split(/\s/)[0].replace(':','');
             if (lastV === 'LGTM') {
               const res = await fetch(`https://api.github.com/repos/${O.owner}/${O.repo}/issues/${n}/labels`, {
                 method: 'POST',

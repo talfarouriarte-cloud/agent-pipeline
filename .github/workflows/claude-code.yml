@@ -853,7 +853,15 @@ jobs:
               const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/actions/runs?head_sha=${pr.head.sha}&per_page=50`, {
                 headers: { Authorization: `Bearer ${process.env.ARM_PAT}`, Accept: 'application/vnd.github+json' } });
               if (!res.ok) { core.warning(`open-review-failsafe: HTTP ${res.status} listando runs — no se decide.`); return null; }
-              return (await res.json()).workflow_runs.filter(r => r.name === REVIEWER_WF).length > 0;
+              // Higiene del dedupe (AP-025, repesca finplan#1450): un run del
+              // Reviewer YA CONCLUIDO en `failure` sin veredicto NO cuenta como
+              // «trigger opened OK» — es una muerte por presupuesto/crash, la
+              // cubre la rama sin-veredicto del post-step de reviewer.yml, no debe
+              // bloquear este belt. Dedupea solo contra runs vivos (queued/
+              // in_progress) o exitosos (success ⇒ el Reviewer sí posteó veredicto).
+              return (await res.json()).workflow_runs.filter(r => r.name === REVIEWER_WF).some(r =>
+                r.status === 'queued' || r.status === 'in_progress'
+                || (r.status === 'completed' && r.conclusion === 'success'));
             };
             // Camino sano: este post-step corre minutos después del `opened`, así
             // que el run ya existe y el corto-circuito ahorra el settle. Un match
