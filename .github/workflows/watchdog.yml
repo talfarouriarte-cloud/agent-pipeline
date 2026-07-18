@@ -340,6 +340,21 @@ jobs:
               const closesReviewer = !!lastBot && /^\s*@reviewer\b/im.test(lastBot.body || '');
               const closesReady = !!lastBot && /^\s*\[READY-TO-MERGE\]/m.test(lastBot.body || '');
               const relaunches = hcs.filter(c => { const b = c.body || ''; return b.includes(TURN_MARK) || b.includes(HANDOFF_MARK); }).length;
+              // Cinturón por-estado de escalada (AP-028 capa 3, repesca finplan#1467):
+              // firma DETERMINISTA de rastro-mecánico-ausente. El Creator publica
+              // `creator-escalated` como comentario SEPARADO vía `gh api` (canal que
+              // conserva HTML) — anclado como HTML, JAMÁS substring de prosa libre
+              // (clase 6 regex polarity: «declaro el bloqueo» no es firma; el marcador
+              // + la ausencia del rastro sí). Escalada NO materializada = hay un
+              // marcador SIN un rastro `-materializado` POSTERIOR a él (freshness que
+              // distingue una escalada pendiente de una ya rulada/re-escalada).
+              const escMarks = bots.filter(c => /<!--\s*creator-escalated\s*-->/.test(c.body || ''));
+              const lastEscMark = escMarks[escMarks.length - 1] || null;
+              const matTraces = hcs.filter(c => (c.body || '').includes('creator-escalated-materializado'));
+              const lastMatTrace = matTraces[matTraces.length - 1] || null;
+              const escUnmaterialized = !!lastEscMark
+                && (!lastMatTrace || new Date(lastEscMark.created_at) > new Date(lastMatTrace.created_at))
+                && (!lastVerdict || new Date(lastEscMark.created_at) > new Date(lastVerdict.created_at));
 
               // turnoDe(pr): derivado de la tabla de protocol.md.
               let turno = null, why = '', fix = null;   // fix devuelve true si ya publicó su comentario-marcador
@@ -419,6 +434,36 @@ jobs:
                 } catch (e) { core.info(`reviewer-run-lookup #${pr.number}: ${e.message}`); }
                 why = `PR sin veredicto ni needs-review; último run del Reviewer para el head: ${lastRvConcl}`;
                 fix = async () => { await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['needs-review'] }); return false; };
+              } else if (escUnmaterialized) {
+                // ── Cinturón por-estado de escalada (AP-028 capa 3, repesca
+                // finplan#1467). Red para la ventana de muerte RESIDUAL: la sesión
+                // del Creator declaró la escalada al Architect (marcador HTML
+                // `creator-escalated` en comentario separado, AP-028 capa 1) pero el
+                // post-step `creator-escalated` de claude-code.yml NO materializó el
+                // estado — murió entre el `gh api` y el post-step, o el evento del
+                // trigger se perdió: `estado:esperando-architect` ausente (el guard de
+                // más arriba ya habría cedido si estuviera) Y sin rastro
+                // `-materializado`. El dispatcher caería al `else` y declararía
+                // `turno-de-nadie` — degradando la escalada CORRECTA a anomalía (el bug
+                // exacto de finplan#1391/#1467). La belt materializa lo que el post-step
+                // prometía: `estado:esperando-architect` + `stalled` con el PAT (su
+                // `labeled=stalled` convoca a architect-resolve POR EVENTO, edge AP-017)
+                // y CEDE. Idempotente con el post-step: publica el MISMO rastro
+                // `creator-escalated-materializado`, que bloquea re-emisiones (freshness
+                // de `escUnmaterialized`) y activa la cesión de la label en el próximo
+                // tick. Sin aging: es rastro-mecánico-ausente, no am-I-still-working.
+                turno = 'architect-resolve';
+                why = 'escalada declarada (`creator-escalated`) sin `estado:esperando-architect` ni rastro `-materializado` — ventana de muerte del post-step / evento perdido';
+                fix = async () => {
+                  // estado visible PRIMERO, `stalled` DESPUÉS (mismo orden que el
+                  // post-step): el `labeled=stalled` con PAT convoca a architect-resolve
+                  // con `estado:esperando-architect` ya presente. `estado:*` es dinámica.
+                  await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['estado:esperando-architect'] });
+                  await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['stalled'] });
+                  await github.rest.issues.createComment({ ...O, issue_number: pr.number,
+                    body: `**watchdog · cinturón por-estado de escalada (AP-028 capa 3)**: el Creator declaró una escalada al Architect (marcador HTML \`creator-escalated\` en comentario separado) pero \`estado:esperando-architect\` nunca se materializó y no hay rastro \`-materializado\` — ventana de muerte del post-step \`creator-escalated\` de claude-code.yml (o el evento del trigger se perdió). Firma determinista de rastro-mecánico-ausente (sin aging): marcador HTML presente + label + rastro ausentes. Estado materializado con el PAT: \`estado:esperando-architect\` + \`stalled\` ⇒ architect-resolve dispara POR EVENTO (edge AP-017) y el dispatcher de turno cede sobre la label en el próximo tick. architect-resolve limpia el estado al rular. Idempotente: este mismo rastro bloquea re-emisiones.\n\n<!-- creator-escalated-materializado -->\n${CAPA}` });
+                  return true;   // self-comment con rastro propio: no consume el cap 2 de relanzamiento
+                };
               } else {
                 anomalies.push({ type: 'turno-de-nadie', number: pr.number, branch: pr.head.ref,
                   labels, last_verdict: lastV,
