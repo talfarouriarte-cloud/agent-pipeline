@@ -16,10 +16,18 @@
 name: Epic Merge
 
 # CALLABLE (agent-pipeline): triggers (workflow_run de CI+Reviewer,
-# pull_request closed+labeled) y concurrency viven en el stub. El grupo de
-# concurrency del stub DEBE serializar por rama y llevar
+# pull_request closed+labeled, issues closed) y concurrency viven en el stub.
+# El grupo de concurrency del stub DEBE serializar por rama y llevar
 # cancel-in-progress: false. El nombre del workflow de CI del consumidor se
 # pasa como input `ci_workflow_name` (el gate lo compara contra run.name).
+#
+# Cierre POR ESTADO (AP-031, repesca finplan#1478): trigger `issues: [closed]`
+# — un issue `epica` que termina por estado (creator-alcance-completo ⇒
+# `estado:cierre-pendiente-humano`, AP-020) y lo cierra un humano NO es un
+# evento de merge: sus sentinels de cadena (`launch-next`/`epic-audit`)
+# quedan sin consumidor. `postStateClose` los consume con la misma lógica del
+# camino de merge, idempotente. Consumidores que no declaren el trigger en su
+# stub no reciben el evento (no-op); ninguna regresión.
 #
 # Serialización de refuerzo (AP-015, issue #46): además de la del stub, el
 # JOB de este reusable declara su propia concurrency por rama con
@@ -476,8 +484,167 @@ jobs:
               } catch (e) { await diag(prNumber, `mergeado pero lanzar #${next} falló: ${e.message}`); }
             }
 
+            // ── Cierre POR ESTADO (AP-031, repesca finplan#1478). Un issue
+            // `epica` que termina por ESTADO — el Creator concluye con
+            // `creator-alcance-completo` (alcance ya en base, sin PR que abrir)
+            // ⇒ el post-step de claude-code aplica `estado:cierre-pendiente-
+            // humano` (AP-020) y un humano lo cierra — NO genera evento de
+            // merge, así que `postMerge` NUNCA corre y sus sentinels de cadena
+            // (`launch-next`/`epic-audit`) quedan SIN consumidor mecánico
+            // (hoy los arma la memoria humana: patrón #14→#21, «visibilizar
+            // sin prevenir»). Este handler los consume con la MISMA lógica del
+            // camino de merge, idempotente y sin tocar el cierre (que sigue
+            // siendo humano por diseño, AP-019).
+            //
+            // Rastro/dedupe global del handler: comentario con marcador
+            // `<!-- epic-state-close-processed -->` en el issue ⇒ procesado
+            // una sola vez por issue (superviviente a reopen/reclose).
+            async function stateCloseMark(issueNumber, msg) {
+              try {
+                await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber,
+                  body: `<!-- epic-state-close-processed -->\n**epic-merge · cierre por estado** (${new Date().toISOString()}): ${msg}` });
+              } catch (e) { core.warning('stateCloseMark: ' + e.message); }
+            }
+            // Dedupe de arm (Riesgo 1 — doble-arm humano+handler): devuelve un
+            // motivo si el destino de `launch-next` ya está armado/en vuelo/
+            // encolado/cerrado (⇒ no re-armar), o null si está fresco. Cubre
+            // «el humano ya armó a mano» (caso finplan#1478: el Architect armó
+            // el eslabón 2/2 ANTES de cerrar el 1/2).
+            async function targetAlreadyArmed(n) {
+              try {
+                const t = (await github.rest.issues.get({ owner, repo, issue_number: n })).data;
+                if (t.state !== 'open') return 'destino no abierto';
+                const tl = (t.labels || []).map(l => l.name);
+                if (tl.includes('serial-activo')) return 'serial-activo (Creator en vuelo)';
+                if (tl.includes('en-cola')) return 'en-cola (encolado)';
+              } catch (e) { /* si issues.get falla (p.ej. no existe) lo tratamos como no armado */ }
+              try {
+                const { data: prs } = await github.rest.pulls.list({ owner, repo, state: 'open', per_page: 100 });
+                if (prs.some(p => (p.head.ref || '').startsWith(`claude/issue-${n}-`))) return 'PR claude/* abierto';
+              } catch (e) { core.info('targetAlreadyArmed pulls.list: ' + e.message); }
+              try {
+                const { data: cs } = await github.rest.issues.listComments({ owner, repo, issue_number: n, per_page: 100 });
+                if (cs.some(c => /<!--\s*epic-auto-launch\s*-->/.test(c.body || ''))) return 'epic-auto-launch (ya armado)';
+              } catch (e) { core.info('targetAlreadyArmed listComments: ' + e.message); }
+              return null;
+            }
+            async function postStateClose(issue) {
+              const issueNumber = issue.number;
+              const labels = (issue.labels || []).map(l => l.name);
+              // Guard 1: SOLO cadenas de épica. Sueltos (auditoría al cierre por
+              // otra vía) y issues sin label de épica quedan fuera.
+              if (!labels.includes(process.env.IN_EPIC_LABEL)) return;
+              // Guard 2: kill-switches (respetados igual que el camino de merge).
+              if (labels.includes('pause-agents') || labels.includes('human-needed')) {
+                core.info(`[epic-merge] cierre-por-estado #${issueNumber}: kill-switch activo; no-op.`); return;
+              }
+              // Guard 3 (Riesgo 2): actuar SOLO sobre la clase evidenciada
+              // «terminal por estado» — `estado:cierre-pendiente-humano` (AP-020)
+              // o el rastro `creator-alcance-completo-materializado*` del
+              // post-step. Los cierres de REESTRUCTURACIÓN del Architect (alcance
+              // migrado a hijos) NO llevan ese estado ⇒ quedan fuera y siguen
+              // siendo del Architect.
+              let allComments = [];
+              try {
+                allComments = (await github.rest.issues.listComments({ owner, repo, issue_number: issueNumber, per_page: 100 })).data;
+              } catch (e) { core.warning(`cierre-por-estado listComments #${issueNumber}: ${e.message}`); }
+              const evidenced = labels.includes('estado:cierre-pendiente-humano')
+                || allComments.some(c => /<!--\s*creator-alcance-completo-materializado(-por-estado)?\s*-->/.test(c.body || ''));
+              if (!evidenced) {
+                core.info(`[epic-merge] cierre #${issueNumber}: sin estado terminal-por-estado (¿reestructuración?); no-op.`); return;
+              }
+              // Dedupe global del handler (reopen/reclose): procesado una vez.
+              if (allComments.some(c => /<!--\s*epic-state-close-processed\s*-->/.test(c.body || ''))) {
+                core.info(`[epic-merge] cierre-por-estado #${issueNumber}: ya procesado; no-op.`); return;
+              }
+
+              const body = issue.body || '';
+              // NOTA sobre la cola serial: el turno pasado a la cola (`en-cola`
+              // ⇒ `popQueue`) YA lo ejecutó el post-step de `claude-code.yml` al
+              // materializar el terminal por estado (libera `serial-activo` +
+              // `popQueue` en el MISMO instante, `:1076`). Este handler NO
+              // re-pop-ea la cola general (sería doble-pop: armaría un segundo
+              // `en-cola` que el guard serial re-encola — ruido). Su ÚNICA tarea
+              // es consumir el SENTINEL DE CADENA (arm del successor o creación
+              // de la auditoría), que el post-step no toca.
+
+              // AUDITORÍA DE ÉPICA (peor caso latente: la épica cerraría SIN
+              // auditoría, en silencio, si el último eslabón termina por estado).
+              // createAuditIdempotent es idempotente por título/claim ⇒ si el
+              // humano ya creó la auditoría, la adopta sin duplicar. El claim se
+              // ancla en el propio issue cerrado (no hay PR aquí).
+              const am = body.match(/<!--\s*epic-audit:\s*([^>]+?)\s*-->/);
+              if (am) {
+                const scope = am[1].trim();
+                try {
+                  const auditNumber = await createAuditIdempotent(issueNumber, {
+                    title: `Auditoría de épica · ${scope}`,
+                    labels: ['auditoria'],
+                    body: [
+                      `Auditoría post-épica (run único). Alcance: **${scope}**.`,
+                      ``,
+                      `Rol y protocolo: \`docs/agents/epic-auditor.md\` (vinculante).`,
+                      `Los «Invariantes funcionales de la épica» viven en el ISSUE DE ÉPICA del rango (casa canónica, junto al sentinel): léelos allí y EJECÚTALOS. Su ausencia ALLÍ es la omisión a visibilizar.`,
+                      `Compara el árbol mergeado de \`${process.env.IN_DEFAULT_BRANCH}\` contra el alcance TOTAL`,
+                      `de la épica (ADR + unión de issues del rango), no PR-a-PR.`,
+                      ``,
+                      `@claude arranca la auditoría siguiendo docs/agents/epic-auditor.md.`,
+                    ].join('\n'),
+                  });
+                  await stateCloseMark(issueNumber, `\`epic-audit\` consumido tras cierre por estado: auditoría ${auditNumber ? '#' + auditNumber : '(creación falló)'} para «${scope}».`);
+                } catch (e) {
+                  await stateCloseMark(issueNumber, `cierre por estado: crear/armar auditoría «${scope}» falló: ${e.message}`);
+                }
+                return; // epic-audit implica fin de cadena (no coexiste con launch-next)
+              }
+
+              if (/<!--\s*epic-done\s*-->/.test(body)) {
+                // Fin de cadena sin auditoría: no hay successor ni auditoría que
+                // armar; la cola ya la popeó el post-step. Solo dejamos rastro.
+                await stateCloseMark(issueNumber, '`epic-done`: fin de cadena sin auditoría (nada que encadenar tras cierre por estado; la cola serial ya la gestionó el post-step).');
+                return;
+              }
+
+              const lm = body.match(/<!--\s*launch-next:\s*#?(\d+)\s*-->/);
+              if (!lm) {
+                // `epica` cerrada por estado SIN sentinel: posible defecto de
+                // horneado. A diferencia del camino de merge (que aplica
+                // `stalled`), NO re-etiquetamos un issue ya cerrado por el
+                // humano — solo dejamos rastro para el Auditor.
+                await stateCloseMark(issueNumber, 'sin sentinel de cadena (ni `launch-next` ni `epic-audit`): nada que encadenar. Posible defecto de horneado — issue ya cerrado por el humano; no se re-etiqueta.');
+                return;
+              }
+              const next = Number(lm[1]);
+              const already = await targetAlreadyArmed(next);
+              if (already) {
+                await stateCloseMark(issueNumber, `\`launch-next: #${next}\` ya consumido (${already}); no re-armo (dedupe doble-arm humano+handler).`);
+                return;
+              }
+              // Des-bloqueo mecánico del destino (idéntico al camino de merge,
+              // 2026-07-08/#1120) + arm con rastro `epic-auto-launch`.
+              for (const stale of ['stalled', 'human-needed']) {
+                try { await github.rest.issues.removeLabel({ owner, repo, issue_number: next, name: stale }); }
+                catch (e) { /* 404 = no la tenía; ok */ }
+              }
+              try {
+                await github.rest.issues.createComment({ owner, repo, issue_number: next,
+                  body: `@claude\n\nArranque automático de épica tras cierre POR ESTADO de #${issueNumber} (terminal alcance-completo, sin merge — AP-031). El sentinel \`launch-next\` de una cadena que termina por estado lo consume epic-merge, no la memoria humana.\n\n<!-- epic-auto-launch -->` });
+                await stateCloseMark(issueNumber, `\`launch-next\` consumido tras cierre por estado: #${next} armado (des-bloqueo aplicado si tenía \`stalled\`/\`human-needed\`).`);
+              } catch (e) {
+                await stateCloseMark(issueNumber, `cierre por estado: arm de #${next} falló: ${e.message}`);
+              }
+            }
+
             let prNumber = null;
             try {
+              // ── Evento issues closed (AP-031): cierre POR ESTADO de una
+              // épica. Camino disjunto del de merge (no hay PR); consume los
+              // sentinels de cadena que un cierre manual (no-merge) huérfana.
+              if (context.eventName === 'issues') {
+                if (context.payload.action !== 'closed') return;
+                await postStateClose(context.payload.issue);
+                return;
+              }
               // ── Evento labeled (ADR-218): solo `lgtm` evalúa; el resto de
               // labels se ignoran aquí (concurrency ya serializa).
               let labeledPr = null;
