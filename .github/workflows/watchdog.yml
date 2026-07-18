@@ -730,7 +730,7 @@ jobs:
           # 1) Anotaciones ::error de vitest (reporter github-actions): fichero
           # + título, dedupe, cap 10.
           FAILS=$(grep -rhoE '::error file=[^,]*packages/[^,]+,title=[^,]+' "$TMP" \
-            | sed -E 's|::error file=[^,]*(packages/[^,]+),title=|\1 › |' \
+            | sed -E 's|::error file=[^,]*(packages/[^,]+),title=|\1 > |' \
             | sort -u | head -10 || true)
           # 2) Fallback al reporter default de vitest: bloque «Failed Tests»,
           # líneas ancladas al prefijo `FAIL ` (lección «regex polarity
@@ -750,7 +750,7 @@ jobs:
           if [ -z "$FAILS" ]; then
             post_unparseable; exit 0
           fi
-          gh pr comment "$PR" --repo "${{ github.repository }}" --body "$(printf '**watchdog · cosecha de flaky-candidatos** (attempt 1 del run %s — confirmados como flaky si el re-run sale verde; el Auditor los cuenta por épica):\n\n~~~\n%s\n~~~\n\n<!-- flaky-harvest -->' "$RUN" "$FAILS")"
+          gh pr comment "$PR" --repo "${{ github.repository }}" --body "$(printf '**watchdog · cosecha de flaky-candidatos** (attempt 1 del run %s — confirmados como flaky si el re-run sale verde; el Auditor los cuenta por épica):\n\n~~~\n%s\n~~~\n\n<!-- flaky-harvest -->' "$RUN" "$FAILS")" || true
 
       - name: Orphan PR net
         id: orphan_net
