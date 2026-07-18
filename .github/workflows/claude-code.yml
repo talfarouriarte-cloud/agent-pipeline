@@ -523,6 +523,11 @@ jobs:
         # `auditoria`/`auditoria-completa`) quedan fuera del régimen: no
         # producen PRs de código (2026-07-13, deadlock #1312). El loop Creator↔Reviewer (contexto
         # PR) no pasa por aquí. Override manual: label `serial-ok` en el issue.
+        # AP-033 (repesca finplan#1471/#1484): la exclusión es PRE-DESPACHO y sin
+        # excepción por mismo-issue — `serial-activo` presente bloquea también el
+        # re-arm del PROPIO issue (Watchdog/architect-resolve/arm manual/override
+        # humano). El cinturón para dos ARRANQUES simultáneos queda DEFERIDO (el
+        # diseño literal tiene un deadlock; ver AP-033 y `### Alcance restante`).
         id: check_serial
         if: |
           steps.check_pause.outputs.paused != 'true'
@@ -567,16 +572,46 @@ jobs:
             const inFlightPRs = prs.filter(p => p.head.ref.startsWith('claude/')).map(p => `#${p.number} (${p.head.ref})`);
             const { data: flagged } = await github.rest.issues.listForRepo({
               owner, repo, state: 'open', labels: 'serial-activo', per_page: 20 });
-            const inFlightArms = flagged.filter(i => i.number !== issue.number).map(i => `#${i.number} (armado)`);
-            const inFlight = [...inFlightPRs, ...inFlightArms];
-            if (inFlight.length > 0) {
+            // AP-033 (repesca finplan#1471/#1484): `serial-activo` presente
+            // bloquea CUALQUIER re-arm, INCLUIDO el del propio issue. La exención
+            // histórica `i.number !== issue.number` dejaba pasar re-arms sobre el
+            // MISMO issue que ya tenía el flag puesto por su run vivo (rearm del
+            // Watchdog, architect-resolve encolado, arm manual) ⇒ doble Creator.
+            // El relanzamiento legítimo post-merge/parcial NO colisiona: el flag
+            // cae al abrir el PR (post-step) o al morir el Creator (watchdog), así
+            // que un re-arm legítimo SIEMPRE ve la serie libre. La responsabilidad
+            // del mutex es del RUN en su arranque (este guard es su primer paso),
+            // no del actor que arma ni de una vigilancia externa.
+            const selfHeld = flagged.some(i => i.number === issue.number);
+            const inFlightOther = [...inFlightPRs, ...flagged.filter(i => i.number !== issue.number).map(i => `#${i.number} (armado)`)];
+            if (selfHeld) {
+              // Re-arm concurrente sobre el MISMO issue: su `serial-activo` lo puso
+              // el run vivo. Este run es redundante ⇒ se auto-aborta SIN
+              // re-etiquetar: el issue NO está en cola ni stalled, está EN VUELO
+              // (lo posee el Creator vivo). NO se retira `serial-activo` (lo libera
+              // su run natural al abrir el PR o el watchdog si muere).
               await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
-                body: `**claude-code · guard serial**: ya hay un Creator en vuelo (${inFlight.join(', ')}). La serialidad es regla dura — no se arma un segundo Creator en paralelo. Este issue NO se arma; queda **EN COLA** (label \`en-cola\`): al liberarse la serie por un merge, epic-merge armará automáticamente el más antiguo de la cola (2026-07-14). Para forzar YA: \`serial-ok\`.\n\n<!-- serial-guard -->` });
+                body: `**claude-code · guard serial**: este issue ya tiene un Creator en vuelo (\`serial-activo\` puesto por su run vivo). La serialidad es regla dura — un re-arm concurrente del MISMO issue (rearm del Watchdog, architect-resolve encolado, arm manual, override humano) NO lanza un segundo Creator. Este run se auto-aborta; la serie la libera el run vivo por su vía natural (PR abierto / muerte del Creator / watchdog). Para forzar un relanzamiento: retira \`serial-activo\` o usa \`serial-ok\`.\n\n<!-- serial-guard -->` });
+              core.setOutput('blocked', 'true');
+              core.warning(`Guard serial: re-arm concurrente de #${issue.number} con serial-activo ya puesto; auto-abortado.`);
+            } else if (inFlightOther.length > 0) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
+                body: `**claude-code · guard serial**: ya hay un Creator en vuelo (${inFlightOther.join(', ')}). La serialidad es regla dura — no se arma un segundo Creator en paralelo. Este issue NO se arma; queda **EN COLA** (label \`en-cola\`): al liberarse la serie por un merge, epic-merge armará automáticamente el más antiguo de la cola (2026-07-14). Para forzar YA: \`serial-ok\`.\n\n<!-- serial-guard -->` });
               await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['stalled', 'en-cola'] });
               core.setOutput('blocked', 'true');
-              core.warning(`Guard serial: ${inFlight.length} en vuelo; no se arma #${issue.number}.`);
+              core.warning(`Guard serial: ${inFlightOther.length} en vuelo; no se arma #${issue.number}.`);
             } else {
-              // Deja pasar: marca ATÓMICAMENTE este issue como Creator en vuelo.
+              // Deja pasar: toma ATÓMICAMENTE el mutex marcando este issue en vuelo.
+              // NOTA (AP-033): el cinturón TOCTOU para dos ARRANQUES simultáneos
+              // (leer-ambos-vacío antes de escribir) queda DEFERIDO — el diseño
+              // literal «escribir el flag y luego ceder al run in_progress más
+              // antiguo» tiene un deadlock: un run está `in_progress` desde el
+              // arranque del job (mucho antes de este guard), así que el orden de
+              // LLEGADA al guard puede diferir del orden de `run_id`; el joven que
+              // llega primero escribe+cede, y el veterano que llega después ve el
+              // flag y se auto-aborta por Change A ⇒ CERO Creators + flag orfanado.
+              // Requiere decisión de diseño del propietario (ver `### Alcance
+              // restante` del PR y AP-033).
               await github.rest.issues.removeLabel({ owner, repo, issue_number: issue.number, name: 'en-cola' }).catch(() => {});
               await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['serial-activo'] });
               core.setOutput('blocked', 'false');
