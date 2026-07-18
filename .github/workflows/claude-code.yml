@@ -1539,8 +1539,13 @@ jobs:
               return;
             }
             // Idempotencia (AP-028 capa 2): si el rastro `-materializado` ya está
-            // (post-step previo o cinturón del Watchdog), no dupliques.
-            if (freshBots.some(c => /<!--\s*creator-escalated-materializado\s*-->/.test(c.body || ''))) {
+            // (post-step previo o cinturón del Watchdog), no dupliques. El rastro
+            // se publica con el PAT ⇒ NO lo firma claude[bot]: se busca sobre
+            // TODOS los comentarios frescos, no solo los de claude[bot].
+            const freshAll = trigRaw
+              ? comments.filter(c => new Date(c.created_at) > new Date(trigRaw))
+              : comments;
+            if (freshAll.some(c => /<!--\s*creator-escalated-materializado\s*-->/.test(c.body || ''))) {
               core.notice('creator-escalated: ya materializado (rastro presente) — no duplico.');
               return;
             }
