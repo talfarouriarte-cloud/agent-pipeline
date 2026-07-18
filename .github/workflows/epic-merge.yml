@@ -559,6 +559,15 @@ jobs:
               }
 
               const body = issue.body || '';
+              // NOTA sobre la cola serial: el turno pasado a la cola (`en-cola`
+              // ⇒ `popQueue`) YA lo ejecutó el post-step de `claude-code.yml` al
+              // materializar el terminal por estado (libera `serial-activo` +
+              // `popQueue` en el MISMO instante, `:1076`). Este handler NO
+              // re-pop-ea la cola general (sería doble-pop: armaría un segundo
+              // `en-cola` que el guard serial re-encola — ruido). Su ÚNICA tarea
+              // es consumir el SENTINEL DE CADENA (arm del successor o creación
+              // de la auditoría), que el post-step no toca.
+
               // AUDITORÍA DE ÉPICA (peor caso latente: la épica cerraría SIN
               // auditoría, en silencio, si el último eslabón termina por estado).
               // createAuditIdempotent es idempotente por título/claim ⇒ si el
@@ -583,7 +592,6 @@ jobs:
                     ].join('\n'),
                   });
                   await stateCloseMark(issueNumber, `\`epic-audit\` consumido tras cierre por estado: auditoría ${auditNumber ? '#' + auditNumber : '(creación falló)'} para «${scope}».`);
-                  if (auditNumber) await armQueue(issueNumber, `épica terminada por estado (epic-audit), #${issueNumber}`);
                 } catch (e) {
                   await stateCloseMark(issueNumber, `cierre por estado: crear/armar auditoría «${scope}» falló: ${e.message}`);
                 }
@@ -591,8 +599,9 @@ jobs:
               }
 
               if (/<!--\s*epic-done\s*-->/.test(body)) {
-                await stateCloseMark(issueNumber, '`epic-done`: fin de cadena sin auditoría (consumido tras cierre por estado).');
-                await armQueue(issueNumber, `épica terminada por estado (epic-done), #${issueNumber}`);
+                // Fin de cadena sin auditoría: no hay successor ni auditoría que
+                // armar; la cola ya la popeó el post-step. Solo dejamos rastro.
+                await stateCloseMark(issueNumber, '`epic-done`: fin de cadena sin auditoría (nada que encadenar tras cierre por estado; la cola serial ya la gestionó el post-step).');
                 return;
               }
 
