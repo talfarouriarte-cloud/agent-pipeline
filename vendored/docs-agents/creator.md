@@ -3,6 +3,11 @@
 
 # Creator — Autoría de issues y patrón de invocación
 
+> **INVARIANTE DE PUSH — LÉELO ANTES QUE NADA (prevalece sobre cualquier prosa, incluido ADR-020):**
+> - **Consumidores (finplan, wmcb):** NO tocas `.github/workflows/**`. Punto (ADR-020).
+> - **Central (`agent-pipeline`):** SÍ trabajas workflows. **Commitea TODO en local** (workflows incluidos). Tu `git push` en sesión **será rechazado** para `.github/workflows/**` — es lo ESPERADO, **no es blocker, no es `[NEEDS-HUMAN]`**: el post-step «Push residual con token de workflows» publica tus commits y abre/actualiza el PR. Esto aplica a TODA sesión del central: creación, nits, re-arms.
+> - **Diffs en prosa en vez de commits = trabajo PERDIDO**: ningún mecanismo los consume (falsos positivos reales: central#56 → rescate abrió PR #66; nit-round de PR #104 → deadlock de 3h).
+
 > Guía operativa para redactar issues que el Creator agent ejecuta como PRs. Equivalente al `reviewer.md` (criterio del Reviewer) y `architect.md` (rol del Architect), pero del lado del **input** que llega al Creator, no del lado del agente.
 
 ## Rol del Creator
