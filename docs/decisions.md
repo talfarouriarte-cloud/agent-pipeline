@@ -772,7 +772,7 @@ Clase de fallo: **el bloque `permissions` del stub/job del reusable es superfici
 
 **Fecha.** 2026-07-18.
 
-## AP-033 — La exclusión serial es PRE-DESPACHO y sin excepción por mismo-issue: `serial-activo` presente bloquea CUALQUIER re-arm (incluido el del propio issue) + cinturón TOCTOU que cede al run más antiguo (repesca finplan#1471/#1484)
+## AP-033 — La exclusión serial es PRE-DESPACHO y sin excepción por mismo-issue: `serial-activo` presente bloquea CUALQUIER re-arm, incluido el del propio issue (Change A); cinturón TOCTOU DEFERIDO por deadlock (repesca finplan#1471/#1484)
 
 **Contexto.** Repesca finplan#1471 (origen central#92). El guard `check_serial` de `claude-code.yml` ya toma el mutex `serial-activo` atómicamente al dejar pasar y ya bloquea un segundo arm… pero su filtro EXIMÍA al propio issue: `flagged.filter(i => i.number !== issue.number)`. La serialidad es regla dura (existe por colisión de PRs de código, #1303), pero la exención abría una carrera: si un run vivo YA había puesto `serial-activo` sobre su issue, cualquier re-arm del MISMO issue pasaba. Dos instancias medidas en 24h, ambas re-arms sobre el mismo issue con el flag ya puesto por el run vivo:
 
