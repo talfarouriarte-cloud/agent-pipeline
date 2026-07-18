@@ -152,6 +152,34 @@ gh api repos/{owner}/{repo}/issues/<N>/comments -f body='<!-- creator-escalated 
 
 **Orden via-negativa (mitigación de la ventana de muerte):** publica el comentario separado con `gh api` **ANTES** de tu cierre final si es viable. El intervalo entre el tracking comment y el `gh api` es una ventana en la que una muerte de sesión pierde el marcador; publicar primero por `gh api` la minimiza. Como red determinista para esa ventana, el cinturón del Watchdog (AP-028) materializa el estado por firma de rastro-mecánico-ausente — pero es cinturón, no cortesía: no dependas de él. `[NEEDS-HUMAN]` es TEXTO plano (no HTML) y sobrevive al tracking comment: ese sí va en tu cierre, no necesita canal separado.
 
+### Si la apertura del PR falla por credencial caducada: declara el body en el cierre (AP-030)
+
+Tu auth es un App token de `claude[bot]` con **TTL ~1h** (ver § Rol). Si tu sesión se alarga (deps + suite por lotes + pre-reviewer) el token puede **caducar a mitad de sesión**, y entonces `gh pr create` falla por credencial expirada DESPUÉS de que ya empujaste tus commits (la rama queda ahead sin PR). No re-intentes indefinidamente ni pares en silencio: la red por-estado del post-step (AP-023) abrirá el PR desde la rama con el **PAT** (credencial no ligada a la vida de tu sesión) — pero por defecto lo abre con **`partial-pr` forzado** y «Alcance restante: desconocido», IGNORANDO el alcance real que solo tú conoces. Esa polaridad falsa desata una cascada cara (parcial fantasma: re-arm nulo + belt AP-026 + watchdog falso-positivo + arm manual del `launch-next` — 5-whys finplan#1481).
+
+**Para que el post-step abra el PR FIEL (polaridad + body reales ⇒ cascada cero):** cuando `gh pr create` falle por credencial caducada, publica el **body ÍNTEGRO del PR** que ibas a abrir en un **comentario SEPARADO vía `gh api` en el ISSUE** (mismo canal que los marcadores terminales — conserva el HTML; el tracking comment lo perdería, AP-028), delimitado por los marcadores `<!-- pr-body-declarado:start -->` / `<!-- pr-body-declarado:end -->` en **línea propia**. El body declarado DEBE contener, cada uno en su línea:
+
+- tu marcador de polaridad REAL anclado (`<!-- full-pr -->` o `<!-- partial-pr -->`), exactamente uno;
+- `Closes #N` fiel (es lo que restituye el cierre automático del issue y el consumo de `launch-next` por epic-merge al mergear — con `Refs #N` el issue no se cierra);
+- la huella `pre-reviewer: ejecutado · N hallazgos · M aplicados` (o `pre-reviewer: no ejecutado — <motivo>`).
+
+```bash
+gh api repos/{owner}/{repo}/issues/<N>/comments -f body="$(cat <<'EOF'
+<!-- pr-body-declarado:start -->
+Closes #<N>
+
+<resumen de cambios y blast radius>
+
+pre-reviewer: ejecutado · N hallazgos · M aplicados
+<!-- full-pr -->
+<!-- pr-body-declarado:end -->
+EOF
+)"
+```
+
+El post-step lee este bloque (freshness: solo cuenta si viene de tu MISMA sesión, la que dejó la rama ahead; marcadores HTML anclados, jamás substring de prosa) y abre el PR con ESE body y ESA polaridad. Si el bloque no existe, no es fiel (falta `Closes #N` o la polaridad no está anclada/es ambigua), o viene de otra sesión, el post-step cae al `partial-pr` forzado residual. Reviewer + CI siguen siendo gates completos del PR resultante, así que una declaración `full-pr` con commits faltantes no se cuela: es el camino estándar `opened`-por-PAT ya ejercitado.
+
+Esto es solo para la muerte por **credencial caducada con rama ya ahead**: si paras por un hueco de diseño usa `creator-blocked`; si el alcance ya está completo sin PR que abrir usa `creator-alcance-completo` (tabla de arriba).
+
 ## Subagentes (contexto separado — úsalo para no quemar el tuyo)
 
 Tienes dos subagentes en `.claude/agents/`. Cuándo invocarlos:
