@@ -526,8 +526,9 @@ jobs:
         # AP-033 (repesca finplan#1471/#1484): la exclusión es PRE-DESPACHO y sin
         # excepción por mismo-issue — `serial-activo` presente bloquea también el
         # re-arm del PROPIO issue (Watchdog/architect-resolve/arm manual/override
-        # humano). El cinturón para dos ARRANQUES simultáneos queda DEFERIDO (el
-        # diseño literal tiene un deadlock; ver AP-033 y `### Alcance restante`).
+        # humano). El cinturón para dos ARRANQUES simultáneos (Change B) cierra la
+        # ventana TOCTOU con un ganador único determinista (menor `run_id` sobre el
+        # mismo issue; solo el ganador escribe el flag) — ver AP-033.
         id: check_serial
         if: |
           steps.check_pause.outputs.paused != 'true'
@@ -601,20 +602,60 @@ jobs:
               core.setOutput('blocked', 'true');
               core.warning(`Guard serial: ${inFlightOther.length} en vuelo; no se arma #${issue.number}.`);
             } else {
-              // Deja pasar: toma ATÓMICAMENTE el mutex marcando este issue en vuelo.
-              // NOTA (AP-033): el cinturón TOCTOU para dos ARRANQUES simultáneos
-              // (leer-ambos-vacío antes de escribir) queda DEFERIDO — el diseño
-              // literal «escribir el flag y luego ceder al run in_progress más
-              // antiguo» tiene un deadlock: un run está `in_progress` desde el
-              // arranque del job (mucho antes de este guard), así que el orden de
-              // LLEGADA al guard puede diferir del orden de `run_id`; el joven que
-              // llega primero escribe+cede, y el veterano que llega después ve el
-              // flag y se auto-aborta por Change A ⇒ CERO Creators + flag orfanado.
-              // Requiere decisión de diseño del propietario (ver `### Alcance
-              // restante` del PR y AP-033).
-              await github.rest.issues.removeLabel({ owner, repo, issue_number: issue.number, name: 'en-cola' }).catch(() => {});
-              await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['serial-activo'] });
-              core.setOutput('blocked', 'false');
+              // Serie libre según el flag. Antes de tomar el mutex corre el
+              // cinturón TOCTOU (AP-033 Change B — ganador único determinista):
+              // cierra la ventana de segundos entre DOS arranques simultáneos que
+              // leen AMBOS `flagged` vacío antes de que ninguno escriba el flag
+              // (que el label solo no cubre). NO dependemos del orden de LLEGADA
+              // al guard — que NO coincide con el orden de `run_id`, porque un run
+              // está `in_progress` desde el arranque del job, mucho antes de este
+              // step (por eso el diseño literal «escribir+ceder al más antiguo»
+              // tenía deadlock). En su lugar computamos un ganador DETERMINISTA:
+              // el run Creator `in_progress` de MENOR `run_id` sobre ESTE MISMO
+              // issue. Todos los contendientes calculan el mismo ganador; SOLO el
+              // ganador escribe el flag y procede, los demás ceden SIN escribir
+              // (nunca se orfana el mutex — a lo sumo, si el ganador muere en la
+              // ventana, se pierde el arm y lo recupera el watchdog/cola).
+              let runs = [];
+              try {
+                const { data } = await github.rest.actions.listWorkflowRunsForRepo({
+                  owner, repo, status: 'in_progress', per_page: 100 });
+                runs = data.workflow_runs || [];
+              } catch (e) {
+                // Degradación segura: sin lista no aplicamos cinturón y tomamos el
+                // mutex (comportamiento pre-Change-B). Peor caso = la carrera
+                // original, que Change A ya mitiga en su mayor parte.
+                core.warning(`Guard serial · cinturón TOCTOU: no se pudo listar runs (${e.message}); se toma el mutex sin cinturón.`);
+              }
+              // Aísla runs Creator del MISMO issue: mismo workflow caller
+              // (`r.name === context.workflow` — robusto en contexto reusable:
+              // excluye self-epic-merge/signal-closer/self-reviewer, que disparan
+              // sobre `issues` con el mismo `display_title` pero otro nombre de
+              // workflow — ceder a ellos orfanaría el flag) Y mismo `display_title`
+              // (= título del issue en eventos issue/issue_comment).
+              const contenders = runs
+                .filter(r => r.name === context.workflow && r.display_title === issue.title)
+                .map(r => r.id);
+              // El run actual SIEMPRE es contendiente (está in_progress ejecutando
+              // esto); inclúyelo por si la lista viene rancia por el retardo de
+              // indexación de la API de runs.
+              if (!contenders.includes(context.runId)) contenders.push(context.runId);
+              const winner = Math.min(...contenders);
+              if (winner !== context.runId) {
+                // Arranque simultáneo con `run_id` MENOR: es el ganador
+                // determinista. Este run cede SIN escribir el flag (lo escribe el
+                // ganador) ⇒ nunca se orfana. Auto-aborto SIN re-etiquetar: el
+                // issue NO está en cola, el ganador lo arma ahora mismo.
+                await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
+                  body: `**claude-code · guard serial**: arranque simultáneo sobre este issue; el ganador determinista (run de menor id, \`${winner}\`) toma la serie. Este run (\`${context.runId}\`) cede SIN escribir \`serial-activo\` para no orfanar el mutex — no se re-etiqueta, el ganador arma ahora.\n\n<!-- serial-guard -->` });
+                core.setOutput('blocked', 'true');
+                core.warning(`Guard serial · cinturón TOCTOU: run ${context.runId} cede ante ganador ${winner} para #${issue.number}.`);
+              } else {
+                // Ganador (o único contendiente): toma ATÓMICAMENTE el mutex.
+                await github.rest.issues.removeLabel({ owner, repo, issue_number: issue.number, name: 'en-cola' }).catch(() => {});
+                await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['serial-activo'] });
+                core.setOutput('blocked', 'false');
+              }
             }
 
       - name: Sync a la rama base actual antes de ramificar (solo issues, no PRs)
