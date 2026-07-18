@@ -111,6 +111,21 @@ RE-ARMA (`@claude` + `<!-- watchdog-rearm -->`). Si añadir el bloque exige una
 decisión de DISEÑO no tomada en el ADR (no derivable), NO lo inventes: escala al
 Architect dejando el `stalled` puesto.
 
+**Épica con invariantes sin dry-run declarado (`dry-run-ausente-stall`, AP-029).**
+Si el `stalled` viene del guard de horneado con el marcador
+`<!-- dry-run-ausente-stall -->` (el bloque `## Invariantes funcionales de la épica`
+está presente pero NINGÚN invariante declara su estado esperado pre-épica), resuelve
+en ESTE run: EJECUTA el dry-run de cada invariante contra el árbol PRE-épica, edita el
+issue de épica (`gh issue edit`) añadiendo bajo cada invariante la línea anclada
+`pre-épica: rojo|verde — <por qué>` con el veredicto observado, y la cita de la
+cláusula del ADR que ese invariante protege (`⇐ <cláusula>`, regla de cita del
+resolver-protocol: copia textual). Si al ejecutar el dry-run descubres que un
+invariante es insatisfacible de origen porque CONTRADICE la cláusula que dice
+proteger (clase de la recurrencia finplan#1476), NO lo hornees: corrige el invariante
+para alinearlo con la cláusula o —si exige rediseño no tomado— escala al Architect con
+el `stalled` puesto. Si la épica es doc-only, publica `<!-- invariantes-na -->`. En
+los casos resolubles quita `stalled` y RE-ARMA (`@claude` + `<!-- watchdog-rearm -->`).
+
 **Herramientas de re-dimensionado:** la etapa architect dispone de
 `gh issue create` en su allowedTools (añadido 2026-07-08 tras el
 incidente #1120: el régimen exigía crear issues hijos y la herramienta

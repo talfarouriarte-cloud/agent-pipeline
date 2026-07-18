@@ -222,8 +222,9 @@ jobs:
             let body = issue.body || '';
             let hops = 0;
             let hasInvariants = false;
+            let invariantsBody = ''; // AP-029: cuerpo donde vive el bloque, para el dry-run
             while (hops++ < 20) {
-              if (/invariantes funcionales/i.test(body)) hasInvariants = true;
+              if (/invariantes funcionales/i.test(body)) { hasInvariants = true; if (!invariantsBody) invariantsBody = body; }
               if (/<!--\s*epic-audit:/.test(body)) {
                 if (!hasInvariants) {
                   // AP-021 (central#59): el aviso `sin-invariantes` era
@@ -289,7 +290,49 @@ jobs:
                   }
                   core.setOutput('broken', 'true'); return;
                 }
-                core.setOutput('broken', 'false'); return;
+                // AP-029 (central#89 — recurrencia POST-fix de central#77 en
+                // finplan#1476): la PRESENCIA del bloque NO basta. El fix de
+                // central#77 dejó la declaración del resultado esperado pre-épica
+                // (dry-run de invariantes) como DISCIPLINA DE SESIÓN sin
+                // consumidor mecánico; su primer uso tras el fix (épica
+                // finplan#1471) horneó el bloque SIN ninguna declaración y el
+                // Invariante #3 —insatisfacible de origen— llegó intacto al
+                // Auditor. Se MATERIALIZA la declaración como PRECONDICIÓN del
+                // arm: el bloque debe llevar ≥1 línea ANCLADA
+                // `pre-épica: rojo|verde — <por qué>` (anclada a inicio de línea,
+                // jamás substring — clase 6 del pipeline-map). Límite honesto: el
+                // guard fuerza la DECLARACIÓN (≥1), no la ejecución ni la
+                // completitud per-invariante; la red per-invariante y la
+                // reconciliación declarado-vs-observado es el Auditor. Mismo
+                // desenlace materializado que `sin-invariantes-stall` (stall con
+                // dueño ⇒ architect-resolve por evento), marcador propio
+                // `dry-run-ausente-stall`, mismas exenciones (re-arm de cadena,
+                // `invariantes-na`) y dedup (AP-018 §1).
+                // Riesgo 2 (falsos stalls sobre cadenas horneadas con formato
+                // viejo, sin el token): gate «solo cadenas nuevas» por fecha de
+                // creación del issue raíz — el token se DEFINE en ESTA misma PR
+                // (skill proceso-diseño §Fase 3), así que ninguna cadena anterior
+                // al corte podía llevarlo.
+                const DRYRUN_CUTOVER = Date.parse('2026-07-18T00:00:00Z');
+                const issueCreated = Date.parse(issue.created_at || '');
+                const preexisting = Number.isFinite(issueCreated) && issueCreated < DRYRUN_CUTOVER;
+                // Token tolerante a la tilde (pre-épica / pre-epica); anclado a
+                // inicio de línea con `m`, tolera sangría de lista, jamás substring.
+                const hasDryRun = /^[ \t]*pre-[eé]pica:\s*(rojo|verde)\b/im.test(invariantsBody);
+                if (preexisting || hasDryRun) { core.setOutput('broken', 'false'); return; }
+                const armBody2 = context.payload.comment?.body || '';
+                const isChainRearm2 = armBody2.includes('epic-auto-launch') || armBody2.includes('watchdog-rearm');
+                const { data: existing2 } = await github.rest.issues.listComments({ owner, repo, issue_number: issue.number, per_page: 100 });
+                const TRUSTED2 = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+                const naDeclared2 = existing2.some(c => /<!--\s*invariantes-na\s*-->/.test(c.body || '') && TRUSTED2.has(c.author_association));
+                if (naDeclared2 || isChainRearm2) { core.setOutput('broken', 'false'); return; }
+                await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['stalled'] });
+                const alreadyDryRunStalled = existing2.some(c => /<!--\s*dry-run-ausente-stall\s*-->/.test(c.body || ''));
+                if (!alreadyDryRunStalled) {
+                  await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
+                    body: '**claude-code · guard de horneado**: el bloque `## Invariantes funcionales de la épica` está presente pero NINGÚN invariante declara su estado esperado pre-épica (línea anclada `pre-épica: rojo|verde — <por qué>`). Sin esa declaración el dry-run de invariantes queda como disciplina de sesión sin consumidor mecánico y un invariante insatisfacible de origen llega intacto al Auditor (recurrencia POST-fix de central#77: épica finplan#1471 → finplan#1476, Invariante #3). El arm NO continúa: se materializa como transición con dueño (`stalled` ⇒ architect-resolve por evento). Resolución en un run de architect-resolve: EJECUTA el dry-run de cada invariante contra el árbol PRE-épica, añade bajo cada uno la línea `pre-épica: rojo|verde — <por qué>` y la cita de la cláusula ADR que protege (`⇐ <cláusula>`), y des-stallea/re-arma; o si la épica es doc-only declara `<!-- invariantes-na -->` (force pegajoso) y des-stallea/re-arma.\n\n<!-- dry-run-ausente-stall -->' });
+                }
+                core.setOutput('broken', 'true'); return;
               }
               const m = body.match(/<!--\s*launch-next:\s*#?(\d+)\s*-->/);
               if (!m) break; // sin sentinel y sin epic-audit: cadena rota aquí
