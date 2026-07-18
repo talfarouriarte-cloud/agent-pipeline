@@ -598,11 +598,19 @@ jobs:
           # contexto largo/compactación, menos verbosidad de comentarios.)
           # max-turns 100 razonable con OAuth Max (no hay coste por uso,
           # solo cuota de bucket).
+          # `Bash(gh api:*)` en el allowlist (AP-028, repesca finplan#1467):
+          # los tres terminales del Creator (`creator-escalated`,
+          # `creator-blocked`, `creator-alcance-completo`) se publican como
+          # comentario SEPARADO vía `gh api` — canal que conserva el HTML del
+          # marcador, a diferencia del tracking comment que lo elimina (AP-013).
+          # Explícito además del `bypassPermissions` ya activo: el allowlist es
+          # central en el reusable ⇒ uniforme para toda la flota (clase 5
+          # mandate/toolbox drift).
           claude_args: |
             --model ${{ inputs.creator_model }}
             --max-turns ${{ inputs.creator_max_turns }}
             --permission-mode bypassPermissions
-            --allowedTools "Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr edit:*),Bash(gh pr checks:*),Bash(gh pr merge:*)"
+            --allowedTools "Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr edit:*),Bash(gh pr checks:*),Bash(gh pr merge:*),Bash(gh api:*)"
 
       # Auto-labeling según tag de cierre del Creator. ADR-063.
       # Solo en contextos de PR (los tags solo aplican en loop con Reviewer).
@@ -1033,9 +1041,19 @@ jobs:
             async function freshScopeComplete() {
               const trigTs = context.payload.comment ? new Date(context.payload.comment.created_at).getTime() : 0;
               const { data: cs } = await github.rest.issues.listComments({ owner, repo, issue_number: n, per_page: 100 });
-              const lastBot = [...cs].reverse().find(c => c.user?.login === 'claude[bot]');
-              const fresh = !!lastBot && new Date(lastBot.created_at).getTime() > trigTs;
-              return { lastBot, fresh, scoped: fresh && /<!--\s*creator-alcance-completo\s*-->/.test(lastBot?.body || '') };
+              const bots = cs.filter(c => c.user?.login === 'claude[bot]');
+              const lastBot = bots.length ? bots[bots.length - 1] : null;
+              // AP-028 capa 2 (repesca finplan#1467): el marcador terminal viaja
+              // en un comentario SEPARADO vía `gh api` (canal que conserva HTML),
+              // NO en el tracking comment (que lo elimina — AP-013) y rara vez es
+              // el comentario más reciente (el tracking comment se reescribe al
+              // final). Grepea el marcador en TODOS los comentarios frescos de
+              // claude[bot] (POSTERIORES al disparador — lección #180), no solo en
+              // el último. Anclado como HTML (clase PR #1133), jamás substring.
+              const freshBots = bots.filter(c => new Date(c.created_at).getTime() > trigTs);
+              const fresh = freshBots.length > 0;
+              const scoped = freshBots.some(c => /<!--\s*creator-alcance-completo\s*-->/.test(c.body || ''));
+              return { lastBot, fresh, scoped, freshBots };
             }
             // Estado de la rama huérfana (si existe): el diagnóstico que el
             // rearm necesita ("no rehagas nada").
@@ -1063,8 +1081,10 @@ jobs:
               // en su comentario de cierre (creator.md § escalado determinista);
               // freshness: solo cuenta un comentario de claude[bot] POSTERIOR
               // al que disparó este job (lección del bucle PR #180).
-              const { lastBot, fresh, scoped } = await freshScopeComplete();
-              const blocked = fresh && /<!--\s*creator-blocked\s*-->/.test(lastBot?.body || '');
+              const { scoped, freshBots } = await freshScopeComplete();
+              // AP-028 capa 2: `creator-blocked` también en cualquier comentario
+              // fresco (comentario separado vía `gh api`), no solo en el último.
+              const blocked = freshBots.some(c => /<!--\s*creator-blocked\s*-->/.test(c.body || ''));
               // AP-020 (2026-07-16, central#46): veredicto terminal LEGÍTIMO
               // «alcance ya completo en la rama base, sin PR que abrir». Se
               // chequea ANTES de la clasificación v4 (escalada no-declarada):
@@ -1334,8 +1354,18 @@ jobs:
               // + `estado:esperando-architect` — el PR quedaría con DOS dueños a
               // la vez. La transición la materializa el post-step creator-escalated
               // (gemelo con-PR del Re-review-por-estado, que también cede). ANCLADO
-              // como HTML (clase PR #1133), jamás substring de prosa.
-              if (/<!--\s*creator-escalated\s*-->/.test(body)) {
+              // como HTML (clase PR #1133), jamás substring de prosa. AP-028 capa 2
+              // (repesca finplan#1467): el marcador viaja en un comentario SEPARADO
+              // vía `gh api` (canal que conserva HTML), no en el tracking comment
+              // (`last`, lossy) — grepea en TODOS los comentarios frescos de
+              // claude[bot] (posteriores al trigger), no solo en el último. Los
+              // tags de loop (@reviewer/[…]) sí son prosa del tracking comment y se
+              // detectan arriba sobre `body`; solo la CESIÓN por marcador se abre
+              // al canal separado.
+              const escFresh = triggerCreatedAtRaw
+                ? botComments.filter(c => new Date(c.created_at) > new Date(triggerCreatedAtRaw))
+                : botComments;
+              if (escFresh.some(c => /<!--\s*creator-escalated\s*-->/.test(c.body || ''))) {
                 core.notice('Cierre del Creator es una escalada al Architect (creator-escalated) — turn-close-failsafe cede; lo materializa su post-step.');
                 return;
               }
@@ -1494,20 +1524,32 @@ jobs:
               owner, repo, issue_number: prNumber, per_page: 100 });
             const botComments = comments.filter(c => c.user?.login === 'claude[bot]');
             if (botComments.length === 0) return;
-            const last = botComments[botComments.length - 1];
-            // FRESHNESS CHECK (lección #180): el último comment del Creator solo
-            // es cierre válido de ESTE run si fue creado DESPUÉS del comment/review
-            // que lo disparó. Si es anterior, trigger espurio (típ. substring
-            // `@claude` en backticks en prosa del Reviewer) ⇒ no materializar.
+            // FRESHNESS CHECK (lección #180): solo cuenta el cierre del Creator
+            // POSTERIOR al comment/review que disparó este job. Si no hay ninguno
+            // posterior, trigger espurio (típ. substring `@claude` en backticks en
+            // prosa del Reviewer) ⇒ no materializar.
             const trigRaw = context.payload.comment?.created_at
               || context.payload.review?.submitted_at || null;
-            if (trigRaw && new Date(last.created_at) <= new Date(trigRaw)) {
-              core.notice('creator-escalated: último comment del Creator anterior/igual '
+            const freshBots = trigRaw
+              ? botComments.filter(c => new Date(c.created_at) > new Date(trigRaw))
+              : botComments;
+            if (freshBots.length === 0) {
+              core.notice('creator-escalated: sin comentarios de claude[bot] posteriores '
                 + 'al trigger — probable trigger espurio, no materializo.');
               return;
             }
-            // Detección ANCLADA como HTML (clase PR #1133): jamás substring de prosa.
-            if (!/<!--\s*creator-escalated\s*-->/.test(last.body || '')) return;
+            // Idempotencia (AP-028 capa 2): si el rastro `-materializado` ya está
+            // (post-step previo o cinturón del Watchdog), no dupliques.
+            if (freshBots.some(c => /<!--\s*creator-escalated-materializado\s*-->/.test(c.body || ''))) {
+              core.notice('creator-escalated: ya materializado (rastro presente) — no duplico.');
+              return;
+            }
+            // AP-028 capa 2 (repesca finplan#1467): el marcador viaja en un
+            // comentario SEPARADO vía `gh api` (canal que conserva HTML), NO en el
+            // tracking comment (lossy — AP-013) y rara vez es el más reciente.
+            // Grepea en TODOS los comentarios frescos, no solo el último. Detección
+            // ANCLADA como HTML (clase PR #1133): jamás substring de prosa.
+            if (!freshBots.some(c => /<!--\s*creator-escalated\s*-->/.test(c.body || ''))) return;
             // Materializa por ESTADO. Estado visible PRIMERO, `stalled` DESPUÉS:
             // así el `labeled=stalled` (con PAT) convoca a architect-resolve con
             // el `estado:esperando-architect` ya presente. `estado:*` es dinámica
