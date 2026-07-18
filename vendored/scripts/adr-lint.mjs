@@ -75,5 +75,27 @@ for (const block of adrBlocks) {
     if (!block.includes(sec)) errs.push(`ADR-${num}: falta sección «${sec}»`);
 }
 
+// ── 5. Claims de estado-de-árbol MARCADAS exigen ancla file:line ──
+// (AP-034) Espejo docs-only de la disciplina de proceso-diseño §Fase 3.
+// Toda afirmación sobre estado EXISTENTE del árbol que el Architect marque
+// con el token anclado `estado-árbol: <claim> ⇐ <file:line>` debe portar un
+// ancla file:line bien formada (`ruta.ext:NN` o rango `:NN-MM`). El lint es
+// SINTÁCTICO: fuerza la PRESENCIA del ancla, no que la línea citada sustente
+// la claim (eso lo re-verifica el Creator al arrancar; el Auditor es la red).
+// Sin marca NO hay red mecánica —el marcado es del Architect (disciplina de
+// chat)—; el lint materializa lo marcado, cazando en el CI docs-only lo que
+// la disciplina de chat deje pasar (clase de fallo 4: el defecto nace en
+// CHAT, invisible al repo hasta que cuesta un relanzamiento — ADR-228 «μ/σ/ρ
+// ya se computaban en el loop mensual», FALSO). Anclado a inicio de línea,
+// tolera sangría de lista/cita, jamás substring de prosa (clase 6).
+const ANCHOR = /[\w./-]+\.[A-Za-z0-9]+:\d+(?:-\d+)?/;
+for (const block of adrBlocks) {
+  const num = +block.match(/^ADR-(\d+)/)[1];
+  if (num < STRICT_FROM) continue;
+  for (const m of block.matchAll(/^[ \t>*-]*estado-[aá]rbol:\s*(.+)$/gim)) {
+    if (!ANCHOR.test(m[1])) errs.push(`ADR-${num}: claim «estado-árbol» sin ancla file:line: «${norm(m[1]).slice(0, 90)}…»`);
+  }
+}
+
 if (errs.length) { console.error('ADR-LINT ROJO:\n' + errs.map(e => ' - ' + e).join('\n')); process.exit(1); }
 console.log(`ADR-LINT verde (${headers.length} ADRs en volumen vivo, reglas estrictas desde ADR-${STRICT_FROM}).`);
