@@ -4,6 +4,12 @@
 # issue de la cola serial (en-cola, FIFO).
 name: Epic Merge
 on:
+  # Cierre POR ESTADO (AP-031, repesca finplan#1478): una épica que termina
+  # por estado (creator-alcance-completo ⇒ estado:cierre-pendiente-humano) y la
+  # cierra un humano NO es un evento de merge — el reusable consume aquí sus
+  # sentinels de cadena (launch-next/epic-audit), huérfanos hoy.
+  issues:
+    types: [closed]
   pull_request:
     types: [closed, labeled]
   workflow_run:
