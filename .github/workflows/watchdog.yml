@@ -708,16 +708,49 @@ jobs:
           RUN="${{ steps.scan.outputs.flaky_run }}"
           PR="${{ steps.scan.outputs.flaky_pr }}"
           TMP=$(mktemp -d)
-          # Log del attempt fallido (el retry ya corre); best-effort: la
-          # cosecha jamás rompe el watchdog.
-          gh api "repos/${{ github.repository }}/actions/runs/${RUN}/attempts/1/logs" > "$TMP/l.zip" 2>/dev/null || exit 0
-          unzip -qo "$TMP/l.zip" -d "$TMP" 2>/dev/null || exit 0
-          # Anotaciones ::error de vitest: fichero + título, dedupe, cap 10
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${RUN}/attempts/1"
+          # Vacío materializado (issue #103): un sensor que no puede leer deja
+          # rastro, no silencio. Cualquier salida vacía —download/unzip fallan,
+          # o ningún formato casa— postea IGUALMENTE el comentario con marcador
+          # flaky-harvest: el Auditor lo cuenta por épica y la señal se agrega.
+          # Viola «no silent caps» y los principios 1/3 de protocol.md que el
+          # exit 0 mudo (nueve retries, cero cosechas) incumplía.
+          post_unparseable() {
+            gh pr comment "$PR" --repo "${{ github.repository }}" --body "$(printf '**watchdog · cosecha de flaky-candidatos** (attempt 1 del run %s): attempt 1 no parseable — sin bloque Failed Tests ni anotaciones ::error legibles en el log. Run: %s\n\n<!-- flaky-harvest -->' "$RUN" "$RUN_URL")" || true
+          }
+          # Log del attempt fallido (el retry ya corre); best-effort: la cosecha
+          # jamás rompe el watchdog. Si download o unzip fallan, el vacío se
+          # materializa (antes: exit 0 silencioso).
+          if ! gh api "repos/${{ github.repository }}/actions/runs/${RUN}/attempts/1/logs" > "$TMP/l.zip" 2>/dev/null; then
+            post_unparseable; exit 0
+          fi
+          if ! unzip -qo "$TMP/l.zip" -d "$TMP" 2>/dev/null; then
+            post_unparseable; exit 0
+          fi
+          # 1) Anotaciones ::error de vitest (reporter github-actions): fichero
+          # + título, dedupe, cap 10.
           FAILS=$(grep -rhoE '::error file=[^,]*packages/[^,]+,title=[^,]+' "$TMP" \
-            | sed -E 's|::error file=[^,]*(packages/[^,]+),title=|\1 › |' \
+            | sed -E 's|::error file=[^,]*(packages/[^,]+),title=|\1 > |' \
             | sort -u | head -10 || true)
-          [ -z "$FAILS" ] && exit 0
-          gh pr comment "$PR" --repo "${{ github.repository }}" --body "$(printf '**watchdog · cosecha de flaky-candidatos** (attempt 1 del run %s — confirmados como flaky si el re-run sale verde; el Auditor los cuenta por épica):\n\n~~~\n%s\n~~~\n\n<!-- flaky-harvest -->' "$RUN" "$FAILS")"
+          # 2) Fallback al reporter default de vitest: bloque «Failed Tests»,
+          # líneas ancladas al prefijo `FAIL ` (lección «regex polarity
+          # blindness»: anclaje estricto al prefijo de línea, jamás substring
+          # suelto). Normaliza antes: strip de códigos ANSI y del timestamp que
+          # GitHub antepone a cada línea del log crudo. Este consumidor no emite
+          # `::error`; su fallo real vive aquí (issue #103).
+          if [ -z "$FAILS" ]; then
+            FAILS=$(find "$TMP" -type f -name '*.txt' -exec cat {} + 2>/dev/null \
+              | sed -E 's/\x1b\[[0-9;]*[a-zA-Z]//g' \
+              | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z +//' \
+              | grep -oE '(^| )FAIL +[^ ]+ > .+' \
+              | sed -E 's/^ *FAIL +//' \
+              | sort -u | head -10 || true)
+          fi
+          # 3) Nada extraíble tras ambos formatos ⇒ vacío materializado.
+          if [ -z "$FAILS" ]; then
+            post_unparseable; exit 0
+          fi
+          gh pr comment "$PR" --repo "${{ github.repository }}" --body "$(printf '**watchdog · cosecha de flaky-candidatos** (attempt 1 del run %s — confirmados como flaky si el re-run sale verde; el Auditor los cuenta por épica):\n\n~~~\n%s\n~~~\n\n<!-- flaky-harvest -->' "$RUN" "$FAILS")" || true
 
       - name: Orphan PR net
         id: orphan_net
