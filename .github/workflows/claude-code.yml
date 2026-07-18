@@ -405,6 +405,34 @@ jobs:
             // actor que el arm; en repo público un comentario ajeno no debe
             // forzar) o del comentario de arm actual.
             const TRUSTED = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+            // Exención 4 (AP-032, repesca finplan#1471): REANUDACIÓN de cadena en
+            // vuelo. El guard existe para impedir LANZAR una épica NUEVA sobre
+            // paneles sin leer; NO para congelar la continuación de una cadena YA
+            // en vuelo cuyo panel NACIÓ durante esa misma cadena (finplan#1471:
+            // 3 forces `panel-ok` —#1471/#1478/#1477—, todos justificados, todos
+            // causados por paneles que no debían bloquear la continuación de una
+            // cadena a medias). Discriminador determinista LANZAR vs REANUDAR: un
+            // eslabón NO-primero de una cadena SIEMPRE recibió el arm de
+            // epic-merge con `<!-- epic-auto-launch -->` (posteado con el PAT
+            // REVIEWER_GITHUB_TOKEN ⇒ comentario de confianza) cuando su
+            // predecesor cerró-COMPLETO — merge o cierre por estado (AP-031); el
+            // PRIMER eslabón de una cadena nueva JAMÁS lo lleva (lo arma el
+            // Auditor/humano). La Exención 1 solo mira el armBody ACTUAL —
+            // insuficiente: un eslabón downstream se re-arma por OTRA vía tras el
+            // epic-auto-launch (release de cola `arm-de-cola`, `watchdog-rearm`,
+            // arm manual) y pierde el marcador en el armBody PERO no en el
+            // historial de comentarios (ya leído para `panelOk`, sin API extra —
+            // fuertemente consistente, no el search index). «epic-auto-launch
+            // presente» ⟺ «eslabón anterior cerrado-completo» ⟺ reanudación, sin
+            // juicio del actor. Falso-positivo imposible: epic-merge SOLO postea
+            // el marcador al lanzar el SUCESOR de un `launch-next`, nunca sobre un
+            // primer eslabón. Staleness segura: el gate TRUSTED es anti-spoof y
+            // una omisión solo PIERDE la exención (cae al force `panel-ok` de
+            // hoy), nunca la concede de más — el bloqueo por panel del PRIMER
+            // eslabón queda intacto.
+            const isResumption = issueComments.some(c =>
+              /<!--\s*epic-auto-launch\s*-->/.test(c.body || '') && TRUSTED.has(c.author_association));
+            if (isResumption) { core.setOutput('blocked', 'false'); return; }
             const panelOk = /<!--\s*panel-ok\s*-->/.test(armBody)
               || issueComments.some(c => /<!--\s*panel-ok\s*-->/.test(c.body || '') && TRUSTED.has(c.author_association));
             if (panelOk) { core.setOutput('blocked', 'false'); return; }
