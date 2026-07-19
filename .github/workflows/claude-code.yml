@@ -745,11 +745,13 @@ jobs:
           # contexto largo/compactación, menos verbosidad de comentarios.)
           # max-turns 100 razonable con OAuth Max (no hay coste por uso,
           # solo cuota de bucket).
-          # `Bash(gh api:*)` en el allowlist (AP-028, repesca finplan#1467):
-          # los tres terminales del Creator (`creator-escalated`,
-          # `creator-blocked`, `creator-alcance-completo`) se publican como
-          # comentario SEPARADO vía `gh api` — canal que conserva el HTML del
-          # marcador, a diferencia del tracking comment que lo elimina (AP-013).
+          # `Bash(gh api:*)` en el allowlist (AP-028, repesca finplan#1467;
+          # canal enmendado por AP-035): los tres terminales del Creator se
+          # declaran ahora como token de TEXTO en la primera línea del cierre
+          # (`[CREATOR-BLOCKED]`/`[CREATOR-ESCALATED]`/`[ALCANCE-COMPLETO]`);
+          # el comentario SEPARADO vía `gh api` con marcador HTML queda como
+          # belt aceptado — `gh api` sigue en el allowlist por él y por el
+          # body declarado de AP-030.
           # Explícito además del `bypassPermissions` ya activo: el allowlist es
           # central en el reusable ⇒ uniforme para toda la flota (clase 5
           # mandate/toolbox drift).
@@ -1199,7 +1201,11 @@ jobs:
               // el último. Anclado como HTML (clase PR #1133), jamás substring.
               const freshBots = bots.filter(c => new Date(c.created_at).getTime() > trigTs);
               const fresh = freshBots.length > 0;
-              const scoped = freshBots.some(c => /<!--\s*creator-alcance-completo\s*-->/.test(c.body || ''));
+              // AP-035: vía primaria = token de TEXTO anclado a inicio de línea
+              // en la PRIMERA línea del cierre (sobrevive al tracking comment,
+              // clase posicional compliant AP-011); el HTML separado (AP-028)
+              // degrada a belt — se sigue aceptando en OR.
+              const scoped = freshBots.some(c => /<!--\s*creator-alcance-completo\s*-->/.test(c.body || '') || /^\[ALCANCE-COMPLETO\]/m.test(c.body || ''));
               return { lastBot, fresh, scoped, freshBots };
             }
             // AP-030 (2026-07-18, repesca finplan#1478): cuando el Creator NO
@@ -1273,7 +1279,11 @@ jobs:
               const { scoped, freshBots } = await freshScopeComplete();
               // AP-028 capa 2: `creator-blocked` también en cualquier comentario
               // fresco (comentario separado vía `gh api`), no solo en el último.
-              const blocked = freshBots.some(c => /<!--\s*creator-blocked\s*-->/.test(c.body || ''));
+              // AP-035: token de texto anclado (primera línea del cierre) en OR
+              // con el HTML separado legacy (AP-028, ahora belt). La clase
+              // «escalada no-declarada» midió 5 ocurrencias (3 POST-AP-028:
+              // finplan#1484/#1510/#1531): el paso gh api final se caía (AP-011).
+              const blocked = freshBots.some(c => /<!--\s*creator-blocked\s*-->/.test(c.body || '') || /^\[CREATOR-BLOCKED\]/m.test(c.body || ''));
               // AP-020 (2026-07-16, central#46): veredicto terminal LEGÍTIMO
               // «alcance ya completo en la rama base, sin PR que abrir». Se
               // chequea ANTES de la clasificación v4 (escalada no-declarada):
@@ -1572,7 +1582,7 @@ jobs:
               const escFresh = triggerCreatedAtRaw
                 ? botComments.filter(c => new Date(c.created_at) > new Date(triggerCreatedAtRaw))
                 : botComments;
-              if (escFresh.some(c => /<!--\s*creator-escalated\s*-->/.test(c.body || ''))) {
+              if (escFresh.some(c => /<!--\s*creator-escalated\s*-->/.test(c.body || '') || /^\[CREATOR-ESCALATED\]/m.test(c.body || ''))) {
                 core.notice('Cierre del Creator es una escalada al Architect (creator-escalated) — turn-close-failsafe cede; lo materializa su post-step.');
                 return;
               }
@@ -1761,7 +1771,8 @@ jobs:
             // tracking comment (lossy — AP-013) y rara vez es el más reciente.
             // Grepea en TODOS los comentarios frescos, no solo el último. Detección
             // ANCLADA como HTML (clase PR #1133): jamás substring de prosa.
-            if (!freshBots.some(c => /<!--\s*creator-escalated\s*-->/.test(c.body || ''))) return;
+            // AP-035: token de texto anclado en OR con el HTML separado (belt).
+            if (!freshBots.some(c => /<!--\s*creator-escalated\s*-->/.test(c.body || '') || /^\[CREATOR-ESCALATED\]/m.test(c.body || ''))) return;
             // Materializa por ESTADO. Estado visible PRIMERO, `stalled` DESPUÉS:
             // así el `labeled=stalled` (con PAT) convoca a architect-resolve con
             // el `estado:esperando-architect` ya presente. `estado:*` es dinámica

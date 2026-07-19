@@ -342,13 +342,15 @@ jobs:
               const relaunches = hcs.filter(c => { const b = c.body || ''; return b.includes(TURN_MARK) || b.includes(HANDOFF_MARK); }).length;
               // Cinturón por-estado de escalada (AP-028 capa 3, repesca finplan#1467):
               // firma DETERMINISTA de rastro-mecánico-ausente. El Creator publica
-              // `creator-escalated` como comentario SEPARADO vía `gh api` (canal que
-              // conserva HTML) — anclado como HTML, JAMÁS substring de prosa libre
-              // (clase 6 regex polarity: «declaro el bloqueo» no es firma; el marcador
+              // `creator-escalated`: token de TEXTO anclado a inicio de línea en la
+              // primera línea del cierre (vía primaria, AP-035) O marcador HTML en
+              // comentario SEPARADO vía `gh api` (belt legacy, AP-028) — anclado
+              // (línea o HTML), JAMÁS substring de prosa libre (clase 6 regex
+              // polarity: «declaro el bloqueo» no es firma; el token anclado
               // + la ausencia del rastro sí). Escalada NO materializada = hay un
               // marcador SIN un rastro `-materializado` POSTERIOR a él (freshness que
               // distingue una escalada pendiente de una ya rulada/re-escalada).
-              const escMarks = bots.filter(c => /<!--\s*creator-escalated\s*-->/.test(c.body || ''));
+              const escMarks = bots.filter(c => /<!--\s*creator-escalated\s*-->/.test(c.body || '') || /^\[CREATOR-ESCALATED\]/m.test(c.body || ''));
               const lastEscMark = escMarks[escMarks.length - 1] || null;
               const matTraces = hcs.filter(c => (c.body || '').includes('creator-escalated-materializado'));
               const lastMatTrace = matTraces[matTraces.length - 1] || null;
@@ -461,7 +463,7 @@ jobs:
                   await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['estado:esperando-architect'] });
                   await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['stalled'] });
                   await github.rest.issues.createComment({ ...O, issue_number: pr.number,
-                    body: `**watchdog · cinturón por-estado de escalada (AP-028 capa 3)**: el Creator declaró una escalada al Architect (marcador HTML \`creator-escalated\` en comentario separado) pero \`estado:esperando-architect\` nunca se materializó y no hay rastro \`-materializado\` — ventana de muerte del post-step \`creator-escalated\` de claude-code.yml (o el evento del trigger se perdió). Firma determinista de rastro-mecánico-ausente (sin aging): marcador HTML presente + label + rastro ausentes. Estado materializado con el PAT: \`estado:esperando-architect\` + \`stalled\` ⇒ architect-resolve dispara POR EVENTO (edge AP-017) y el dispatcher de turno cede sobre la label en el próximo tick. architect-resolve limpia el estado al rular. Idempotente: este mismo rastro bloquea re-emisiones.\n\n<!-- creator-escalated-materializado -->\n${CAPA}` });
+                    body: `**watchdog · cinturón por-estado de escalada (AP-028 capa 3)**: el Creator declaró una escalada al Architect (token \`[CREATOR-ESCALATED]\` de primera línea, AP-035, o marcador HTML \`creator-escalated\` legacy) pero \`estado:esperando-architect\` nunca se materializó y no hay rastro \`-materializado\` — ventana de muerte del post-step \`creator-escalated\` de claude-code.yml (o el evento del trigger se perdió). Firma determinista de rastro-mecánico-ausente (sin aging): token/marcador anclado presente + label + rastro ausentes. Estado materializado con el PAT: \`estado:esperando-architect\` + \`stalled\` ⇒ architect-resolve dispara POR EVENTO (edge AP-017) y el dispatcher de turno cede sobre la label en el próximo tick. architect-resolve limpia el estado al rular. Idempotente: este mismo rastro bloquea re-emisiones.\n\n<!-- creator-escalated-materializado -->\n${CAPA}` });
                   return true;   // self-comment con rastro propio: no consume el cap 2 de relanzamiento
                 };
               } else {
