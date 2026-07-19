@@ -833,3 +833,21 @@ Resultado: **CERO Creators + `serial-activo` orfanado** hasta que lo sanee el wa
 **Reversibilidad.** Alta: la regla 5 de `adr-lint.mjs` es un bloque autocontenido (~12 líneas) que se elimina; el bullet de `proceso-diseño` y la fila de `protocol.md` se revierten con esta entrada.
 
 **Fecha.** 2026-07-18.
+
+## AP-035 — Los terminales del Creator se declaran como token de TEXTO anclado en la PRIMERA línea del comentario de cierre; el comentario HTML separado vía `gh api` degrada a belt (enmienda de canal a AP-028)
+
+**Contexto.** AP-028 movió los marcadores terminales del Creator (`creator-blocked`, `creator-escalated`, `creator-alcance-completo`) del tracking comment (que elimina el HTML — AP-013) a un comentario SEPARADO vía `gh api`. Medición post-despliegue: **la clase NO convirtió**. Cinco escaladas legítimas degradadas a «escalada no-declarada»/`human-needed` en finplan (#1392, #1466, #1484, #1510, #1531), **tres de ellas POSTERIORES a AP-028** (18–19 jul). Firma común: escalada perfecta y completa en la PROSA del comentario de cierre (en #1531, tres mismatches anclados `file:line` + espacio de decisión superficiado); el comentario separado vía `gh api` **jamás emitido**. Es la clase AP-011 en su forma más cara: no un closing tag que se cae, sino una llamada de tool aparte DESPUÉS del cierre — el tipo exacto de paso procedimental final que el Creator empíricamente omite, mientras que las reglas posicionales/de template las cumple (AP-011, PR #74: mover el closing tag a la cabecera convirtió la clase). Coste por ocurrencia: `human-needed` es el cortacircuito que EXCLUYE al Watchdog ⇒ architect-resolve nunca aterriza, cirugía humana de estado obligatoria, y falso incidente contaminando la ventana de medición de convergencia (16–23 jul). AP-028 eligió un canal que ni cumple (procedimental-final) ni hacía falta: el tracking comment elimina el HTML pero **conserva el texto** — por eso `[NEEDS-HUMAN]`, texto abriendo su línea, nunca falló.
+
+**Decisión (del propietario, ejecutada por el Architect de mejora continua).**
+
+1. **Canal primario**: los tres terminales se declaran como token de TEXTO en línea propia, **PRIMERA línea del comentario de cierre** — `[CREATOR-BLOCKED]` (sin PR), `[CREATOR-ESCALATED]` (con PR), `[ALCANCE-COMPLETO]` (terminal no-escalada). Misma semántica, mismo emisor y misma tabla de decisión que antes (creator.md); cambia solo el vehículo: texto (sobrevive al tracking comment, AP-013) + posición de apertura (clase compliant, AP-011). Sin paso extra ni ventana de muerte tracking-comment→`gh api`.
+2. **Detección**: regex multiline anclada a inicio de línea (`/^\[CREATOR-BLOCKED\]/m` etc.) sobre los comentarios frescos de `claude[bot]`, en **OR** con el marcador HTML legacy. Clase substring (PR #1133) mitigada por el anclaje de línea + prohibición en creator.md de reproducir el token a inicio de línea fuera de la declaración (cita inline entre backticks).
+3. **El canal AP-028 degrada a belt**: el comentario separado vía `gh api` con marcador HTML se sigue aceptando (post-step y cinturón capa 3 del Watchdog intactos); `Bash(gh api:*)` sigue en el allowlist (belt + body declarado AP-030). `[NEEDS-HUMAN]` intacto.
+4. **Superficie tocada**: `claude-code.yml` (detección `blocked`/`scoped`/`escalated` ×2 + comentario de allowlist), `watchdog.yml` (cinturón capa 3), `vendored/docs-agents/creator.md` (tabla, § Canal reescrito, historial items 4–5), `protocol.md` (filas de los tres terminales, append-only con nota datada), `watchdog.md` (cinturón y cesión).
+
+**Falsable.** La clase `escalada-materializada` («no-declarada») sobre escaladas legítimas debe caer a 0 tras el despliegue. Si el Creator omite también la primera línea, la clase persiste y el siguiente escalón sería derivación semántica por estado — no deseable (la prosa no es contrato); antes de eso, revisar si el prompt de cierre del mandato necesita el token en el template literal del ejemplo.
+
+**Cirugía puntual asociada (2026-07-19).** finplan#1531 (5ª ocurrencia) desbloqueada materializando a mano el camino declarado: retirada `human-needed`, aplicada `stalled` con PAT ⇒ architect-resolve por evento (quien debía aterrizar, leer la doc de la épica y rular).
+
+**Fecha.** 2026-07-19.
+---
