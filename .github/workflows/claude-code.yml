@@ -1281,8 +1281,13 @@ jobs:
               // fresco (comentario separado vía `gh api`), no solo en el último.
               // AP-035: token de texto anclado (primera línea del cierre) en OR
               // con el HTML separado legacy (AP-028, ahora belt). La clase
-              // «escalada no-declarada» midió 5 ocurrencias (3 POST-AP-028:
-              // finplan#1484/#1510/#1531): el paso gh api final se caía (AP-011).
+              // «escalada no-declarada» midió 6 ocurrencias a través de TRES
+              // fixes de canal (3 POST-AP-028: finplan#1484/#1510/#1531; 1ª
+              // POST-AP-035: finplan#1532): el paso gh api final se caía (AP-011).
+              // AP-036 (2026-07-20) deja de perseguir la prosa: la rama
+              // no-declarada de abajo materializa el MISMO terminal que la
+              // declarada (`stalled` ⇒ architect-resolve), así que la omisión
+              // ya no cuesta re-arm humano — queda como métrica de legibilidad.
               const blocked = freshBots.some(c => /<!--\s*creator-blocked\s*-->/.test(c.body || '') || /^\[CREATOR-BLOCKED\]/m.test(c.body || ''));
               // AP-020 (2026-07-16, central#46): veredicto terminal LEGÍTIMO
               // «alcance ya completo en la rama base, sin PR que abrir». Se
@@ -1325,11 +1330,30 @@ jobs:
                   await materializeScopeComplete({ viaState: true });
                   return;
                 }
-                await github.rest.issues.removeLabel({ owner, repo, issue_number: n, name: 'serial-activo' }).catch(() => {});
-                await github.rest.issues.addLabels({ owner, repo, issue_number: n, labels: ['human-needed'] });
+                // AP-036 (2026-07-20, repescas finplan#1531/#1532): el estado
+                // DERIVADO aquí (serie ocupada + success + sin commits + sin PR)
+                // es EXACTAMENTE el mismo que la gemela declarada `creator-blocked`
+                // materializa como `stalled` ⇒ architect-resolve POR EVENTO. La
+                // única diferencia entre ambas ramas era la omisión de prosa del
+                // Creator — y esa omisión midió 6 ocurrencias a través de TRES
+                // fixes de canal (AP-011 → AP-028 → AP-035) sin sellarse (doctrina
+                // push-primario wmcb#38: el ESTADO, no la prosa, es la costura).
+                // Materializar `human-needed` costaba 1-12h de re-arm humano para
+                // un estado que la maquinaria autónoma resuelve en cuanto se lo
+                // entregan (finplan#1531: architect-resolve lo cerró en autónomo
+                // 6 min tras la cirugía manual de `human-needed`→`stalled`). Se
+                // materializa el MISMO terminal que la rama declarada; la omisión
+                // de prosa queda como métrica informativa de legibilidad (igual
+                // que `@reviewer` bajo push-primario). El breaker progress-aware
+                // final sigue cubriendo el thrash (re-escalada sin merges ⇒
+                // `human-needed`), y architect-resolve rebota al humano la escalada
+                // que de verdad lo requiere (doble rebote ⇒ `human-needed`).
                 await github.rest.issues.createComment({ owner, repo, issue_number: n,
-                  body: `**claude-code · post-step**: la sesión terminó sin PR ni commits con la serie ocupada y SIN declarar bloqueo (falta \`<!-- creator-blocked -->\` — creator.md § escalado determinista). Tratado como ESCALADA no-declarada: serie liberada, \`human-needed\`, turno pasado a la cola.\n\n<!-- escalada-materializada -->` });
+                  body: `**claude-code · post-step**: la sesión terminó sin PR ni commits con la serie ocupada y SIN declarar bloqueo (falta \`<!-- creator-blocked -->\` — creator.md § escalado determinista). Tratado como ESCALADA no-declarada. Materializado el MISMO terminal que la rama declarada (\`creator-blocked\`), no \`human-needed\` (AP-036): el estado, no la prosa, es la costura (finplan#1531/#1532).\n\n- \`stalled\` aplicada con PAT ⇒ architect-resolve dispara POR EVENTO (diagnostica y resuelve en autónomo, o rebota a \`human-needed\` si de verdad requiere humano).\n- \`serial-activo\` retirada + turno pasado a la cola.\n\n<!-- escalada-materializada -->` });
                 await popQueue(n, `escalada de #${n}`);
+                await github.rest.issues.addLabels({ owner, repo, issue_number: n, labels: ['stalled'] });
+                await github.rest.issues.removeLabel({ owner, repo, issue_number: n, name: 'serial-activo' }).catch(() => {});
+                core.warning(`Creator de #${n}: escalada no-declarada materializada (stalled por PAT, evento push — mismo terminal que la rama declarada, AP-036).`);
                 return;
               }
               await github.rest.issues.createComment({ owner, repo, issue_number: n,
