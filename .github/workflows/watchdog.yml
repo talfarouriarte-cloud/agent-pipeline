@@ -264,6 +264,7 @@ jobs:
                 // inspecciones + human-needed sobre trabajo terminado).
                 'auditoria', 'process-proposal', 'registro-decisiones'].includes(l.name));
 
+
             // ── Dispatcher de TURNO (ADR-217, 2026-07-10, state-driven).
             // Sustituye a pr-stalled (envejecimiento de 30 min) y absorbe el
             // modo e. Invariante: todo ítem abierto tiene turno asignado.
@@ -299,6 +300,48 @@ jobs:
               return res;
             };
             const { data: prs } = await github.rest.pulls.list({ ...O, state: 'open', per_page: 50 });
+            // ── Re-derivación por ESTADO de la señal `stalled` (AP-038).
+            // El camino por evento (labeled=stalled ⇒ anomalía directa, arriba)
+            // solo existe en el PAYLOAD de su run — y la concurrency global del
+            // stub (`group: watchdog`) cancela el pending más antiguo en cada
+            // racha de workflow_run: el run capa-1 muere y la señal con él
+            // (medido: finplan#1544, 2026-07-20 16:31:37Z, run `issues`
+            // cancelled; ningún tick posterior la recogía porque el scan no
+            // derivaba `stalled`). Doctrina ADR-217/AP-036: la señal debe ser
+            // re-derivable del ESTADO por CUALQUIER run superviviente — el
+            // evento es la vía rápida, jamás la única. Mismo cortacircuito de
+            // doble rebote que el camino por evento; dedupe contra anomalías ya
+            // encoladas en este run. Carreras: la concurrency global serializa
+            // runs completos (detect+resolve), así que cuando este scan ve
+            // `stalled`, ningún resolve está en vuelo — o lo quitó, o murió.
+            try {
+              const { data: stIss } = await github.rest.issues.listForRepo({ ...O,
+                state: 'open', labels: 'stalled', per_page: 30 });
+              for (const it of stIss) {
+                if (it.pull_request) continue;             // PRs: los cubre el bloque de PRs abajo
+                if (skip(it.labels)) continue;
+                if (anomalies.some(a => a.number === it.number)) continue;
+                const { data: cs } = await github.rest.issues.listComments({ ...O, issue_number: it.number, per_page: 100 });
+                const autos = cs.filter(c => (c.body || '').includes('<!-- autonomous-decision -->')).length;
+                if (autos >= 2) {
+                  if (!cs.some(c => (c.body || '').includes('<!-- watchdog-circuit-breaker -->'))) {
+                    await github.rest.issues.addLabels({ ...O, issue_number: it.number, labels: ['human-needed'] });
+                    await github.rest.issues.createComment({ ...O, issue_number: it.number,
+                      body: `Doble rebote tras recuperación autónoma: cortacircuito. Requiere decisión humana.\n\n<!-- watchdog-circuit-breaker -->\n${CAPA}` });
+                    core.notice(`#${it.number}: doble rebote (scan) ⇒ human-needed.`);
+                  }
+                } else {
+                  anomalies.push({ type: 'stalled-autonomous-resolve', number: it.number });
+                  core.notice(`#${it.number}: stalled re-derivado del estado (AP-038).`);
+                }
+              }
+              for (const pr of prs.filter(p => p.labels?.some(l => l.name === 'stalled'))) {
+                if (skip(pr.labels)) continue;
+                if (anomalies.some(a => a.number === pr.number)) continue;
+                anomalies.push({ type: 'stalled-autonomous-resolve', number: pr.number });
+                core.notice(`PR #${pr.number}: stalled re-derivado del estado (AP-038).`);
+              }
+            } catch (e) { core.warning('re-derivación stalled: ' + e.message); }
             // ── Belt de CIERRE por estado (AP-037): si el resolver publicó la
             // verificación materializada (`<!-- cierre-verificado -->`, actor de
             // confianza) sobre un issue `estado:cierre-pendiente-humano` pero el

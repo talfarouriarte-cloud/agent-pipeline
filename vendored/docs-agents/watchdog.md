@@ -109,6 +109,16 @@ NO re-armes (el cierre es humano, AP-019); (c) la sesión es **degenerada** (sin
 informe utilizable del que derivar veredicto) ⇒ `human-needed` con diagnóstico.
 El humano entra por doble rebote (cap de re-arms), no de primera línea.
 
+**Re-derivación por estado de `stalled` (AP-038).** El camino por evento
+(`labeled=stalled` ⇒ anomalía directa) vive solo en el payload de su run, y la
+concurrency global del stub cancela el pending más antiguo en cada racha de
+`workflow_run` — el run capa-1 puede morir con la señal dentro (medido:
+finplan#1544, 16:31:37Z cancelled; ningún tick posterior la recogía). Desde
+AP-038 el scan del detect re-deriva la anomalía del ESTADO en cada tick: todo
+issue/PR abierto con `stalled` no excluido (cortacircuito de doble rebote
+replicado) entra como `stalled-autonomous-resolve` aunque su evento haya muerto.
+El evento es la vía rápida; el estado es la garantía.
+
 **Cierre autónomo de completitud por-estado (`estado:cierre-pendiente-humano`,
 AP-037 — rectifica AP-019 «opción A sin necesidad» y el «NO stalled» de
 AP-020/AP-026).** Si el `stalled` viene del post-step de alcance-completo (rastro
