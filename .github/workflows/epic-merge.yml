@@ -345,8 +345,8 @@ jobs:
                 if (relaunches >= Number(process.env.IN_PARTIAL_ROUND_CAP)) {
                   try { await github.rest.issues.addLabels({ owner, repo, issue_number: issueNumber, labels: ['stalled'] }); } catch (e) {}
                   try { await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber,
-                    body: `Cap de relanzamientos parciales alcanzado (ronda de ${process.env.IN_PARTIAL_ROUND_CAP}). El contador se resetea a partir de aquí: un des-stall humano abre una ronda nueva.\n\n<!-- relaunch-cap-reached -->` }); } catch (e) {}
-                  await diag(prNumber, `MERGEADO parcial, pero ya hubo ${relaunches} relanzamientos en esta ronda (cap ${process.env.IN_PARTIAL_ROUND_CAP}): issue #${issueNumber} marcado stalled, NO re-armo. Escala a humano.`);
+                    body: `Cap de relanzamientos parciales alcanzado (ronda de ${process.env.IN_PARTIAL_ROUND_CAP}). architect-resolve (por evento \`stalled\`, o re-derivado del estado por el scan — AP-038): diagnostica por qué esta ronda no converge y decide — re-dimensionar el restante (partición) o abrir ronda nueva con des-stall + re-arm. El contador se resetea desde aquí; humano solo por doble rebote.\n\n<!-- relaunch-cap-reached -->` }); } catch (e) {}
+                  await diag(prNumber, `MERGEADO parcial, pero ya hubo ${relaunches} relanzamientos en esta ronda (cap ${process.env.IN_PARTIAL_ROUND_CAP}): issue #${issueNumber} marcado stalled, NO re-armo. architect-resolve rula (régimen autónomo; humano solo por doble rebote).`);
                   return;
                 }
                 // Parcial FORZADO por estado (AP-023): el PR lo abrió el post-step

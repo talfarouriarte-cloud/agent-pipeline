@@ -887,3 +887,17 @@ Resultado: **CERO Creators + `serial-activo` orfanado** hasta que lo sanee el wa
 
 **Fecha.** 2026-07-20.
 ---
+
+## AP-038 — La señal `stalled` se re-deriva del ESTADO en cada scan del detect: el evento `labeled` es la vía rápida, jamás la única (la concurrency global mata runs con la señal en el payload)
+
+**Contexto.** finplan#1544 (5/5 de ADR-210·R·13) alcanzó el cap de ronda (16:31:36Z): el handler aplicó `stalled` con PAT y el evento `labeled` disparó el Watchdog capa-1 (16:31:37Z, `event: issues`) — que fue **cancelado** por la concurrency global del stub (`group: watchdog`, `cancel-in-progress: false`: en racha de `workflow_run`, el pending más nuevo sustituye al anterior y el sustituido se cancela). La anomalía vivía SOLO en el payload de ese run: ningún run superviviente la recogía, porque el scan del detect no derivaba `stalled` del estado. No era «esperar a capa 2»: era **señal perdida** — el issue habría quedado stalled indefinidamente (rescatado por cirugía: re-emisión del labeled a las 16:39). Los textos del cap («un des-stall humano abre una ronda nueva», «Escala a humano») además predataban el régimen autónomo.
+
+**Decisión.**
+1. **Re-derivación por estado**: el scan del detect (todas las capas — labeled, workflow_run, cron, dispatch) lista los issues y PRs abiertos con `stalled` no excluidos y los encola como `stalled-autonomous-resolve`, con el cortacircuito de doble rebote replicado del camino por evento (≥2 `autonomous-decision` ⇒ `human-needed`, dedupe por rastro `watchdog-circuit-breaker`) y dedupe contra anomalías ya encoladas. Doctrina ADR-217/AP-036: la detección es de estado; el evento solo acelera. Carreras: la concurrency global serializa runs completos, así que un `stalled` visto por el scan no tiene resolve en vuelo.
+2. **Textos del cap** (epic-merge.yml) actualizados al régimen autónomo: architect-resolve rula (re-dimensionar o ronda nueva); humano solo por doble rebote.
+3. **Cirugía asociada (2026-07-20 16:39Z)**: finplan#1544 desbloqueado re-emitiendo el `labeled=stalled` con PAT.
+
+**Falsable.** Ningún ítem con `stalled` (sin exclusiones) debe superar un tick de cron (20 min) sin anomalía encolada o cortacircuito aplicado — aunque su run de evento haya sido cancelado. Si aparece churn (resolves duplicados sobre el mismo ítem), revisar el dedupe antes que retirar la re-derivación.
+
+**Fecha.** 2026-07-20.
+---
