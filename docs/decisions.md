@@ -851,3 +851,22 @@ Resultado: **CERO Creators + `serial-activo` orfanado** hasta que lo sanee el wa
 
 **Fecha.** 2026-07-19.
 ---
+
+## AP-036 — El terminal NO-declarado del Creator se enruta al escalón autónomo (`stalled` ⇒ architect-resolve), no a `human-needed`: el marcador pasa de single-point-of-failure a optimización
+
+**Contexto.** AP-035 (canal de texto en primera línea) quedó **refutado en menos de 24h por su propio criterio falsable**: 6ª ocurrencia de la clase «terminal no-declarado» POST-despliegue (finplan#1532, 19:59 del mismo día — escalada perfecta en prosa, sin `[CREATOR-BLOCKED]` en ninguna línea), más finplan#1547 (08:32, alcance-completo en prosa sin `[ALCANCE-COMPLETO]`, salvado por el belt AP-026). Lectura estructural que corrige a AP-035: la clase no era «posicional vs procedimental» — es que **cualquier regla que dependa de que el modelo emita un formato en su cierre falla con frecuencia suficiente para romper la continuidad**, sea cual sea el canal (`[NEEDS-HUMAN]` cumple por años de ejemplos en el corpus de issues que el Creator lee; un token nuevo tiene cero). Tres canales quemados (HTML en tracking comment → AP-013; comentario separado `gh api` → AP-028; texto posicional → AP-035) apuntan a la misma conclusión: la RUTA de despacho no puede depender del marcador. Coste medido del default `human-needed`: 6 paradas de cadena con el humano de primera línea y el watchdog excluido.
+
+**Decisión (del propietario).** En el ramal no-declarado del post-step (serie ocupada + `success` + sin commits + sin PR + sin token/marcador), las únicas verdades posibles son bloqueo, alcance-completo o sesión degenerada — y las tres las puede rular architect-resolve leyendo la prosa del cierre (que empíricamente SÍ contiene el veredicto: 6/6 ocurrencias). Por tanto:
+
+1. **Default nuevo**: comentario de clasificación → pop de cola → `stalled` con PAT (⇒ architect-resolve POR EVENTO) → retirada de `serial-activo`. Mismo orden que el camino declarado. `human-needed` desaparece de este ramal.
+2. **Mandato del resolver (watchdog.md)**: nuevo caso `escalada-materializada` — rula (a) bloqueo ⇒ resolver-protocol + re-arm (como `creator-blocked`); (b) alcance completo ⇒ materializa `estado:cierre-pendiente-humano`, retira `stalled`, sin re-arm (cierre humano, AP-019); (c) sesión degenerada sin informe utilizable ⇒ `human-needed` con diagnóstico.
+3. **El humano entra por doble rebote** (cap de re-arms del watchdog), como el régimen autónomo ya define — no de primera línea.
+4. **Los tokens AP-035 y belts AP-026/AP-028 quedan intactos**: su presencia ahorra el run de resolve (camino declarado directo al terminal correcto). El marcador es optimización, no requisito de continuidad.
+5. **Vocabulario**: fila de `<!-- escalada-materializada -->` añadida a `protocol.md` (registro retroactivo — se emitía desde v4/central#34 sin fila).
+
+**Riesgo aceptado.** Más runs de architect-resolve (uno por cierre mudo) y posible bucle mudo→resolve→re-arm→mudo: acotado por el cap de re-arms existente, que termina en `human-needed` igual que antes — pero tras agotar lo autónomo. Un ruling erróneo del resolver sobre prosa ambigua es revertible (veto asíncrono, `autonomous-decision`).
+
+**Falsable.** Paradas de cadena con humano de primera línea por esta clase: deben caer a 0 (el humano solo por doble rebote o veredicto (c)). Si architect-resolve rula mal ≥2 veces sobre prosa clara, el siguiente escalón es estructurar el cierre del Creator por template inyectado en el arm, no volver a `human-needed`.
+
+**Fecha.** 2026-07-20.
+---
