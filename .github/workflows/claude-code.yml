@@ -598,7 +598,15 @@ jobs:
             } else if (inFlightOther.length > 0) {
               await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
                 body: `**claude-code · guard serial**: ya hay un Creator en vuelo (${inFlightOther.join(', ')}). La serialidad es regla dura — no se arma un segundo Creator en paralelo. Este issue NO se arma; queda **EN COLA** (label \`en-cola\`): al liberarse la serie por un merge, epic-merge armará automáticamente el más antiguo de la cola (2026-07-14). Para forzar YA: \`serial-ok\`.\n\n<!-- serial-guard -->` });
-              await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['stalled', 'en-cola'] });
+              // AP-039: el encolado deja SOLO `en-cola` (+ marcador `serial-guard`
+              // del comentario de arriba). NO se aplica `stalled`: `stalled`
+              // significa «necesita ruling del resolutor» y aquí convocaba por
+              // evento un architect-resolve cuyo único acto observado era retirar
+              // la label sobre un estado que ya tiene dueño mecánico (popQueue/
+              // armQueue). La espera de cola es legítima; el watchdog solo la
+              // trata como anomalía (`cola-huerfana`) si la premisa de serie cae
+              // y persiste >1 tick (watchdog.yml, detector issue-armed-no-pr).
+              await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['en-cola'] });
               core.setOutput('blocked', 'true');
               core.warning(`Guard serial: ${inFlightOther.length} en vuelo; no se arma #${issue.number}.`);
             } else {

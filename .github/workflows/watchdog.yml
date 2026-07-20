@@ -692,6 +692,17 @@ jobs:
             const { data: issues } = await github.rest.issues.listForRepo({
               ...O, state: 'open', sort: 'updated', direction: 'desc', per_page: 50,
             });
+            // ── Premisa de la cola serial (AP-039): ¿está la serie OCUPADA?
+            // Un ítem `en-cola` (encolado por el guard serial, AP-014) es una
+            // espera LEGÍTIMA mientras exista un titular de la serie — hay
+            // `serial-activo` en algún issue O un PR `claude/*` abierto. Se
+            // calcula UNA vez (no por-ítem) para el chequeo de premisa de abajo.
+            let serialActiveOpen = [];
+            try {
+              serialActiveOpen = (await github.rest.issues.listForRepo({
+                ...O, state: 'open', labels: 'serial-activo', per_page: 20 })).data;
+            } catch (e) { core.warning('premisa de serie (serial-activo): ' + e.message); }
+            const seriePremiseHolds = openAgentPRs.length > 0 || serialActiveOpen.length > 0;
             for (const issue of issues) {
               if (issue.pull_request) continue;        // solo issues puros
               if (skip(issue.labels)) continue;
@@ -729,6 +740,33 @@ jobs:
               if (!lastArm) continue;
               if (ageMin(lastArm.created_at) > ARM_WINDOW_H * 60) continue;
 
+              // ── Chequeo de premisa de serie para ítems `en-cola` (AP-039,
+              // NO exclusión ciega). Un ítem encolado por el guard serial no es
+              // anomalía mientras la premisa de la cola se sostenga: si la serie
+              // está OCUPADA (hay titular — `serial-activo` o PR `claude/*`), la
+              // espera es legítima ⇒ silencio, sin etapa architect. Si la serie
+              // está LIBRE y el ítem sigue `en-cola` tras una ventana de
+              // asentamiento (>1 tick: marcador de sospecha + el gate STALL_MIN,
+              // pues el comentario refresca `updated_at`), eso SÍ es anomalía
+              // real —pop de cola muerto, clase `cola-huerfana`— ⇒ escala a la
+              // etapa architect. La exención cubre la espera legítima sin cegar
+              // la clase huérfana (Riesgo a); la ventana absorbe la carrera
+              // encolado↔liberación de serie (Riesgo c).
+              if (issue.labels.some(l => l.name === 'en-cola')) {
+                if (seriePremiseHolds) {
+                  core.notice(`#${issue.number}: en-cola con serie ocupada (premisa sostenida) — espera legítima, sin anomalía.`);
+                  continue;
+                }
+                const SETTLE_MARK = '<!-- watchdog-cola-huerfana-sospecha -->';
+                if (!comments.some(c => (c.body || '').includes(SETTLE_MARK))) {
+                  await github.rest.issues.createComment({ ...O, issue_number: issue.number,
+                    body: `**watchdog · cola serial**: \`en-cola\` con la serie LIBRE (sin \`serial-activo\` ni PR \`claude/*\` abierto). Puede ser un pop de cola muerto o una liberación de serie aún asentándose. Ventana de asentamiento: si persiste al próximo tick efectivo, se escala a la etapa architect como \`cola-huerfana\`.\n\n${SETTLE_MARK}\n${CAPA}` });
+                  core.notice(`#${issue.number}: en-cola + serie libre; marcador de asentamiento puesto (1er tick), sin escalar aún.`);
+                  continue;
+                }
+                core.notice(`#${issue.number}: en-cola + serie libre PERSISTENTE (>1 tick) ⇒ cola-huerfana, escala a architect.`);
+              }
+
               // Armado, sin PR abierta, todo en silencio > STALL_MIN, y
               // ningún run activo (gate 0). Candidato. El diagnóstico fino
               // (¿terminó de verdad? ¿murió a medias? ¿PR ya mergeada y el
@@ -746,6 +784,11 @@ jobs:
                 last_bot_comment_at: lastBot ? lastBot.created_at : null,
                 watchdog_rearms_so_far: rearms,
                 labels: issue.labels.map(l => l.name),
+                // AP-039: si llega aquí con `en-cola` es porque la premisa de
+                // serie cayó y la sospecha persistió >1 tick — pop de cola
+                // muerto. El architect-resolve lee esta pista para rular la
+                // clase `cola-huerfana` (re-pop / re-arm), no un arm normal.
+                cola_huerfana: issue.labels.some(l => l.name === 'en-cola'),
               });
             }
 
