@@ -1325,11 +1325,26 @@ jobs:
                   await materializeScopeComplete({ viaState: true });
                   return;
                 }
-                await github.rest.issues.removeLabel({ owner, repo, issue_number: n, name: 'serial-activo' }).catch(() => {});
-                await github.rest.issues.addLabels({ owner, repo, issue_number: n, labels: ['human-needed'] });
+                // AP-036 (2026-07-20): el default del terminal NO-declarado pasa
+                // de `human-needed` a `stalled` (⇒ architect-resolve por evento).
+                // AP-035 refutado en 24h: 6ª ocurrencia POST-despliegue
+                // (finplan#1532 19:59) — ningún canal de marcador convierte la
+                // clase porque depende de que el modelo emita un formato en su
+                // cierre. En este ramal (serie ocupada + success + sin commits +
+                // sin PR) las únicas verdades son bloqueo, alcance-completo o
+                // sesión degenerada: las tres las rula architect-resolve leyendo
+                // la prosa del cierre. `human-needed` directo saltaba el escalón
+                // autónomo y ponía al humano de primera línea; el humano entra
+                // por doble rebote (cap de re-arms del watchdog), como está
+                // diseñado. El token AP-035 pasa de single-point-of-failure a
+                // optimización (su presencia ahorra este run de resolve). Orden
+                // idéntico al camino declarado: comentario → pop → stalled →
+                // retirar serial-activo.
                 await github.rest.issues.createComment({ owner, repo, issue_number: n,
-                  body: `**claude-code · post-step**: la sesión terminó sin PR ni commits con la serie ocupada y SIN declarar bloqueo (falta \`<!-- creator-blocked -->\` — creator.md § escalado determinista). Tratado como ESCALADA no-declarada: serie liberada, \`human-needed\`, turno pasado a la cola.\n\n<!-- escalada-materializada -->` });
-                await popQueue(n, `escalada de #${n}`);
+                  body: `**claude-code · post-step**: la sesión terminó sin PR ni commits con la serie ocupada y SIN token terminal (\`[CREATOR-BLOCKED]\`/\`[ALCANCE-COMPLETO]\` — creator.md § escalado determinista). Terminal NO-declarado ⇒ escalón AUTÓNOMO (AP-036): \`stalled\` con PAT ⇒ architect-resolve por evento, que lee la prosa del cierre y rula — bloqueo ⇒ resuelve y re-arma; alcance completo ⇒ materializa \`estado:cierre-pendiente-humano\`; sesión degenerada sin informe utilizable ⇒ \`human-needed\`. El humano entra tras doble rebote, no de primera línea. Serie liberada, turno pasado a la cola.\n\n<!-- escalada-materializada -->` });
+                await popQueue(n, `terminal no-declarado de #${n}`);
+                await github.rest.issues.addLabels({ owner, repo, issue_number: n, labels: ['stalled'] });
+                await github.rest.issues.removeLabel({ owner, repo, issue_number: n, name: 'serial-activo' }).catch(() => {});
                 return;
               }
               await github.rest.issues.createComment({ owner, repo, issue_number: n,

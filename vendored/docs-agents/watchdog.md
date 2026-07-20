@@ -95,6 +95,20 @@ no vigila el PR — dejarlo puesto tras el ruling lo volvería invisible). Es el
 complemento con-PR de `[CREATOR-BLOCKED]` (paro sin PR); no confundir con
 `[NEEDS-HUMAN]`, que sí para hasta humano.
 
+**Terminal NO-declarado del Creator (`escalada-materializada`, AP-036).** Si el
+`stalled` viene del post-step de terminales con el rastro
+`<!-- escalada-materializada -->` (sesión `success` con la serie ocupada, sin
+commits, sin PR y SIN token terminal — el Creator omitió el formato pero su
+cierre suele contener el veredicto en prosa), TU trabajo es rular lo que el
+token habría declarado, leyendo el comentario de cierre y el issue: (a) es un
+**bloqueo** (hueco de diseño, decisión pendiente) ⇒ aplica resolver-protocol
+sobre la decisión concreta y re-arma con el ruling, como en `creator-blocked`;
+(b) es un **alcance completo** (la re-verificación no encontró nada pendiente)
+⇒ materializa el terminal: `estado:cierre-pendiente-humano`, retira `stalled`,
+NO re-armes (el cierre es humano, AP-019); (c) la sesión es **degenerada** (sin
+informe utilizable del que derivar veredicto) ⇒ `human-needed` con diagnóstico.
+El humano entra por doble rebote (cap de re-arms), no de primera línea.
+
 **Épica sin bloque de invariantes (`sin-invariantes-stall`, AP-021).** Si el
 `stalled` viene del guard de horneado (`claude-code.yml` materializó el marcador
 `<!-- sin-invariantes-stall -->`: se armó el primer eslabón de una `epica` cuya
