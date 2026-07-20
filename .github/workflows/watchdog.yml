@@ -758,13 +758,25 @@ jobs:
                   continue;
                 }
                 const SETTLE_MARK = '<!-- watchdog-cola-huerfana-sospecha -->';
-                if (!comments.some(c => (c.body || '').includes(SETTLE_MARK))) {
+                // La ventana de asentamiento es POR-EPISODIO de encolado, no
+                // por presencia histórica del marcador: si el mismo issue se
+                // re-encoló (nuevo `serial-guard`) tras un episodio previo, el
+                // marcador viejo NO debe contar — anclarlo así escalaría en el
+                // 1er tick del episodio nuevo (viola «no antes» de AP-039 y
+                // reintroduce el falso positivo en régimen de épicas
+                // concurrentes). Ancla del episodio vigente = último comentario
+                // `serial-guard`; la sospecha solo vale si se levantó DESPUÉS.
+                const lastGuard = comments.filter(c => (c.body || '').includes('<!-- serial-guard -->')).pop();
+                const episodeAt = lastGuard ? new Date(lastGuard.created_at).getTime() : 0;
+                const freshSuspicion = comments.some(c => (c.body || '').includes(SETTLE_MARK)
+                  && new Date(c.created_at).getTime() >= episodeAt);
+                if (!freshSuspicion) {
                   await github.rest.issues.createComment({ ...O, issue_number: issue.number,
                     body: `**watchdog · cola serial**: \`en-cola\` con la serie LIBRE (sin \`serial-activo\` ni PR \`claude/*\` abierto). Puede ser un pop de cola muerto o una liberación de serie aún asentándose. Ventana de asentamiento: si persiste al próximo tick efectivo, se escala a la etapa architect como \`cola-huerfana\`.\n\n${SETTLE_MARK}\n${CAPA}` });
-                  core.notice(`#${issue.number}: en-cola + serie libre; marcador de asentamiento puesto (1er tick), sin escalar aún.`);
+                  core.notice(`#${issue.number}: en-cola + serie libre; marcador de asentamiento puesto (1er tick del episodio), sin escalar aún.`);
                   continue;
                 }
-                core.notice(`#${issue.number}: en-cola + serie libre PERSISTENTE (>1 tick) ⇒ cola-huerfana, escala a architect.`);
+                core.notice(`#${issue.number}: en-cola + serie libre PERSISTENTE (>1 tick del episodio) ⇒ cola-huerfana, escala a architect.`);
               }
 
               // Armado, sin PR abierta, todo en silencio > STALL_MIN, y
