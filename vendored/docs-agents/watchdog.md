@@ -109,6 +109,30 @@ NO re-armes (el cierre es humano, AP-019); (c) la sesión es **degenerada** (sin
 informe utilizable del que derivar veredicto) ⇒ `human-needed` con diagnóstico.
 El humano entra por doble rebote (cap de re-arms), no de primera línea.
 
+**Cierre autónomo de completitud por-estado (`estado:cierre-pendiente-humano`,
+AP-037 — rectifica AP-019 «opción A sin necesidad» y el «NO stalled» de
+AP-020/AP-026).** Si el `stalled` viene del post-step de alcance-completo (rastro
+`creator-alcance-completo-materializado*` + label `estado:cierre-pendiente-humano`),
+TU trabajo es ejercer el cierre que antes era humano. (1) **Verificación
+MATERIALIZADA obligatoria**: re-verifica el veredicto del Creator contra el HEAD
+actual y publica UN comentario con los checks ejecutados y sus anclas
+`file:line` frescas (qué afirmó el veredicto, qué encontraste, dónde) — jamás
+«lo he revisado» sin anclas. Ese comentario DEBE terminar con el marcador
+`<!-- cierre-verificado -->` en línea propia. (2) Tres desenlaces: (a) el
+veredicto SE SUSTENTA ⇒ retira `stalled` (conserva
+`estado:cierre-pendiente-humano`: es guard del handler de cierre-por-estado y
+firma del belt) y cierra el issue `completed` con `gh issue close` — el handler
+AP-031 consume los sentinels de cadena al cierre y la cadena sigue sola; (b) NO
+se sustenta (hay alcance real sin cubrir) ⇒ NO cierres: re-arma al Creator con
+el hueco concreto anclado (es trabajo del Creator, no `human-needed`); (c)
+ambiguo/inverificable ⇒ `human-needed` con diagnóstico. (3) Red por estado: si
+publicas la verificación con su marcador pero tu `gh issue close` muere, el
+detect cierra por FIRMA en el siguiente tick (`cierre-materializado-por-estado`)
+— la verificación ES el estado; el cierre se deriva. `gh issue close` está en tu
+allowlist SOLO para este caso: jamás cierres un issue sin la label ni sin haber
+publicado la verificación. Gate humano restante: doble rebote, veto asíncrono y
+verificación visual de épica.
+
 **Épica sin bloque de invariantes (`sin-invariantes-stall`, AP-021).** Si el
 `stalled` viene del guard de horneado (`claude-code.yml` materializó el marcador
 `<!-- sin-invariantes-stall -->`: se armó el primer eslabón de una `epica` cuya

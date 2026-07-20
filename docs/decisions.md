@@ -870,3 +870,20 @@ Resultado: **CERO Creators + `serial-activo` orfanado** hasta que lo sanee el wa
 
 **Fecha.** 2026-07-20.
 ---
+
+## AP-037 — Cierre AUTÓNOMO de las completitudes por-estado: architect-resolve verifica el veredicto contra HEAD con verificación materializada y cierra `completed` (rectificación de AP-019 «opción A sin necesidad»; enmienda de AP-020/AP-026)
+
+**Contexto.** Handoff del Architect de finplan (2026-07-20), verificado contra los árboles vivos. Dos hechos: (1) el handler de cierre-por-estado (AP-031, `postStateClose`) era **código muerto en toda la flota** — ningún stub suscribía `issues:[closed]`; corregido en vivo por el propietario (human-execute) + template en central#112. (2) Con el handler ya vivo, el régimen seguía exigiendo un **cierre humano** por cada completitud por-estado (`estado:cierre-pendiente-humano`, «merge/cierre no se delega, AP-019»): finplan#1547 paró la cadena ADR-210 horas esperando un cierre cuya verificación (leer el veredicto, spot-check contra HEAD — hq16 en `structural-key.ts:247`, campos en `types.ts`, D4 diferido) es ejercible por un resolutor con contexto. La cita de AP-019 en el template del post-step **sobre-generaliza su letra**: AP-019 (central#55) decidió el guard del PANEL y descartó dar `close` al watchdog como «blast radius mayor y SIN NECESIDAD» — para aquel problema. La necesidad está ahora medida, la vía normal ya cierra en autónomo (`Closes #N` al mergear), y el principio del propietario es decisión cerrada verbatim: **«Toda decisión que pueda ser autónoma dentro de agentes del repo DEBE ser autónoma.»**
+
+**Decisión (del propietario, diseño cerrado en sesión 2026-07-20).**
+
+1. **Disparo**: el post-step de alcance-completo (`materializeScopeComplete`, ambas vías — marcador y belt AP-026) añade `stalled` con PAT junto a `estado:cierre-pendiente-humano` ⇒ architect-resolve POR EVENTO. Rectifica el «NO stalled» de AP-020/AP-026. Cero superficie de trigger nueva.
+2. **Verificación y cierre (mandato del resolver, watchdog.md)**: verificación MATERIALIZADA obligatoria — comentario con los checks ejecutados y anclas `file:line` frescas, terminado en `<!-- cierre-verificado -->`. Desenlaces: (a) sustenta ⇒ retira `stalled` (conserva la label: guard de postStateClose + firma del belt) y cierra `completed` ⇒ el handler AP-031 consume los sentinels y la cadena sigue; (b) NO sustenta ⇒ re-arma al Creator con el hueco anclado (alcance real sin cubrir es trabajo del Creator, no `human-needed`); (c) ambiguo ⇒ `human-needed` con diagnóstico.
+3. **Contención**: `Bash(gh issue close:*)` SOLO en el allowlist del stage resolutor (jamás Creator/Reviewer — restricción del handoff intacta), acotado por mandato a issues con la label y con verificación publicada. Belt por estado en el detect: verificación publicada + issue abierto ⇒ cierre por firma (`cierre-materializado-por-estado`) — la verificación ES el estado, el cierre se deriva (doctrina AP-036: la ruta no depende del formato-de-acción del modelo). Residual honesto: sin verificación publicada no hay cierre — el issue queda como en el régimen previo. Reversibilidad: un cierre erróneo es un `reopen`; el Auditor de épica es la red aguas abajo; veto asíncrono vigente.
+4. **La label conserva el nombre** `estado:cierre-pendiente-humano` con semántica redefinida en `protocol.md` («cierre pendiente del RESOLUTOR») — renombrarla tocaría el guard de postStateClose, `labels.json` y las filas por churn sin ganancia funcional; opción señalada y descartada por el propietario.
+5. **Gate humano restante**: doble rebote (cortacircuito del watchdog), veto asíncrono de `autonomous-decision`, y verificación visual final de épica.
+
+**Falsable.** Cierres manuales del propietario sobre `estado:cierre-pendiente-humano` ⇒ 0 en régimen normal (solo desenlace (c) o doble rebote). Si el resolver cierra ≥1 vez sobre un veredicto que NO se sustentaba (medible por el Auditor contra la verificación anclada), revisar el caso (b) antes de retirar autonomía.
+
+**Fecha.** 2026-07-20.
+---
