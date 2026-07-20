@@ -7,6 +7,12 @@ on:
     types: [completed]
   pull_request:
     types: [closed, labeled]
+  # issues:[closed] es OBLIGATORIO: sin él, el handler de cierre-por-estado
+  # (AP-031, postStateClose) es código muerto en el consumidor y los sentinels
+  # de un issue cerrado sin merge quedan huérfanos (parada de cadena — medido
+  # en finplan#1547, 2026-07-20; el agujero estaba en LOS DOS stubs).
+  issues:
+    types: [closed]
 permissions:
   contents: write
   pull-requests: write
@@ -14,7 +20,10 @@ permissions:
   statuses: write
   actions: read
 concurrency:
-  group: epic-merge-${{ github.event.workflow_run.head_branch || github.event.pull_request.head.ref }}
+  # Tercer fallback issue.number: sin él, todo evento `issues` colapsa en el
+  # grupo constante `epic-merge-` y se encola entre sí y con cualquier evento
+  # de sufijo vacío.
+  group: epic-merge-${{ github.event.workflow_run.head_branch || github.event.pull_request.head.ref || github.event.issue.number }}
   cancel-in-progress: false
 jobs:
   call:
