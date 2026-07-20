@@ -299,6 +299,33 @@ jobs:
               return res;
             };
             const { data: prs } = await github.rest.pulls.list({ ...O, state: 'open', per_page: 50 });
+            // ── Belt de CIERRE por estado (AP-037): si el resolver publicó la
+            // verificación materializada (`<!-- cierre-verificado -->`, actor de
+            // confianza) sobre un issue `estado:cierre-pendiente-humano` pero el
+            // `gh issue close` no llegó a ejecutarse (ventana de muerte de la
+            // sesión), el detect cierra por FIRMA en el siguiente tick — no
+            // reconstruimos la dependencia de formato-de-acción que AP-036 mató:
+            // la verificación ES el estado; el cierre se deriva de él. Rastro
+            // `<!-- cierre-materializado-por-estado -->` bloquea re-emisiones.
+            // Residual honesto: sin verificación publicada no hay cierre — el
+            // issue queda como en el régimen previo (cierre humano).
+            try {
+              const { data: pendClose } = await github.rest.issues.listForRepo({ ...O,
+                state: 'open', labels: 'estado:cierre-pendiente-humano', per_page: 30 });
+              for (const it of pendClose) {
+                if (it.pull_request) continue;
+                if (it.labels.some(l => (l.name || l) === 'pause-agents' || (l.name || l) === 'human-needed')) continue;
+                const { data: ccs } = await github.rest.issues.listComments({ ...O, issue_number: it.number, per_page: 100 });
+                const trusted = c => ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(c.author_association) || c.user?.login === 'claude[bot]';
+                if (ccs.some(c => trusted(c) && /<!--\s*cierre-materializado-por-estado\s*-->/.test(c.body || ''))) continue;
+                if (!ccs.some(c => trusted(c) && /<!--\s*cierre-verificado\s*-->/.test(c.body || ''))) continue;
+                await patCall('POST', `/issues/${it.number}/comments`, {
+                  body: `**watchdog · belt de cierre por estado (AP-037)**: la verificación materializada del resolver está publicada (\`<!-- cierre-verificado -->\`) pero el issue seguía abierto — ventana de muerte del \`gh issue close\`. Cierre \`completed\` materializado por firma; el handler de cierre-por-estado (AP-031) consume los sentinels.\n\n<!-- cierre-materializado-por-estado -->\n${CAPA}` });
+                try { await patCall('DELETE', `/issues/${it.number}/labels/stalled`); } catch (e) { /* label ausente: ok */ }
+                await patCall('PATCH', `/issues/${it.number}`, { state: 'closed', state_reason: 'completed' });
+                core.notice(`#${it.number}: cierre por estado materializado (belt AP-037).`);
+              }
+            } catch (e) { core.warning('belt cierre-por-estado: ' + e.message); }
             const openAgentPRs = prs.filter(p => p.head.ref.startsWith('claude/'));
             const verdictRe = /^\s*(LGTM|REVIEW|NITS)\b/;
             for (const pr of openAgentPRs) {
@@ -846,7 +873,7 @@ jobs:
           claude_args: |
             --model ${{ inputs.resolve_model }}
             --max-turns ${{ inputs.resolve_max_turns }}
-            --allowedTools "Read,Glob,Grep,Bash(gh issue view:*),Bash(gh issue comment:*),Bash(gh issue edit:*),Bash(gh issue create:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr checks:*),Bash(gh pr comment:*),Bash(gh pr edit:*),Bash(gh run list:*),Bash(gh run view:*),Bash(gh api repos/*)"
+            --allowedTools "Read,Glob,Grep,Bash(gh issue view:*),Bash(gh issue comment:*),Bash(gh issue edit:*),Bash(gh issue create:*),Bash(gh issue close:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr checks:*),Bash(gh pr comment:*),Bash(gh pr edit:*),Bash(gh run list:*),Bash(gh run view:*),Bash(gh api repos/*)"
           prompt: |
             Eres el Architect en rol watchdog del repo ${{ github.repository }}.
             Tu rol vinculante está en docs/agents/watchdog.md del checkout:
@@ -875,7 +902,12 @@ jobs:
             `epic-context-<ADR>` del checkout si existe. (2) Decide:
             resolver-protocol primero; si no es derivable, decide con tu
             mejor juicio y publica el racional completo con el marcador
-            `<!-- autonomous-decision -->`. (3) Actúa: si el stall es de
+            `<!-- autonomous-decision -->`. Caso especial (AP-037): si el
+            ítem lleva `estado:cierre-pendiente-humano`, aplica el caso
+            «Cierre autónomo de completitud por-estado» de watchdog.md —
+            verificación MATERIALIZADA del veredicto contra HEAD y
+            `gh issue close` si se sustenta; `gh issue close` está en tu
+            allowlist SOLO para ese caso. (3) Actúa: si el stall es de
             tamaño (cap de parciales), re-dimensiona el restante según la
             heurística de partición de architect.md (issues nuevos con label
             `${{ inputs.epic_label }}`, encadenados, heredando el sentinel del padre y cerrando

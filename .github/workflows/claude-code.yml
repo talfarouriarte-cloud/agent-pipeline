@@ -1160,7 +1160,17 @@ jobs:
               const viaState = !!opts.viaState;
               const held = (await liveLabels()).includes('serial-activo');
               if (held) await github.rest.issues.removeLabel({ owner, repo, issue_number: n, name: 'serial-activo' }).catch(() => {});
-              await github.rest.issues.addLabels({ owner, repo, issue_number: n, labels: ['estado:cierre-pendiente-humano'] });
+              // AP-037 (2026-07-20): el cierre de la completitud por-estado es
+              // AUTÓNOMO — se añade `stalled` (este step corre con PAT) ⇒
+              // architect-resolve POR EVENTO verifica el veredicto contra HEAD
+              // con verificación MATERIALIZADA y cierra `completed`; el handler
+              // AP-031 consume los sentinels al cierre. Rectifica la cláusula
+              // «opción A sin necesidad» de AP-019 y el «NO stalled» de
+              // AP-020/AP-026 (necesidad medida: finplan#1547 paró la cadena
+              // horas por un cierre que el resolutor puede ejercer). La label
+              // `estado:cierre-pendiente-humano` se conserva (guard de
+              // postStateClose + firma del belt de cierre del detect).
+              await github.rest.issues.addLabels({ owner, repo, issue_number: n, labels: ['estado:cierre-pendiente-humano', 'stalled'] });
               // AP-026 (2026-07-17, repesca finplan#1466): el terminal
               // alcance-completo se materializa por DOS vías con el MISMO efecto
               // mecánico — (a) el marcador `creator-alcance-completo` del Creator
@@ -1171,14 +1181,14 @@ jobs:
               // rastro difieren para que la auditoría/5-whys distinga
               // marcador-emitido de estado-derivado.
               const preamble = viaState
-                ? `**claude-code · post-step**: sesión de **re-arm de un parcial fantasma** (\`pr-abierto-por-estado\` mergeado ⇒ \`epic-partial-relaunch-por-estado\`) terminó \`success\` sin PR, sin commits y SIN emitir \`creator-alcance-completo\`. El "resto" de un parcial forzado era \`desconocido\` (placeholder, no alcance real): la re-verificación en verde que no encuentra nada ES el terminal **alcance ya COMPLETO** — **NO es escalada** ⇒ el estado lo DERIVA en vez de degradar a \`human-needed\` (cola fantasma, AP-026). Sin \`human-needed\` ni \`stalled\`:`
-                : `**claude-code · post-step**: el Creator concluyó con veredicto **alcance ya COMPLETO en la rama base, sin PR que abrir** (\`<!-- creator-alcance-completo -->\`). Estado terminal legítimo materializado en el instante — **NO es escalada** ⇒ sin \`human-needed\` ni \`stalled\`:`;
+                ? `**claude-code · post-step**: sesión de **re-arm de un parcial fantasma** (\`pr-abierto-por-estado\` mergeado ⇒ \`epic-partial-relaunch-por-estado\`) terminó \`success\` sin PR, sin commits y SIN emitir \`creator-alcance-completo\`. El "resto" de un parcial forzado era \`desconocido\` (placeholder, no alcance real): la re-verificación en verde que no encuentra nada ES el terminal **alcance ya COMPLETO** — **NO es escalada** ⇒ el estado lo DERIVA en vez de degradar a \`human-needed\` (cola fantasma, AP-026):`
+                : `**claude-code · post-step**: el Creator concluyó con veredicto **alcance ya COMPLETO en la rama base, sin PR que abrir** (\`<!-- creator-alcance-completo -->\`). Estado terminal legítimo materializado en el instante — **NO es escalada**:`;
               const traceMarker = viaState ? 'creator-alcance-completo-materializado-por-estado' : 'creator-alcance-completo-materializado';
               const humanNote = viaState
-                ? '\n- **Derivado por ESTADO, no por marcador**: el humano DEBE re-verificar contra el HEAD antes de cerrar (mitigación del riesgo «cerrar-como-completo sobre veredicto equivocado», AP-026).'
+                ? '\n- **Derivado por ESTADO, no por marcador**: la verificación materializada del resolver es OBLIGATORIA y con anclas frescas — si el veredicto NO se sustenta, re-arma al Creator con el hueco (alcance real sin cubrir), no cierres (AP-026/AP-037).'
                 : '';
               await github.rest.issues.createComment({ owner, repo, issue_number: n,
-                body: `${preamble}\n\n- ${held ? '`serial-activo` retirada y **turno pasado a la cola** — la serie se libera por el fin de turno del agente, no solo por merge (AP-014/AP-020).' : 'la serie no estaba ocupada por este issue: nada que liberar ni que armar.'}\n- \`estado:cierre-pendiente-humano\` aplicada: el cierre del issue en el central es HUMANO (merge/cierre no se delega, AP-019). El humano verifica el veredicto y cierra.${humanNote}\n\n<!-- ${traceMarker} -->` });
+                body: `${preamble}\n\n- ${held ? '`serial-activo` retirada y **turno pasado a la cola** — la serie se libera por el fin de turno del agente, no solo por merge (AP-014/AP-020).' : 'la serie no estaba ocupada por este issue: nada que liberar ni que armar.'}\n- \`estado:cierre-pendiente-humano\` + \`stalled\` aplicadas (AP-037): architect-resolve verifica el veredicto contra HEAD con verificación MATERIALIZADA (checks anclados \`file:line\` en comentario) y cierra \`completed\` — el humano entra por doble rebote o veto asíncrono, no de primera línea.${humanNote}\n\n<!-- ${traceMarker} -->` });
               if (held) await popQueue(n, `alcance completo ${viaState ? 'derivado por estado' : 'verificado'} de #${n}`);
               core.notice(`Creator de #${n}: alcance-completo materializado (${viaState ? 'BELT por estado' : 'marcador'}, serie ${held ? 'liberada + cola armada' : 'no ocupada'}, cierre-pendiente-humano).`);
             }
