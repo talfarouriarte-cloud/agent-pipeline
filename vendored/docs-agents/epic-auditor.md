@@ -59,7 +59,7 @@ El alcance migra legítimamente entre eslabones (un issue posterior puede haber 
        | grep -oE "<!--[[:space:]]*($MARCADORES)[^>]*-->" \
        | grep -oE "$MARCADORES" \
        | sort -u \
-       | sed "s#\$#\t${url}#"
+       | while IFS= read -r m; do printf '%s\t%s\n' "$m" "$url"; done
    done | tee /tmp/barrido-marcadores.tsv        # evidencia: «marcador <TAB> comment-URL», un evento por línea
    cut -f1 /tmp/barrido-marcadores.tsv | sort | uniq -c   # total por marcador (de aquí se DERIVAN los conteos)
    ```
