@@ -159,14 +159,16 @@ Ejemplo de apertura de un cierre de escalada sin PR:
 
 **Belt (no vía primaria):** el marcador HTML legacy en comentario SEPARADO vía `gh api` (`<!-- creator-blocked -->` / `<!-- creator-escalated -->` / `<!-- creator-alcance-completo -->`, canal AP-028) sigue siendo aceptado por el post-step y por los cinturones del Watchdog — si dudas de haber emitido bien la primera línea, puedes añadirlo, pero la vía primaria es el token de apertura: no tiene ventana de muerte (viaja EN el cierre, no después) ni paso extra que olvidar. `[NEEDS-HUMAN]` queda como estaba: texto abriendo su línea en el cierre.
 
-### Si la apertura del PR falla por credencial caducada: declara el body en el cierre (AP-030)
+### Si la apertura del PR falla por credencial caducada: caso particular de la cadencia (AP-030, generalizado por AP-042)
 
-Tu auth es un App token de `claude[bot]` con **TTL ~1h** (ver § Rol). Si tu sesión se alarga (deps + suite por lotes + pre-reviewer) el token puede **caducar a mitad de sesión**, y entonces `gh pr create` falla por credencial expirada DESPUÉS de que ya empujaste tus commits (la rama queda ahead sin PR). No re-intentes indefinidamente ni pares en silencio: la red por-estado del post-step (AP-023) abrirá el PR desde la rama con el **PAT** (credencial no ligada a la vida de tu sesión) — pero por defecto lo abre con **`partial-pr` forzado** y «Alcance restante: desconocido», IGNORANDO el alcance real que solo tú conoces. Esa polaridad falsa desata una cascada cara (parcial fantasma: re-arm nulo + belt AP-026 + watchdog falso-positivo + arm manual del `launch-next` — 5-whys finplan#1481).
+Este es un **caso particular** de la cadencia de hito de arriba (§ «El push de hito no está completo sin el bloque `pr-body-declarado`»): si mantuviste el bloque al día por hito, la declaración FIEL YA existe cuando el token caduca y no tienes que hacer nada especial. Esta sección conserva el manejo específico de la emergencia.
 
-**Para que el post-step abra el PR FIEL (polaridad + body reales ⇒ cascada cero):** cuando `gh pr create` falle por credencial caducada, publica el **body ÍNTEGRO del PR** que ibas a abrir en un **comentario SEPARADO vía `gh api` en el ISSUE** (mismo canal que los marcadores terminales — conserva el HTML; el tracking comment lo perdería, AP-028), delimitado por los marcadores `<!-- pr-body-declarado:start -->` / `<!-- pr-body-declarado:end -->` en **línea propia**. El body declarado DEBE contener, cada uno en su línea:
+Tu auth es un App token de `claude[bot]` con **TTL ~1h** (ver § Rol). Si tu sesión se alarga (deps + suite por lotes + pre-reviewer) el token puede **caducar a mitad de sesión**, y entonces `gh pr create` falla por credencial expirada DESPUÉS de que ya empujaste tus commits (la rama queda ahead sin PR). No re-intentes indefinidamente ni pares en silencio: la red por-estado del post-step (AP-023) abrirá el PR desde la rama con el **PAT** (credencial no ligada a la vida de tu sesión) — pero sin tu bloque declarado lo abre con **`partial-pr` forzado** y «Alcance restante: desconocido», IGNORANDO el alcance real que solo tú conoces. Esa polaridad falsa desata una cascada cara (parcial fantasma: re-arm nulo + belt AP-026 + watchdog falso-positivo + arm manual del `launch-next` — 5-whys finplan#1481).
 
-- tu marcador de polaridad REAL anclado (`<!-- full-pr -->` o `<!-- partial-pr -->`), exactamente uno;
-- `Closes #N` fiel (es lo que restituye el cierre automático del issue y el consumo de `launch-next` por epic-merge al mergear — con `Refs #N` el issue no se cierra);
+**Para que el post-step abra el PR FIEL (polaridad + body reales ⇒ cascada cero):** si aún no lo habías publicado por cadencia, publica AHORA el **body ÍNTEGRO del PR** que ibas a abrir en un **comentario SEPARADO vía `gh api` en el ISSUE** (mismo canal que los marcadores terminales — conserva el HTML; el tracking comment lo perdería, AP-028), delimitado por los marcadores `<!-- pr-body-declarado:start -->` / `<!-- pr-body-declarado:end -->` en **línea propia**. El body declarado DEBE contener, cada uno en su línea:
+
+- tu marcador de polaridad REAL anclado (`<!-- full-pr -->` o `<!-- partial-pr -->`), exactamente uno — en la emergencia sueles tener el alcance completo, así que aquí normalmente `<!-- full-pr -->`;
+- la referencia consistente con la polaridad: `Closes #N` con `full-pr` (restituye el cierre automático del issue y el consumo de `launch-next` por epic-merge al mergear), `Refs #N` con `partial-pr` (NO cierra el issue);
 - la huella `pre-reviewer: ejecutado · N hallazgos · M aplicados` (o `pre-reviewer: no ejecutado — <motivo>`).
 
 ```bash
@@ -375,6 +377,40 @@ concreto: si el repo migra a `@v2`, la variable sigue resolviendo al
 path correcto sin tocar este texto.)
 
 Después del push, actualizar el comment de progreso marcando §X como hecha y registrando el SHA del commit. Si el job se muere a continuación, el humano (o el siguiente turn) ve exactamente dónde quedó.
+
+### El push de hito no está completo sin el bloque `pr-body-declarado` (cadencia de hito, AP-042)
+
+**Regla dura (generaliza AP-030 de emergencia a cadencia).** Un push de hito NO está completo hasta que publicas/**actualizas** en el ISSUE el bloque `pr-body-declarado` con el body VIGENTE del PR que abrirás. No es solo para la emergencia «token caducado» (§ abajo): es cadencia normal, en CADA hito, junto al `git push`. El motivo es estructural: si tu sesión muere antes del paso de apertura del PR —token caducado, turnos/contexto agotados en la derivación densa del issue, timeout del job— la red por-estado (AP-023) abre el PR igual, pero SIN tu declaración lo abre con `partial-pr` FORZADO y «Alcance restante: desconocido» (cuesta un slot del cap de relanzamientos y una ronda extra aunque el alcance estuviera completo). Con el bloque al día, el post-step abre un PR **FIEL** —tu polaridad y tu body reales— **mueras donde mueras**.
+
+Esta cadencia es un **mandato de prosa/disciplina, deliberadamente SIN gate mecánico** (a diferencia de la polaridad de `gh pr create`, que sí lleva hook). La elección no es un olvido (AP-008): el valor del bloque es cubrir la MUERTE de la sesión, y un gate no puede correr en una sesión ya muerta —justo el escenario que hay que proteger—, así que un gate cerraría precisamente los casos que NO importan (sesión viva que abre su PR normal, donde el bloque es redundante) y no los que sí. El peor caso de no tener gate está acotado por diseño: un bloque rancio `partial-pr` degrada al comportamiento AP-023 con MEJOR body, nunca a un `full-pr` sin respaldo (riesgo 1 de AP-042). Prosa-vs-mecanismo aquí es la decisión correcta, no una laguna.
+
+El bloque va en un **comentario SEPARADO vía `gh api` en el ISSUE** (canal AP-028, conserva el HTML; el tracking comment lo perdería), delimitado por `<!-- pr-body-declarado:start -->` / `<!-- pr-body-declarado:end -->` en **línea propia**, y DEBE contener, cada uno en su línea:
+
+> **«Actualizar» = publicar un comentario NUEVO, no editar el anterior.** El comando es un `POST` (`gh api .../issues/<N>/comments`): cada hito AÑADE un comentario `pr-body-declarado`; NO uses `PATCH` para editar el bloque previo. El post-step recorre los comentarios frescos de tu sesión de más nuevo a más antiguo y se queda con el más reciente VÁLIDO, así que el último POST es el que gana. En un issue multi-hito esto acumula varios comentarios `pr-body-declarado` (uno por hito): es ruido ASUMIDO —el coste ya contabilizado de «~1 comentario de API por hito»—, no un error que haya que limpiar.
+
+- **Polaridad REAL anclada, exactamente una**: `<!-- partial-pr -->` por DEFECTO (mientras quede alcance del issue sin cubrir); `<!-- full-pr -->` SOLO cuando hayas completado TODO el alcance. Nunca declares `full-pr` optimista: si te equivocas por exceso, el post-step abriría un full que cierra el issue con alcance sin cubrir.
+- **Referencia consistente con la polaridad**: `Refs #N` con `partial-pr` (NO cierra el issue — un parcial que cerrara huérfana el alcance restante); `Closes #N` con `full-pr` (restituye el cierre automático + el consumo de `launch-next` por epic-merge al mergear ⇒ cascada cero). El post-step exige esta consistencia: un bloque `partial-pr`+`Closes` (o `full-pr`+`Refs`) se rechaza y cae al forzado.
+- **Huella `pre-reviewer`** cuando ya corrió (`pre-reviewer: ejecutado · N hallazgos · M aplicados`); si aún no —hitos intermedios—, `pre-reviewer: no ejecutado — pendiente (hito intermedio)`.
+
+```bash
+# Tras el `git push` del hito §X (y en el hito final, con full-pr + Closes):
+gh api repos/{owner}/{repo}/issues/<N>/comments -f body="$(cat <<'EOF'
+<!-- pr-body-declarado:start -->
+Refs #<N>
+
+<resumen de cambios hasta §X + blast radius>
+
+### Alcance restante (para el Architect)
+<qué secciones del issue faltan aún>
+
+pre-reviewer: no ejecutado — pendiente (hito intermedio)
+<!-- partial-pr -->
+<!-- pr-body-declarado:end -->
+EOF
+)"
+```
+
+Cuesta ~1 comentario de API por hito, sin coste de agente. El post-step lee SIEMPRE el bloque más reciente de tu MISMA sesión (freshness lección #180: jamás bloques de sesiones anteriores). Si mueres sin actualizar un hito, el peor caso es un bloque un poco RANCIO con polaridad `partial-pr` — degrada al comportamiento AP-023 con MEJOR body, nunca a un `full-pr` sin respaldo. Cuando SÍ llegas a abrir el PR normalmente, el bloque es redundante (lo ignora todo el mundo): es una red, no un canal de doble escritura crítico.
 
 ### Cuándo NO commitear inmediatamente
 
