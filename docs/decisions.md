@@ -961,3 +961,35 @@ Resultado: **CERO Creators + `serial-activo` orfanado** hasta que lo sanee el wa
 
 **Fecha.** 2026-07-21.
 ---
+
+## AP-041 — El barrido mecánico del Auditor (central#108) se ancla a la forma HTML literal del marcador y deduplica por comentario: cierra el sobreconteo por prosa (2 auditorías consecutivas corregidas a mano)
+
+**Contexto.** El fix de central#108 («salida literal pegada, no memoria») sustituyó el subconteo-de-memoria de los bloques `## Métricas de proceso` y `## Análisis de repescas` por un barrido mecánico con la salida pegada. Pero ese barrido contaba por SUBSTRING (`grep -oE '<nombre>'` sobre `.body`), así que atrapaba la PROSA que menciona el marcador además del marcador HTML mismo — el defecto inverso al que central#108 combatía (sobreconteo, no subconteo). Dos auditorías consecutivas necesitaron corrección manual inline del propio Auditor:
+
+1. **Auditoría finplan#1569** (épica ADR-229·R·4): el barrido contó `3 watchdog-rearm` que eran la prosa «Sin watchdog-rearm» de los comentarios del Watchdog — 0 re-arms reales; anotado como falso positivo a mano.
+2. **Auditoría finplan#1577** (épica ADR-229·R·5): el barrido contó `2 turn-close-failsafe` para 1 solo evento — el marcador HTML y la cabecera de prosa del MISMO comentario del failsafe (PR finplan#1576); corregido inline con `# 1 evento`.
+
+La revisión de proceso de finplan#1569 dejó **pre-declarado el criterio de escalada**: «si recurre, el conteo necesita anclaje de línea/contexto». Recurrió en finplan#1577 ⇒ patrón con evidencia ≥2 + criterio pre-declarado que recurre. Es la clase «regex polarity blindness» (pipeline-map, Known failure classes) dentro del propio INSTRUMENTO DE MEDIDA: el barrido alimenta el bloque de métricas y el canal «repesca = fix obligatorio» del process-reviewer, y central#108 nació precisamente porque el conteo de memoria OCULTÓ 2 repescas — su fix por substring tiene el defecto simétrico.
+
+**Decisión (del propietario, ejecutada por el Creator del central; issue nace armado). En la sección del barrido mecánico del mandato vendorizado del Auditor (`vendored/docs-agents/epic-auditor.md`, disciplina de central#108), edición de docs, cero código de workflow:**
+
+1. **Anclaje a la forma HTML literal.** El conteo se ancla al patrón `<!-- marcador -->` (`grep -oE "<!--[[:space:]]*($MARCADORES)[^>]*-->"`), jamás el nombre suelto como substring de prosa. Los marcadores parametrizados (p. ej. `watchdog-rearm: architect-resolve`) se cubren por anclaje de PREFIJO (`[^>]*-->` tolera el parámetro; un segundo `grep -oE "$MARCADORES"` recorta el token del tipo), no por literal exacto.
+2. **Dedupe por comentario.** El barrido itera comentario a comentario (jq emite `html_url<TAB>body`), extrae los marcadores presentes y aplica `sort -u` POR comentario: un comentario cuenta como máximo 1 ocurrencia por tipo de marcador (marcador + su cabecera de prosa en el MISMO comentario = 1 evento). Refleja el contrato real de emisión de `protocol.md`: los emisores publican un comentario por evento.
+3. **Salida verificable por evento.** La salida pegada lista el desglose `marcador × comment-URL` (`/tmp/barrido-marcadores.tsv`, un evento por línea) ADEMÁS del total por marcador, para que cualquier residuo sea verificable sin juicio inline — un conteo sin su lista de URLs no cumple la DoD.
+
+**Riesgo — infra-conteo si un emisor publicara 2 eventos reales del mismo tipo en un solo comentario.** No observado en ninguna auditoría: el dedupe refleja el contrato de emisión (1 comentario por evento) de `protocol.md`. Si algún emisor pasara a agregar eventos, el fix es del contrato de emisión, no del barrido.
+
+**Riesgo — regex polarity blindness (clase conocida).** El anclaje a `<!-- … -->` es precisamente la mitigación canónica de la clase (todo trigger/consumo de texto se ancla o se sustituye por marcador HTML), aplicada aquí al instrumento de medida en vez de a un trigger del pipeline.
+
+**Interacción con el pipeline.** Ninguna: es disciplina de lectura del Auditor; no toca triggers, labels ni post-steps. El barrido de labels/cirugías por timeline (§ eventos `labeled`/`unlabeled` + `actor.login`) ya iba por campos estructurados y no se altera.
+
+**Contrato `workflow_call`.** Sin cambios (no toca ningún reusable) ⇒ `templates/workflow-contracts.json` intacto (AP-003). No añade labels ⇒ `templates/labels-usage.json` intacto (AP-022).
+
+**Alcance.** Edita el mandato vendorizado del Auditor: todo diff en `vendored/` despliega a los DOS consumidores en su siguiente run (finplan, wmcb) — la disciplina anclada llega a ambos Auditores sin gradualidad.
+
+**Alternativas descartadas.** Mantener el barrido por substring y confiar en la corrección inline del Auditor: es justo lo que falló 2 veces y el criterio pre-declarado obligaba a anclar. Anclar por literal exacto sin prefijo: rompería los marcadores parametrizados (`watchdog-rearm: …`).
+
+**Reversibilidad.** Alta: es una edición de docs; se revierte restaurando el `grep -oE '<nombre>'` sobre `.body` del bloque previo.
+
+**Fecha.** 2026-07-21.
+---

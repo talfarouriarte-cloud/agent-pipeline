@@ -38,15 +38,30 @@ El alcance migra legítimamente entre eslabones (un issue posterior puede haber 
 6b. **Staleness de skills de estado sincronizadas** (solo si la épica implementó ADRs de una zona con skill sincronizada declarada en el anexo del repo): chequeo mecánico — la fecha de sincronización de cabecera de la skill debe ser ≥ la fecha del último ADR de esa zona en la épica, y el registro de cabecera debe cubrir ese ADR. NO re-verifiques el contenido (eso es del Reviewer, PR a PR): solo la sincronización agregada. Si está estal ⇒ correctivo mecánico (actualizar skill + cabecera).
 **Sub-paso mecánico PREVIO a los bloques de métricas y repescas (2026-07-20, central#108 — barrido de marcadores con salida pegada, misma clase que `skill-edit:`):** los bloques `## Métricas de proceso` y `## Análisis de repescas` se redactaban de la memoria narrativa de la sesión y SUBCONTABAN los marcadores de la etapa architect/rescate. Dos instancias medidas: finplan#1543 contó «Watchdog 0» y «autonomous 0» pese al `watchdog-rearm` + `autonomous-decision` del re-arm de architect-resolve; finplan#1556 recurrió Y AGRAVADO — «Watchdog 0», «autonomous-decision 0», «intervenciones humanas 0», «Sin repescas» contra un rango con 2 `watchdog-rearm`, 1 `autonomous-decision`, 2 `human-needed`, 1 cirugía de estado manual y 1 re-arm manual humano, y el subconteo **suprimió el bloque 5-whys** (la capa de medición cegó la de corrección; central#107). Por eso los conteos de AMBOS bloques se DERIVAN de un barrido mecánico con la salida PEGADA como evidencia, NUNCA de la memoria de la sesión — la misma disciplina «evidencia, no afirmación» que ya rige `skill-edit:` y los invariantes, extendida a la familia de marcadores de proceso. El árbol del job es shallow (§Instrumento vs estado): el barrido va por la API, no por `git log`.
 
-- **Barrido de marcadores** sobre TODOS los issues y PRs del rango (incluidos hijos de partición y correctivos referenciados), filtrado por los timestamps del rango de la épica (Riesgo 1 — marcadores de re-auditorías o rondas previas en los MISMOS issues inflarían los conteos; los comentarios y el timeline de labels llevan fecha):
+- **Barrido de marcadores** sobre TODOS los issues y PRs del rango (incluidos hijos de partición y correctivos referenciados), **anclado a la forma HTML literal del marcador (`<!-- marcador -->`) y deduplicado por comentario** (central#119 — el barrido por substring contaba PROSA que menciona el marcador además del marcador mismo, y dos auditorías consecutivas necesitaron corrección inline a mano: finplan#1569 contó `3 watchdog-rearm` que eran la prosa «Sin watchdog-rearm» de los comentarios del Watchdog —0 re-arms reales—, y finplan#1577 contó `2 turn-close-failsafe` para 1 solo evento —el marcador HTML y la cabecera de prosa del MISMO comentario del failsafe—; es la clase «regex polarity blindness» dentro del propio INSTRUMENTO DE MEDIDA, y su sobreconteo infla el bloque de métricas y el canal repesca del process-reviewer igual que el subconteo que motivó central#108), y filtrado por los timestamps del rango de la épica (Riesgo 1 — marcadores de re-auditorías o rondas previas en los MISMOS issues inflarían los conteos; los comentarios y el timeline de labels llevan fecha):
 
    ```bash
    # RANGO_INI / RANGO_FIN = fechas ISO del rango de la épica (primer arm … último merge)
+   # Anclaje a la forma HTML literal + dedupe por comentario (central#119): el marcador se cuenta
+   # SOLO dentro de `<!-- … -->` (jamás el nombre suelto como substring de prosa), y cada comentario
+   # aporta como máximo 1 ocurrencia por tipo (marcador + su cabecera de prosa en el MISMO comentario
+   # = 1 evento; contrato de emisión de protocol.md: 1 comentario por evento). Los marcadores
+   # parametrizados (p. ej. `watchdog-rearm: architect-resolve`) se cubren por anclaje de PREFIJO, no
+   # por literal exacto: `[^>]*-->` tolera el parámetro y el segundo grep recorta el token del tipo.
+   MARCADORES='watchdog-[a-z-]+|autonomous-decision|derived-decision|escalada-materializada|creator-[a-z-]*materializado[a-z-]*|creator-muerto-sin-pr|pr-abierto-por-estado|arm-de-cola|serial-guard|turn-close-failsafe|open-review-failsafe|reviewer-no-verdict-[a-z-]+|epic-partial-relaunch(-por-estado)?'
    for n in <issues y PRs del rango>; do
      gh api repos/:owner/:repo/issues/$n/comments --paginate \
-       --jq '.[] | select(.created_at >= "'"$RANGO_INI"'" and .created_at <= "'"$RANGO_FIN"'") | .body'
-   done | grep -oE 'watchdog-[a-z-]+|autonomous-decision|derived-decision|escalada-materializada|creator-[a-z-]*materializado[a-z-]*|creator-muerto-sin-pr|pr-abierto-por-estado|arm-de-cola|serial-guard|turn-close-failsafe|open-review-failsafe|reviewer-no-verdict-[a-z-]+|epic-partial-relaunch(-por-estado)?' \
-     | sort | uniq -c
+       --jq '.[] | select(.created_at >= "'"$RANGO_INI"'" and .created_at <= "'"$RANGO_FIN"'")
+                 | "\(.html_url)\t" + (.body | gsub("\n"; " "))'
+   done | while IFS=$'\t' read -r url body; do
+     # marcadores HTML presentes en ESTE comentario, deduplicados (máx 1 por tipo/comentario)
+     printf '%s\n' "$body" \
+       | grep -oE "<!--[[:space:]]*($MARCADORES)[^>]*-->" \
+       | grep -oE "$MARCADORES" \
+       | sort -u \
+       | while IFS= read -r m; do printf '%s\t%s\n' "$m" "$url"; done
+   done | tee /tmp/barrido-marcadores.tsv        # evidencia: «marcador <TAB> comment-URL», un evento por línea
+   cut -f1 /tmp/barrido-marcadores.tsv | sort | uniq -c   # total por marcador (de aquí se DERIVAN los conteos)
    ```
 
 - **Barrido de labels de gate/estado** (`human-needed`, `stalled`, `en-cola`) y de las cirugías/arms manuales por el timeline de eventos, también acotado al rango (una cirugía de estado a mano = relabel por un login humano; un re-arm manual = comentario `@claude` de un login humano):
@@ -58,7 +73,7 @@ El alcance migra legítimamente entre eslabones (un issue posterior puede haber 
    done | sort
    ```
 
-   PEGA la salida de AMBOS barridos en el informe (aunque sea vacía). PROHIBIDO reportar «Watchdog 0», «autonomous 0», «intervenciones humanas 0», «Sin repescas» o «0 re-arm/re-label manual» sin la salida del barrido — la misma prohibición que rige `skill-edit:` («no afirmar sin pegar la salida»). Las líneas (d)/(e)/(e-bis)/(f)/(g) del bloque de métricas y el enumerado del bloque de repescas SE LEEN de esta salida, no se recuerdan.
+   PEGA la salida de AMBOS barridos en el informe (aunque sea vacía). Del barrido de marcadores pega el DESGLOSE `marcador × comment-URL` (el contenido de `/tmp/barrido-marcadores.tsv`, un evento por línea) JUNTO al total por marcador — así cualquier residuo es verificable sin juicio inline y un conteo sin su lista de URLs no cumple la DoD (central#119; era el eslabón que faltaba cuando finplan#1569 y finplan#1577 tuvieron que anotar el falso positivo «a ojo»). PROHIBIDO reportar «Watchdog 0», «autonomous 0», «intervenciones humanas 0», «Sin repescas» o «0 re-arm/re-label manual» sin la salida del barrido — la misma prohibición que rige `skill-edit:` («no afirmar sin pegar la salida»). Las líneas (d)/(e)/(e-bis)/(f)/(g) del bloque de métricas y el enumerado del bloque de repescas SE LEEN de esta salida, no se recuerdan.
 
 - **Taxonomía — cada marcador tiene fila, ninguno queda sin casa** (la aclaración que pidió la revisión de finplan#1543, eje CENTRAL): clasifica cada ocurrencia del barrido en UNA de tres filas por el test de la doctrina push-primario (2026-07-14): ¿el camino primario EJECUTÓ su transición (dueño), o un fallback ABSORBIÓ un primario que falló (repesca)?
 
