@@ -1285,8 +1285,21 @@ jobs:
                 //    forzado de AP-023, sin optimismo de cierre (degradación
                 //    segura — riesgo 1 de AP-042). Un bloque partial+`Closes` es
                 //    incoherente ⇒ se rechaza y cae al forzado (con `Refs`).
+                // Coherencia ESTRICTA (AP-042): la referencia consistente tiene
+                // que estar PRESENTE y la INCONSISTENTE AUSENTE. No basta con
+                // exigir la primera: un `partial-pr` que arrastre `Closes #N` por
+                // descuido (p.ej. en la prosa de «Alcance restante», violando el
+                // template de una sola referencia de creator.md) pasaría la guarda
+                // por su `Refs #N` y el helper devolvería el body TAL CUAL — con
+                // el `Closes #N` dentro, que al mergear cierra el issue
+                // huérfanando el alcance restante (la cascada exacta que AP-042
+                // evita). Rechazar también la referencia contraria cierra ese
+                // hueco: el bloque de doble referencia cae al forzado (con
+                // `Refs`), la degradación segura que la decisión ya describe.
                 const ref = isFull ? 'closes' : 'refs';
+                const antiRef = isFull ? 'refs' : 'closes';
                 if (!new RegExp(`${ref}\\s+#${n}(?!\\d)`, 'i').test(declaredBody)) continue;
+                if (new RegExp(`${antiRef}\\s+#${n}(?!\\d)`, 'i').test(declaredBody)) continue;
                 return { body: declaredBody, polarity: isFull ? 'full-pr' : 'partial-pr' };
               }
               return null;
