@@ -925,3 +925,39 @@ Resultado: **CERO Creators + `serial-activo` orfanado** hasta que lo sanee el wa
 
 **Fecha.** 2026-07-20.
 ---
+
+## AP-040 — La rama sin-veredicto del post-step (AP-025) MATERIALIZA la causa terminal de la sesión muerta y hace fast-path de la muerte-por-presupuesto POSITIVA: 2ª pata de AP-025, cierra la inatribuibilidad presupuesto/crash (repesca finplan#1575)
+
+**Contexto.** Repesca finplan#1575 (épica ADR-229·R·5, auditoría finplan#1577). **2ª instancia de la clase «Reviewer muere sin veredicto» y 1ª POST-fix de AP-025** (1ª: finplan#1450). El belt por-estado de AP-025 FUNCIONÓ (la rama sin-veredicto rescató la transición: la sesión relanzada convergió a LGTM + merge en ~7 min, cero humano) — pero el marcador `<!-- reviewer-no-verdict-relaunch -->` NO registraba la CAUSA terminal de la sesión muerta, así que:
+
+1. **El 5-whys del Auditor quedó ciego.** El relanzamiento convergió con el MISMO presupuesto en ~7 min — señal fuerte de crash/infra, NO de presupuesto — pero el Auditor tuvo que dejarlo en «presupuesto/crash indistinguible» porque el marcador no lo declara. El ledger anotó la sesión NULO con «coste/minutos no legibles» (finplan#1577 §Ledger).
+2. **El bump de presupuesto de AP-025 se calibró A CIEGAS** (50→80 turns / 15→22 min): sin saber si el presupuesto era el asesino de la instancia que motivó el bump, la única palanca preventiva (calibrar presupuesto vs arreglar infra) no tiene datos.
+
+**Causa raíz (5-whys del Auditor).** El veredicto se materializa en un único acto terminal; una muerte previa deja la transición sin materializar. AP-025 ya ejecuta la transición POR ESTADO (funcionó); el hueco residual es que el primario sigue fallando y **cada fallo es INATRIBUIBLE** — misma clase que la cosmética del dispatcher de AP-025 §4 (rotular ESTADO observado, no causa inferida), aplicada ahora al propio marcador del belt.
+
+**Decisión (del propietario, ejecutada por el Creator del central; issue nace armado). En la rama sin-veredicto del post-step de `reviewer.yml` (AP-025), cero coste marginal por PR (sin sesión LLM nueva):**
+
+1. **Atribución terminal materializada.** El step `Run Reviewer` gana `id: reviewer`; el post-step lee la salida ESTRUCTURADA de la action —`steps.reviewer.outputs.execution_file` (fallback al path canónico `${RUNNER_TEMP}/claude-execution-output.json` del base-action si el output no se seteó) + `steps.reviewer.outcome`— y clasifica la causa en cuatro buckets desde el ÚLTIMO mensaje `result` del execution file (`subtype` ∈ {success, `error_max_turns`, error_during_execution}, `is_error`, `duration_ms`): `max-turns` (`subtype === 'error_max_turns'`), `timeout` (`outcome === 'cancelled'` o `wall ≥ timeout_minutes − 30s`), `crash` (execution file legible, cualquier otra conclusión), `ilegible` (sin execution file parseable). El comentario del marcador incluye la línea `causa: <bucket> · <Nm Ns>`. **Jamás substring de log** (clase regex-polarity blindness): solo campos estructurados del JSON de la action.
+
+2. **Fast-path de muerte-por-presupuesto.** Si la causa es POSITIVAMENTE presupuesto (`max-turns`), NO se quema el cap-1 en una sesión idéntica condenada a morir igual — se va directo a `reviewer-no-verdict-persistent` + `stalled` (architect-resolve re-dimensiona), exactamente el racional que AP-025 ya aplica a la 2ª muerte. Crash/timeout/infra/ilegible ⇒ relanzar como hoy (**fail-open** al comportamiento AP-025).
+
+3. **Filas 75/76 de `protocol.md` (vendored) actualizadas** en el mismo cambio (la fuente única; el `docs/agents/protocol.md` lo sirve el graft, AP-009 — no trackeado).
+
+**Riesgo 1 — clasificar mal la causa (fast-path que salta una review recuperable).** El fast-path (2) SOLO activa con identificación POSITIVA de presupuesto (`subtype === 'error_max_turns'`); CUALQUIER ambigüedad ⇒ `crash`/`timeout`/`ilegible` ⇒ comportamiento actual (relanzar). La instancia de finplan#1575 (crash: convergió con el mismo presupuesto) caería en `crash` ⇒ relanzaría ⇒ el fast-path correctamente NO se habría disparado. La atribución (1) es solo observabilidad añadida a un comentario existente: no cambia ninguna transición.
+
+**Riesgo 2 — regex polarity blindness (clase conocida del pipeline-map).** La causa se deriva de campos ESTRUCTURADOS del execution file JSON (`subtype`/`is_error`/`duration_ms`) y del `outcome` del step, nunca de parsear texto de log — mismo criterio que AP-025 (veredicto anclado a la primera palabra) y que el diagnóstico is_error/num_turns de `process-review.yml`.
+
+**Riesgo 3 — execution file ausente/ilegible.** Si el step murió antes de setear el output o el JSON no parsea, la causa cae a `ilegible` (o `timeout` si el `outcome` es `cancelled`) ⇒ rama de relanzamiento (fail-open). La muerte total del runner (el post-step no corre) la sigue cubriendo el Watchdog como hoy — disjunto: si el post-step corrió, no hay ventana de Watchdog.
+
+**Interacciones revisadas (pipeline-map §Known failure classes).** Disjunto de la rama `lgtm`/AP-024 por presencia-de-veredicto (sin carrera). El dispatcher de turno del Watchdog no se toca (si el post-step corrió, no hay ventana de Watchdog; si el runner murió entero, el post-step no corre y esa ventana la cubre el Watchdog como hoy). NO añade ningún trigger de texto nuevo ni label nueva (`stalled`/`needs-review` ya en uso).
+
+**Contrato `workflow_call`.** Sin cambios de superficie: no añade inputs/secrets; los permisos del job ya cubren el relabel/`stalled` ⇒ `templates/workflow-contracts.json` intacto (AP-003). No añade labels fijas (la línea `causa:` es prosa del comentario; los marcadores son HTML) ⇒ `templates/labels-usage.json` intacto (AP-022).
+
+**Alcance no aplicable al central.** El `pipeline-map` es artefacto per-consumidor (finplan/wmcb); el central solo tiene la plantilla.
+
+**Alternativas descartadas.** Parsear el log de texto de la action para la causa (clase regex-polarity, prohibido). Fast-path también en `timeout` (no es identificación POSITIVA de presupuesto-de-turnos: un timeout puede ser infra lenta recuperable ⇒ se mantiene en la rama de relanzamiento). Solo la atribución (1) sin el fast-path (2): deja la palanca de calibración con datos pero sigue quemando el cap-1 en sesiones positivamente condenadas.
+
+**Reversibilidad.** Alta: (1) es el `id: reviewer` + un helper `diagnoseTerminal()` y una línea `causa:` en los comentarios; (2) es añadir `|| budgetDeath` a la condición de escalada ya existente. Se revierte quitando el helper, el `id` y el disyunto de la condición.
+
+**Fecha.** 2026-07-21.
+---

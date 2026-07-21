@@ -165,6 +165,7 @@ jobs:
         uses: talfarouriarte-cloud/agent-pipeline/.github/actions/graft-vendored@main
 
       - name: Run Reviewer
+        id: reviewer
         if: steps.gate.outputs.run == 'true'
         uses: anthropics/claude-code-action@v1
         env:
@@ -291,6 +292,15 @@ jobs:
         uses: actions/github-script@v7
         env:
           ARM_PAT: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          # Diagnóstico terminal de la sesión muerta (AP-040): salida ESTRUCTURADA
+          # de la action (execution file JSON + outcome del step), jamás substring
+          # de log (clase regex-polarity). `execution_file` puede venir vacío si el
+          # step murió antes de setear el output ⇒ fallback al path canónico del
+          # base-action (`${RUNNER_TEMP}/claude-execution-output.json`).
+          EXEC_FILE: ${{ steps.reviewer.outputs.execution_file }}
+          STEP_OUTCOME: ${{ steps.reviewer.outcome }}
+          STEP_CONCLUSION: ${{ steps.reviewer.conclusion }}
+          TIMEOUT_MIN: ${{ inputs.timeout_minutes }}
         with:
           script: |
             const O = { owner: context.repo.owner, repo: context.repo.repo };
@@ -330,15 +340,68 @@ jobs:
               if (!res.ok && res.status !== 404) core.warning(`AP-025 ${method} ${path}: HTTP ${res.status}`);
               return res;
             };
-            // ── Rama SIN-VEREDICTO (AP-025): cap 1 por head SHA; reincidencia ⇒ escalada.
+            // Diagnóstico terminal de la sesión muerta (AP-040): lee la salida
+            // ESTRUCTURADA de la action (el último mensaje `result` del execution
+            // file: `subtype` ∈ {success, error_max_turns, error_during_execution},
+            // `is_error`, `duration_ms`), jamás substring de log (clase regex-
+            // polarity). Cuatro buckets: `max-turns` (identificación POSITIVA de
+            // presupuesto — único que activa el fast-path), `timeout` (job cancelado
+            // o wall rozando `timeout_minutes`), `crash` (cualquier otra conclusión
+            // con execution file legible — error_during_execution, is_error, o
+            // success-sin-veredicto), `ilegible` (sin execution file parseable). Todo
+            // lo que NO es `max-turns` ⇒ fail-open al relanzamiento de hoy.
+            const diagnoseTerminal = () => {
+              const fs = require('fs');
+              const fmtWall = (ms) => Number.isFinite(ms)
+                ? `${Math.floor(Math.round(ms / 1000) / 60)}m ${Math.round(ms / 1000) % 60}s`
+                : 'wall ilegible';
+              const execPath = process.env.EXEC_FILE
+                || `${process.env.RUNNER_TEMP || '/tmp'}/claude-execution-output.json`;
+              const timeoutMin = Number(process.env.TIMEOUT_MIN) || 0;
+              const outcome = process.env.STEP_OUTCOME || '';
+              let last = null;
+              try {
+                const arr = JSON.parse(fs.readFileSync(execPath, 'utf8'));
+                const list = Array.isArray(arr) ? arr : [arr];
+                for (let i = list.length - 1; i >= 0; i--) {
+                  if (list[i] && list[i].type === 'result') { last = list[i]; break; }
+                }
+                if (!last) last = list[list.length - 1] || null;
+              } catch (e) { core.info(`AP-040 diag: execution file ilegible (${e.message})`); }
+              const wallMs = last && Number.isFinite(last.duration_ms) ? last.duration_ms : NaN;
+              const wall = fmtWall(wallMs);
+              if (last && last.subtype === 'error_max_turns') return { causa: 'max-turns', wall };
+              // Timeout de job: el step se cancela (result no llega) o el wall roza el
+              // techo (margen 30s). Positivo, pero NO presupuesto-de-turnos ⇒ relanzar.
+              if (outcome === 'cancelled' ||
+                  (timeoutMin && Number.isFinite(wallMs) && wallMs >= timeoutMin * 60 * 1000 - 30000)) {
+                return { causa: 'timeout', wall };
+              }
+              if (!last) return { causa: 'ilegible', wall };
+              return { causa: 'crash', wall };
+            };
+
+            // ── Rama SIN-VEREDICTO (AP-025 + AP-040): cap 1 por head SHA; reincidencia
+            // O muerte-por-presupuesto POSITIVA ⇒ escalada directa (sin relanzar).
             if (!verdictForHead) {
               const MARK = `<!-- reviewer-no-verdict-relaunch: ${headSha} -->`;
               const prior = cs.filter(c => (c.body || '').includes(MARK)).length;
-              if (prior >= 1) {
+              const diag = diagnoseTerminal();
+              const causaLine = `causa: ${diag.causa} · ${diag.wall}`;
+              // Fast-path muerte-por-presupuesto (AP-040): `max-turns` es identificación
+              // POSITIVA de que la review no cabe en el presupuesto. Relanzar una sesión
+              // idéntica la condena a morir igual (mismo racional que la 2ª muerte de
+              // AP-025): NO quemar el cap-1 ⇒ directo a persistent + `stalled`
+              // (architect-resolve re-dimensiona). Cualquier otra causa ⇒ relanzar.
+              const budgetDeath = diag.causa === 'max-turns';
+              if (prior >= 1 || budgetDeath) {
                 await patCall('POST', `/issues/${n}/labels`, { labels: ['stalled'] });
+                const motivo = budgetDeath && prior < 1
+                  ? `muerte-por-presupuesto POSITIVA (\`error_max_turns\`) en la 1ª conclusión — fast-path AP-040: relanzar una sesión idéntica moriría igual, no se quema el cap-1`
+                  : `2ª conclusión del Reviewer SIN veredicto para el mismo head — una 2ª muerte indica que la review no cabe en el presupuesto (no un flake)`;
                 await github.rest.issues.createComment({ ...O, issue_number: n,
-                  body: `**reviewer · rama sin-veredicto (AP-025)**: 2ª conclusión del Reviewer SIN veredicto para el head \`${headSha.slice(0,7)}\` — no se re-etiqueta. Una 2ª muerte por presupuesto sobre el mismo head indica que la review no cabe en el presupuesto (no un flake): anomalía para architect-resolve (\`stalled\`).\n\n<!-- reviewer-no-verdict-persistent -->` });
-                core.warning(`AP-025: 2ª muerte sin veredicto para ${headSha.slice(0,7)} — escalado a architect-resolve.`);
+                  body: `**reviewer · rama sin-veredicto (AP-025/AP-040)**: ${motivo}. Anomalía para architect-resolve (\`stalled\`). \`${causaLine}\`\n\n<!-- reviewer-no-verdict-persistent -->` });
+                core.warning(`AP-040: escalada a architect-resolve para ${headSha.slice(0,7)} — ${causaLine}${budgetDeath ? ' (fast-path presupuesto)' : ''}.`);
                 return;
               }
               // remove+add fuerza el evento `labeled` aunque hubiera un resto; con
@@ -346,8 +409,8 @@ jobs:
               await patCall('DELETE', `/issues/${n}/labels/needs-review`);
               await patCall('POST', `/issues/${n}/labels`, { labels: ['needs-review'] });
               await github.rest.issues.createComment({ ...O, issue_number: n,
-                body: `**reviewer · rama sin-veredicto (AP-025)**: la sesión del Reviewer concluyó sin veredicto anclado (LGTM/REVIEW/NITS, cabecera ADR-063) para el head \`${headSha.slice(0,7)}\` — muerte por presupuesto/crash antes de postear. Transición materializada por ESTADO: \`needs-review\` re-aplicada con el PAT (sesión fresca por evento, latencia cero). Cap 1 por head SHA.\n\n${MARK}` });
-              core.notice(`AP-025: needs-review re-aplicada para ${headSha.slice(0,7)} (relanzamiento por evento).`);
+                body: `**reviewer · rama sin-veredicto (AP-025)**: la sesión del Reviewer concluyó sin veredicto anclado (LGTM/REVIEW/NITS, cabecera ADR-063) para el head \`${headSha.slice(0,7)}\` — muerte por crash/infra antes de postear (no presupuesto: si lo fuera, iría directo a \`stalled\`). Transición materializada por ESTADO: \`needs-review\` re-aplicada con el PAT (sesión fresca por evento, latencia cero). Cap 1 por head SHA. \`${causaLine}\`\n\n${MARK}` });
+              core.notice(`AP-040: needs-review re-aplicada para ${headSha.slice(0,7)} (relanzamiento por evento) — ${causaLine}.`);
               return;
             }
             // ── Rama CON veredicto (ADR-218): materializa la label lgtm.
