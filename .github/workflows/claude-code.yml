@@ -1226,12 +1226,17 @@ jobs:
               const scoped = freshBots.some(c => /<!--\s*creator-alcance-completo\s*-->/.test(c.body || '') || /^\[ALCANCE-COMPLETO\]/m.test(c.body || ''));
               return { lastBot, fresh, scoped, freshBots };
             }
-            // AP-030 (2026-07-18, repesca finplan#1478): cuando el Creator NO
-            // pudo abrir el PR (App token de `claude[bot]` caducado a mitad de
-            // sesión — TTL ~1h) pero dejó la rama ahead + un comentario de cierre
-            // FRESCO con el body ÍNTEGRO del PR declarado (su polaridad fiel +
-            // `Closes #N`), el post-step abre el PR con ESE body y ESA polaridad
-            // en vez de forzar `partial-pr`. La polaridad falsa desata una
+            // AP-030 (2026-07-18, repesca finplan#1478) · GENERALIZADO por AP-042
+            // (2026-07-21, repesca finplan#1547): cuando el Creator NO pudo abrir
+            // el PR pero dejó la rama ahead + un bloque `pr-body-declarado` FRESCO
+            // con el body ÍNTEGRO del PR declarado (su polaridad fiel + referencia
+            // consistente `Closes`/`Refs #N`), el post-step abre el PR con ESE body
+            // y ESA polaridad en vez de forzar `partial-pr`. AP-030 nació para la
+            // emergencia «App token de `claude[bot]` caducado a mitad de sesión —
+            // TTL ~1h»; AP-042 lo lleva a CADENCIA DE HITO (el Creator publica/
+            // actualiza el bloque en cada push de hito) ⇒ hay declaración FIEL
+            // muera el Creator donde muera (token caducado, turnos/contexto
+            // agotados en la derivación densa antes del paso de apertura, etc.). La polaridad falsa desata una
             // cascada cara (parcial fantasma: re-arm nulo + belt AP-026 + watchdog
             // falso-positivo + arm manual — 5-whys finplan#1481); un `full-pr`
             // fiel cierra el issue (`Closes #N`) y consume `launch-next` en el
@@ -1248,7 +1253,15 @@ jobs:
               const trigTs = context.payload.comment ? new Date(context.payload.comment.created_at).getTime() : 0;
               const { data: cs } = await github.rest.issues.listComments({ owner, repo, issue_number: n, per_page: 100 });
               const freshBots = cs.filter(c => c.user?.login === 'claude[bot]' && new Date(c.created_at).getTime() > trigTs);
-              // Del más reciente al más antiguo: gana la declaración FRESCA más nueva.
+              // Del más reciente al más antiguo: gana la declaración FRESCA más
+              // NUEVA de ESTA sesión. Con la cadencia de hito (AP-042, generaliza
+              // AP-030) el Creator publica/ACTUALIZA el bloque en CADA push de
+              // hito —no solo en la emergencia de token caducado—, así que muera
+              // donde muera hay un bloque FIEL y el más reciente refleja el último
+              // estado empujado. El lower bound `> trigTs` mantiene la lección
+              // #180 (jamás un bloque de una sesión ANTERIOR al disparador); es la
+              // MISMA sesión (la que dejó la rama ahead), no «cualquier bloque
+              // posterior al disparador» sin más — se elige el más reciente válido.
               for (let i = freshBots.length - 1; i >= 0; i--) {
                 const body = freshBots[i].body || '';
                 const m = body.match(/<!--\s*pr-body-declarado:start\s*-->\r?\n([\s\S]*?)\r?\n<!--\s*pr-body-declarado:end\s*-->/);
@@ -1260,10 +1273,20 @@ jobs:
                 const isFull = /^<!--\s*full-pr\s*-->\s*$/m.test(declaredBody);
                 const isPartial = /^<!--\s*partial-pr\s*-->\s*$/m.test(declaredBody);
                 if (isFull === isPartial) continue;
-                // `Closes #N` FIEL obligatorio: es lo que restituye el cierre
-                // automático del issue y el consumo de sentinels por epic-merge al
-                // mergear. Sin él, la declaración no es abrible como full fiable.
-                if (!new RegExp(`closes\\s+#${n}(?!\\d)`, 'i').test(declaredBody)) continue;
+                // Referencia al issue CONSISTENTE con la polaridad (anclada, con
+                // guarda de prefijo `(?!\d)` para no colisionar con #Nx — clase 6,
+                // ningún substring de prosa):
+                //  - full-pr    ⇒ `Closes #N` FIEL: restituye el cierre automático
+                //    del issue y el consumo de `launch-next` por epic-merge al
+                //    mergear (cascada cero);
+                //  - partial-pr ⇒ `Refs #N` (NO `Closes`: un parcial que cerrara
+                //    el issue huérfana el alcance restante). El parcial FIEL solo
+                //    mejora el body «Alcance restante» sobre el «desconocido»
+                //    forzado de AP-023, sin optimismo de cierre (degradación
+                //    segura — riesgo 1 de AP-042). Un bloque partial+`Closes` es
+                //    incoherente ⇒ se rechaza y cae al forzado (con `Refs`).
+                const ref = isFull ? 'closes' : 'refs';
+                if (!new RegExp(`${ref}\\s+#${n}(?!\\d)`, 'i').test(declaredBody)) continue;
                 return { body: declaredBody, polarity: isFull ? 'full-pr' : 'partial-pr' };
               }
               return null;
@@ -1413,17 +1436,23 @@ jobs:
             // completo termina en `creator-alcance-completo` (AP-020) o cierre
             // humano.
             if (hasCommits && branchRef) {
-              // AP-030 (2026-07-18, repesca finplan#1478): antes de FORZAR
-              // `partial-pr`, respeta la declaración de polaridad + body que el
-              // Creator dejó en su comentario de cierre FRESCO (caso finplan#1478:
-              // App token caducado a mitad de sesión ⇒ el Creator publicó el body
-              // íntegro en el cierre en lugar de abrir el PR). Si existe y es fiel
-              // (polaridad anclada única + `Closes #N`), abre CON ESE body y ESA
-              // polaridad — un `full-pr` fiel restituye el cierre del issue y el
-              // consumo de sentinels por epic-merge (cascada cero). Sin
-              // declaración fiel ⇒ `partial-pr` forzado (camino residual para
-              // muerte-sin-comentario, comportamiento AP-023 previo).
+              // AP-030 (2026-07-18, repesca finplan#1478) + AP-042 (2026-07-21,
+              // repesca finplan#1547): antes de FORZAR `partial-pr`, respeta la
+              // declaración de polaridad + body que el Creator dejó FRESCA. AP-030
+              // la reservaba a la emergencia «App token caducado a mitad de
+              // sesión»; AP-042 la GENERALIZA a cadencia de hito (el Creator
+              // publica/actualiza el bloque en cada push de hito), así que la
+              // declaración FIEL existe muera el Creator donde muera —agote turnos
+              // o contexto en la derivación densa, no solo por credencial. Si
+              // existe y es fiel (polaridad anclada única + referencia consistente:
+              // `Closes #N` para full, `Refs #N` para partial), abre CON ESE body
+              // y ESA polaridad — un `full-pr` fiel restituye el cierre del issue y
+              // el consumo de sentinels por epic-merge (cascada cero); un
+              // `partial-pr` fiel abre con «Alcance restante» REAL en vez del
+              // «desconocido» forzado. Sin declaración fiel ⇒ `partial-pr` forzado
+              // (camino residual para muerte-sin-bloque, comportamiento AP-023).
               const declared = await freshDeclaredPr();
+              const declaredRef = declared ? (declared.polarity === 'full-pr' ? `Closes #${n}` : `Refs #${n}`) : null;
               const forcedPartialBody = [
                 `Refs #${n}`,
                 '',
@@ -1441,7 +1470,7 @@ jobs:
               ].join('\n');
               const prBody = declared ? declared.body : forcedPartialBody;
               const prTitle = declared
-                ? `Cierre de #${n} desde estado (Creator declaró el body pero no pudo abrir el PR — credencial caducada): ${branchRef}`
+                ? `Cierre de #${n} desde estado FIEL (Creator declaró el body por cadencia de hito pero murió antes de abrir el PR): ${branchRef}`
                 : `Cierre desde estado de #${n} (Creator terminó en ${outcome} sin abrir el PR): ${branchRef}`;
               let prNum = null;
               try {
@@ -1469,7 +1498,7 @@ jobs:
                 // epic-merge arma la cola, como cualquier PR normal.
                 await github.rest.issues.removeLabel({ owner, repo, issue_number: n, name: 'serial-activo' }).catch(() => {});
                 const polarityNote = declared
-                  ? `polaridad **FIEL \`${declared.polarity}\`** con el body íntegro y \`Closes #${n}\` restituidos del comentario de cierre FRESCO del Creator (App token caducado a mitad de sesión — AP-030, repesca finplan#1478); un \`full-pr\` fiel cierra el issue y consume \`launch-next\` en el propio merge (cascada cero)`
+                  ? `polaridad **FIEL \`${declared.polarity}\`** con el body íntegro y \`${declaredRef}\` restituidos del bloque \`pr-body-declarado\` FRESCO del Creator (cadencia de hito AP-042, generaliza AP-030); un \`full-pr\` fiel cierra el issue y consume \`launch-next\` en el propio merge (cascada cero); un \`partial-pr\` fiel abre con «Alcance restante» REAL en vez del «desconocido» forzado de AP-023`
                   : `polaridad \`partial-pr\` forzada, \`Refs #${n}\`, «Alcance restante» de texto fijo`;
                 await github.rest.issues.createComment({ owner, repo, issue_number: n,
                   body: `**claude-code · post-step**: la sesión del Creator terminó en \`${outcome}\` con el trabajo COMMITEADO en verde y SIN abrir el PR, pero con rama utilizable. La transición Creator→PR está DETERMINADA por el estado ⇒ el post-step la EJECUTA con el PAT — **NO** re-arma otra sesión ni declara \`stalled\` (repesca finplan#1404, AP-023):\n\n- ${branchInfo}\n- **PR #${prNum} abierto desde el estado** (${polarityNote}).\n- Abierto con el **PAT** ⇒ el \`opened\` dispara **CI** (\`ci-verde\`) y la **review** (rama de agente) como cualquier PR normal; por eso NO se aplica \`needs-review\` (doblaría la sesión Opus).\n- \`serial-activo\` retirada al nacer el PR (el PR abierto ES la señal de vuelo; la serie la libera el MERGE + arma la cola, como cualquier PR).\n\n<!-- creator-muerto-sin-pr-abierto-por-estado -->` });
