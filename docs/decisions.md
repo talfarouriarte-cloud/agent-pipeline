@@ -901,3 +901,27 @@ Resultado: **CERO Creators + `serial-activo` orfanado** hasta que lo sanee el wa
 
 **Fecha.** 2026-07-20.
 ---
+
+## AP-039 — La espera de cola serial es legítima, no anomalía: el encolado deja SOLO `en-cola` y el watchdog chequea la premisa de serie (no exclusión ciega)
+
+**Contexto.** La cola serial (AP-014) generaba falsos positivos DETERMINISTAS en el Watchdog, medidos en la auditoría finplan#1569 (épica ADR-229·R·4). Un ítem legítimamente `en-cola` (finplan#1560, serie retenida por OTRA épica finplan#1544) disparaba dos clases de ruido sin Δestado:
+
+1. **`stalled` al encolar ⇒ architect-resolve por evento.** El guard serial de `claude-code.yml` etiquetaba `['stalled', 'en-cola']` (AP-014). El `stalled` —que significa «necesita ruling del resolutor»— convocaba (vía AP-038, re-derivación por estado) un architect-resolve cuyo ÚNICO acto observado (14:26:43Z) fue retirar la label como «mislabel colateral del arm bloqueado»: 1 run LLM quemado sobre un estado que ya tiene dueño mecánico (`popQueue`/`armQueue`).
+2. **`issue-armed-no-pr` en cada tick.** El detector del watchdog trataba el ítem `en-cola` como armado-sin-PR: 3× `watchdog-capa: workflow_run` (14:26/16:48/17:09Z), TODAS auto-declaradas falso positivo, el propio watchdog sugiriendo «excluir en-cola» en las 3. A las 18:38Z la cola hizo pop sola (`arm-de-cola`): ninguna de las 4 sesiones LLM aportó valor. Regresión: 0→0→0→0 en las 4 auditorías previas → 3+1 en finplan#1569; con épicas concurrentes (régimen actual) CADA espera de cola reproduce N falsos positivos/tick + 1 architect-resolve/encolado.
+
+**Decisión (del propietario, ejecutada por el Creator del central).**
+
+1. **Detector `issue-armed-no-pr` (`watchdog.yml`): chequeo de premisa de serie, NO exclusión ciega.** Un ítem `en-cola` no es anomalía mientras la premisa de la cola se sostenga — check determinista sin LLM: existe `serial-activo` en algún issue O hay PR `claude/*` abierto ⇒ silencio (ni etapa architect). Si la serie está LIBRE y el ítem sigue `en-cola` tras una ventana de asentamiento (>1 tick: marcador `<!-- watchdog-cola-huerfana-sospecha -->` anclado POR-EPISODIO al último `serial-guard` —no por presencia histórica, o el re-encolado escalaría en su 1er tick— + el gate `STALL_MIN`, pues el comentario refresca `updated_at`), eso SÍ es anomalía real —pop de cola muerto, clase `cola-huerfana`— ⇒ etapa architect (anomalía `issue-armed-no-pr` con `cola_huerfana: true`). La exención cubre la espera legítima sin cegar la clase huérfana.
+2. **El guard serial (`claude-code.yml`, AP-014) deja de aplicar `stalled` al encolar** — queda SOLO `en-cola` (+ marcador `serial-guard` del comentario). La rama de anomalía del punto 1 repone la convocatoria del resolutor cuando la cola de verdad se muere.
+3. **`protocol.md` (central + vendored): filas `serial-guard`/`en-cola` actualizadas** — hoy documentaban «se etiqueta `stalled` + `en-cola`».
+
+**Riesgos (contrastados con Known failure classes).** *(a) `cola-huerfana` invisible («silent handoffs»):* la exención es CONDICIONAL a una premisa verificable (titular de serie vivo) y su caída tiene rama de anomalía explícita con dueño (etapa architect) — no es exclusión ciega. *(b) Mandate/consumer drift al quitar `stalled` del encolado:* auditados los lectores en el mismo cambio — `popQueue` (`claude-code.yml`), `armQueue` (`epic-merge.yml`) y `targetAlreadyArmed` (`epic-merge.yml`) keyean SOLO por la label `en-cola`, ninguno depende de `stalled`; el único consumidor de `stalled`-en-encolado era la convocatoria de architect-resolve (AP-038), que es justo el ruido que este ADR mata. *(c) Carrera encolado↔liberación de serie* (pop y detector leyendo estados a medio transicionar): la absorbe la ventana de asentamiento del punto 1 (mismo patrón que el settle de 90s→330s del `workflow_run`, AP-011).
+
+**Falsable.** Un ítem `en-cola` con la serie OCUPADA no debe generar ninguna anomalía de watchdog ni ningún run de architect-resolve. Un ítem `en-cola` con la serie LIBRE debe escalar a la etapa architect al 2º tick efectivo (no antes, no nunca). Si reaparece churn de resolves sobre encolados legítimos, revisar el cálculo de `seriePremiseHolds` antes que ampliar la exención.
+
+**Contrato `workflow_call`.** Sin cambios (no añade inputs/secrets) ⇒ `templates/workflow-contracts.json` intacto (AP-003).
+
+**Reversibilidad.** Alta: un bloque `if (en-cola)` en el detect del watchdog, un `labels` del guard serial y dos filas de doc; se revierte restaurando `['stalled', 'en-cola']` y quitando el bloque de premisa.
+
+**Fecha.** 2026-07-20.
+---
