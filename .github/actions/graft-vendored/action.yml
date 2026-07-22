@@ -27,7 +27,23 @@ runs:
         [ -d "$SRC" ] || { echo "::error::graft: $SRC no existe en el checkout del central"; exit 1; }
         EXCLUDE=".git/info/exclude"
         mkdir -p "$(dirname "$EXCLUDE")"; touch "$EXCLUDE"
-        note() { grep -qxF "$1" "$EXCLUDE" || echo "$1" >> "$EXCLUDE"; }
+        # note: registra un path injertado para que el Creator no lo re-commitee
+        # y para que el checkout de sesión NO arranque dirty (precondición dura de
+        # CLAUDE.md «working tree limpio»). Dos casos, dos mecanismos (AP-044):
+        #  - UNTRACKED (el caso general del graft AP-009): .git/info/exclude —igual
+        #    que .gitignore, SOLO surte efecto sobre ficheros no trackeados.
+        #  - TRACKED por el consumidor (p.ej. finplan committea scripts/adr-lint.mjs
+        #    porque su CI docs-only local lo invoca — deuda anotada en AP-009): el
+        #    exclude es un NO-OP y el `cp -f` de arriba lo deja como `M <path>` ⇒
+        #    árbol sucio en CADA sesión. skip-worktree hace que git IGNORE la
+        #    sobrescritura del fichero trackeado ⇒ árbol limpio, invariante restaurado.
+        #    (git ls-files falla en untracked y en directorios ⇒ solo-exclude ahí.)
+        note() {
+          grep -qxF "$1" "$EXCLUDE" || echo "$1" >> "$EXCLUDE"
+          if git ls-files --error-unmatch "$1" >/dev/null 2>&1; then
+            git update-index --skip-worktree "$1" 2>/dev/null || true
+          fi
+        }
 
         # 1. Mandatos genéricos -> docs/agents/ (pisa copias si existen; annexes locales intactos)
         mkdir -p docs/agents
