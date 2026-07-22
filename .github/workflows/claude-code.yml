@@ -1725,6 +1725,80 @@ jobs:
                   );
                   return;
                 }
+                // ── Rama ELSE del turn-close-failsafe (repesca finplan#1598,
+                // AP-046): gemelo con-PR de `escalada-materializada` (AP-036).
+                // Llegamos aquí con el terminal NO-declarado del loop de PR
+                // completamente acotado por ESTADO: sesión convocada por
+                // `ping-creator` (veredicto vigente), `success`, HEAD SIN
+                // commits posteriores al veredicto (este else del push — el
+                // turn-close-failsafe de arriba ganó si los hubiera), SIN tag
+                // de cierre anclado (estamos en `!label`) y SIN token de
+                // escalada por ninguno de los dos canales (la cesión
+                // `creator-escalated` de arriba ya retornó si lo hubiera). Ese
+                // estado —success + cero push + cero tokens sobre un PR con
+                // veredicto vigente— es HOY un «turno-de-nadie» que el
+                // dispatcher del Watchdog acaba declarando zombi por cron (~20
+                // min + slot del cap). Esta rama lo MATERIALIZA en el instante
+                // como escalada por ESTADO (misma semántica AP-036): estado
+                // visible primero + `stalled` con el PAT del step ⇒
+                // architect-resolve POR EVENTO, que lee la prosa del cierre y
+                // rula (escalada ⇒ resuelve/re-arma; sesión degenerada ⇒
+                // humano por DOBLE REBOTE, jamás de primera línea — ninguna vía
+                // nueva a humano). Estricto else-case: no solapa con
+                // turn-close-failsafe (ganó el push) ni con los post-steps
+                // AP-035/AP-028 (ganó el token) ni con el Auto-label (ganó el
+                // tag). Idempotencia: dedupe por el marcador (publicado por PAT
+                // ⇒ NO lo firma claude[bot]) sobre TODOS los comentarios
+                // frescos, y huella del head SHA en el diagnóstico.
+                const escMatFresh = comments.filter(
+                  c => new Date(c.created_at) > new Date(triggerCreatedAtRaw));
+                if (escMatFresh.some(
+                  c => /<!--\s*escalada-materializada-con-pr\s*-->/.test(c.body || ''))) {
+                  core.notice('escalada-materializada-con-pr: ya materializada '
+                    + '(rastro presente) — no duplico.');
+                  return;
+                }
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  labels: ['estado:esperando-architect'],
+                });
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  labels: ['stalled'],
+                });
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  body: '**claude-code · escalada-materializada-con-pr**: la '
+                    + 'sesión del Creator (convocada por `ping-creator`, '
+                    + 'veredicto vigente) terminó `success` SIN commits '
+                    + 'posteriores al veredicto, SIN tag de cierre anclado y SIN '
+                    + 'token de escalada por ninguno de los dos canales '
+                    + '(`[CREATOR-ESCALATED]`/`<!-- creator-escalated -->`) — un '
+                    + 'terminal NO-declarado dentro del loop de PR. Gemelo '
+                    + 'con-PR de `escalada-materializada` (AP-046, repesca '
+                    + 'finplan#1598): estado materializado por PAT en el mismo '
+                    + 'job (doctrina estado-primario, protocol.md §1), sin '
+                    + 'esperar a que el dispatcher lo declare `turno-de-nadie` '
+                    + 'por cron. `estado:esperando-architect` (el dispatcher '
+                    + 'cede) + `stalled` ⇒ architect-resolve POR EVENTO, que lee '
+                    + 'la prosa del cierre y rula (misma semántica AP-036: '
+                    + 'escalada ⇒ resuelve/re-arma; sesión degenerada ⇒ humano '
+                    + 'por doble rebote). HEAD `' + pr.head.sha.slice(0, 7) + '`.'
+                    + '\n\n<!-- escalada-materializada-con-pr -->',
+                });
+                core.warning(
+                  `PR #${prNumber}: terminal no-declarado en loop de PR `
+                  + `(success, sin push post-veredicto, sin token de escalada) `
+                  + `materializado por estado — stalled + estado:esperando-architect `
+                  + `(escalada-materializada-con-pr, AP-046).`
+                );
+                return;
               }
               core.notice(
                 'El último comentario del Creator no contiene tag de cierre '
