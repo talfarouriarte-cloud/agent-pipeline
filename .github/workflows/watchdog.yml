@@ -382,9 +382,11 @@ jobs:
               // convocar al Creator para el rebase (auto-bloqueo). Solo `dirty`
               // (conflicto real); un PR `behind` sin conflicto SÍ es mergeable
               // y no debe saltarse.
+              let isDraft = false;
               try {
                 const { data: pf } = await github.rest.pulls.get({ ...O, pull_number: pr.number });
                 if (pf.mergeable_state === 'dirty') continue;
+                isDraft = pf.draft;   // AP-047: hito en vuelo vs. transición ready pendiente
               } catch (e) { core.info(`turno/dirty-check #${pr.number}: ${e.message}`); }
               const labels = pr.labels.map(l => l.name);
               // Cede ante PRs escalados a architect-resolve (creator-escalated,
@@ -401,6 +403,50 @@ jobs:
                 continue;
               }
               const { data: hcs } = await github.rest.issues.listComments({ ...O, issue_number: pr.number, per_page: 100 });
+              // ── Backstop residual del draft huérfano (AP-047). Un draft que llega
+              // hasta aquí pasó el guard de liveness (updated_at > LIVENESS_MIN): su
+              // sesión del Creator terminó SIN `gh pr ready` Y el post-step de muerte
+              // de claude-code.yml no materializó la transición (job muerto de raíz,
+              // o `markReady` fallido que dejó `needs-review` INERTE sobre un draft —
+              // el gate de reviewer.yml salta todo draft, AP-047). Sin este backstop
+              // el dispatcher caería en la rama `!lastVerdict`, aplicaría needs-review
+              // —inerte sobre un draft— y lo re-churnearía cada ciclo (rama
+              // `needs-review presente`), con la review NUNCA disparada y la cadena
+              // colgada para siempre: una muerte-sin-review NUEVA que el propio
+              // mecanismo draft introduce. El watchdog es la red de 2º orden del
+              // post-step: materializa la transición ready POR ESTADO idéntica —
+              // `markPullRequestReadyForReview` (con el `GITHUB_TOKEN` del job: este
+              // step corre con el token por defecto, NO el PAT —solo `patCall` usa
+              // `ARM_PAT`—; el markReady no dispara ningún trigger, así que el token
+              // por defecto con `pull-requests: write` basta) + `needs-review` POR PAT
+              // (`patCall`: su `labeled` SÍ debe pasar la anti-recursión del gate del
+              // Reviewer, que ya ve el PR ready, sin depender del `opened` que un
+              // draft salta ni de un `ready_for_review` nuevo). Reutiliza el MARCADOR del post-step (misma clase de evento
+              // para el Auditor/5-whys). Cap del comentario por estado: si el marcador
+              // ya está en el hilo (post-step o ciclo previo del watchdog) NO re-comenta,
+              // pero SÍ reintenta `markReady` (idempotente; si prende, el próximo ciclo
+              // ve el PR non-draft y el flujo normal gobierna).
+              if (isDraft) {
+                const priorMat = hcs.some(c => (c.body || '').includes('creator-muerto-draft-materializado-ready'));
+                try {
+                  await github.graphql(
+                    `mutation($id:ID!){ markPullRequestReadyForReview(input:{pullRequestId:$id}){ pullRequest { number isDraft } } }`,
+                    { id: pr.node_id });
+                } catch (e) {
+                  core.warning(`watchdog/draft-markReady #${pr.number}: ${e.message} — sin needs-review (sería inerte sobre un draft); se reintenta el próximo ciclo.`);
+                  continue;   // markReady falló ⇒ sigue draft; NO ensuciar con needs-review inerte, reintentar
+                }
+                // markReady OK ⇒ el PR es non-draft; el `labeled` de needs-review por PAT
+                // dispara al Reviewer con el gate ya satisfecho.
+                await patCall('DELETE', `/issues/${pr.number}/labels/needs-review`).catch(() => {});
+                await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['needs-review'] });
+                if (!priorMat) {
+                  await github.rest.issues.createComment({ ...O, issue_number: pr.number,
+                    body: `**watchdog · draft huérfano materializado a ready (AP-047, backstop residual)**: el PR #${pr.number} quedó en DRAFT pasado el guard de liveness — la sesión del Creator terminó sin \`gh pr ready\` y el post-step de muerte de \`claude-code.yml\` no materializó la transición (job muerto de raíz, o \`markReady\` fallido). Marcado \`ready\` (\`markPullRequestReadyForReview\` con el \`GITHUB_TOKEN\` del job, \`pull-requests: write\` — el markReady no dispara nada, así que no requiere el PAT) + \`needs-review\` **por PAT** ⇒ el Reviewer dispara por \`labeled\` (su gate ya ve el PR ready), sin depender del \`opened\` que un draft salta ni de un \`ready_for_review\` nuevo. Mismo desenlace-por-estado que el post-step; el watchdog es su red de segundo orden.\n\n<!-- creator-muerto-draft-materializado-ready -->\n${CAPA}` });
+                }
+                core.warning(`watchdog: draft #${pr.number} materializado a ready + needs-review (backstop residual AP-047).`);
+                continue;
+              }
               const verdicts = hcs.filter(c => verdictRe.test((c.body || '').trim()));
               const lastVerdict = verdicts[verdicts.length - 1] || null;
               const lastV = lastVerdict ? (lastVerdict.body || '').trim().split(/\s/)[0].replace(':','') : null;
