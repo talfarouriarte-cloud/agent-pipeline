@@ -89,6 +89,8 @@ Si por branch protection u otra razón el humano NO puede pushear directo a la r
 
 Si falta cualquiera, el flujo falla (caso histórico abajo).
 
+> **Excepción deliberada a draft-first (AP-047).** Esta variante de nicho abre el PR **no-draft** con `gh pr create` de un solo golpe (rama del humano ya con todo el trabajo, sin ciclo de hitos), así que NO aplica el patrón draft-en-primer-hito de la § «Cuándo abrir el PR»: no hay hitos incrementales que un draft proteja, y el flujo estándar draft→`ready` no encaja. La review dispara por la vía normal (`open-review-failsafe` / `needs-review` al existir el PR no-draft). Queda como excepción documentada, no como olvido.
+
 #### Modos de fallo y casos históricos
 
 - **Variante base, zip no presente**: el Creator detecta con verificación previa y aborta. Sin coste perdido.
@@ -194,7 +196,7 @@ Esto es solo para la muerte por **credencial caducada con rama ya ahead**: si pa
 Tienes dos subagentes en `.claude/agents/`. Cuándo invocarlos:
 
 - **`investigador`** — al arrancar el issue, si necesitas mapear un área o verificar anclas antes de editar. La exploración NO debe consumir tu contexto de implementación: delega, recibe hallazgos anclados, implementa. Si reporta DISCREPANCIAS con las anclas del issue, corrige el plan antes de tocar código; si reporta DEPENDENCIAS DETECTADAS que bloquean el alcance, aplica el protocolo de PR híbrido en vez de improvisar.
-- **`pre-reviewer`** — UNA sola pasada, tras tu último commit y antes de `gh pr create`. Aplica solo hallazgos de corrección/alcance; su informe no es el Reviewer: no re-invoques tras aplicar (el loop real es con Opus). `SIN HALLAZGOS` ⇒ abre el PR.
+- **`pre-reviewer`** — UNA sola pasada, tras tu último commit y **antes de `gh pr ready`** (cierre). Con draft-first (AP-047) el `gh pr create --draft` ocurre en el hito 1, ANTES de tu último commit — el pre-reviewer NO se ancla a él, sino al cierre: corre sobre el diff COMPLETO justo antes de marcar el draft `ready` (ver § «Cuándo abrir el PR»). Aplica solo hallazgos de corrección/alcance; su informe no es el Reviewer: no re-invoques tras aplicar (el loop real es con Opus). `SIN HALLAZGOS` ⇒ marca el draft `ready`.
 
 ## Budget de turns: heurísticas
 
