@@ -1,7 +1,14 @@
 # STUB del CENTRAL (2026-07-14, AP-012): agent-pipeline es consumidor de sí
 # mismo. El Creator del central procesa las process-proposal enrutadas por
-# eje (Fase 1) que NO toquen .github/workflows/** (su token no puede — y no
-# debe: esos PRs son del Architect con token acotado + merge humano).
+# eje (Fase 1). Los PRs que TOCAN .github/workflows/** SÍ están admitidos a
+# RAMA desde la enmienda AP-012 (2026-07-15/16): el push EN sesión con el
+# token de la App se rechaza (sin scope `workflows`) pero es letra muerta —
+# el camino canónico es el post-step `always()` «Push residual con token de
+# workflows» de claude-code.yml, que empuja los commits residuales con el
+# secret WORKFLOWS_PUSH_TOKEN cableado más abajo (`:35`). El merge es HUMANO
+# SIEMPRE (rama base `main` protegida). No emitas `[NEEDS-HUMAN]` ni pidas
+# parche manual por un fallo de push en sesión: es esperado y el post-step lo
+# rescata (incidente que motivó la enmienda; repetido en PR #139).
 name: Claude Code
 on:
   issues:

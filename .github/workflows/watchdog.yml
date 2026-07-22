@@ -738,25 +738,35 @@ jobs:
             const { data: issues } = await github.rest.issues.listForRepo({
               ...O, state: 'open', sort: 'updated', direction: 'desc', per_page: 50,
             });
-            // ── Premisa de la cola serial (AP-039): ¿está la serie OCUPADA?
-            // Un ítem `en-cola` (encolado por el guard serial, AP-014) es una
-            // espera LEGÍTIMA mientras exista un titular de la serie — hay
-            // `serial-activo` en algún issue O un PR `claude/*` abierto. Se
-            // calcula UNA vez (no por-ítem) para el chequeo de premisa de abajo.
+            // ── Premisa de la cola serial (AP-039, refinada por AP-048): ¿está
+            // la serie OCUPADA por un titular AJENO y vivo? Un ítem `en-cola`
+            // (encolado por el guard serial, AP-014) es una espera LEGÍTIMA
+            // mientras exista un titular AJENO — `serial-activo` en OTRO issue O
+            // un PR `claude/*` de OTRA rama. `serialActiveOpen` se lista UNA vez;
+            // la exclusión del PROPIO titular es por-ítem abajo (complemento
+            // anti-interbloqueo AP-048: el propio PR huérfano NO sostiene la
+            // premisa — ver el chequeo del bloque `en-cola`).
             let serialActiveOpen = [];
             try {
               serialActiveOpen = (await github.rest.issues.listForRepo({
                 ...O, state: 'open', labels: 'serial-activo', per_page: 20 })).data;
             } catch (e) { core.warning('premisa de serie (serial-activo): ' + e.message); }
-            const seriePremiseHolds = openAgentPRs.length > 0 || serialActiveOpen.length > 0;
             for (const issue of issues) {
               if (issue.pull_request) continue;        // solo issues puros
               if (skip(issue.labels)) continue;
               if (ageMin(issue.updated_at) < STALL_MIN) continue;
 
-              // ¿Rama de PR abierta para este issue? Entonces el trabajo
-              // vive en la PR (cubierto arriba si está parada).
-              if (openAgentPRs.some(p =>
+              // ¿Rama de PR abierta para este issue? Entonces el trabajo vive en
+              // la PR (cubierto por la red de PR parada). EXCEPCIÓN (AP-048,
+              // complemento anti-interbloqueo de finplan#1603): si el issue está
+              // `en-cola`, NO lo saltamos aquí — el arm mismo-issue quedó encolado
+              // DETRÁS de su propia rama (`en-cola` sólo se desencola al MERGE o al
+              // terminal del Creator, y un PR huérfano no tiene ni lo uno ni lo
+              // otro ⇒ interbloqueo). Debe caer al chequeo de premisa de abajo,
+              // que trata «serie ocupada sólo por el propio PR huérfano» como
+              // premisa CAÍDA y escala como `cola-huerfana`.
+              const isQueued = issue.labels.some(l => l.name === 'en-cola');
+              if (!isQueued && openAgentPRs.some(p =>
                     p.head.ref.startsWith(`claude/issue-${issue.number}-`))) continue;
 
               // Buscar el último arm humano (@claude o ping-creator) en
@@ -799,8 +809,21 @@ jobs:
               // la clase huérfana (Riesgo a); la ventana absorbe la carrera
               // encolado↔liberación de serie (Riesgo c).
               if (issue.labels.some(l => l.name === 'en-cola')) {
-                if (seriePremiseHolds) {
-                  core.notice(`#${issue.number}: en-cola con serie ocupada (premisa sostenida) — espera legítima, sin anomalía.`);
+                // Premisa POR-ÍTEM (AP-048, complemento anti-interbloqueo): la
+                // serie está ocupada por un titular AJENO y vivo sólo si hay
+                // `serial-activo` en OTRO issue o un PR `claude/*` de OTRA rama.
+                // El PROPIO PR huérfano del issue (misma `claude/issue-N-*`) NO
+                // cuenta como titular: es el interbloqueo (finplan#1603), no una
+                // espera legítima detrás de OTRA unidad — y post gate-0 no hay run
+                // activo ni sesión de Creator viva sobre él (si la hubiera, el gate
+                // 0 habría salido antes). «Serie ocupada SÓLO por el propio PR
+                // huérfano, persistente >1 tick» ⇒ premisa CAÍDA ⇒ escala como
+                // `cola-huerfana` (le da dueño: architect-resolve) aunque nadie
+                // aplique el fast-path del guard (AP-048).
+                const foreignHolder = serialActiveOpen.some(i => i.number !== issue.number)
+                  || openAgentPRs.some(p => !p.head.ref.startsWith(`claude/issue-${issue.number}-`));
+                if (foreignHolder) {
+                  core.notice(`#${issue.number}: en-cola con serie ocupada por titular AJENO (premisa sostenida) — espera legítima, sin anomalía.`);
                   continue;
                 }
                 const SETTLE_MARK = '<!-- watchdog-cola-huerfana-sospecha -->';
@@ -816,13 +839,20 @@ jobs:
                 const episodeAt = lastGuard ? new Date(lastGuard.created_at).getTime() : 0;
                 const freshSuspicion = comments.some(c => (c.body || '').includes(SETTLE_MARK)
                   && new Date(c.created_at).getTime() >= episodeAt);
+                // Titular AJENO ausente: la serie está LIBRE, o ocupada SÓLO por
+                // el propio PR huérfano del issue (interbloqueo AP-048). Ambos son
+                // premisa caída — el ítem debe tener dueño, no esperar para siempre.
+                const ownOrphanPR = openAgentPRs.find(p => p.head.ref.startsWith(`claude/issue-${issue.number}-`));
+                const premiseNote = ownOrphanPR
+                  ? `la serie sólo la ocupa el PROPIO PR huérfano #${ownOrphanPR.number} (\`${ownOrphanPR.head.ref}\`) — sin run activo ni sesión de Creator viva (interbloqueo AP-048: \`en-cola\` sólo se desencola al merge o al terminal del Creator, y no hay ninguno)`
+                  : 'la serie está LIBRE (sin `serial-activo` ni PR `claude/*` abierto)';
                 if (!freshSuspicion) {
                   await github.rest.issues.createComment({ ...O, issue_number: issue.number,
-                    body: `**watchdog · cola serial**: \`en-cola\` con la serie LIBRE (sin \`serial-activo\` ni PR \`claude/*\` abierto). Puede ser un pop de cola muerto o una liberación de serie aún asentándose. Ventana de asentamiento: si persiste al próximo tick efectivo, se escala a la etapa architect como \`cola-huerfana\`.\n\n${SETTLE_MARK}\n${CAPA}` });
-                  core.notice(`#${issue.number}: en-cola + serie libre; marcador de asentamiento puesto (1er tick del episodio), sin escalar aún.`);
+                    body: `**watchdog · cola serial**: \`en-cola\` y ${premiseNote}. Puede ser un pop de cola muerto, un interbloqueo mismo-issue o una liberación de serie aún asentándose. Ventana de asentamiento: si persiste al próximo tick efectivo, se escala a la etapa architect como \`cola-huerfana\`.\n\n${SETTLE_MARK}\n${CAPA}` });
+                  core.notice(`#${issue.number}: en-cola + premisa caída; marcador de asentamiento puesto (1er tick del episodio), sin escalar aún.`);
                   continue;
                 }
-                core.notice(`#${issue.number}: en-cola + serie libre PERSISTENTE (>1 tick del episodio) ⇒ cola-huerfana, escala a architect.`);
+                core.notice(`#${issue.number}: en-cola + premisa caída PERSISTENTE (>1 tick del episodio) ⇒ cola-huerfana, escala a architect.`);
               }
 
               // Armado, sin PR abierta, todo en silencio > STALL_MIN, y
