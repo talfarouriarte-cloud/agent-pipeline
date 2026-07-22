@@ -58,8 +58,15 @@ jobs:
     # para que el gate diga no). El prefiltro NO referencia inputs, user.login
     # ni labels del PR: solo campos probados en producción en régimen
     # workflow_call (la cláusula labeled acumula successes desde el día uno).
+    # AP-047 (aterrizaje draft/ready-por-estado): un `opened` en DRAFT (primer
+    # hito del Creator) NO levanta runner — la review se difiere a la transición
+    # ready, materializada por estado (`needs-review`/PAT del post-step de muerte
+    # o del open-review-failsafe, trigger `labeled` que TODO stub ya tiene). El
+    # `draft == false` es campo probado del payload pull_request; sin él cada
+    # push de hito quemaría un spin-up de gate. El guard semántico (gate step)
+    # re-cubre el caso `labeled` sobre un draft (belt).
     if: |
-      github.event.action == 'opened'
+      (github.event.action == 'opened' && github.event.pull_request.draft == false)
       || (github.event.action == 'labeled' && github.event.label.name == 'needs-review')
 
     # v1.4: el gate vive como PRIMER STEP github-script, no como job-if.
@@ -96,6 +103,16 @@ jobs:
               reason = 'PR de fork (sin acceso a secrets)';
             } else if (labels.includes('pause-agents')) {
               reason = 'kill-switch pause-agents (ADR-063)';
+            } else if (pr.draft) {
+              // AP-047: un draft es el PR de un hito intermedio del Creator; NUNCA
+              // se revisa. La review llega en la transición ready, materializada por
+              // ESTADO vía `needs-review`/PAT (post-step «Materializar muerte» al
+              // marcar ready un draft huérfano, o open-review-failsafe al cierre en
+              // verde) — ambas usan el trigger `labeled` que todo stub ya tiene, sin
+              // evento `ready_for_review` nuevo. Belt del job-if (que ya salta el
+              // `opened`+draft): cubre cualquier `labeled` que llegue mientras el PR
+              // siga en draft (p.ej. antes de que el post-step lo marque ready).
+              reason = 'PR en draft (primer hito, AP-047) — review diferida a ready-por-estado; un draft nunca se revisa';
             } else if (action === 'opened') {
               const isBot = author === 'claude[bot]' || (authorType === 'Bot' && author.startsWith('claude'));
               const isAgentBranch = headRef.startsWith(prefix);
