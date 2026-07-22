@@ -89,6 +89,8 @@ Si por branch protection u otra razón el humano NO puede pushear directo a la r
 
 Si falta cualquiera, el flujo falla (caso histórico abajo).
 
+> **Excepción deliberada a draft-first (AP-047).** Esta variante de nicho abre el PR **no-draft** con `gh pr create` de un solo golpe (rama del humano ya con todo el trabajo, sin ciclo de hitos), así que NO aplica el patrón draft-en-primer-hito de la § «Cuándo abrir el PR»: no hay hitos incrementales que un draft proteja, y el flujo estándar draft→`ready` no encaja. La review dispara por la vía normal (`open-review-failsafe` / `needs-review` al existir el PR no-draft). Queda como excepción documentada, no como olvido.
+
 #### Modos de fallo y casos históricos
 
 - **Variante base, zip no presente**: el Creator detecta con verificación previa y aborta. Sin coste perdido.
@@ -194,7 +196,7 @@ Esto es solo para la muerte por **credencial caducada con rama ya ahead**: si pa
 Tienes dos subagentes en `.claude/agents/`. Cuándo invocarlos:
 
 - **`investigador`** — al arrancar el issue, si necesitas mapear un área o verificar anclas antes de editar. La exploración NO debe consumir tu contexto de implementación: delega, recibe hallazgos anclados, implementa. Si reporta DISCREPANCIAS con las anclas del issue, corrige el plan antes de tocar código; si reporta DEPENDENCIAS DETECTADAS que bloquean el alcance, aplica el protocolo de PR híbrido en vez de improvisar.
-- **`pre-reviewer`** — UNA sola pasada, tras tu último commit y antes de `gh pr create`. Aplica solo hallazgos de corrección/alcance; su informe no es el Reviewer: no re-invoques tras aplicar (el loop real es con Opus). `SIN HALLAZGOS` ⇒ abre el PR.
+- **`pre-reviewer`** — UNA sola pasada, tras tu último commit y **antes de `gh pr ready`** (cierre). Con draft-first (AP-047) el `gh pr create --draft` ocurre en el hito 1, ANTES de tu último commit — el pre-reviewer NO se ancla a él, sino al cierre: corre sobre el diff COMPLETO justo antes de marcar el draft `ready` (ver § «Cuándo abrir el PR»). Aplica solo hallazgos de corrección/alcance; su informe no es el Reviewer: no re-invoques tras aplicar (el loop real es con Opus). `SIN HALLAZGOS` ⇒ marca el draft `ready`.
 
 ## Budget de turns: heurísticas
 
@@ -380,6 +382,8 @@ Después del push, actualizar el comment de progreso marcando §X como hecha y r
 
 ### El push de hito no está completo sin el bloque `pr-body-declarado` (cadencia de hito, AP-042)
 
+> **Superado como CADENCIA por AP-047 (draft-en-primer-hito); conservado como BELT PRE-DRAFT.** Desde AP-047 abres el PR en DRAFT en tu primer push de hito (§ «Cuándo abrir el PR») y el body del propio PR pasa a ser el artefacto de fidelidad —el post-step marca ese draft `ready` si mueres—, así que el bloque `pr-body-declarado` **ya NO es la cadencia primaria**. Sigue siendo tu belt SOLO en la ventana **pre-draft**: entre el primer commit y el momento en que el draft existe, si mueres ahí no hay PR y el post-step (red residual AP-023) abre uno FIEL desde este bloque. Mantén el bloque al día hasta abrir el draft; a partir de ahí, `gh pr edit` sobre el draft lo reemplaza. El resto de esta sección describe ese belt pre-draft.
+
 **Regla dura (generaliza AP-030 de emergencia a cadencia).** Un push de hito NO está completo hasta que publicas/**actualizas** en el ISSUE el bloque `pr-body-declarado` con el body VIGENTE del PR que abrirás. No es solo para la emergencia «token caducado» (§ abajo): es cadencia normal, en CADA hito, junto al `git push`. El motivo es estructural: si tu sesión muere antes del paso de apertura del PR —token caducado, turnos/contexto agotados en la derivación densa del issue, timeout del job— la red por-estado (AP-023) abre el PR igual, pero SIN tu declaración lo abre con `partial-pr` FORZADO y «Alcance restante: desconocido» (cuesta un slot del cap de relanzamientos y una ronda extra aunque el alcance estuviera completo). Con el bloque al día, el post-step abre un PR **FIEL** —tu polaridad y tu body reales— **mueras donde mueras**.
 
 Esta cadencia es un **mandato de prosa/disciplina, deliberadamente SIN gate mecánico** (a diferencia de la polaridad de `gh pr create`, que sí lleva hook). La elección no es un olvido (AP-008): el valor del bloque es cubrir la MUERTE de la sesión, y un gate no puede correr en una sesión ya muerta —justo el escenario que hay que proteger—, así que un gate cerraría precisamente los casos que NO importan (sesión viva que abre su PR normal, donde el bloque es redundante) y no los que sí. El peor caso de no tener gate está acotado por diseño: un bloque rancio `partial-pr` degrada al comportamiento AP-023 con MEJOR body, nunca a un `full-pr` sin respaldo (riesgo 1 de AP-042). Prosa-vs-mecanismo aquí es la decisión correcta, no una laguna.
@@ -452,11 +456,19 @@ Cuando el job muere, el "(en curso)" marca exactamente la frontera de recuperaci
 
 **Huella del pre-reviewer (2026-07-12, propuesta #1259 del repo de origen — sin rastro público el mecanismo es inevaluable):** el body de todo PR que abras incluye UNA línea obligatoria: `pre-reviewer: ejecutado · N hallazgos · M aplicados` (o `pre-reviewer: no ejecutado — <motivo>`). Solo la huella, no el informe: es texto informativo que ningún workflow parsea.
 
-El PR se abre al final, una vez todas las secciones están pusheadas. Verificaciones locales antes de abrir: el chequeo estático y **solo los ficheros de test que has tocado**, ambos con los comandos de tu ANEXO de rol. **NO abrir PR mid-flight** — un PR con secciones a medias dispara al Reviewer prematuramente.
+**El PR se abre en el PRIMER push de hito, en modo DRAFT (AP-047).** La apertura del PR deja de ser la ÚLTIMA acción discrecional de la sesión —el acto que la clase «Creator termina en `success` sin abrir su PR» pierde una y otra vez cuando el presupuesto se agota tras commitear (finplan#1601, 2ª muerte POST-AP-023)— y pasa a ser una transición **MECÁNICA verificable por estado**: un hito pusheado sin PR es una anomalía detectable, no una omisión de prosa. Flujo:
+
+1. **Primer push de hito → abre el PR en DRAFT** con `gh pr create --draft`, polaridad PROVISIONAL `<!-- partial-pr -->` (aún queda alcance), `Refs #N` (NUNCA `Closes` en un draft de hito), la sección «Alcance restante» y la línea `pre-reviewer: no ejecutado — pendiente (draft de hito)`. El hook `pr-polarity` exige polaridad + huella pre-reviewer también en el draft. Verificaciones locales antes de este primer push: el chequeo estático y **solo los ficheros de test que has tocado**, ambos con los comandos de tu ANEXO de rol.
+2. **Hitos siguientes → actualiza el body del draft** con `gh pr edit <N> --body` (o `--body-file`). El body del propio PR es ahora el ARTEFACTO de fidelidad —sustituye la cadencia del bloque `pr-body-declarado` (AP-042) por el PR REAL—: si mueres a mitad, el draft queda con el body de tu último hito (parcial FIEL por construcción) y el post-step lo materializa a `ready` (§ abajo), sin depender de que publiques un bloque declarativo en la MISMA sesión agotada (un canal declarativo no puede ser el belt de otro canal declarativo).
+3. **Cierre → marca el draft `ready`** con `gh pr ready <N>` tras editar el body a su polaridad DEFINITIVA: `<!-- full-pr -->` + `Closes #N` si completaste TODO el alcance, o `<!-- partial-pr -->` + `Refs #N` + «Alcance restante» si es híbrido. Actualiza la huella a `pre-reviewer: ejecutado · N hallazgos · M aplicados`. El `ready` NO dispara la review por sí solo (no se introduce evento nuevo): la transición Creator→Reviewer la materializa por estado el **`open-review-failsafe`** (post-step, `needs-review` con PAT) — **NO apliques `needs-review` tú** (tu `labeled` de claude[bot] lo ignora el gate del Reviewer por anti-recursión, ADR-063).
+
+**Por qué DRAFT y no un PR normal mid-flight:** un draft NO dispara al Reviewer (guard de draft en el gate de `reviewer.yml`, AP-047) — se evita quemar una sesión Opus sobre un diff a medias, exactamente el daño que motivaba el viejo «NO abrir PR mid-flight». La review llega UNA sola vez, en la transición `ready`.
+
+**Si mueres ANTES de abrir el draft** (antes de completar el primer hito): no hay PR y actúa la red residual AP-023 (el post-step abre el PR desde el estado con el bloque `pr-body-declarado` si lo mantuviste al día, o `partial-pr` forzado). Por eso el bloque `pr-body-declarado` sigue siendo tu belt ÚNICAMENTE en la ventana **pre-draft**; en cuanto el draft existe, el body del PR manda.
 
 > **REGLA DURA — NUNCA corras la suite completa en tu sandbox.** NO ejecutes la suite completa, ni el runner sin rutas, ni la build global (comandos concretos: ANEXO de rol). La suite completa **te cuelga** (causa confirmada de parada repetida de épicas) y es **redundante**: CI corre la suite completa + typecheck + build sobre el PR como gate de merge. Tu trabajo: tocar solo lo tuyo, correr **solo tus ficheros de test afectados** (comando: ANEXO de rol), commit + push conforme avanzas (por sección/fichero), abrir PR. El conjunto lo valida CI, no tú. Nunca acumules trabajo sin commitear esperando a una verificación amplia.
 
-Si el job muere antes de abrir el PR pero con todas las secciones pusheadas, el siguiente intento solo necesita ejecutar las verificaciones finales + `gh pr create`. Bajo coste de turns.
+Si el job muere con el **draft ya abierto**, no se pierde el PR: el post-step «Materializar muerte del Creator sin PR» lo marca `ready` + `needs-review` por estado (AP-047) con el body de tu último hito. Si muere ANTES de abrir el draft (con las secciones pusheadas), el siguiente intento solo ejecuta las verificaciones finales + `gh pr create --draft`, o la red residual AP-023 lo abre desde el estado. Bajo coste de turns en ambos casos.
 
 ## Historial de aprendizajes empíricos
 

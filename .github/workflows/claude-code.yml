@@ -1008,6 +1008,15 @@ jobs:
             const { data: prs } = await github.rest.pulls.list({ owner, repo, state: 'open', per_page: 100 });
             const pr = prs.find(p => p.head.ref.startsWith(`claude/issue-${n}-`));
             if (!pr) { core.notice(`open-review-failsafe: sin PR de #${n} — nada que materializar.`); return; }
+            // AP-047: un PR en DRAFT es un hito intermedio — NO se materializa la
+            // review aquí. El cierre en verde del Creator marca ready (`gh pr ready`)
+            // ANTES de terminar, así que este belt ve un PR ya-ready y actúa normal.
+            // Si el Creator murió dejando el draft, el post-step «Materializar muerte»
+            // (más abajo, MISMO job) lo marca ready + `needs-review`; aplicar
+            // `needs-review` a un draft aquí sería inerte (el gate de reviewer.yml lo
+            // salta) y se perdería (sin re-evento tras el ready). Dejar el ready a ese
+            // post-step evita la doble costura.
+            if (pr.draft) { core.notice(`open-review-failsafe: PR #${pr.number} de #${n} en DRAFT — la transición ready la materializa el post-step de muerte; no se aplica needs-review a un draft.`); return; }
             // DEDUPE (condición de aplicabilidad): ¿algún run del Reviewer para el
             // head SHA del PR? El run pertenece al stub caller; se identifica por
             // su `name` (mismo criterio que el watchdog, input reviewer_workflow_name).
@@ -1123,10 +1132,44 @@ jobs:
             const { owner, repo } = context.repo;
             const issue = context.payload.issue;
             const n = issue.number;
-            // ¿Murió DESPUÉS de abrir su PR? Entonces gobierna el flujo PR-driven.
+            // ¿Murió/terminó DESPUÉS de abrir su PR? Entonces gobierna el flujo
+            // PR-driven — SALVO que el PR siga en DRAFT (AP-047, aterrizaje del
+            // draft-en-primer-hito). El Creator abre el PR en DRAFT en su PRIMER push
+            // de hito y lo marca ready al cerrar; si murió antes del cierre, el draft
+            // quedó sin la transición ready. Ese acto —la ÚLTIMA acción discrecional
+            // que esta clase de incidente (muerte-en-`success` sin PR) pierde— se
+            // materializa aquí POR ESTADO: el draft EXISTE (abierto en el hito 1),
+            // así que basta marcarlo ready + `needs-review` con el PAT (este step
+            // corre con REVIEWER_GITHUB_TOKEN ⇒ el `labeled` dispara al Reviewer y su
+            // gate ya ve el PR ready, sin depender del `opened` que un draft salta ni
+            // de un evento `ready_for_review` nuevo). El body es el del último hito
+            // (fidelidad por construcción — lo que el belt declarativo AP-042
+            // perseguía, ahora garantizado por el ARTEFACTO real). PR ya-ready ⇒ el
+            // flujo PR-driven gobierna, nada que materializar.
             const { data: prs } = await github.rest.pulls.list({ owner, repo, state: 'open', per_page: 100 });
-            if (prs.some(p => p.head.ref.startsWith(`claude/issue-${n}-`))) {
-              core.notice(`Creator de #${n} murió con PR ya abierto — flujo PR-driven gobierna; nada que materializar aquí.`);
+            const openPr = prs.find(p => p.head.ref.startsWith(`claude/issue-${n}-`));
+            if (openPr) {
+              if (!openPr.draft) {
+                core.notice(`Creator de #${n} concluyó con PR #${openPr.number} ya ready — flujo PR-driven gobierna; nada que materializar aquí.`);
+                return;
+              }
+              // Draft huérfano (Creator murió antes del `gh pr ready` del cierre):
+              // materializar la transición ready POR ESTADO.
+              try {
+                await github.graphql(
+                  `mutation($id:ID!){ markPullRequestReadyForReview(input:{pullRequestId:$id}){ pullRequest { number isDraft } } }`,
+                  { id: openPr.node_id });
+              } catch (e) {
+                core.warning(`AP-047: markReadyForReview falló para PR #${openPr.number} de #${n}: ${e.message} — se aplica needs-review igual (el gate del Reviewer saltará si el PR sigue en draft; queda el watchdog).`);
+              }
+              // `needs-review` con el PAT (remove+add para forzar el evento `labeled`
+              // aunque hubiera un resto). El PR ya-ready ⇒ el gate de reviewer.yml
+              // corre; el `labeled` del PAT (no claude[bot]) pasa su anti-recursión.
+              await github.rest.issues.removeLabel({ owner, repo, issue_number: openPr.number, name: 'needs-review' }).catch(() => {});
+              await github.rest.issues.addLabels({ owner, repo, issue_number: openPr.number, labels: ['needs-review'] });
+              await github.rest.issues.createComment({ owner, repo, issue_number: openPr.number,
+                body: `**claude-code · post-step**: la sesión del Creator de #${n} terminó en \`${process.env.STEP_CREATOR_OUTCOME}\` con su PR **en DRAFT** (abierto en el primer push de hito, AP-047) y SIN marcarlo ready — el acto de cierre discrecional que esta clase de incidente (muerte-en-\`success\` sin PR) pierde. Materializado por ESTADO en el instante:\n\n- **PR #${openPr.number} marcado \`ready\`** (\`markPullRequestReadyForReview\` vía PAT) con el body del último hito (fidelidad por construcción — lo que AP-042 perseguía, ahora por artefacto real).\n- **\`needs-review\`** aplicada con el PAT ⇒ el Reviewer dispara por \`labeled\` (su gate ya ve el PR ready), sin depender del \`opened\` (que un draft salta) ni de un \`ready_for_review\` nuevo.\n- \`serial-activo\` ya retirada al existir el PR (post-step de liberación); el PR ready es la señal de vuelo — la serie la libera el MERGE.\n\n<!-- creator-muerto-draft-materializado-ready -->` });
+              core.warning(`AP-047: PR #${openPr.number} de #${n} en draft materializado a ready + needs-review por PAT (muerte antes del cierre en verde).`);
               return;
             }
             const outcome = process.env.STEP_CREATOR_OUTCOME;
