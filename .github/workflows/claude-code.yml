@@ -584,8 +584,8 @@ jobs:
             // que un re-arm legítimo SIEMPRE ve la serie libre. La responsabilidad
             // del mutex es del RUN en su arranque (este guard es su primer paso),
             // no del actor que arma ni de una vigilancia externa.
-            const selfHeld = flagged.some(i => i.number === issue.number);
-            const inFlightOther = [...inFlightPRs, ...flagged.filter(i => i.number !== issue.number).map(i => `#${i.number} (armado)`)];
+            let selfHeld = flagged.some(i => i.number === issue.number);
+            let inFlightOther = [...inFlightPRs, ...flagged.filter(i => i.number !== issue.number).map(i => `#${i.number} (armado)`)];
             // ── FAST-PATH de CONTINUACIÓN MISMO-ISSUE (AP-048, finplan#1603):
             // ¿el ÚNICO titular de la serie es un PR del PROPIO issue (misma rama
             // `claude/issue-N-*`)? Entonces el arm es continuación de la MISMA
@@ -601,7 +601,7 @@ jobs:
             const sameIssuePRs = claudePRs.filter(p => p.head.ref.startsWith(sameIssuePrefix));
             const otherPRs = claudePRs.filter(p => !p.head.ref.startsWith(sameIssuePrefix));
             const otherFlagged = flagged.filter(i => i.number !== issue.number);
-            const soloSameIssue = sameIssuePRs.length > 0 && otherPRs.length === 0 && otherFlagged.length === 0;
+            let soloSameIssue = sameIssuePRs.length > 0 && otherPRs.length === 0 && otherFlagged.length === 0;
             // Runs in_progress + queued una sola vez: los usan el fast-path
             // (identificación POSITIVA de «sin otro run de Creator vivo sobre la
             // serie» — fail-closed si la API no responde) y el cinturón TOCTOU
@@ -631,6 +631,50 @@ jobs:
               // (comportamiento pre-Change-B) y el fast-path NO actúa (fail-closed:
               // sólo con identificación positiva de «sin run activo»).
               core.warning(`Guard serial: no se pudo listar runs (${e.message}); mutex sin cinturón y sin fast-path.`);
+            }
+            // ── LIVENESS DEL HOLDER (lado LECTOR) — AP-049, repesca finplan#1604 ──
+            // `serial-activo` lo ESCRIBE un run en su arranque (este guard) y lo
+            // RETIRA al abrir su PR (post-step) o el watchdog si el Creator muere.
+            // Toda esa capa post-step vive en el ESCRITOR: una muerte DURA del
+            // runner entre el push y el post-step la vacía ENTERA a la vez (no un
+            // belt que falla — la capa que muere con el proceso) y deja el flag
+            // colgado SIN PR y SIN run. El guard, único lector síncrono del lock,
+            // lo lee como «Creator en vuelo» y rechaza un arm AUTORIZADO del
+            // propietario hasta el cron del watchdog (~10 min de ventana ciega,
+            // finplan#1604). La liveness del run vive en la Actions API — lado
+            // LECTOR, que sobrevive a CUALQUIER muerte del escritor: si NINGÚN run
+            // de este workflow está vivo (excluido ESTE arm, que ES el run que va a
+            // nacer), ningún Creator puede estar sosteniendo el lock ⇒ huérfano.
+            // FAIL-CLOSED (§2 de la propuesta): sin lista de runs (API caída,
+            // `!runsListed`) o con CUALQUIER run vivo (atribución ambigua) se
+            // mantiene el bloqueo/cola de hoy — la regla del ganador determinista
+            // AP-033 (c) queda intacta. Cubre lo que #129/#130 no alcanzan: la
+            // capa post-step entera muerta, y arms cross-issue / pop de cola sobre
+            // el lock huérfano. El watchdog conserva su 3ª mano (des-huérfana
+            // aunque nadie intente armar); esto sólo elimina la ventana ciega en el
+            // momento en que duele — cuando alguien CON autorización intenta armar.
+            // Sólo actúa cuando el ÚNICO titular de la serie es el flag (cero PRs
+            // claude/* abiertos): un PR abierto es una unidad de trabajo con rama y
+            // commits cuyo estado NO lo decide la liveness de un run (su Creator
+            // espera al Reviewer entre rondas — cero runs vivos es su estado NORMAL,
+            // no orfandad); des-huérfanas de PRs siguen siendo del watchdog.
+            if (runsListed && flagged.length > 0 && inFlightPRs.length === 0) {
+              const liveOtherCreators = runs.filter(r =>
+                r.name === context.workflow && r.id !== context.runId);
+              if (liveOtherCreators.length === 0) {
+                for (const i of flagged) {
+                  await github.rest.issues.removeLabel({ owner, repo, issue_number: i.number, name: 'serial-activo' }).catch(() => {});
+                }
+                await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
+                  body: `**claude-code · guard serial · liveness del holder (lado lector, AP-049)**: se encontró \`serial-activo\` en ${flagged.map(i => `#${i.number}`).join(', ')} pero CERO runs de \`${context.workflow}\` en vuelo (excluido este arm) — ninguna sesión de Creator puede estar sosteniendo el lock. Diagnóstico: muerte dura del runner entre el push y el post-step de liberación (vacía TODA la capa post-step a la vez); el flag quedó HUÉRFANO. Se retira \`serial-activo\` y el arm AUTORIZADO pasa: el estado se lee del lado LECTOR (Actions API), que sobrevive a la muerte del escritor. Fail-closed intacto — con cualquier run vivo o sin lista de runs se mantiene el bloqueo/cola de hoy; el watchdog conserva su 3ª mano.\n\n<!-- serial-holder-muerto -->` });
+                core.warning(`Guard serial · liveness del holder: lock huérfano (0 runs vivos); retirado serial-activo de ${flagged.map(i => i.number).join(',')} para #${issue.number}.`);
+                // Serie libre: el flag huérfano ya no bloquea. Se recomputan las
+                // variables de decisión — todas las flags cayeron y no hay PRs, así
+                // que el arm cae al `else` final (winner) y toma el mutex ATÓMICO.
+                selfHeld = false;
+                inFlightOther = [...inFlightPRs];
+                soloSameIssue = false;
+              }
             }
             // Contendientes = runs Creator sobre ESTE mismo issue: mismo workflow
             // caller (`r.name === context.workflow` — excluye self-epic-merge/
