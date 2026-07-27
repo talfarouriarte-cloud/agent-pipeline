@@ -31,6 +31,7 @@
   ],
   "watchdog.yml": [
     "human-needed",
+    "lgtm",
     "needs-review",
     "serial-activo",
     "stalled"
