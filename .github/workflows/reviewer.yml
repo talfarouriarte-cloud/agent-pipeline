@@ -256,8 +256,67 @@ jobs:
               core.notice(`Could not remove needs-review: ${e.message}`);
             }
 
-      - name: Checkout
+      # Cap DETERMINISTA de convergencia NITS (AP-053, 2026-07-27, PR
+      # finplan#1686). Por mandato, `NITS` = mergeable tal cual; bajo ADR-193
+      # cada NITS pinga al Creator y reconvoca al Reviewer ⇒ un reviewer que
+      # re-audita lo aplicado y abre nits NUEVOS cada ronda no converge nunca
+      # a LGTM y quema el cap=8 escalando a humano PRs ya mergeables (#1686:
+      # 6 rondas, 2h20m, 11-16k chars/ronda con Opus 5). Regla de clase
+      # (AP-011/AP-035): la autocontención procedural del agente es la clase
+      # de regla que FALLA — el cierre del loop debe ser estructural, no
+      # confiado al mandato. Dos rondas NITS consecutivas aplicadas (commits
+      # posteriores al último veredicto) ⇒ LGTM determinista, sesión omitida.
+      # Un REVIEW intermedio resetea la cuenta (los 🔴 sí re-litigan).
+      - name: Cap de convergencia NITS (AP-053) — LGTM determinista tras 2 NITS aplicadas
+        id: nitscap
         if: steps.gate.outputs.run == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          script: |
+            const n = context.payload.pull_request.number;
+            const cs = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: n, per_page: 100,
+            });
+            // Identidad del Reviewer = la del PAT (epic-merge filtra por este
+            // login; incidente #1048). Veredicto = token anclado en línea 1.
+            const REVIEWER_LOGIN = 'talfarouriarte-cloud';
+            const vs = cs.filter(c => c.user.login === REVIEWER_LOGIN
+              && /^\s*(LGTM|REVIEW|NITS)\b/.test((c.body || '').trim())
+              && !/<!--\s*epic-merge-diag\s*-->/.test(c.body || ''));
+            let trailingNits = 0;
+            for (let i = vs.length - 1; i >= 0; i--) {
+              if (/^\s*NITS\b/.test(vs[i].body.trim())) trailingNits++; else break;
+            }
+            if (trailingNits < 2) { core.setOutput('skip', 'false'); return; }
+            // ¿El Creator aplicó la última ronda? Vigencia por-estado: el head
+            // debe ser POSTERIOR al último veredicto. Fail-open a sesión normal
+            // si no se puede verificar (no capar sobre incertidumbre).
+            try {
+              const head = context.payload.pull_request.head.sha;
+              const cm = await github.rest.repos.getCommit({
+                owner: context.repo.owner, repo: context.repo.repo, ref: head });
+              const headDate = new Date(cm.data.commit.committer.date);
+              const lastV = new Date(vs[vs.length - 1].created_at);
+              if (headDate <= lastV) { core.setOutput('skip', 'false'); return; }
+            } catch (e) {
+              core.warning('nits-cap: vigencia no verificable (' + e.message + '); sesión normal.');
+              core.setOutput('skip', 'false'); return;
+            }
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo, issue_number: n,
+              body: 'LGTM\n\n**reviewer · cap de convergencia NITS (AP-053, determinista — sesión de agente omitida).** '
+                + 'Tercer tick tras ' + trailingNits + ' rondas `NITS` consecutivas aplicadas por el Creator (head posterior al último veredicto). '
+                + 'Por mandato, `NITS` = mergeable tal cual: las reservas menores restantes viven en las rondas previas del panel; '
+                + 'una tercera pasada re-auditando lo aplicado no aporta valor proporcional (rendimientos decrecientes). '
+                + 'Un 🔴 sobrevenido siempre puede reabrirse vía `REVIEW` humano o del watchdog. <!-- nits-convergence-cap -->',
+            });
+            core.notice('AP-053: LGTM determinista tras ' + trailingNits + ' NITS consecutivas aplicadas — sesión del Reviewer omitida.');
+            core.setOutput('skip', 'true');
+
+      - name: Checkout
+        if: steps.gate.outputs.run == 'true' && steps.nitscap.outputs.skip != 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -277,12 +336,12 @@ jobs:
       # esperar `@claude` mention. El system prompt del Reviewer vive en
       # docs/agents/reviewer.md y se carga via el propio prompt aquí.
       - name: Graft vendored (capa común servida desde el central — AP-009)
-        if: steps.gate.outputs.run == 'true'
+        if: steps.gate.outputs.run == 'true' && steps.nitscap.outputs.skip != 'true'
         uses: talfarouriarte-cloud/agent-pipeline/.github/actions/graft-vendored@main
 
       - name: Run Reviewer
         id: reviewer
-        if: steps.gate.outputs.run == 'true'
+        if: steps.gate.outputs.run == 'true' && steps.nitscap.outputs.skip != 'true'
         uses: anthropics/claude-code-action@v1
         env:
           # Blindaje OAuth-only: bloquea cualquier fallback silencioso a API
