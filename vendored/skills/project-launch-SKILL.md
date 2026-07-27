@@ -50,7 +50,10 @@ todo escala.
 
 - CI propio (sin suite ⇒ typecheck-only, pero el job DEBE materializar
   `ci-verde`); labels desde templates/labels.json; secrets (OAuth, ARM_TOKEN,
-  PAT); stubs anclados a tag con los inputs de la instancia.
+  PAT); stubs copiados de `templates/stubs/` tal cual vienen, anclados a
+  `@main` (README §13: los consumidores operados por el propietario siguen
+  `@main`, y así un PR mergeado del central ES el despliegue; los tags son
+  hitos documentados que nada consume), con los inputs de la instancia.
 - Checklist mecánico antes de dar por cerrada la fase: cada input de cada stub
   verificado contra la realidad del repo (nombre del job de CI, rama, label).
 - **Regla de pineo (AP-052).** Cada línea del `with:` pisa un default del
@@ -81,6 +84,6 @@ todo escala.
 ## Registro
 
 Al cerrar, el Architect registra el alta como ADR en el repo nuevo (parámetros
-de instancia, tag anclado, desviaciones del contrato) y actualiza la instancia
+de instancia, referencia del reusable (`@main`), desviaciones del contrato) y actualiza la instancia
 de pipeline-map. Las correcciones del propietario durante la génesis van al
 retro (capa 2 si son transversales).

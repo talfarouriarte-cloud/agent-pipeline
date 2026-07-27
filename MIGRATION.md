@@ -2,7 +2,7 @@
 
 Two paths: **A) new repo from scratch** and **B) existing repo already running a local copy of the pipeline** (the originating project is the documented case). Read README.md first — the three layers, the one-writer rule and the consumer contract are assumed known here.
 
-> **Operating-mode note (2026-07-12).** Single-operator mode is active (README §13): consumers pin `@main` and every human upload to the central IS the release. References to release tags below (§0, A5, B2, §4) describe multi-operator consumption — valid the day the framework gains consumers not operated by the owner; meanwhile tags are cut as documented milestones after real-traffic shakedown (README §13).
+> **Operating-mode note (2026-07-12).** Single-operator mode is active (README §13): consumers pin `@main` and every human upload to the central IS the release. The only reference to release tags left below is §0 (A5, B2 and §4 were rewritten to `@main` on 2026-07-27, AP-052); it describes multi-operator consumption — valid the day the framework gains consumers not operated by the owner; meanwhile tags are cut as documented milestones after real-traffic shakedown (README §13).
 
 > **Status note.** The per-workflow input reference (§4) is finalized during Phase A of the rollout (extraction of the five workflows to `workflow_call`). Until Phase A lands, input names in this guide are indicative; the extraction is the source of truth and this file is updated in the same commit.
 
@@ -10,7 +10,7 @@ Two paths: **A) new repo from scratch** and **B) existing repo already running a
 
 ## 0. Prerequisites (both paths)
 
-- [ ] `agent-pipeline` released at a tag you will pin to.
+- [ ] `agent-pipeline` reachable from the consumer. In single-operator mode (the current one, README §13) the stubs track `@main` and there is nothing to release: a merged central PR IS the deployment. Only a consumer *not* operated by the owner pins a release tag — and then this line means "a tag exists and you pinned it".
 - [ ] A fine-grained PAT covering the consumer repo (Contents RW, Issues RW, PR RW, Actions read, metadata read) — stored as the consumer's `ARM_TOKEN`-class secret, never committed.
 - [ ] Anthropic OAuth token (Claude Max) as consumer secret.
 - [ ] The human operator understands the two human gates that never delegate: workflow/`prototype`-class frozen-file commits, and default-branch → production promotion.
