@@ -290,8 +290,11 @@ for (const f of Object.keys(onDisk)) {
     const esc = name.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&');
     const clave = new RegExp(`"${esc}"\\s*:`).test(pinsRaw);
     const envuelto = new RegExp(`toJSON\\(\\s*inputs\\.${esc}\\s*\\)`).test(pinsRaw);
-    const desnudo = new RegExp(`inputs\\.${esc}\\b`).test(pinsRaw);
-    if (!(clave && desnudo)) {
+    // `presente`, no «desnudo»: casa igual con `${{ inputs.x }}` que con
+    // `${{ toJSON(inputs.x) }}` (envuelto ⇒ presente), así que mide PRESENCIA de
+    // la referencia. Lo desnudo es el `else if`: presente pero sin envolver.
+    const presente = new RegExp(`inputs\\.${esc}\\b`).test(pinsRaw);
+    if (!(clave && presente)) {
       errors.push(`${f}: \`${name}\` está en la tabla \`${LB_STEP_ENV}\` pero el mapa \`${LB_PINS_ENV}\` del step no le pasa \`inputs.${name}\` — el aviso nace inerte para ese input (clase wmcb#20)`);
     } else if (!envuelto) {
       errors.push(`${f}: \`${name}\` viaja al mapa \`${LB_PINS_ENV}\` con interpolación desnuda — usa \`\${{ toJSON(inputs.${name}) }}\`, o un input no numérico produce JSON inválido y el fail-open del step mata el aviso de TODOS los inputs (AP-052)`);
