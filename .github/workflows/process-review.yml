@@ -31,7 +31,7 @@ on:
         default: claude-fable-5
       process_fallback_model:
         type: string
-        default: claude-opus-4-8
+        default: claude-opus-5
       process_max_turns:
         type: number
         default: 60

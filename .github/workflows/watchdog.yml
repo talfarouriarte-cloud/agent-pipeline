@@ -78,7 +78,7 @@ on:
         default: epica
       resolve_model:
         type: string
-        default: claude-opus-4-8
+        default: claude-opus-5
       resolve_max_turns:
         type: number
         default: 40
