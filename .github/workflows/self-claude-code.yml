@@ -33,8 +33,12 @@ jobs:
       # (Reviewer >1h). El repo es público: GitHub-hosted es gratis.
       runner: ubuntu-latest
       default_branch: main
+      # `creator_max_turns: 120` (default central 200) NO replica el default:
+      # es elección de coste del propietario para este repo, y por eso se
+      # queda. `bot_comment_cap` sí lo replicaba (8) y se retira (AP-052): el
+      # central se aplica su propia regla de no-pineo (AP-012, consumidor de
+      # sí mismo) — sin línea rige el default y ADR-021 llega sola si se mueve.
       creator_max_turns: 120
-      bot_comment_cap: 8
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       REVIEWER_GITHUB_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}

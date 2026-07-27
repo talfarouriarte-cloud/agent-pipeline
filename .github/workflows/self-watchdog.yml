@@ -41,8 +41,12 @@ jobs:
       epic_merge_workflow_name: Epic Merge
       extra_pipeline_workflows: ""
       epic_label: epica
-      resolve_max_turns: 40
-      lookback_min: 45
+      # `resolve_max_turns` y `lookback_min` NO se pinean (AP-052): replicaban
+      # verbatim el default del central (40/45) — el central se aplica su
+      # propia regla de no-pineo (AP-012, consumidor de sí mismo), igual que
+      # `self-reviewer.yml`. Son los DOS MISMOS valores que este PR retira de
+      # `templates/stubs/stub-watchdog.yml`. Ausencia deliberada: sin línea
+      # rige el default y las lecciones futuras del central llegan solas.
       # AP-051: en el CENTRAL `process-proposal` es la COLA, no un panel —
       # sin esta línea el barrido AP-038 la excluye y `stalled` muere en
       # silencio (incidente #125/#128/#129/#131/#142, 2026-07-22/27).

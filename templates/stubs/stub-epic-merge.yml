@@ -29,11 +29,16 @@ jobs:
   call:
     uses: talfarouriarte-cloud/agent-pipeline/.github/workflows/epic-merge.yml@main
     with:
+      # Solo VERDAD DE INSTANCIA (AP-052): runner, rama, nombre del job de CI y
+      # label de épica. Los caps de partición (`partial_round_cap` /
+      # `partial_lifetime_cap`) NO se pinean: replicaban el default del central
+      # (3/6), calibrado tras incidentes. Un template que copia el default lo
+      # congela en el consumidor cuando el central lo mueve — la máquina que
+      # produjo el pin 50 de finplan. Píneálos solo si eliges otro valor a
+      # propósito, con anotación (motivo).
       runner: ubuntu-latest
       default_branch: main
       ci_workflow_name: CI
       epic_label: epica
-      partial_round_cap: 3
-      partial_lifetime_cap: 6
     secrets:
       REVIEWER_GITHUB_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}

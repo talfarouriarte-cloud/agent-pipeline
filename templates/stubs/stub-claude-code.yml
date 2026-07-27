@@ -18,10 +18,15 @@ jobs:
   call:
     uses: talfarouriarte-cloud/agent-pipeline/.github/workflows/claude-code.yml@main
     with:
+      # Solo VERDAD DE INSTANCIA (AP-052): runner y rama. `creator_max_turns` y
+      # `bot_comment_cap` NO se pinean aquí — replicaban verbatim el default del
+      # central (200/8), que es un cap calibrado por decisión (el de comentarios
+      # viene de ADR-021), no una preferencia de este repo. Un template que copia
+      # el default lo CONGELA en el consumidor el día que el central lo mueve:
+      # es la máquina exacta que produjo el pin 50 de finplan (AP-052). Píneálos
+      # solo si tu repo elige a propósito otro valor, y con anotación (motivo).
       runner: ubuntu-latest
       default_branch: main
-      creator_max_turns: 200
-      bot_comment_cap: 8
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       REVIEWER_GITHUB_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}

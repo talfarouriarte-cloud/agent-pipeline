@@ -13,6 +13,12 @@ on:
         type: string
         default: claude-opus-5
       reviewer_max_turns:
+        # LESSON-BEARING (AP-052): este default NO es una preferencia de
+        # instancia — es una lección aprendida. Si lo cambias, actualiza la tabla
+        # del step «Divergencia pin↔default» (abajo) y el bloque `lesson_bearing`
+        # de templates/workflow-contracts.json EN EL MISMO PR: check-contracts
+        # exige fidelidad de las tres declaraciones.
+        #
         # 80 y no 50 (AP-025, repesca finplan#1450): el mandato universal-strict
         # (2026-07-12, fidelidad ADR cláusula-a-cláusula en TODO PR) expandió el
         # trabajo por sesión y provocó la 1ª muerte por presupuesto observada del
@@ -22,6 +28,8 @@ on:
         type: number
         default: 80
       timeout_minutes:
+        # LESSON-BEARING (AP-052) — ver nota de `reviewer_max_turns`.
+        #
         # 22 y no 15 (AP-025): el timeout de wall-clock debe escalar con el bump
         # de turns o el bump es inerte — a 50 turns la muerte por presupuesto de
         # finplan#1450 llegó a los ~9 min; 80 turns rozarían los 15 min y el
@@ -128,6 +136,97 @@ jobs:
             }
             core.notice(`gate: run=${run} — ${reason}`);
             core.setOutput('run', run ? 'true' : 'false');
+
+      # ── Divergencia pin↔default (AP-052, repesca finplan#1674) ──────────────
+      # Un `with:` del stub consumidor pisa EN SILENCIO un default que el central
+      # ya corrigió por lección aprendida. Instancia que lo motiva: el stub de
+      # finplan pineaba `reviewer_max_turns: 50` cuando el central ya servía 80
+      # (AP-025, lección nacida en finplan#1450) — el fix estaba DESPLEGADO («un
+      # PR mergeado del central ES el despliegue») y no regía; coste medido en
+      # PR finplan#1674: `reviewer-no-verdict-persistent` ×3, causa terminal
+      # POSITIVA `max-turns` (AP-040) y `human-needed` ×2 (las únicas dos
+      # intervenciones humanas de una épica por lo demás limpia).
+      #
+      # Este step NO decide nada ni toca labels: materializa la divergencia como
+      # estado LEGIBLE (::notice + job summary) en vez de dejarla como
+      # arqueología post-incidente (protocol.md, principio 1). Determinista, cero
+      # LLM, cero coste marginal. Acotado a inputs LESSON-BEARING (los que llevan
+      # una AP detrás) para no convertir en ruido los pins legítimos de instancia
+      # (`runner`, `review_context`, …).
+      #
+      # `LESSON_BEARING` es la lista corta que se mantiene JUNTO al default (ver
+      # el bloque `workflow_call`); su fidelidad contra el default REAL y contra
+      # `templates/workflow-contracts.json` la verifica check-contracts en el CI
+      # del central — una tabla rancia es rojo, no un aviso callado.
+      #
+      # `continue-on-error` + try/catch: este aviso jamás puede impedir una
+      # review (un `if:` sin función de estado implica `success()`, así que un
+      # throw aquí saltaría el Checkout y el propio Reviewer). Fail-open total.
+      - name: Divergencia pin↔default (inputs con lección AP — AP-052)
+        id: pindiv
+        if: steps.gate.outputs.run == 'true'
+        continue-on-error: true
+        uses: actions/github-script@v7
+        env:
+          LESSON_BEARING: |
+            [
+              {"input": "reviewer_max_turns", "default": 80, "ap": "AP-025", "leccion": "finplan#1450 — 1ª muerte del Reviewer por presupuesto tras el mandato universal-strict"},
+              {"input": "timeout_minutes",    "default": 22, "ap": "AP-025", "leccion": "finplan#1450 — el wall-clock escala con los turns o el bump es inerte"}
+            ]
+          # `toJSON()` y no interpolación desnuda: emite `80` para un number y
+          # `"claude-opus-5"` para un string. Con la interpolación a pelo, el
+          # primer input lesson-bearing NO numérico produciría JSON inválido, el
+          # `JSON.parse` de abajo lanzaría y el catch dejaría el aviso inerte
+          # para TODOS los inputs del reusable — fail-open silencioso, la misma
+          # clase que este AP viene a impedir. `check-contracts` exige esta forma.
+          PINS_RECIBIDOS: |
+            {
+              "reviewer_max_turns": ${{ toJSON(inputs.reviewer_max_turns) }},
+              "timeout_minutes": ${{ toJSON(inputs.timeout_minutes) }}
+            }
+        with:
+          script: |
+            try {
+              const tabla = JSON.parse(process.env.LESSON_BEARING || '[]');
+              const pins = JSON.parse(process.env.PINS_RECIBIDOS || '{}');
+              const div = [];
+              for (const e of tabla) {
+                const got = pins[e.input];
+                if (got === undefined || got === null || got === '') continue;
+                const nGot = Number(got), nDef = Number(e.default);
+                // Numérico ⇒ solo POR DEBAJO diverge: un pin por encima del
+                // default es sobre-aprovisionamiento deliberado, no pérdida de
+                // la lección (acota falsos positivos). No numérico ⇒ distinto.
+                const esNum = Number.isFinite(nGot) && Number.isFinite(nDef);
+                const diverge = esNum ? nGot < nDef : String(got) !== String(e.default);
+                if (diverge) div.push({ ...e, recibido: got });
+              }
+              if (!div.length) {
+                core.info('AP-052: sin divergencia pin↔default en los inputs lesson-bearing.');
+                core.setOutput('linea', '');
+                return;
+              }
+              // Formato fijo (lo cita el 5-whys del Auditor y lo reusa el
+              // post-step): `input=<recibido> (default central: <def>, <AP>)`.
+              const linea = 'pin-divergente: ' + div
+                .map(d => `${d.input}=${d.recibido} (default central: ${d.default}, ${d.ap})`)
+                .join('; ');
+              core.notice(`AP-052 · ${linea} — el stub de este repo pisa un default que el central corrigió por lección aprendida; el fix del central NO rige aquí. Revisa el \`with:\` del stub (territorio HUMANO, ADR-020).`);
+              await core.summary
+                .addHeading('Divergencia pin↔default (AP-052)', 3)
+                .addRaw(`El stub de este repo pinea ${div.length} input(s) *lesson-bearing* por debajo del default del central. El fix desplegado en el central **no rige** en este consumidor:`)
+                .addTable([
+                  [{ data: 'Input', header: true }, { data: 'Pin del stub', header: true }, { data: 'Default central', header: true }, { data: 'AP', header: true }, { data: 'Lección', header: true }],
+                  ...div.map(d => [d.input, String(d.recibido), String(d.default), d.ap, d.leccion || '']),
+                ])
+                .addRaw('Los stubs son territorio humano (ADR-020): ningún agente los edita. Pinear un input con default central exige anotación (motivo + referencia AP) — ver `MIGRATION.md` §A5.')
+                .write();
+              core.setOutput('linea', linea);
+            } catch (e) {
+              // Fail-open: sin aviso, pero la review sigue. Nunca al revés.
+              core.warning(`AP-052: comparación pin↔default no evaluable (${e.message}) — se continúa sin aviso.`);
+              core.setOutput('linea', '');
+            }
 
       # Patrón ADR-063: el agente disparado por una label la quita como
       # primer paso. Así el próximo add (del Creator tras responder a
@@ -318,6 +417,14 @@ jobs:
           STEP_OUTCOME: ${{ steps.reviewer.outcome }}
           STEP_CONCLUSION: ${{ steps.reviewer.conclusion }}
           TIMEOUT_MIN: ${{ inputs.timeout_minutes }}
+          # Divergencia pin↔default ya calculada por el step determinista de
+          # arriba (AP-052). Cadena vacía si no hay divergencia, si el step
+          # falló (continue-on-error) o si el input no es lesson-bearing. Se
+          # cita SOLO en la rama `reviewer-no-verdict-persistent` — el momento
+          # exacto en que un humano/el Auditor tienen que decidir algo — para
+          # que el pin culpable aparezca en el MISMO comentario que pide actuar,
+          # en vez de exigir arqueología entre repos.
+          PIN_DIVERGENTE: ${{ steps.pindiv.outputs.linea }}
         with:
           script: |
             const O = { owner: context.repo.owner, repo: context.repo.repo };
@@ -416,8 +523,16 @@ jobs:
                 const motivo = budgetDeath && prior < 1
                   ? `muerte-por-presupuesto POSITIVA (\`error_max_turns\`) en la 1ª conclusión — fast-path AP-040: relanzar una sesión idéntica moriría igual, no se quema el cap-1`
                   : `2ª conclusión del Reviewer SIN veredicto para el mismo head — una 2ª muerte indica que la review no cabe en el presupuesto (no un flake)`;
+                // AP-052: si el stub de este repo pinea un input lesson-bearing
+                // por debajo del default del central, el pin culpable viaja EN
+                // ESTE comentario. Sin marcador nuevo (nada lo consume): es
+                // atribución para el 5-whys y una acción legible para el humano,
+                // que es quien decide sobre sus stubs (ADR-020).
+                const pinLine = (process.env.PIN_DIVERGENTE || '').trim()
+                  ? `\n\n\`${(process.env.PIN_DIVERGENTE || '').trim()}\` — el stub de este repo pisa un default que el central corrigió por lección aprendida; el presupuesto real de esta sesión NO es el que el central sirve. Revisar el \`with:\` del stub antes de re-dimensionar el PR.`
+                  : '';
                 await github.rest.issues.createComment({ ...O, issue_number: n,
-                  body: `**reviewer · rama sin-veredicto (AP-025/AP-040)**: ${motivo}. Anomalía para architect-resolve (\`stalled\`). \`${causaLine}\`\n\n<!-- reviewer-no-verdict-persistent -->` });
+                  body: `**reviewer · rama sin-veredicto (AP-025/AP-040)**: ${motivo}. Anomalía para architect-resolve (\`stalled\`). \`${causaLine}\`${pinLine}\n\n<!-- reviewer-no-verdict-persistent -->` });
                 core.warning(`AP-040: escalada a architect-resolve para ${headSha.slice(0,7)} — ${causaLine}${budgetDeath ? ' (fast-path presupuesto)' : ''}.`);
                 return;
               }
