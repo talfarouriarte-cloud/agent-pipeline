@@ -18,7 +18,7 @@ jobs:
       # cubre este repo — los jobs quedaban `queued` sin runner para siempre
       # (Reviewer >1h). El repo es público: GitHub-hosted es gratis.
       runner: ubuntu-latest
-      reviewer_model: claude-opus-4-8
+      reviewer_model: claude-opus-5
       reviewer_max_turns: 80   # AP-025: bump de presupuesto (50→80) — ataca la frecuencia de muerte sin veredicto; la red por-estado del post-step cubre cualquier muerte
       timeout_minutes: 22      # AP-025: el wall-clock escala con los turns o el bump es inerte
       agent_branch_prefix: claude/
