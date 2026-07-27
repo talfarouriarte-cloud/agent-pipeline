@@ -117,7 +117,17 @@ jobs:
     timeout-minutes: 12
     permissions:
       contents: read
-      issues: read
+      # write y no read (AP-056, 2026-07-27, watchdog caído en finplan): el
+      # cap del job se diseñó cuando detect era solo-lectura sobre issues;
+      # AP-038 (cortacircuito: human-needed + comentario) y AP-039/AP-048
+      # (sospecha de asentamiento de cola-huerfana) añadieron escrituras
+      # sobre ISSUES con el GITHUB_TOKEN. Permisos efectivos = intersección
+      # stub∩job: los stubs ya conceden issues:write, pero este cap lo
+      # recortaba a read ⇒ `Resource not accessible by integration`, throw
+      # sin capturar, scan entero muerto en cada tick mientras persistiera
+      # el estado en-cola+serie-libre. (Las escrituras sobre PRs pasaban:
+      # las cubre pull-requests:write.)
+      issues: write
       statuses: write   # espejo watchdog/turno en checks (2026-07-10)
       # Modo d): re-run de jobs fallidos del CI + comentario-marcador en el
       # PR. El GITHUB_TOKEN basta (no necesita disparar otros workflows: la
@@ -1102,9 +1112,19 @@ jobs:
                   ? `la serie sólo la ocupa el PROPIO PR huérfano #${ownOrphanPR.number} (\`${ownOrphanPR.head.ref}\`) — sin run activo ni sesión de Creator viva (interbloqueo AP-048: \`en-cola\` sólo se desencola al merge o al terminal del Creator, y no hay ninguno)`
                   : 'la serie está LIBRE (sin `serial-activo` ni PR `claude/*` abierto)';
                 if (!freshSuspicion) {
-                  await github.rest.issues.createComment({ ...O, issue_number: issue.number,
-                    body: `**watchdog · cola serial**: \`en-cola\` y ${premiseNote}. Puede ser un pop de cola muerto, un interbloqueo mismo-issue o una liberación de serie aún asentándose. Ventana de asentamiento: si persiste al próximo tick efectivo, se escala a la etapa architect como \`cola-huerfana\`.\n\n${SETTLE_MARK}\n${CAPA}` });
-                  core.notice(`#${issue.number}: en-cola + premisa caída; marcador de asentamiento puesto (1er tick del episodio), sin escalar aún.`);
+                  // Fail-soft (AP-056): el marcador es diagnóstico — si no se
+                  // puede escribir, se avisa y se sigue; el producto del scan
+                  // son las anomalías del resto de ítems, no este comentario.
+                  // Coste del fallo blando: la ventana de asentamiento no
+                  // arranca y este ítem espera al tick en que el write funcione
+                  // — degradación de latencia, nunca de detección global.
+                  try {
+                    await github.rest.issues.createComment({ ...O, issue_number: issue.number,
+                      body: `**watchdog · cola serial**: \`en-cola\` y ${premiseNote}. Puede ser un pop de cola muerto, un interbloqueo mismo-issue o una liberación de serie aún asentándose. Ventana de asentamiento: si persiste al próximo tick efectivo, se escala a la etapa architect como \`cola-huerfana\`.\n\n${SETTLE_MARK}\n${CAPA}` });
+                    core.notice(`#${issue.number}: en-cola + premisa caída; marcador de asentamiento puesto (1er tick del episodio), sin escalar aún.`);
+                  } catch (e) {
+                    core.warning(`#${issue.number}: no se pudo poner el marcador de asentamiento (${e.message}); reintento en el próximo tick.`);
+                  }
                   continue;
                 }
                 core.notice(`#${issue.number}: en-cola + premisa caída PERSISTENTE (>1 tick del episodio) ⇒ cola-huerfana, escala a architect.`);
