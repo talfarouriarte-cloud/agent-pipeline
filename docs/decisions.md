@@ -1376,3 +1376,16 @@ La clase que motivó el hard stop serial (AP-033, incidente finplan#1298/#1299) 
 
 **Fecha.** 2026-07-27.
 ---
+
+## AP-056 — `issues: write` en el cap de permisos del job `detect` del Watchdog + fail-soft en el marcador de asentamiento: las escrituras sobre ISSUES añadidas por AP-038/AP-039/AP-048 corrían bajo un cap diseñado cuando detect era solo-lectura — throw sin capturar ⇒ scan muerto en cada tick: EJECUTADA
+
+**Contexto (watchdog caído en finplan, 2026-07-27 ~19:47→20:40).** Todos los ticks del Watchdog de finplan morían en `Scan for stalled work` con `Resource not accessible by integration` ⇒ detect en failure ⇒ architect skipped ⇒ vigilancia efectivamente caída. El disparador: primer episodio real de `en-cola` con la serie LIBRE — la rama de sospecha de `cola-huerfana` (AP-039, refinada AP-048) intentó postear su marcador de asentamiento sobre el ISSUE con el `GITHUB_TOKEN`, y el cap del job `detect` concede `issues: read`. Permisos efectivos = intersección stub∩job: los stubs conceden `issues: write` desde siempre, pero el cap del reusable lo recortaba. Las escrituras sobre PRs (rebase-ping, CI-retry, dirty) pasaban porque las cubre `pull-requests: write` — por eso el bug durmió: solo las rutas que escriben sobre ISSUES estaban rotas, y ninguna se había ejercido en consumidor hasta hoy. Misma latencia tienen las del cortacircuito AP-038 (`human-needed` + comentario sobre issues): habrían fallado igual en su primer disparo real. Es la superficie de contrato no verificada ya fichada en AP-050: los bloques de permisos job-level del reusable no se validan contra las escrituras que su propio código ejerce — `check-contracts` verifica stub ⊇ job, nadie verifica job ⊇ código.
+
+**Decisión.** (1) `issues: write` en el cap del job `detect`, comentado con la causa (sin cambio en stubs: ya lo concedían — por eso NO hay superficie nueva de contrato ni edición de consumidores). (2) Fail-soft (`try/catch` + warning) en la escritura del marcador de asentamiento: es diagnóstico — su fallo degrada la latencia de ESE ítem (la ventana arranca en el tick en que el write funcione), jamás la detección global del scan. Las escrituras consecuentes (cortacircuito AP-038) quedan deliberadamente FUERA del fail-soft: con el permiso corregido funcionan, y si vuelven a fallar debe ser ruidoso — materializan estado, no diagnóstican.
+
+**Falsable.** (a) Tras el merge, el primer tick del Watchdog de finplan completa el scan en verde y postea el marcador de asentamiento sobre el issue `en-cola`; (b) el tick siguiente escala `cola-huerfana` a architect-resolve y el ítem encolado recupera dueño sin intervención humana; (c) ningún tick futuro debe morir por un write de diagnóstico. Ítem abierto que este AP no cubre: un check estático «job ⊇ escrituras del propio código» (clase job∩código) — candidato a `process-proposal`.
+
+**Reversibilidad.** Total: revertir el permiso restaura el cap previo (y el bug); el try/catch es inocuo por sí solo.
+
+**Fecha.** 2026-07-27.
+---
