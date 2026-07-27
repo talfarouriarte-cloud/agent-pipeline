@@ -382,8 +382,10 @@ jobs:
             const openAgentPRs = prs.filter(p => p.head.ref.startsWith('claude/'));
             const verdictRe = /^\s*(LGTM|REVIEW|NITS)\b/;
             // ── Rectificación de ADR aterrizada EN VUELO (AP-055, repesca
-            // finplan#1688). Una `## ADR-N · Rectificación` que aterriza en la
-            // rama BASE mientras un PR está en loop no invalidaba NADA ni
+            // finplan#1688). Una rectificación —`### Revisión R·1 (…)` dentro
+            // del bloque, `> **Enmienda (…)`: las formas que el corpus SÍ
+            // exhibe, §FIRMA abajo— que aterriza en la rama BASE mientras un
+            // PR está en loop no invalidaba NADA ni
             // reconvocaba a nadie: la puerta de fidelidad universal-strict del
             // Reviewer contrasta contra el snapshot del ADR de su ARRANQUE, y
             // `lgtm` + el gate de epic-merge quedan intactos. Doble fuga
@@ -399,12 +401,15 @@ jobs:
             // Firma DETERMINISTA por ESTADO, cero LLM: compare
             // `pr.base.sha`...`pr.base.ref` —lo que aterrizó en la BASE desde el
             // punto de partida del PR; `base.sha` no avanza con la rama— ∩ IDs
-            // de ADR citados en título/body del PR. Solo cuentan los bloques
-            // `· Rectificación` NUEVOS (líneas AÑADIDAS del patch), no cualquier
-            // edición del volumen: eso acota el falso positivo a lo que la
-            // propuesta acepta (una re-review Opus), en vez de re-convocar por
-            // cada commit de docs. Cap 1 por (PR, rectificación) vía marcador
-            // con clave. Por qué el watchdog y no «el camino docs-only del
+            // de ADR citados en título/body del PR. Solo cuentan las LÍNEAS
+            // AÑADIDAS del patch que son rectificación según la §FIRMA de
+            // abajo —la del CORPUS, nunca un header de bloque propio—, no
+            // cualquier edición del volumen: eso acota el falso positivo a lo
+            // que la propuesta acepta (una re-review Opus), en vez de
+            // re-convocar por cada commit de docs. Cap 1 por (PR,
+            // rectificación) vía marcador con clave (§CLAVE abajo: DOS formas,
+            // con ordinal y sin él, ambas declaradas en `protocol.md`).
+            // Por qué el watchdog y no «el camino docs-only del
             // reusable de CI» que proponía el issue: el central NO sirve ningún
             // reusable de CI —el CI docs-only con `adr-lint` es LOCAL de cada
             // consumidor (AP-009 §deuda anotada)—, luego ahí el edge habría que
@@ -443,11 +448,12 @@ jobs:
             // el fichero entero en `pr.base.ref` y caminándolo con el último
             // `^## (ADR|AP)-N` visto. Fallback si el GET falla: el propio
             // patch; y si tampoco, `::warning` nominal — nunca silencio.
-            const RECT_MARK = '<!-- rectificacion-en-vuelo';   // prefijo; el marcador emitido lleva la clave: `<!-- rectificacion-en-vuelo: ADR-231·R·1 -->`
+            const RECT_MARK = '<!-- rectificacion-en-vuelo';   // prefijo; el marcador emitido lleva la clave en cualquiera de sus DOS formas (§CLAVE abajo): `<!-- rectificacion-en-vuelo: ADR-231·R·1 -->` o `<!-- rectificacion-en-vuelo: AP-006·enmienda-2026-07-13 -->`
             const RECT_MARK_RE = /<!--\s*rectificacion-en-vuelo:\s*[^>]*-->/;   // cadena COMPLETA con clave (clase 6: jamás substring de prosa; una cita transportada por AP-054 llega con `<!--` escapado a `&lt;!--` y no casa)
             const ADR_HEAD = /^##\s*(ADR|AP)-(\d+)\b/;   // `+n` normaliza los ceros a la izquierda (`ADR-005` ≡ `ADR-5`) SOLO para cruzar; la clave del marcador usa la forma LITERAL del header
-            const RECT_ORD = /R\s*[·.]\s*(\d+)/;
+            const RECT_ORD = /\bR\s*[·.]\s*(\d+)/;   // `\b`: sin frontera, la `R` puede ser la SEGUNDA letra de otra palabra (`PR.1`, `PR·2`) y el ordinal dispararía la rama (a) sin vocablo. `### Revisión R·1 (…)` y `(R·1)` conservan la frontera
             const RECT_VOCAB = /Rectificaci[oó]n|Rectifica|Derogaci[oó]n|Deroga|Enmienda|Revisi[oó]n/i;
+            const RECT_DATE = /\b(\d{4}-\d{2}-\d{2})\b/;   // fecha de la rectificación cuando la línea la trae (`**Enmienda (2026-07-13).**`): parte ESTABLE de la clave sin ordinal
             const rectCand = t => {
               if (/^#{2,6}\s+/.test(t)) return ADR_HEAD.test(t)
                 ? (RECT_VOCAB.test(t) && RECT_ORD.test(t))   // header de BLOQUE: solo si se declara rectificación CON ordinal
@@ -505,10 +511,32 @@ jobs:
                     cand.delete(t);
                     if (!cur) continue;                 // rectificación antes de todo header: no atribuible
                     if (!cited.has(cur)) continue;      // rectificación de un ADR/AP que este PR no cita: no es su base normativa
+                    // CLAVE del marcador — DOS formas, ambas declaradas en
+                    // `protocol.md` y en el §Decisión 2 del AP:
+                    //   · `ADR-N·R·M` cuando la rectificación lleva ordinal
+                    //     (finplan/wmcb: `### Revisión R·1 (…)`);
+                    //   · `ADR-N·<vocablo>[-<fecha>]` cuando NO lo lleva — la
+                    //     forma del central (`AP-006·enmienda-2026-07-13`).
+                    // El sufijo sin ordinal se deriva del VOCABLO (+ fecha si
+                    // la línea la trae), NO del texto completo de la línea: un
+                    // slug del texto cambia con cualquier edición posterior
+                    // (typo, reformulación, fecha corregida), el compare vuelve
+                    // a ver la línea como AÑADIDA, la clave ya no casa y el
+                    // dedupe emite un SEGUNDO comentario —con su segunda
+                    // retirada de `lgtm`— por la MISMA rectificación: el cap
+                    // «1 por rectificación» dejaba de ser duro justo en la rama
+                    // sin ordinal. Desempate por sufijo `-2`, `-3`… si dos
+                    // rectificaciones del MISMO bloque comparten vocablo y
+                    // fecha: colisionarían y la segunda se perdería en
+                    // SILENCIO, que es peor que un comentario de más.
+                    const headTxt = t.replace(/^[#>\s]+/, '');
                     const ord = t.match(RECT_ORD);
-                    const slug = t.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40).toLowerCase();
-                    const key = `${curDisp}${ord ? `·R·${ord[1]}` : `·${slug || 'rect'}`}`;
-                    if (!rects.has(key)) rects.set(key, { key, head: t.replace(/^[#>\s]+/, '') });
+                    const voc = /Rectifica/i.test(t) ? 'rectificacion' : /Deroga/i.test(t) ? 'derogacion' : /Enmienda/i.test(t) ? 'enmienda' : /Revisi/i.test(t) ? 'revision' : '';   // vocablo CANÓNICO sin diacríticos (conjunto cerrado, explícito: nada de normalize/rangos de combining chars invisibles en el fuente)
+                    const date = (t.match(RECT_DATE) || [])[1];
+                    const suf = ord ? `R·${ord[1]}` : `${voc || 'rect'}${date ? `-${date}` : ''}`;
+                    let key = `${curDisp}·${suf}`;
+                    for (let n = 2; rects.has(key) && rects.get(key).head !== headTxt; n++) key = `${curDisp}·${suf}-${n}`;
+                    if (!rects.has(key)) rects.set(key, { key, head: headTxt });
                   }
                   for (const t of cand) core.warning(`rect-en-vuelo #${pr.number}: línea de rectificación añadida en ${f.filename} no localizable en la base para atribuirla a su ADR — «${t.slice(0, 80)}» NO evaluada.`);
                 }
