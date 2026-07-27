@@ -43,6 +43,10 @@ jobs:
       epic_label: epica
       resolve_max_turns: 40
       lookback_min: 45
+      # AP-051: en el CENTRAL `process-proposal` es la COLA, no un panel —
+      # sin esta línea el barrido AP-038 la excluye y `stalled` muere en
+      # silencio (incidente #125/#128/#129/#131/#142, 2026-07-22/27).
+      skip_labels: "pause-agents,human-needed,auditoria,registro-decisiones"
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       REVIEWER_GITHUB_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}

@@ -85,6 +85,15 @@ on:
       lookback_min:
         type: number
         default: 45
+      skip_labels:
+        description: >-
+          Labels (CSV) que el detector EXCLUYE de la vigilancia. El default es
+          la lista histórica de consumidor (paneles abiertos por diseño). El
+          CENTRAL la pasa SIN `process-proposal`: aquí esa label es la COLA de
+          trabajo, no un panel (AP-051 — el barrido AP-038 salía con «Sin
+          anomalías» sobre 5 stalled reales).
+        type: string
+        default: "pause-agents,human-needed,auditoria,process-proposal,registro-decisiones"
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
@@ -155,6 +164,7 @@ jobs:
           IN_EPIC_MERGE_WF: ${{ inputs.epic_merge_workflow_name }}
           IN_EXTRA_WFS: ${{ inputs.extra_pipeline_workflows }}
           IN_LOOKBACK_MIN: ${{ inputs.lookback_min }}
+          IN_SKIP_LABELS: ${{ inputs.skip_labels }}
           IN_DEFAULT_BRANCH: ${{ inputs.default_branch }}
         with:
           script: |
@@ -256,13 +266,13 @@ jobs:
             }
             // Régimen autónomo: `stalled` ya no excluye (es la señal de
             // architect-resolve); `human-needed` es el cortacircuito que sí.
-            const skip = labels =>
-              labels.some(l => ['pause-agents', 'human-needed',
-                // Paneles de época (fix 2026-07-12, propuesta #1287 finplan):
-                // quedan ABIERTOS por diseño con su arm en el body — para el
-                // detector issue-armed-no-pr eran stall eterno (churn de
-                // inspecciones + human-needed sobre trabajo terminado).
-                'auditoria', 'process-proposal', 'registro-decisiones'].includes(l.name));
+            // Lista de exclusión por INPUT (AP-051). Default = la lista
+            // histórica de consumidor (paneles de época, fix 2026-07-12,
+            // propuesta #1287 finplan: abiertos por diseño con su arm en el
+            // body — para el detector issue-armed-no-pr eran stall eterno).
+            // El central la pasa SIN `process-proposal` (allí es la cola).
+            const SKIP_LABELS = (process.env.IN_SKIP_LABELS || '').split(',').map(x => x.trim()).filter(Boolean);
+            const skip = labels => labels.some(l => SKIP_LABELS.includes(l.name));
 
 
             // ── Dispatcher de TURNO (ADR-217, 2026-07-10, state-driven).
