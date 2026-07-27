@@ -173,10 +173,16 @@ jobs:
               {"input": "reviewer_max_turns", "default": 80, "ap": "AP-025", "leccion": "finplan#1450 — 1ª muerte del Reviewer por presupuesto tras el mandato universal-strict"},
               {"input": "timeout_minutes",    "default": 22, "ap": "AP-025", "leccion": "finplan#1450 — el wall-clock escala con los turns o el bump es inerte"}
             ]
+          # `toJSON()` y no interpolación desnuda: emite `80` para un number y
+          # `"claude-opus-5"` para un string. Con la interpolación a pelo, el
+          # primer input lesson-bearing NO numérico produciría JSON inválido, el
+          # `JSON.parse` de abajo lanzaría y el catch dejaría el aviso inerte
+          # para TODOS los inputs del reusable — fail-open silencioso, la misma
+          # clase que este AP viene a impedir. `check-contracts` exige esta forma.
           PINS_RECIBIDOS: |
             {
-              "reviewer_max_turns": ${{ inputs.reviewer_max_turns }},
-              "timeout_minutes": ${{ inputs.timeout_minutes }}
+              "reviewer_max_turns": ${{ toJSON(inputs.reviewer_max_turns) }},
+              "timeout_minutes": ${{ toJSON(inputs.timeout_minutes) }}
             }
         with:
           script: |

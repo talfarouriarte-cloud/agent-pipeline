@@ -18,8 +18,14 @@ jobs:
       # cubre este repo — los jobs quedaban `queued` sin runner para siempre
       # (Reviewer >1h). El repo es público: GitHub-hosted es gratis.
       runner: ubuntu-latest
-      reviewer_max_turns: 80   # AP-025: bump de presupuesto (50→80) — ataca la frecuencia de muerte sin veredicto; la red por-estado del post-step cubre cualquier muerte
-      timeout_minutes: 22      # AP-025: el wall-clock escala con los turns o el bump es inerte
+      # `reviewer_max_turns` y `timeout_minutes` NO se pinean (AP-052). Este
+      # stub los pineaba a 80/22 — iguales al default del central, luego sin
+      # divergencia hoy y SIN aviso posible (el `::notice` solo ve pins por
+      # DEBAJO). Pero son inputs lesson-bearing: el día que AP-025 se enmiende,
+      # el Reviewer del propio central seguiría a 80 y reproduciría aquí el
+      # escenario finplan#1674 — en el repo que funda la doctrina. Sin línea,
+      # rige el default y la lección futura llega sola (AP-012: el central es
+      # consumidor de sí mismo, así que la regla le aplica igual).
       agent_branch_prefix: claude/
       review_context: |
         - `templates/workflow-contracts.json` si el PR toca la superficie `workflow_call` de un reusable (manifiesto en el MISMO PR, AP-003).
