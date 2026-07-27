@@ -29,7 +29,7 @@ on:
       creator_model:
         description: Modelo del Creator
         type: string
-        default: claude-opus-4-8
+        default: claude-opus-5
       creator_max_turns:
         description: max-turns del Creator
         type: number
@@ -848,11 +848,11 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # claude-opus-4-8: modelo actual de mayor capacidad. Coherente
-          # con la decisión de usar el modelo más capaz para creación de
-          # código en el motor financiero. (Antes claude-opus-4-7; migrado
-          # a 4.8 — mismo precio, mejor tool-calling, mejor manejo de
-          # contexto largo/compactación, menos verbosidad de comentarios.)
+          # Modelo: input `creator_model`, default en workflow_call —
+          # claude-opus-5 desde 2026-07-27 (mismo precio que 4.8, mejor
+          # coding y verificación del propio trabajo). El modelo se gobierna
+          # SOLO por el default del central: los stubs NO lo pinean (clase
+          # #142 — un pin de stub pisa en silencio el default aprendido).
           # max-turns 100 razonable con OAuth Max (no hay coste por uso,
           # solo cuota de bucket).
           # `Bash(gh api:*)` en el allowlist (AP-028, repesca finplan#1467;

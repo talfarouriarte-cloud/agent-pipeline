@@ -11,7 +11,7 @@ on:
         default: ubuntu-latest
       reviewer_model:
         type: string
-        default: claude-opus-4-8
+        default: claude-opus-5
       reviewer_max_turns:
         # 80 y no 50 (AP-025, repesca finplan#1450): el mandato universal-strict
         # (2026-07-12, fidelidad ADR cláusula-a-cláusula en TODO PR) expandió el

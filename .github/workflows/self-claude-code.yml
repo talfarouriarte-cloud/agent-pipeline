@@ -33,7 +33,6 @@ jobs:
       # (Reviewer >1h). El repo es público: GitHub-hosted es gratis.
       runner: ubuntu-latest
       default_branch: main
-      creator_model: claude-opus-5
       creator_max_turns: 120
       bot_comment_cap: 8
     secrets:
