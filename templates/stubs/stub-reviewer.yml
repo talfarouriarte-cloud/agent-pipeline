@@ -24,10 +24,13 @@ jobs:
       # Reviewer sin veredicto + 2 intervenciones humanas. Sin línea = rige el
       # default del central, y las lecciones futuras llegan solas.
       #
-      # Si tu repo NECESITA pinearlos, la regla es: pin CON anotación (motivo +
-      # referencia AP), como los de `self-reviewer.yml` del central. Un pin sin
-      # anotación es un defecto detectable; el reusable además emite `::notice` +
-      # línea en el job summary cada vez que recibe uno por debajo del default.
+      # Si tu repo NECESITA pinearlos, la regla es: pin CON anotación que diga
+      # por qué ESTE repo pisa un input lesson-bearing (no solo por qué el valor
+      # es el que es) + referencia AP. Un pin sin anotación es un defecto POR
+      # DOCTRINA: nada lo verifica — el reusable recibe valores, nunca estos
+      # comentarios. Lo único que sí emite (`::notice` + job summary) es el aviso
+      # cuando recibe un lesson-bearing POR DEBAJO del default; igual o por
+      # encima le es invisible. Ver `MIGRATION.md` §4 para los límites exactos.
       agent_branch_prefix: claude/
       review_context: ""
     secrets:

@@ -277,8 +277,24 @@ for (const f of Object.keys(onDisk)) {
     // ausente del mapa `PINS_RECIBIDOS` nace inerte (clase wmcb#20 aplicada al
     // propio detector — el fallo que este AP viene a impedir, un piso más
     // arriba).
-    if (!(pinsRaw.includes(`"${name}"`) && pinsRaw.includes(`inputs.${name}`))) {
+    //
+    // Dos exigencias, no una:
+    //  1. Que la clave y la referencia estén — con frontera de palabra, o
+    //     `inputs.timeout` daría por bueno un mapa que solo lleva
+    //     `inputs.timeout_minutes` (falso negativo justo en el guard anti-inerte).
+    //  2. Que la referencia vaya envuelta en `toJSON(...)`. Con `${{ inputs.x }}`
+    //     desnudo el mapa solo produce JSON válido para inputs numéricos: el
+    //     primer lesson-bearing de tipo string rompería el `JSON.parse` del step
+    //     y, por fail-open, mataría el aviso de TODOS los inputs del reusable.
+    //     Sin este check pasaría en verde con el detector muerto.
+    const esc = name.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&');
+    const clave = new RegExp(`"${esc}"\\s*:`).test(pinsRaw);
+    const envuelto = new RegExp(`toJSON\\(\\s*inputs\\.${esc}\\s*\\)`).test(pinsRaw);
+    const desnudo = new RegExp(`inputs\\.${esc}\\b`).test(pinsRaw);
+    if (!(clave && desnudo)) {
       errors.push(`${f}: \`${name}\` está en la tabla \`${LB_STEP_ENV}\` pero el mapa \`${LB_PINS_ENV}\` del step no le pasa \`inputs.${name}\` — el aviso nace inerte para ese input (clase wmcb#20)`);
+    } else if (!envuelto) {
+      errors.push(`${f}: \`${name}\` viaja al mapa \`${LB_PINS_ENV}\` con interpolación desnuda — usa \`\${{ toJSON(inputs.${name}) }}\`, o un input no numérico produce JSON inválido y el fail-open del step mata el aviso de TODOS los inputs (AP-052)`);
     }
   }
 }

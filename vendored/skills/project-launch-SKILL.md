@@ -61,8 +61,11 @@ todo escala.
   detrás; lista en `templates/workflow-contracts.json`, bloque
   `lesson_bearing`) NO se pinean: pinearlos por debajo del default revierte en
   silencio un fix ya desplegado. Si aun así hay que pinear uno, la línea va CON
-  anotación (motivo + referencia AP); pin sin anotación = defecto, y el
-  reusable lo señala en el job summary en cada run. Instancia que funda la
+  anotación (motivo + referencia AP); pin sin anotación = defecto **por
+  doctrina, y no hay gate que lo verifique** — el reusable recibe VALORES, no
+  los comentarios del `with:`. Lo que sí señala en cada run es un input
+  lesson-bearing recibido **por debajo** del default (esté anotado o no); un
+  pin igual o por encima le es invisible. Instancia que funda la
   regla: el stub de finplan pineó `reviewer_max_turns: 50` frente al default 80
   del central (AP-025) — el fix estaba desplegado y no regía; costó 3 muertes
   del Reviewer sin veredicto y 2 intervenciones humanas.
