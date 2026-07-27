@@ -1334,7 +1334,7 @@ jobs:
               // rastro difieren para que la auditoría/5-whys distinga
               // marcador-emitido de estado-derivado.
               const preamble = viaState
-                ? `**claude-code · post-step**: sesión de **re-arm de un parcial fantasma** (\`pr-abierto-por-estado\` mergeado ⇒ \`epic-partial-relaunch-por-estado\`) terminó \`success\` sin PR, sin commits y SIN emitir \`creator-alcance-completo\`. El "resto" de un parcial forzado era \`desconocido\` (placeholder, no alcance real): la re-verificación en verde que no encuentra nada ES el terminal **alcance ya COMPLETO** — **NO es escalada** ⇒ el estado lo DERIVA en vez de degradar a \`human-needed\` (cola fantasma, AP-026):`
+                ? `**claude-code · post-step**: sesión de **re-arm de un parcial fantasma** (\`pr-abierto-por-estado\` mergeado ⇒ \`epic-partial-relaunch-por-estado\` **sin** \`...-con-cita\`) terminó \`success\` sin PR, sin commits y SIN emitir \`creator-alcance-completo\`. El "resto" de ese parcial forzado era \`desconocido\` — placeholder, no alcance real, y **verificado como tal por la ausencia del marcador \`-con-cita\`** (con cita transportada, AP-054, este belt NO dispara: se enruta a architect-resolve por \`stalled\`, AP-036). Siendo el resto un placeholder, la re-verificación en verde que no encuentra nada ES el terminal **alcance ya COMPLETO** — **NO es escalada** ⇒ el estado lo DERIVA en vez de degradar a \`human-needed\` (cola fantasma, AP-026):`
                 : `**claude-code · post-step**: el Creator concluyó con veredicto **alcance ya COMPLETO en la rama base, sin PR que abrir** (\`<!-- creator-alcance-completo -->\`). Estado terminal legítimo materializado en el instante — **NO es escalada**:`;
               const traceMarker = viaState ? 'creator-alcance-completo-materializado-por-estado' : 'creator-alcance-completo-materializado';
               const humanNote = viaState
@@ -1449,6 +1449,138 @@ jobs:
               }
               return null;
             }
+            // AP-054 (2026-07-27, repesca finplan#1685): TRANSPORTE del cierre
+            // PÚBLICO de la sesión muerta. `freshDeclaredPr` lee el canal
+            // ESTRUCTURADO (bloque `pr-body-declarado`, AP-042) y, ausente éste,
+            // el compositor degradaba a «Alcance restante: `desconocido`» —
+            // AUNQUE el alcance restante estuviera declarado, verbatim y público,
+            // en el último comentario de la sesión. Incidente: finplan#1685
+            // publicó a las 10:30:58Z su checklist de cierre con «[→] §D2
+            // escalado al Architect», murió en `success` sin PR, y el
+            // relanzamiento gastó 43m14s re-derivando lo que el turno anterior
+            // ya sabía. El canal estructurado falla precisamente en las sesiones
+            // que MUEREN —que son exactamente las que este compositor rescata—:
+            // 2ª omisión medida del bloque tras AP-042, con 0/8 tags de cierre en
+            // la misma unidad. El comentario público ES estado materializado
+            // (principio 1 de protocol.md); no leerlo y fabricar «desconocido»
+            // es inferencia sobre estado disponible.
+            //
+            // NEUTRALIZACIÓN (la mitad que el blockquote NO cubre). Citar prosa
+            // del agente re-emite el vocabulario del pipeline dentro de un
+            // artefacto que otros workflows parsean — clase «regex polarity
+            // blindness» del pipeline-map. Dos capas, porque los consumidores se
+            // reparten en dos familias:
+            //  1. `> ` por LÍNEA (blockquote) rompe los matchers ANCLADOS a
+            //     inicio de línea: `^\s*\[READY-TO-MERGE\]`, `^\[ALCANCE-COMPLETO\]`,
+            //     `^<!--\s*full-pr\s*-->\s*$` de este mismo helper. `>` no es
+            //     `\s`, así que la cita jamás satisface el ancla.
+            //  2. Escape de la sintaxis de comentario HTML (`<!--`/`-->` →
+            //     `&lt;!--`/`--&gt;`) rompe los matchers SIN anclar, que el
+            //     blockquote deja intactos. Este es el camino REALMENTE letal:
+            //     `epic-merge.yml` lee la polaridad con `/<!--\s*full-pr\s*-->/`
+            //     sobre el body ENTERO del PR, sin ancla. Un cierre que eche el
+            //     body que pensaba abrir —justo lo que AP-042 le pide publicar—
+            //     contiene `<!-- full-pr -->`; citado sin escapar, el parcial
+            //     FORZADO se leería como FULL ⇒ issue cerrado y `launch-next`
+            //     consumido con el alcance restante huérfano: la cascada exacta
+            //     que AP-042 existe para evitar, reintroducida por el fix.
+            //     Renderizado en PROSA, `&lt;!--` se ve `<!--` y el humano sigue
+            //     leyendo el texto verbatim; sólo las regex dejan de casar.
+            //     Límite declarado (review AP-054): dentro de un code span o de
+            //     un bloque cercado las entidades NO se decodifican, así que un
+            //     marcador que el Creator escribiera entre backticks —forma
+            //     habitual— se lee `&lt;!-- ... --&gt;` en crudo. Se acepta: la
+            //     capa es de SEGURIDAD, y la fuente íntegra viaja enlazada.
+            //  3. Neutralización de las KEYWORDS DE CIERRE de GitHub
+            //     (`Closes/Fixes/Resolves #N` → referencia en inline-code). El
+            //     tercer consumidor de este body no es un workflow nuestro: es
+            //     el parser NATIVO de GitHub, que enlaza el PR al issue y lo
+            //     CIERRA al mergear. Un cierre que eche su body declarado trae
+            //     `Closes #N` literal (AP-042 se lo pide); citarlo en un parcial
+            //     FORZADO cerraría el issue con alcance sin cubrir — el mismo
+            //     desenlace que la guarda `antiRef` de AP-042 rechaza en el canal
+            //     estructurado, y esa coherencia hay que mantenerla también aquí.
+            //     GitHub no parsea keywords dentro de inline-code; el blockquote
+            //     por sí solo NO basta (verificado: la referencia sobrevive a la
+            //     cita). Cinturón, no tirante único: `epic-merge` ya REABRE
+            //     explícitamente todo issue de PR parcial («inmunidad a un
+            //     `Closes #N` extraviado», 2026-07-06 #1097), así que el peor
+            //     caso residual es un cierre transitorio, no alcance huérfano.
+            //     ENMIENDA de la review de AP-054: esa inmunidad sólo cubre el
+            //     issue de ESTE repo (`epic-merge` reabre con `owner`/`repo`
+            //     propios), luego la forma CROSS-REPO `Closes owner/repo#N`
+            //     cerraría un issue del OTRO consumidor SIN red — y el corpus de
+            //     estos agentes está lleno de referencias cruzadas finplan ⇄ wmcb
+            //     ⇄ central. Se cubren por tanto las TRES formas que GitHub
+            //     honra: `#N`, `owner/repo#N` y la URL completa del issue; y el
+            //     separador admite el `Fixes: #N` con dos puntos. La pasada
+            //     respeta los code spans y los bloques cercados PREEXISTENTES
+            //     (donde GitHub ya no parsea nada): sin eso, un `Closes #N` que
+            //     el Creator ya escribió entre backticks producía
+            //     `` `Closes `#N`` `` — markdown roto que podía DESHACER el code
+            //     span y devolver la referencia al parser.
+            // Efecto colateral BUSCADO: ningún marcador citado puede abrir línea,
+            // así que el delimitador `cierre-sesion-muerta:*` (que epic-merge
+            // extrae con ancla `^`) es inviolable desde el contenido citado.
+            const CLOSE_KW_RE = /\b(clos(?:e|es|ed)|fix(?:e[sd])?|resolv(?:e|es|ed))(\s*:?\s+)((?:[\w.-]+\/[\w.-]+)?#\d+)\b/gi;
+            const ISSUE_URL_RE = /\bhttps?:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+\b/gi;
+            function neutralizeCloseRefs(text) {
+              let inFence = false;
+              return text.split('\n').map(line => {
+                if (/^\s*(?:```|~~~)/.test(line)) { inFence = !inFence; return line; }
+                if (inFence) return line; // GitHub no parsea referencias en bloque cercado
+                // Índices IMPARES = code spans ya existentes: se dejan intactos
+                // (GitHub tampoco los parsea, y tocarlos rompería el span).
+                return line.split(/(`+[^`]*`+)/).map((seg, i) => i % 2 === 1 ? seg
+                  : seg.replace(ISSUE_URL_RE, '`$&`').replace(CLOSE_KW_RE, '$1$2`$3`')).join('');
+              }).join('\n');
+            }
+            function quoteProse(text) {
+              const escaped = String(text).replace(/\r\n?/g, '\n')
+                .replace(/<!--/g, '&lt;!--').replace(/-->/g, '--&gt;');
+              return neutralizeCloseRefs(escaped).split('\n').map(l => '> ' + l).join('\n');
+            }
+            // Cap de tamaño: el body de un PR tope en 65536 chars y el cierre del
+            // Creator puede ser largo. Se trunca con aviso EXPLÍCITO y el enlace
+            // al comentario íntegro viaja siempre — el transporte es un atajo
+            // para el re-arm, no la fuente de verdad.
+            const QUOTE_CAP = 6000;
+            async function freshClosingProse() {
+              const trigTs = context.payload.comment ? new Date(context.payload.comment.created_at).getTime() : 0;
+              // `listComments` ordena por `created` ASCENDENTE: la página 1 son
+              // los 100 comentarios más ANTIGUOS. En un issue de épica con más
+              // de 100 comentarios —los de varias rondas de re-arm, diagnósticos
+              // de post-step, watchdog y architect-resolve, que son JUSTO los que
+              // más caro pagan re-derivar el estado— ningún elemento de esa
+              // página sería posterior a `trigTs` ⇒ el helper degradaría en
+              // SILENCIO a `desconocido`, indistinguible del residual legítimo
+              // (review AP-054). `since` filtra por `updated_at`, superconjunto
+              // de lo que el `created_at > trigTs` de abajo ya recorta ⇒ misma
+              // semántica con el conjunto colapsado a esta sesión; `paginate`
+              // (idioma ya usado en este fichero para el timeline) cierra el caso
+              // aunque `since` no aplique (disparador sin comentario ⇒ trigTs 0).
+              const cs = await github.paginate(github.rest.issues.listComments, {
+                owner, repo, issue_number: n, per_page: 100,
+                ...(trigTs ? { since: new Date(trigTs).toISOString() } : {}),
+              });
+              const freshBots = cs.filter(c => c.user?.login === 'claude[bot]' && new Date(c.created_at).getTime() > trigTs);
+              // Newest-first y `> trigTs`, criterio IDÉNTICO a `freshDeclaredPr`
+              // (lección #180: jamás un comentario de una sesión ANTERIOR al
+              // disparador). Gana el más reciente con prosa real.
+              for (let i = freshBots.length - 1; i >= 0; i--) {
+                const raw = (freshBots[i].body || '').trim();
+                if (!raw) continue;
+                const truncated = raw.length > QUOTE_CAP;
+                const text = truncated ? raw.slice(0, QUOTE_CAP) : raw;
+                return {
+                  quote: quoteProse(text) + (truncated ? '\n>\n> …(truncado)' : ''),
+                  url: freshBots[i].html_url,
+                  at: freshBots[i].updated_at || freshBots[i].created_at,
+                  truncated,
+                };
+              }
+              return null;
+            }
             // Estado de la rama huérfana (si existe): el diagnóstico que el
             // rearm necesita ("no rehagas nada").
             let branchInfo = 'sin rama creada (muerte temprana: no hay trabajo que conservar).';
@@ -1519,8 +1651,27 @@ jobs:
                 // el issue (el humano re-verifica contra HEAD antes de cerrar;
                 // central no delega cierre, AP-019), y el parcial fantasma ya
                 // consumió su slot del cap de rondas.
+                //
+                // ENMIENDA AP-054 (2026-07-27, review de este mismo PR): la
+                // premisa «resto = placeholder» era válida porque el marcador
+                // IMPLICABA, por construcción, un resto `desconocido`. AP-054
+                // rompe esa implicación: con cita transportada, el MISMO
+                // marcador acompaña un «Alcance restante» que puede declarar
+                // alcance REAL sin cubrir (p. ej. «[→] §D2 escalado al
+                // Architect», el incidente del ADR). Derivar alcance-completo
+                // ahí no sólo cerraría sobre una escalada viva: emitiría al
+                // ISSUE un diagnóstico que CONTRADICE el artefacto que el propio
+                // pipeline acaba de crear, y ese diagnóstico es entrada de
+                // architect-resolve (AP-037) y del Auditor — contradicción
+                // silenciosa entre piezas que distintos agentes leen con
+                // confianza. Por eso epic-merge estampa `...-con-cita` JUNTO al
+                // marcador de siempre (aditivo: contadores de cap y belt
+                // existente intactos) y aquí se exige su AUSENCIA. Con cita se
+                // cae al escalón AP-036 (`stalled` ⇒ architect-resolve), que es
+                // el camino que sabe LEER prosa y verificarla contra HEAD.
                 const trigBody = context.payload.comment?.body || '';
-                if (/<!--\s*epic-partial-relaunch-por-estado\s*-->/.test(trigBody)) {
+                const relanzadoConCita = /<!--\s*epic-partial-relaunch-por-estado-con-cita\s*-->/.test(trigBody);
+                if (!relanzadoConCita && /<!--\s*epic-partial-relaunch-por-estado\s*-->/.test(trigBody)) {
                   await materializeScopeComplete({ viaState: true });
                   return;
                 }
@@ -1539,8 +1690,11 @@ jobs:
                 // optimización (su presencia ahorra este run de resolve). Orden
                 // idéntico al camino declarado: comentario → pop → stalled →
                 // retirar serial-activo.
+                const citaNote = relanzadoConCita
+                  ? ` **El belt AP-026 NO aplica aquí**: este re-arm llevaba \`epic-partial-relaunch-por-estado-con-cita\` ⇒ su «Alcance restante» NO era un placeholder sino el cierre PÚBLICO transportado de la sesión muerta (AP-054), luego el silencio de esta sesión NO puede derivarse como «resto vacío ⇒ alcance completo»: la cita puede declarar alcance real o una escalada sin cubrir. Resolver: contrasta la cita del re-arm con HEAD antes de cualquier terminal.`
+                  : '';
                 await github.rest.issues.createComment({ owner, repo, issue_number: n,
-                  body: `**claude-code · post-step**: la sesión terminó sin PR ni commits con la serie ocupada y SIN token terminal (\`[CREATOR-BLOCKED]\`/\`[ALCANCE-COMPLETO]\` — creator.md § escalado determinista). Terminal NO-declarado ⇒ escalón AUTÓNOMO (AP-036): \`stalled\` con PAT ⇒ architect-resolve por evento, que lee la prosa del cierre y rula — bloqueo ⇒ resuelve y re-arma; alcance completo ⇒ materializa \`estado:cierre-pendiente-humano\`; sesión degenerada sin informe utilizable ⇒ \`human-needed\`. El humano entra tras doble rebote, no de primera línea. Serie liberada, turno pasado a la cola.\n\n<!-- escalada-materializada -->` });
+                  body: `**claude-code · post-step**: la sesión terminó sin PR ni commits con la serie ocupada y SIN token terminal (\`[CREATOR-BLOCKED]\`/\`[ALCANCE-COMPLETO]\` — creator.md § escalado determinista).${citaNote} Terminal NO-declarado ⇒ escalón AUTÓNOMO (AP-036): \`stalled\` con PAT ⇒ architect-resolve por evento, que lee la prosa del cierre y rula — bloqueo ⇒ resuelve y re-arma; alcance completo ⇒ materializa \`estado:cierre-pendiente-humano\`; sesión degenerada sin informe utilizable ⇒ \`human-needed\`. El humano entra tras doble rebote, no de primera línea. Serie liberada, turno pasado a la cola.\n\n<!-- escalada-materializada -->` });
                 await popQueue(n, `terminal no-declarado de #${n}`);
                 await github.rest.issues.addLabels({ owner, repo, issue_number: n, labels: ['stalled'] });
                 await github.rest.issues.removeLabel({ owner, repo, issue_number: n, name: 'serial-activo' }).catch(() => {});
@@ -1611,6 +1765,26 @@ jobs:
               // (camino residual para muerte-sin-bloque, comportamiento AP-023).
               const declared = await freshDeclaredPr();
               const declaredRef = declared ? (declared.polarity === 'full-pr' ? `Closes #${n}` : `Refs #${n}`) : null;
+              // AP-054: sin bloque estructurado FIEL, antes de degradar a
+              // «desconocido» transporta la prosa de cierre PÚBLICA de la sesión
+              // muerta. Solo se consulta en el camino forzado: con declaración
+              // fiel el body es del Creator y no se toca.
+              const closing = declared ? null : await freshClosingProse();
+              // Delimitadores en LÍNEA PROPIA: `epic-merge` extrae de aquí la
+              // cita para el texto de re-arm (2ª mitad de AP-054) sin re-consultar
+              // la API ni re-parsear prosa. Inviolables desde el contenido: toda
+              // línea citada abre con `> `.
+              const scopeSection = closing
+                ? [
+                    `**Transportado del cierre PÚBLICO de la sesión muerta** ([comentario](${closing.url}), ${closing.at}) — cita VERBATIM, sin interpretación del post-step. Los marcadores HTML van escapados (\`&lt;!--\`) y cada línea en blockquote: la cita NO declara polaridad ni emite tags, solo transporta estado (AP-054).`,
+                    '',
+                    '<!-- cierre-sesion-muerta:start -->',
+                    closing.quote,
+                    '<!-- cierre-sesion-muerta:end -->',
+                    '',
+                    '**Cómo leerlo:** la polaridad REAL de este PR es la forzada (`partial-pr`), no la que la cita pueda mencionar — el post-step no juzga full/partial. Si la cita declara alcance restante o una escalada, ESO es el resto real; si describe el trabajo como terminado, el re-arm lo re-verifica contra HEAD y emite `<!-- creator-alcance-completo -->`. **epic-merge y el Auditor: el resto de este PR es la cita, no un `desconocido`.**',
+                  ].join('\n')
+                : '**desconocido — parcial FORZADO por estado, NO un parcial de contenido real.** El post-step no juzga full/partial: marca `partial-pr` por seguridad porque la sesión murió antes de declarar alcance, y no dejó NINGÚN comentario fresco que citar (AP-054: el transporte de prosa no encontró fuente). Semántica del "resto" (AP-026): si esto mergea, `epic-merge` re-arma el issue con el marcador `epic-partial-relaunch-por-estado` y la sesión re-armada DEBE re-verificar contra el HEAD y declarar el TERMINAL — si NADA queda, emite `<!-- creator-alcance-completo -->` (no cierre manual en prosa); si queda alcance real, lo cubre y abre un PR full. **epic-merge y el Auditor NO deben leer este "desconocido" como una laguna de contenido real** — es un placeholder con desenlace determinista, no trabajo pendiente identificado.';
               const forcedPartialBody = [
                 `Refs #${n}`,
                 '',
@@ -1622,7 +1796,7 @@ jobs:
                 '',
                 '### Alcance restante (para el Architect)',
                 '',
-                '**desconocido — parcial FORZADO por estado, NO un parcial de contenido real.** El post-step no juzga full/partial: marca `partial-pr` por seguridad porque la sesión murió antes de declarar alcance. Semántica del "resto" (AP-026): si esto mergea, `epic-merge` re-arma el issue con el marcador `epic-partial-relaunch-por-estado` y la sesión re-armada DEBE re-verificar contra el HEAD y declarar el TERMINAL — si NADA queda, emite `<!-- creator-alcance-completo -->` (no cierre manual en prosa); si queda alcance real, lo cubre y abre un PR full. **epic-merge y el Auditor NO deben leer este "desconocido" como una laguna de contenido real** — es un placeholder con desenlace determinista, no trabajo pendiente identificado.',
+                scopeSection,
                 '',
                 '<!-- pr-abierto-por-estado -->',
               ].join('\n');
@@ -1657,7 +1831,9 @@ jobs:
                 await github.rest.issues.removeLabel({ owner, repo, issue_number: n, name: 'serial-activo' }).catch(() => {});
                 const polarityNote = declared
                   ? `polaridad **FIEL \`${declared.polarity}\`** con el body íntegro y \`${declaredRef}\` restituidos del bloque \`pr-body-declarado\` FRESCO del Creator (cadencia de hito AP-042, generaliza AP-030); un \`full-pr\` fiel cierra el issue y consume \`launch-next\` en el propio merge (cascada cero); un \`partial-pr\` fiel abre con «Alcance restante» REAL en vez del «desconocido» forzado de AP-023`
-                  : `polaridad \`partial-pr\` forzada, \`Refs #${n}\`, «Alcance restante» de texto fijo`;
+                  : closing
+                    ? `polaridad \`partial-pr\` forzada, \`Refs #${n}\`, y «Alcance restante» con la **cita VERBATIM del cierre público** de la sesión muerta ([comentario](${closing.url})${closing.truncated ? ', truncada al cap de tamaño' : ''}) en vez del \`desconocido\` — sin bloque \`pr-body-declarado\` fiel, el comentario público SIGUE siendo estado materializado (AP-054, repesca finplan#1685)`
+                    : `polaridad \`partial-pr\` forzada, \`Refs #${n}\`, «Alcance restante» \`desconocido\` — ni bloque declarado ni comentario fresco que citar (residual de AP-054)`;
                 await github.rest.issues.createComment({ owner, repo, issue_number: n,
                   body: `**claude-code · post-step**: la sesión del Creator terminó en \`${outcome}\` con el trabajo COMMITEADO en verde y SIN abrir el PR, pero con rama utilizable. La transición Creator→PR está DETERMINADA por el estado ⇒ el post-step la EJECUTA con el PAT — **NO** re-arma otra sesión ni declara \`stalled\` (repesca finplan#1404, AP-023):\n\n- ${branchInfo}\n- **PR #${prNum} abierto desde el estado** (${polarityNote}).\n- Abierto con el **PAT** ⇒ el \`opened\` dispara **CI** (\`ci-verde\`) y la **review** (rama de agente) como cualquier PR normal; por eso NO se aplica \`needs-review\` (doblaría la sesión Opus).\n- \`serial-activo\` retirada al nacer el PR (el PR abierto ES la señal de vuelo; la serie la libera el MERGE + arma la cola, como cualquier PR).\n\n<!-- creator-muerto-sin-pr-abierto-por-estado -->` });
                 core.warning(`Creator de #${n}: muerte sin PR RESUELTA por estado — PR #${prNum} abierto (${declared ? declared.polarity + ' FIEL' : 'partial forzado'}) por PAT; CI+review por \`opened\`, sin needs-review, sin stalled ni re-arm.`);
