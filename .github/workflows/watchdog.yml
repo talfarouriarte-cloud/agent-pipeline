@@ -381,8 +381,98 @@ jobs:
             } catch (e) { core.warning('belt cierre-por-estado: ' + e.message); }
             const openAgentPRs = prs.filter(p => p.head.ref.startsWith('claude/'));
             const verdictRe = /^\s*(LGTM|REVIEW|NITS)\b/;
+            // ── Rectificación de ADR aterrizada EN VUELO (AP-055, repesca
+            // finplan#1688). Una `## ADR-N · Rectificación` que aterriza en la
+            // rama BASE mientras un PR está en loop no invalidaba NADA ni
+            // reconvocaba a nadie: la puerta de fidelidad universal-strict del
+            // Reviewer contrasta contra el snapshot del ADR de su ARRANQUE, y
+            // `lgtm` + el gate de epic-merge quedan intactos. Doble fuga
+            // CORRELACIONADA medida: las dos puertas del Reviewer sobre
+            // finplan#1687 (NITS 15:47Z, LGTM 15:57Z) anclaron su verificación a
+            // §Decisión 3 y NINGUNA a R·1, que llevaba en el árbol desde las
+            // 15:37Z — falso-LGTM de fidelidad; y el merge humano (16:02Z) no
+            // tuvo señal mecánica que lo frenara. Clase «la puerta valida contra
+            // un árbol desfasado», misma familia en polaridad INVERSA que el
+            // falso-🔴 por checkout stale de finplan#1673 (aud. #1681, dejado
+            // «bajo vigilancia: si recurre, sube a propuesta» — recurrió).
+            //
+            // Firma DETERMINISTA por ESTADO, cero LLM: compare
+            // `pr.base.sha`...`pr.base.ref` —lo que aterrizó en la BASE desde el
+            // punto de partida del PR; `base.sha` no avanza con la rama— ∩ IDs
+            // de ADR citados en título/body del PR. Solo cuentan los bloques
+            // `· Rectificación` NUEVOS (líneas AÑADIDAS del patch), no cualquier
+            // edición del volumen: eso acota el falso positivo a lo que la
+            // propuesta acepta (una re-review Opus), en vez de re-convocar por
+            // cada commit de docs. Cap 1 por (PR, rectificación) vía marcador
+            // con clave. Por qué el watchdog y no «el camino docs-only del
+            // reusable de CI» que proponía el issue: el central NO sirve ningún
+            // reusable de CI —el CI docs-only con `adr-lint` es LOCAL de cada
+            // consumidor (AP-009 §deuda anotada)—, luego ahí el edge habría que
+            // escribirlo dos veces y fuera de la casa única. Y la señal se
+            // re-deriva del ESTADO en cualquier tick superviviente (doctrina
+            // AP-038), lo que además cubre las rectificaciones que aterrizan por
+            // push directo o merge humano, no solo por merge de epic-merge.
+            const RECT_MARK = '<!-- rectificacion-en-vuelo';   // prefijo; el marcador emitido lleva la clave: `<!-- rectificacion-en-vuelo: ADR-231·R·1 -->`
+            const rectHandled = new Set();
             for (const pr of openAgentPRs) {
               if (skip(pr.labels)) continue;
+              try {
+                const cited = new Set([...`${pr.title || ''}\n${pr.body || ''}`.matchAll(/\bADR-(\d+)\b/g)].map(m => +m[1]));
+                if (!cited.size) continue;   // PR que no cita ADR: nada que invalidar
+                // `compareCommits` y no `compareCommitsWithBasehead`: es la
+                // superficie ya EJERCIDA por la casa (`claude-code.yml:1594` y el
+                // modo de PR huérfano de este mismo scan). Un método inexistente
+                // caería en el `catch` de abajo y dejaría el detector inerte en
+                // SILENCIO — precisamente la clase de fallo que este AP cierra.
+                const { data: cmp } = await github.rest.repos.compareCommits({
+                  ...O, base: pr.base.sha, head: pr.base.ref });
+                if (!(cmp.commits || []).length) continue;   // la base no avanzó desde el arranque del PR
+                const rects = new Map();
+                for (const f of cmp.files || []) {
+                  if (!/decisions[^/]*\.md$/i.test(f.filename)) continue;
+                  if (!f.patch) {   // diff demasiado grande: GitHub omite el patch — residual honesto, no silencioso
+                    core.warning(`rect-en-vuelo #${pr.number}: ${f.filename} sin patch en el compare (diff grande) — rectificaciones de ese fichero NO evaluadas.`);
+                    continue;
+                  }
+                  for (const raw of f.patch.match(/^\+##\s*ADR-\d+[^\n]*Rectificaci[oó]n[^\n]*/gim) || []) {
+                    const head = raw.replace(/^\+/, '').trim();
+                    const adr = +head.match(/ADR-(\d+)/)[1];
+                    if (!cited.has(adr)) continue;   // rectificación de un ADR que este PR no cita: no es su base normativa
+                    const ord = head.match(/R\s*[·.]\s*(\d+)/);
+                    const key = `ADR-${adr}${ord ? `·R·${ord[1]}` : ''}`;
+                    if (!rects.has(key)) rects.set(key, { key, head });
+                  }
+                }
+                if (!rects.size) continue;
+                const { data: rcs } = await github.rest.issues.listComments({ ...O, issue_number: pr.number, per_page: 100 });
+                const nuevos = [...rects.values()].filter(r => !rcs.some(c => (c.body || '').includes(`${RECT_MARK}: ${r.key} -->`)));
+                if (!nuevos.length) continue;   // ya materializado en una ronda anterior (cap 1 por rectificación)
+                const rLabels = pr.labels.map(l => l.name);
+                const hadLgtm = rLabels.includes('lgtm');
+                let rDraft = false;
+                try {
+                  const { data: rpf } = await github.rest.pulls.get({ ...O, pull_number: pr.number });
+                  rDraft = rpf.draft;
+                } catch (e) { core.info(`rect-en-vuelo/draft-check #${pr.number}: ${e.message}`); }
+                const lista = nuevos.map(r => `- \`${r.key}\` — ${r.head.replace(/^##\s*/, '')}`).join('\n');
+                const marcadores = nuevos.map(r => `${RECT_MARK}: ${r.key} -->`).join('\n');
+                await github.rest.issues.createComment({ ...O, issue_number: pr.number,
+                  body: `**watchdog · rectificación de ADR aterrizada EN VUELO (AP-055)**: desde el punto de partida de este PR han aterrizado en \`${pr.base.ref}\` rectificaciones de ADRs que el PR CITA — la base normativa contra la que se juzga la fidelidad universal-strict ya no es la del arranque de la review:\n\n${lista}\n\n${hadLgtm ? 'Retirada la label `lgtm` (el gate de epic-merge se cierra hasta re-veredicto; una `unlabeled` no dispara workflows) y ' : ''}${rDraft ? 're-convocatoria del Reviewer OMITIDA: el PR está en draft y su gate salta los drafts — el Reviewer entrará por la transición `ready` normal, ya sobre la base vigente.' : 're-aplicada `needs-review` por PAT para re-convocar al Reviewer sobre la base normativa VIGENTE.'}\n\n@reviewer: abre las rectificaciones listadas y CITA su veredicto contra ellas (\`reviewer.md\` § «Fidelidad al ADR citado» — una rectificación vigente no citada es defecto de review, mismo rango que el veto de LGTM sobre CI rojo). Si no afectan a las cláusulas que este PR implementa, dilo explícitamente en el veredicto: eso también es consumir la rectificación.\n\n${marcadores}\n${CAPA}` });
+                if (hadLgtm) { try { await patCall('DELETE', `/issues/${pr.number}/labels/lgtm`); } catch (e) { core.info(`rect-en-vuelo/lgtm #${pr.number}: ${e.message}`); } }
+                if (!rDraft) {
+                  await patCall('DELETE', `/issues/${pr.number}/labels/needs-review`).catch(() => {});
+                  await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['needs-review'] });
+                }
+                rectHandled.add(pr.number);
+                core.warning(`PR #${pr.number}: rectificación en vuelo (${nuevos.map(r => r.key).join(', ')}) — lgtm ${hadLgtm ? 'retirada' : 'ausente'}, needs-review ${rDraft ? 'omitida (draft)' : 're-aplicada'}.`);
+              } catch (e) { core.warning(`rect-en-vuelo #${pr.number}: ${e.message}`); }
+            }
+            for (const pr of openAgentPRs) {
+              if (skip(pr.labels)) continue;
+              // El bloque de rectificación en vuelo ya materializó la transición
+              // de este PR en ESTE tick (comentario + labels): el dispatcher no
+              // debe re-etiquetar sobre un estado que acaba de cambiar bajo él.
+              if (rectHandled.has(pr.number)) continue;
               if (ageMin(pr.updated_at) < LIVENESS_MIN) continue;   // anti-carrera
               // Cede ante PRs en conflicto (2026-07-12, incidente #1303): un PR
               // `dirty` es propiedad del modo rebase de más abajo — no tiene
@@ -532,13 +622,42 @@ jobs:
                   headAfterVerdict = new Date(headCommit.commit.committer.date) > new Date(lastVerdict.created_at);
                 } catch (e) { core.info(`lgtm-remat/head-check #${pr.number}: ${e.message}`); }
 
-                if (!hasLgtm && !headAfterVerdict && remats < 1) {
+                // Interacción AP-055 (clase 3, label writers × triggers): si una
+                // rectificación aterrizó en la base DESPUÉS de este veredicto y
+                // el bloque de rectificación-en-vuelo retiró `lgtm`, esa ausencia
+                // es INTENCIONAL — no la ventana de crash que este belt repesca.
+                // Sin este guard, los dos escritores de `lgtm` se pisan (uno la
+                // retira por base desfasada, el otro la re-materializa por
+                // veredicto vigente) y el gate de merge se reabre contra el
+                // árbol viejo, que es exactamente el fallo que AP-055 cierra.
+                const rectHold = hcs.some(c => (c.body || '').includes(RECT_MARK)
+                  && new Date(c.created_at) > new Date(lastVerdict.created_at));
+                if (!hasLgtm && !headAfterVerdict && remats < 1 && !rectHold) {
                   why = 'veredicto LGTM en prosa sin label `lgtm` y sin commits posteriores (ventana de crash del post-step del Reviewer)';
                   fix = async () => {   // la label DEBE salir con PAT o su `labeled` no dispara epic-merge (anti-loop)
                     await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['lgtm'] });
                     await github.rest.issues.createComment({ ...O, issue_number: pr.number,
                       body: `**watchdog · re-materialización de \`lgtm\` por estado (AP-024)**: el último veredicto del Reviewer es LGTM (cabecera ADR-063) y el head no tiene commits posteriores, pero la label \`lgtm\` no se materializó — ventana de crash del post-step del Reviewer (repesca finplan#1438). Label re-aplicada con el PAT: su \`labeled\` re-dispara epic-merge (edge ADR-218). Cap 1 por PR.\n\n${LGTM_REMAT_MARK}\n${CAPA}` });
                     return true;   // self-comment: marcador propio, no consume el cap 2 de relanzamiento
+                  };
+                } else if (rectHold) {
+                  // El veredicto vigente es un LGTM ANTERIOR a la rectificación:
+                  // el turno NO es de epic-merge (su gate está cerrado a
+                  // propósito) sino del Reviewer, sobre la base vigente. Si la
+                  // `needs-review` que puso AP-055 ya no está y no ha llegado
+                  // veredicto nuevo, la sesión murió sin veredicto: se re-aplica
+                  // (cap 2 del dispatcher). Sin esta rama el `!fix` de abajo
+                  // declararía `turno-epic-merge-zombie` y convocaría a
+                  // architect-resolve para algo que se arregla con una label.
+                  turno = 'reviewer';
+                  why = 'LGTM anterior a una rectificación aterrizada en la base (AP-055): `lgtm` retirada a propósito y sin re-veredicto sobre la base vigente';
+                  fix = async () => {
+                    // Defensivo: si la retirada de `lgtm` de AP-055 no prendió
+                    // (fallo de API en aquel tick), el gate seguiría abierto
+                    // contra la base vieja — se re-asegura aquí, idempotente.
+                    if (hasLgtm) { try { await patCall('DELETE', `/issues/${pr.number}/labels/lgtm`); } catch (e) { core.info(`rect-hold/lgtm #${pr.number}: ${e.message}`); } }
+                    await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['needs-review'] });
+                    return false;
                   };
                 } else {
                   why = 'LGTM emitido y sin merge (epic-merge es workflow_run: sin relanzamiento mecánico)';
