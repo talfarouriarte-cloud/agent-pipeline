@@ -15,8 +15,6 @@ jobs:
     with:
       runner: ubuntu-latest
       default_branch: main
-      process_model: claude-fable-5
-      process_fallback_model: claude-opus-4-8
       process_max_turns: 60
       timeout_minutes: 20
     secrets:
