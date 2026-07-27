@@ -1,0 +1,49 @@
+# STUB del CENTRAL (2026-07-27, AP-050): agent-pipeline es consumidor de sí
+# mismo (AP-012) pero el auto-consumo se montó SIN este stub — el `stalled`
+# que los post-steps aplican con PAT no tenía consumidor: `self-claude-code`
+# no escucha `labeled` y no existía ni architect-resolve por evento ni el
+# cron de re-derivación por estado (AP-038). Canal sordo: 5 process-proposal
+# quedaron `stalled` sin dueño (2026-07-22/24, #125/#128/#129/#131/#142).
+# Contenido = templates/stubs/stub-watchdog.yml, cuyos defaults son ya los
+# del central. Los NOMBRES de workflow_run son los `name:` de los stubs
+# self-* (los reusables no generan runs propios aquí).
+name: Watchdog
+on:
+  issues:
+    types: [labeled]
+  pull_request:
+    types: [labeled]
+  schedule:
+    - cron: '*/20 * * * *'
+  workflow_run:
+    workflows: ["Claude Code", "Opus Reviewer", "Epic Merge"]
+    types: [completed]
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  actions: write
+  id-token: write
+  statuses: write   # exigido por el job detect del reusable (espejo watchdog/turno, 2026-07-10)
+concurrency:
+  group: watchdog
+  cancel-in-progress: false
+jobs:
+  call:
+    uses: talfarouriarte-cloud/agent-pipeline/.github/workflows/watchdog.yml@main
+    with:
+      runner: ubuntu-latest
+      default_branch: main
+      ci_workflow_name: CI
+      creator_workflow_name: Claude Code
+      reviewer_workflow_name: Opus Reviewer
+      epic_merge_workflow_name: Epic Merge
+      extra_pipeline_workflows: ""
+      epic_label: epica
+      resolve_model: claude-opus-4-8
+      resolve_max_turns: 40
+      lookback_min: 45
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      REVIEWER_GITHUB_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
