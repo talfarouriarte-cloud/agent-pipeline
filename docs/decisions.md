@@ -1229,3 +1229,20 @@ La clase que motivó el hard stop serial (AP-033, incidente finplan#1298/#1299) 
 
 **Fecha.** 2026-07-22.
 ---
+
+## AP-050 — El auto-consumo del central (AP-012) se completa con su stub de Watchdog: `self-watchdog.yml` da consumidor al `stalled` (architect-resolve por evento + cron de re-derivación AP-038), que hasta ahora era un canal SORDO en este repo: EJECUTADA
+
+**Contexto (incidente 2026-07-22/24 → parada total detectada 2026-07-27).** AP-012 hizo al central consumidor de sí mismo montando `self-claude-code.yml`, `self-reviewer.yml` y `self-epic-merge.yml` — pero NO el cuarto stub. El régimen autónomo entero descansa en que `stalled` tenga dueño: los post-steps de `claude-code.yml` lo aplican con PAT contando con que el evento `labeled` dispare architect-resolve (watchdog, etapa 2) y con que el cron re-derive por estado lo que el evento pierda (AP-038). En el central ninguna de las dos patas existía: `self-claude-code.yml` declara `issues: types: [opened, edited, assigned]` — sin `labeled` — y no había stub del Watchdog, luego ni evento ni cron. Resultado observable: las 5 `process-proposal` abiertas (#125, #128, #129, #131, #142) quedaron `stalled` entre el 22 y el 24 y la cola murió en silencio total — cero runs desde el 24. Los post-steps escribieron a un canal sin lector en CADA escalada, y su prosa («`stalled` con PAT ⇒ architect-resolve por evento») era correcta como doctrina y falsa como hecho en ESTE repo.
+
+**Clase del fallo.** La misma que finplan#1321 y AP-035/AP-011 enseñan por el lado del agente, ahora por el lado del cableado: la señal existe y el productor cumple, pero el filtro de triggers del STUB (o su ausencia) la descarta antes de llegar al reusable. El contrato caller↔callee no se rompe por superficie (`check-contracts` verde) sino por un caller que directamente no está. Vía negativa: un repo que se declara consumidor del pipeline debe montar los CUATRO stubs; tres de cuatro no es un pipeline degradado, es un pipeline sin red.
+
+**Decisión.** Añadir `.github/workflows/self-watchdog.yml` = `templates/stubs/stub-watchdog.yml` literal (sus defaults SON los del central: `runner: ubuntu-latest`, `default_branch: main`, nombres «Claude Code»/«Opus Reviewer»/«Epic Merge» que coinciden con los `name:` de los stubs self-*), con cabecera de contexto. Sin cambio en ningún reusable ni en la superficie `workflow_call`: `templates/workflow-contracts.json` intacto (AP-003/AP-022); el check ⊇ de permisos stub↔reusable cubre el fichero nuevo automáticamente (es un `self-*.yml`).
+
+**Efecto esperado sobre el incidente.** Al primer cron tras el merge, la re-derivación por estado (AP-038) convierte los 5 `stalled` en anomalías `stalled-autonomous-resolve` y architect-resolve los procesa en serie con su criterio propio (des-stalleo/re-arm, verificación de `[ALCANCE-COMPLETO]` contra HEAD, o `human-needed` al agotar rondas — #129 va por `rondas:3`). Sin cirugía manual de estado: la doctrina de estado materializado exige dar lector a la señal, no sustituir al resolve.
+
+**Falsable.** (a) Tras el merge, el workflow Watchdog del central registra runs por cron cada ~20 min y un run por cada `labeled`; (b) las 5 issues salen de `stalled` (a resolución o a `human-needed`) sin intervención humana de primera línea; (c) toda futura aplicación de `stalled` en el central produce un run de architect-resolve o, como mínimo, cae en el barrido AP-038 del siguiente cron. Si un `stalled` vuelve a envejecer >40 min sin run del Watchdog, el gap está en otra capa (secrets, permisos del stub, guard interno), no en el trigger.
+
+**Reversibilidad.** Total: borrar el stub restaura el statu quo (canal sordo). Riesgo del cambio: bajo — el reusable ya rueda en finplan/wmcb con este mismo stub-template; el coste nuevo es el cron (2 etapas, la 2ª solo con anomalías) en un repo público con runners gratis.
+
+**Fecha.** 2026-07-27.
+---

@@ -42,5 +42,6 @@
   "self-claude-code.yml": [],
   "self-reviewer.yml": [],
   "signal-closer.yml": [],
-  "self-epic-merge.yml": []
+  "self-epic-merge.yml": [],
+  "self-watchdog.yml": []
 }
