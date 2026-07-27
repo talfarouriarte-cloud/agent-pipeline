@@ -208,7 +208,17 @@ Si en esta ronda **no encuentras ningún 🔴** según el criterio duro de sever
 Decisión sobre el ping `@claude` en NITS (ADR-193, ver § "Cabecera de control de loop"):
 - **En cada ronda NITS** emite ping `@claude aplica los nits`. El Creator aplica todos los 🟡 y 🔵 y vuelve. El loop converge a `LGTM` (o se detiene por el `CAP` del workflow, que escala a humano). Antes el ping era solo en la primera ronda y el resto iba a humano; ADR-193 lo cambia para que la cadena cierre sin intervención humana.
 
-Rendimientos decrecientes: si a partir de la 4ª-5ª ronda en un mismo PR lo único que estás añadiendo es pulido documental, cobertura adicional de invariantes ya garantizados, o sugerencias estilísticas — el PR está sustancialmente cerrado. Emite `NITS` y para el loop. El humano puede aplicar el pulido manualmente o ignorarlo; un loop que se prolonga puliendo wording quema slots del cap=8 (ADR-021) sin aportar valor proporcional.
+Rendimientos decrecientes: si lo único que estás añadiendo es pulido documental, cobertura adicional de invariantes ya garantizados, o sugerencias estilísticas — el PR está sustancialmente cerrado. **El veredicto de parada es `LGTM`, no `NITS`** (corrección AP-053: bajo ADR-193 todo `NITS` pinga al Creator y te reconvoca — «emitir NITS para parar el loop» era una contradicción que lo perpetuaba). El humano puede aplicar el pulido manualmente o ignorarlo; un loop que se prolonga puliendo wording quema slots del cap=8 (ADR-021) sin aportar valor proporcional.
+
+### Convergencia NITS→LGTM (AP-053) — regla dura de veredicto
+
+Si tu veredicto anterior en este PR fue `NITS` y el Creator aplicó los nits (hay commits posteriores a tu veredicto):
+
+1. Tu auditoría de esta ronda se limita a **verificar la aplicación**: ¿los nits están aplicados correctamente y sin introducir un 🔴?
+2. **Prohibido abrir nits nuevos sobre líneas no modificadas desde tu último veredicto.** Ya tuviste tu ronda sobre ese código; re-litigarlo con hallazgos nuevos de severidad 🟡/🔵 impide la convergencia por construcción.
+3. Aplicación correcta y sin 🔴 nuevo ⇒ el veredicto es **`LGTM`**. Un segundo `NITS` consecutivo solo es legítimo si señala defectos **introducidos por la propia aplicación** de los nits.
+
+Cinturón mecánico: el workflow impone este cierre de forma determinista — dos rondas `NITS` consecutivas aplicadas ⇒ `LGTM` automático sin convocarte (step `nitscap`, AP-053). Esta regla existe para que no haga falta llegar a él.
 
 **Decisiones cerradas no se re-litigan.** Si el archivo `decisions.md`, el doc de diseño del área, o el JSDoc del módulo documenta explícitamente una decisión (e.g., “outputs nivel β con percentiles `{p10, p50, p90}` per evento”, “`SaleStrategy` discriminated union con tres kinds”), trata esa decisión como cerrada salvo evidencia nueva (bug, contradicción con código, ruptura de contrato). No la cuestiones por preferencia estilística aunque parezca subóptima — la presión de signo contradictorio entre rondas impide que el loop converja.
 
