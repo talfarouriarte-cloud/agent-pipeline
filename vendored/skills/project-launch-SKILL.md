@@ -53,6 +53,19 @@ todo escala.
   PAT); stubs anclados a tag con los inputs de la instancia.
 - Checklist mecánico antes de dar por cerrada la fase: cada input de cada stub
   verificado contra la realidad del repo (nombre del job de CI, rama, label).
+- **Regla de pineo (AP-052).** Cada línea del `with:` pisa un default del
+  central, así que cada línea se gana su sitio: se pinea lo que es VERDAD DE
+  INSTANCIA (rama, nombre del job de CI, runner, caps elegidos a propósito) y
+  lo demás se omite — sin línea, rige el default y las lecciones futuras del
+  central llegan solas. Los inputs **lesson-bearing** (los que llevan una AP
+  detrás; lista en `templates/workflow-contracts.json`, bloque
+  `lesson_bearing`) NO se pinean: pinearlos por debajo del default revierte en
+  silencio un fix ya desplegado. Si aun así hay que pinear uno, la línea va CON
+  anotación (motivo + referencia AP); pin sin anotación = defecto, y el
+  reusable lo señala en el job summary en cada run. Instancia que funda la
+  regla: el stub de finplan pineó `reviewer_max_turns: 50` frente al default 80
+  del central (AP-025) — el fix estaba desplegado y no regía; costó 3 muertes
+  del Reviewer sin veredicto y 2 intervenciones humanas.
 
 ## Fase 5 — Épica de rodaje
 

@@ -36,6 +36,8 @@ Order matters: the pipeline cannot derive decisions until spec/ADRs exist (consu
 
 **A5. Stubs.** Copy the five stubs, pin `@<tag>`, fill inputs (default branch, test/typecheck commands, caps, canonical doc names, CI job name). Add `watchdog-heartbeat` from template — on GitHub-hosted runners, NOT on the runner infra the other workflows use.
 
+> **Pinning rule (AP-052).** Every `with:` line is an override of a central default, so every line has to earn its place: fill in what is *instance truth* (branch names, CI job name, runner, caps you deliberately chose) and leave everything else out. Never pin a **lesson-bearing** input (§4) — its default carries an AP behind it, and pinning it below the central value silently reverts a fix that is already deployed everywhere else. If you pin one anyway, the line ships with an annotation (reason + AP reference); a pin without annotation is a defect, and the reusable will flag it in the job summary on every run.
+
 **A6. Shakedown epic.** Design a deliberately small 2-issue epic exercising the full chain: issue → Creator PR → Reviewer verdict → auto-merge → `launch-next` → audit issue created and armed. Verify: labels materialize (`ci-verde`, `lgtm`, `estado:*`), commit statuses mirror (`epic-merge / gate`, `watchdog / turno`), audit runs invariants. Only after a green shakedown does real work start.
 
 ## B. Existing repo with a local pipeline
@@ -71,15 +73,19 @@ Order **A → C → B** (decision 2026-07-07, registered in ADR-219): extract fi
 
 ## 4. Per-workflow input reference
 
-Generated from the Phase-A extraction (agent-pipeline@v1). All inputs have defaults; stubs override per repo. Secret names are fixed by contract: `CLAUDE_CODE_OAUTH_TOKEN` (Claude Max OAuth), `REVIEWER_GITHUB_TOKEN` (fine-grained PAT; also exposed to agents as ARM token).
+All inputs have defaults; stubs override per repo. Secret names are fixed by contract: `CLAUDE_CODE_OAUTH_TOKEN` (Claude Max OAuth), `REVIEWER_GITHUB_TOKEN` (fine-grained PAT; also exposed to agents as ARM token). **Values below re-verified against HEAD on 2026-07-27** — the table had drifted (it still taught the pre-AP-025 reviewer budget and the pre-AP-044 model ids), and a stale reference table is how a consumer ends up pinning a value the central abandoned (AP-052).
 
 | Workflow | Inputs (default) | Secrets |
 |---|---|---|
-| claude-code | runner (ubuntu-latest), default_branch (main), creator_model (claude-opus-4-8), creator_max_turns (200), bot_comment_cap (8) | both |
-| reviewer | runner, reviewer_model (claude-opus-4-8), reviewer_max_turns (50), timeout_minutes (15), agent_branch_prefix (claude/), review_context ("") | both |
-| epic-merge | runner, default_branch, ci_workflow_name (CI), epic_label (epica), partial_round_cap (3), partial_lifetime_cap (6) | PAT |
-| watchdog | runner, default_branch, ci_workflow_name, creator_workflow_name (Claude Code), reviewer_workflow_name (Opus Reviewer), epic_merge_workflow_name (Epic Merge), extra_pipeline_workflows (""), epic_label, resolve_model (claude-opus-4-8), resolve_max_turns (40), lookback_min (45) | both |
-| process-review | runner, default_branch, process_model (claude-fable-5), process_fallback_model (claude-opus-4-8), process_max_turns (60), timeout_minutes (20) | both |
+| claude-code | runner (ubuntu-latest), default_branch (main), creator_model (claude-opus-5), creator_max_turns (200), bot_comment_cap (8), epic_label (epica), reviewer_workflow_name (Opus Reviewer) | both |
+| reviewer | runner (ubuntu-latest), reviewer_model (claude-opus-5), **reviewer_max_turns (80 — lesson-bearing, AP-025)**, **timeout_minutes (22 — lesson-bearing, AP-025)**, agent_branch_prefix (claude/), review_context ("") | both |
+| epic-merge | runner, default_branch, ci_workflow_name (CI), epic_label (epica), partial_round_cap (3), partial_lifetime_cap (6), automerge (true), loose_audit (true) | PAT |
+| watchdog | runner, default_branch, ci_workflow_name (CI), creator_workflow_name (Claude Code), reviewer_workflow_name (Opus Reviewer), epic_merge_workflow_name (Epic Merge), extra_pipeline_workflows (""), epic_label (epica), resolve_model (claude-opus-5), resolve_max_turns (40), lookback_min (45), skip_labels (pause-agents,human-needed,auditoria,process-proposal,registro-decisiones) | both |
+| process-review | runner, default_branch, process_model (claude-fable-5), process_fallback_model (claude-opus-5), process_max_turns (60), timeout_minutes (20) | both |
+
+**Lesson-bearing inputs (AP-052).** Some defaults are not instance preferences but *lessons learned*, each with an AP behind it. Pinning one below the central default silently cancels a fix that is already deployed — "a merged central PR IS the deployment" (README §13) stops being true for that repo, and nothing in any readable state says so. The machine-readable list is `lesson_bearing` in `templates/workflow-contracts.json`; `check-contracts` keeps it faithful to the real defaults. At runtime the reusable emits a `::notice` plus a job-summary table whenever it receives such a pin *below* the default (a pin above is deliberate over-provisioning, not a lost lesson), and the Reviewer's no-verdict escalation comment carries the offending pin inline: `pin-divergente: reviewer_max_turns=50 (default central: 80, AP-025)`.
+
+**Default rule: do not pin them.** Leave the line out and the central default rules, so future lessons arrive on their own. If a repo genuinely needs a different value, the pin ships **with an annotation** (reason + AP reference) — see `.github/workflows/self-reviewer.yml` in the central for the shape. A pin without annotation is a defect, detectable on the next sync.
 
 Stub-side responsibilities (not inputs): event triggers, `workflow_run` workflow-name lists, concurrency groups (reviewer and epic-merge and watchdog MUST use `cancel-in-progress: false`), and permissions blocks. Ready-made stubs live in `templates/stubs/`.
 
@@ -92,3 +98,4 @@ New in the extraction (not present in the originating repo's local versions): th
 - Ubicloud-class runner billing lapses fail SILENTLY (jobs queue forever, looks like a universal stall). The heartbeat must live on GitHub-hosted runners.
 - GitHub stores issue bodies with `\r\n`; normalize before string ops. Large files via Git Blobs endpoint, not Contents API.
 - A mandate expansion without the matching tool/budget expansion (allowedTools, max-turns) fails at the last step and masquerades as a design escalation. Audit both in the same change.
+- A stub pin outlives the lesson it predates. Consumers pin `@main`, so a central fix deploys the moment it merges — but only for inputs the stub does *not* pin. finplan's stub kept `reviewer_max_turns: 50` after the central raised the default to 80 (AP-025): the fix was deployed and inert, costing three no-verdict Reviewer deaths and the only two human interventions of an otherwise clean epic (AP-052). Deployment state was *inferred*, never *read*. When a default moves because of a lesson, the release notes name the input and the AP (README §13), and the reusable now says so out loud on every run that receives a stale pin.
