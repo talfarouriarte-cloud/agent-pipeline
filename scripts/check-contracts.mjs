@@ -209,6 +209,80 @@ for (const f of Object.keys(onDisk)) {
   }
 }
 
+// ── Fidelidad de la tabla LESSON-BEARING (AP-052, repesca finplan#1674) ─────
+// Un default del central que codifica una LECCIÓN APRENDIDA (no una preferencia
+// de instancia) se declara TRES veces: (a) como default real del `workflow_call`,
+// (b) en la tabla `LESSON_BEARING` del step «Divergencia pin↔default» del propio
+// reusable — la única copia legible en runtime, porque el reusable corre sobre el
+// checkout del CONSUMIDOR y no puede leer este manifiesto—, y (c) aquí, como
+// contrato publicado (fuente de los release notes, README §13). Tres copias sin
+// gate = deriva garantizada: la instancia que motiva el AP es exactamente una
+// copia rancia (el pin 50 del stub de finplan sobrevivió al bump 50→80 del
+// central). Este check exige que las tres coincidan; subir un default sin
+// actualizar las otras dos es ROJO, no un aviso que nadie lee.
+const LB_STEP_ENV = 'LESSON_BEARING';
+const LB_PINS_ENV = 'PINS_RECIBIDOS';
+for (const f of Object.keys(onDisk)) {
+  const doc = docs[f];
+  const wc = ((doc && doc.on) ?? (doc && doc[true])).workflow_call;
+  const realDefaults = Object.fromEntries(Object.entries(wc.inputs || {})
+    .map(([k, v]) => [k, v && Object.prototype.hasOwnProperty.call(v, 'default') ? v.default : undefined]));
+
+  // Tabla embebida en el step (puede no existir: solo `reviewer.yml` la lleva hoy).
+  let tabla = null, pinsRaw = '';
+  for (const job of Object.values((doc && doc.jobs) || {})) {
+    for (const s of (job && job.steps) || []) {
+      const env = (s && s.env) || {};
+      if (typeof env[LB_STEP_ENV] !== 'string') continue;
+      pinsRaw = typeof env[LB_PINS_ENV] === 'string' ? env[LB_PINS_ENV] : '';
+      try { tabla = JSON.parse(env[LB_STEP_ENV]); }
+      catch (e) {
+        // El step es fail-open en runtime (nunca tumba una review); sin este
+        // check una tabla rota lo dejaría INERTE en silencio (clase wmcb#20).
+        errors.push(`${f}: la tabla \`${LB_STEP_ENV}\` del step no es JSON válido (${e.message}) — el aviso pin↔default nacería inerte (fail-open silencioso)`);
+        tabla = [];
+      }
+      break;
+    }
+    if (tabla) break;
+  }
+
+  const manifiesto = (manifest[f] && manifest[f].lesson_bearing) || null;
+  if (!tabla && !manifiesto) continue; // reusable sin inputs lesson-bearing: nada que verificar
+  if (!tabla) { errors.push(`${f}: el contrato publica \`lesson_bearing\` pero el reusable no lleva el step con la tabla \`${LB_STEP_ENV}\` — el aviso pin↔default no existe en runtime (AP-052)`); continue; }
+  if (!manifiesto) { errors.push(`${f}: el reusable lleva tabla \`${LB_STEP_ENV}\` pero el contrato no publica \`lesson_bearing\` — publícalo en ${MANIFEST} (AP-052)`); continue; }
+
+  const enTabla = new Set(tabla.map(e => e && e.input).filter(Boolean));
+  for (const name of Object.keys(manifiesto)) {
+    if (!enTabla.has(name)) errors.push(`${f}: \`${name}\` es lesson-bearing en el contrato pero falta en la tabla \`${LB_STEP_ENV}\` del step — el aviso nunca se emitiría para él (AP-052)`);
+  }
+  for (const e of tabla) {
+    const name = e && e.input;
+    if (!name) { errors.push(`${f}: entrada sin \`input\` en la tabla \`${LB_STEP_ENV}\``); continue; }
+    if (!(name in realDefaults)) { errors.push(`${f}: \`${name}\` en la tabla \`${LB_STEP_ENV}\` no es un input de \`workflow_call\` (referencia muerta)`); continue; }
+    if (realDefaults[name] === undefined) { errors.push(`${f}: \`${name}\` es lesson-bearing pero su input no declara \`default\` — no hay lección que pisar`); continue; }
+    if (String(realDefaults[name]) !== String(e.default)) {
+      errors.push(`${f}: tabla \`${LB_STEP_ENV}\` RANCIA para \`${name}\` (tabla=${JSON.stringify(e.default)}, default real=${JSON.stringify(realDefaults[name])}) — el aviso compararía contra un valor que ya no se sirve (AP-052)`);
+    }
+    const m = manifiesto[name];
+    if (!m) { errors.push(`${f}: \`${name}\` está en la tabla \`${LB_STEP_ENV}\` pero no en \`lesson_bearing\` del contrato — publícalo en ${MANIFEST} (AP-052)`); continue; }
+    if (String(m.default) !== String(realDefaults[name])) {
+      errors.push(`${f}: \`lesson_bearing.${name}.default\` del contrato (${JSON.stringify(m.default)}) ≠ default real (${JSON.stringify(realDefaults[name])}) — contrato rancio (AP-052)`);
+    }
+    if (e.ap && m.ap && e.ap !== m.ap) {
+      errors.push(`${f}: la AP citada para \`${name}\` diverge (tabla=${e.ap}, contrato=${m.ap}) — reconcilia la atribución de la lección`);
+    }
+    if (!e.ap || !m.ap) errors.push(`${f}: \`${name}\` es lesson-bearing sin referencia AP en ${!e.ap ? `la tabla \`${LB_STEP_ENV}\`` : 'el contrato'} — una lección sin AP no es citable por el 5-whys`);
+    // El step solo puede avisar de los pins que RECIBE: un input en la tabla
+    // ausente del mapa `PINS_RECIBIDOS` nace inerte (clase wmcb#20 aplicada al
+    // propio detector — el fallo que este AP viene a impedir, un piso más
+    // arriba).
+    if (!(pinsRaw.includes(`"${name}"`) && pinsRaw.includes(`inputs.${name}`))) {
+      errors.push(`${f}: \`${name}\` está en la tabla \`${LB_STEP_ENV}\` pero el mapa \`${LB_PINS_ENV}\` del step no le pasa \`inputs.${name}\` — el aviso nace inerte para ese input (clase wmcb#20)`);
+    }
+  }
+}
+
 if (errors.length) {
   console.error('CHECK-CONTRACTS ROJO (rotura de contrato de reusable — desplegaría a los dos consumidores):');
   errors.forEach(e => console.error('  - ' + e));

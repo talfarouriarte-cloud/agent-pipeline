@@ -16,8 +16,18 @@ jobs:
     uses: talfarouriarte-cloud/agent-pipeline/.github/workflows/reviewer.yml@main
     with:
       runner: ubuntu-latest
-      reviewer_max_turns: 50
-      timeout_minutes: 15
+      # `reviewer_max_turns` y `timeout_minutes` NO se pinean (AP-052, repesca
+      # finplan#1674): son inputs LESSON-BEARING — su default del central (80/22)
+      # codifica una lección aprendida (AP-025), no una preferencia de instancia.
+      # Este stub los pineaba a 50/15, los valores PREVIOS a esa lección: el fix
+      # estaba desplegado en el central y no regía aquí, y costó 3 muertes del
+      # Reviewer sin veredicto + 2 intervenciones humanas. Sin línea = rige el
+      # default del central, y las lecciones futuras llegan solas.
+      #
+      # Si tu repo NECESITA pinearlos, la regla es: pin CON anotación (motivo +
+      # referencia AP), como los de `self-reviewer.yml` del central. Un pin sin
+      # anotación es un defecto detectable; el reusable además emite `::notice` +
+      # línea en el job summary cada vez que recibe uno por debajo del default.
       agent_branch_prefix: claude/
       review_context: ""
     secrets:

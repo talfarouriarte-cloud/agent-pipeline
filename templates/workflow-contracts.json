@@ -1,5 +1,6 @@
 {
   "_comment": "Contrato PUBLICADO de los workflows reusables del central (workflow_call servidos a finplan y wmcb). check-contracts.mjs lo verifica contra los ficheros reales con semántica asimétrica: input nuevo con-default pasa en silencio; eliminar/renombrar un input, pasarlo a required, quitarle el default, o volver un secret required son ROTURAS y exigen editar este fichero a propósito (2026-07-12, AP-003). Al hacer un cambio ROMPEDOR en un reusable, actualiza su entrada aquí en el MISMO PR.",
+  "_comment_lesson_bearing": "`lesson_bearing` (AP-052, repesca finplan#1674) publica los inputs cuyo default NO es preferencia de instancia sino LECCIÓN APRENDIDA, con su valor y la AP que la registra. Un stub que los pinea por debajo anula un fix ya desplegado en el central sin dejar rastro legible; el step «Divergencia pin↔default» de cada reusable lo materializa en runtime (::notice + job summary) leyendo su propia copia de la tabla. check-contracts exige fidelidad de las TRES declaraciones (default real del workflow_call ≡ tabla del step ≡ este bloque): subir un default sin actualizar los otros dos es rojo, no un aviso callado. Fuente de los release notes cuando un default cambia por lección (README §13).",
   "_comment_permissions": "`permissions_required` (AP-022, incidente #57) modela el bloque `permissions` del job del reusable como superficie de contrato: es la unión (máximo scope por clave) de los permisos que sus jobs piden al caller. check-contracts exige FIDELIDAD exacta reusable↔contrato (cualquier permiso nuevo en el job del reusable rompe la flota con startup_failure si un stub no lo concede — GitHub obliga callee ⊆ caller) y que cada stub del central conceda ⊇ este set. Congelado por doctrina (AP-022 prop.2): capacidad nueva que requiera permisos ⇒ PAT-en-env o migración de flota explícita (stubs primero), NUNCA un permiso nuevo aquí sin migración.",
   "claude-code.yml": {
     "inputs": {
@@ -157,6 +158,18 @@
       "contents": "read",
       "pull-requests": "write",
       "issues": "write"
+    },
+    "lesson_bearing": {
+      "reviewer_max_turns": {
+        "default": 80,
+        "ap": "AP-025",
+        "leccion": "finplan#1450 — 1ª muerte del Reviewer por presupuesto tras el mandato universal-strict; el pin 50 del stub de finplan la pisaba (repesca finplan#1674)"
+      },
+      "timeout_minutes": {
+        "default": 22,
+        "ap": "AP-025",
+        "leccion": "finplan#1450 — el wall-clock escala con los turns o el bump es inerte"
+      }
     }
   },
   "watchdog.yml": {
