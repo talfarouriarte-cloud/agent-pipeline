@@ -1246,3 +1246,16 @@ La clase que motivó el hard stop serial (AP-033, incidente finplan#1298/#1299) 
 
 **Fecha.** 2026-07-27.
 ---
+
+## AP-051 — La lista de exclusión del detector del Watchdog es un INPUT del reusable (`skip_labels`): en el central `process-proposal` es la COLA, no un panel — con la lista horneada, el barrido AP-038 excluía los 5 `stalled` reales y salía «Sin anomalías»: EJECUTADA
+
+**Contexto (continuación del incidente AP-050, detectado 2026-07-27).** AP-050 dio consumidor al `stalled` (stub `self-watchdog.yml`), pero el Watchdog corría y seguía sin drenar la cola: el barrido de re-derivación por estado (AP-038) aplica `skip()` sobre una lista horneada en el script que incluye `process-proposal` — fix legítimo de 2026-07-12 (propuesta finplan#1287) porque en los CONSUMIDORES los `process-proposal` son paneles abiertos por diseño. En el CENTRAL, `process-proposal` es exactamente lo contrario: la cola de trabajo. Resultado: las 5 issues stalled (#125/#128/#129/#131/#142) eran visibles para el barrido y descartadas una a una; ticks en verde con «Sin anomalías» sobre una cola muerta. El camino por EVENTO (`labeled=stalled`, que no aplica `skip()`) las habría cogido — pero sus labels se aplicaron el 22–24, antes de AP-050: el evento ya había pasado. Nota de clase: es la misma lección de AP-050 en la capa siguiente — la semántica de una label difiere entre repos, y un valor horneado en el reusable impone la del consumidor al central.
+
+**Decisión.** Input nuevo `skip_labels` (string CSV) en el `workflow_call` de `watchdog.yml`, con default = la lista horneada de hoy (`pause-agents,human-needed,auditoria,process-proposal,registro-decisiones`): consumidores byte-compatibles sin tocar sus stubs. `skip()` se construye del input (env `IN_SKIP_LABELS`). El `self-watchdog.yml` del central pasa la lista SIN `process-proposal`. Contrato: input nuevo CON default — clase COMPATIBLE del check (no exige publicación en el manifiesto); superficie previa intacta.
+
+**Falsable.** Tras el merge, el primer tick del Watchdog del central debe emitir 5 anomalías `stalled-autonomous-resolve` (una por issue; ninguna tiene 2+ `autonomous-decision`, así que el cortacircuito no aplica) y architect-resolve procesarlas. Si un tick vuelve a salir «Sin anomalías» con `stalled` abiertos y sin runs del pipeline en vuelo (gate 0), el gap está en otra condición del barrido, no en `skip()`.
+
+**Reversibilidad.** Total: quitar la línea del stub restaura el comportamiento horneado; quitar el input, el statu quo exacto.
+
+**Fecha.** 2026-07-27.
+---
