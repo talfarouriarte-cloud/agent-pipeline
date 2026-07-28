@@ -7,33 +7,49 @@
 // que nadie lo detectara, porque el roto era el detector. Las expresiones
 // `${{ ... }}` se sustituyen por un placeholder (GitHub las interpola antes
 // del runtime). Verde: exit 0.
+//
+// AP-058 (2026-07-28): cubre TAMBIÉN `templates/**` — no solo los workflows
+// propios. `templates/watchdog-heartbeat.template.yml` es un workflow completo
+// con ~150 líneas de github-script que el consumidor copia TAL CUAL, y no lo
+// miraba ningún check: un SyntaxError ahí se despliega a mano y mata al
+// vigilante del vigilante en silencio, que es la clase exacta que este script
+// nació para cerrar (un piso más arriba). El propio AP-058 introdujo la
+// regresión —un comentario JS abierto con `#` en vez de `//`— al editar ese
+// template, y solo la cazó al extender esta cobertura.
 import { readFileSync, readdirSync, writeFileSync, mkdtempSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import yaml from 'js-yaml';
 
-const DIR = '.github/workflows';
+const DIRS = ['.github/workflows', 'templates', 'templates/stubs'];
 const tmp = mkdtempSync(join(tmpdir(), 'ejs-'));
 const errors = [];
 let checked = 0;
 
-for (const f of readdirSync(DIR).filter(f => /\.ya?ml$/.test(f)).sort()) {
+const files = DIRS.flatMap(d => {
+  let names = [];
+  try { names = readdirSync(d); } catch { return []; }   // directorio ausente: nada que validar
+  return names.filter(f => /\.ya?ml$/.test(f)).sort().map(f => [d, f]);
+});
+
+for (const [DIR, f] of files) {
+  const rel = `${DIR}/${f}`;
   let doc;
-  try { doc = yaml.load(readFileSync(`${DIR}/${f}`, 'utf8')); } catch { continue; } // check-yaml reporta
-  for (const [jname, job] of Object.entries(doc.jobs || {})) {
-    (job.steps || []).forEach((s, i) => {
+  try { doc = yaml.load(readFileSync(rel, 'utf8')); } catch { continue; } // check-yaml reporta
+  for (const [jname, job] of Object.entries((doc && doc.jobs) || {})) {
+    ((job && job.steps) || []).forEach((s, i) => {
       const script = s.with && s.with.script;
       if (typeof script !== 'string') return;
       checked++;
       // GH interpola ${{ ... }} antes del runtime: placeholder neutro.
       const src = '(async()=>{\n' + script.replace(/\$\{\{[^}]*\}\}/g, '0') + '\n})()';
-      const fn = join(tmp, `${f}-${jname}-${i}.js`);
+      const fn = join(tmp, `${rel.replace(/\//g, '_')}-${jname}-${i}.js`);
       writeFileSync(fn, src);
       try { execFileSync('node', ['--check', fn], { stdio: 'pipe' }); }
       catch (e) {
         const msg = (e.stderr || '').toString().split('\n').find(l => l.includes('Error')) || 'SyntaxError';
-        errors.push(`${f} · job ${jname} · step ${i} («${(s.name || '').slice(0, 40)}»): ${msg.trim()}`);
+        errors.push(`${rel} · job ${jname} · step ${i} («${(s.name || '').slice(0, 40)}»): ${msg.trim()}`);
       }
     });
   }
