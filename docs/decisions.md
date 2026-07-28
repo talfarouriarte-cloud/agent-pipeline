@@ -1739,3 +1739,46 @@ Segundo residual, del propio guard de la pieza 3-bis: la cuarta señal se apoya 
 
 **Fecha.** 2026-07-28.
 ---
+
+## AP-066 — El ledger de valor deja de auditar CIEGO la clase SENSOR: `actions: read` para el token de las SESIONES de agente, con la corrección de que NO es un input sino DOS concesiones sobre DOS tokens distintos (aud. finplan#1705/#1711/#1714; issue central #169): EJECUTADA en el mandato · el cambio de `.github/workflows/**` queda PENDIENTE DE APLICACIÓN HUMANA (parche adjunto)
+
+**Contexto.** El **ledger de valor por proceso** del epic-auditor (`docs/agents/epic-auditor.md` § «Ledger de valor por proceso») clasifica cada proceso de una épica como PRODUCTIVO / SENSOR / NULO / REDUNDANTE / REVERTIDO. Existe porque los pasos de agente constantes-por-PR y las sesiones de Δestado cero son la consulta de caza-fósiles: el «mayordomo de merge» corrió meses sin que nada lo viera **porque funcionaba** — coste redundante que no dispara ninguna métrica de fallo. La clase **SENSOR** (el tick que miró y no había nada) es justo la que ese diseño persigue.
+
+**Causa raíz.** Tres auditorías consecutivas declararon la clase **no enumerable**, siempre por el mismo 403: aud. finplan#1705 («los ticks vacíos no son enumerables (403 de la API de Actions)»), aud. finplan#1711 («`GET /actions/runs` devuelve `403 Resource not accessible by integration` … solo cuento el que dejó comentario») y aud. finplan#1714 («el token de esta sesión no puede leer la API de Actions … deja el ledger ciego a los procesos SENSOR sin huella en hilos. Es límite del instrumento»). Un tick SENSOR sin comentario **no tiene huella en hilos por definición**, luego el censo por comentarios mide exactamente la mitad que no importa. La misma ceguera dejó sin fuente de duración a los actores sin tracking comment (Reviewer, architect-resolve, watchdog), que es de donde se calibran los presupuestos (clase `mandate/toolbox/budget drift` del pipeline-map, 4 instancias). El fallo se re-declaraba como propiedad del instrumento en cada auditoría en vez de medirse: un límite aceptado es un límite que nadie arregla.
+
+**El issue proponía una línea; la verificación en el código del action encontró que son dos concesiones distintas.** `#169` pedía añadir `additional_permissions: | actions: read` «en el reusable». Leído `src/github/token.ts:158-171` de `anthropics/claude-code-action@v1`:
+
+```js
+export async function setupGitHubToken(): Promise<string> {
+  const providedToken = process.env.OVERRIDE_GITHUB_TOKEN;   // ← inputs.github_token
+  if (providedToken) { return providedToken; }               // ← RETURN TEMPRANO
+  ...
+  const permissions = parseAdditionalPermissions();          // ← solo en la ruta OIDC
+```
+
+`additional_permissions` **solo se parsea si el workflow NO pasa `github_token`**. Contraste de los cuatro sitios que invocan el action:
+
+| reusable | actor de sesión | `github_token:` | token de la sesión | ¿sirve el input? |
+|---|---|---|---|---|
+| `claude-code.yml` | Creator **y epic-auditor** (los issues `auditoria` se arman como sesión de Creator en este mismo reusable) | no lo pasa | OIDC → **token de App** | **sí** |
+| `process-review.yml` | process-reviewer | PAT | PAT | no — letra muerta |
+| `reviewer.yml` | Reviewer | PAT | PAT | no — letra muerta |
+| `watchdog.yml` | watchdog / architect-resolve | PAT | PAT | no — letra muerta |
+
+**Decisión — dos tokens, dos concesiones.** Se separa lo que el issue trataba como un único arreglo:
+
+1. **Token de App (ruta OIDC), sitio `claude-code.yml`.** Aquí corre el epic-auditor —el autor de las tres auditorías cegadas— y el input **sí** surte efecto. Se añade `additional_permissions: actions: read`. Requiere conceder «Actions: Read-only» **a la GitHub App**.
+2. **PAT `REVIEWER_GITHUB_TOKEN`, los otros tres sitios.** Su `actions: read` se concede **en el fine-grained PAT**, sin una línea de código. Poner ahí `additional_permissions` sería peor que inútil: **aparentaría** arreglar el 403 sin tocarlo. El repo ya había medido este borde y lo tenía escrito sin explotar — `claude-code.yml:1134`: `// null = lectura no fiable (p.ej. PAT sin actions:read)`.
+3. **Tool scope, `process-review.yml`.** Este reusable **no** corre con `--permission-mode bypassPermissions` (solo `claude-code.yml` lo hace), luego su `--allowedTools` es un gate real: se le añaden `Bash(gh run list:*)` y `Bash(gh run view:*)`. Sin esto, el PAT concedido seguiría sin poder ejercerse por la vía natural. `claude-code.yml` no necesita cambio de allowlist (bypass activo).
+4. **El mandato cierra el bucle** (`vendored/docs-agents/epic-auditor.md`, ejecutado en este PR y por tanto VIVO sin esperar al humano): la clase SENSOR se enumera por `gh run list --json databaseId,conclusion,createdAt,updatedAt`, no por los hilos; y queda **prohibido declarar «no enumerable» sin pegar el 403 literal**. Habilitar el instrumento sin cambiar la instrucción habría dejado la frase de las tres auditorías como cita heredada — el mandato seguía diciendo que la clase se reconstruye «desde las huellas existentes».
+
+**El riesgo declarado en el issue era el contrario del real.** `#169` afirmaba: «si la App no tiene el permiso concedido, la action degrada al estado actual — no hay camino de rotura». **No es fail-open.** Fijar el input cambia el intercambio de token de «sin body» (default del servidor) a un body **explícito** (`{...DEFAULT_PERMISSIONS, ...additional}`), y `exchangeForAppToken` hace `throw` en `!response.ok` (`token.ts:199-203`). Si la App no tiene concedido «Actions: Read-only», el camino plausible es que **el Creator muera al nacer** — en un reusable que despliega a los DOS consumidores sin gradualidad. De ahí el **orden obligatorio** escrito en la cabecera del parche: conceder primero (App y PAT), aplicar después, verificar el primer run; rollback `git apply --reverse`. La ampliación sigue siendo READ-ONLY y no toca guards, labels ni triggers: ningún mecanismo consume lecturas de Actions como señal de control.
+
+**Alternativas descartadas.** (a) Quitar `github_token` de `process-review.yml` para forzar la ruta OIDC — el PAT es load-bearing ahí por dos razones independientes (autoría humana de los issues creados; los eventos del GITHUB_TOKEN default no disparan otros workflows), y perderlas para ganar una lectura es un intercambio malo. (b) Poner `additional_permissions` en los cuatro sitios «por uniformidad» — es precisamente la clase de configuración muerta que aparenta un arreglo, y este repo la persigue bajo AP-008. (c) Enumerar SENSOR por los hilos con más esfuerzo — imposible por definición: el tick vacío no deja hilo.
+
+**Residuales honestos.** (a) Las dos concesiones son **pasos humanos** y este AP no puede verificarlas; hasta que ocurran, el comportamiento es el de hoy (403) y el mandato exige ahora que la auditoría lo reporte como anomalía de configuración, no como límite del instrumento — es decir, el pendiente tiene consumidor (AP-008). (b) `git apply --check` valida que el parche aplica, no que el permiso exista: la única verificación real es el primer run del Creator tras la concesión. (c) El parche toca `claude-code.yml`, fichero de alto tránsito: si deriva antes de que el humano lo aplique, `check-patches` lo pone ROJO — que es el modo de fallo deseado (ruidoso, no silencioso). (d) `reviewer.yml` y `watchdog.yml` no llevan cambio de código: ganan la lectura por la concesión del PAT, y si su allowlist les estorba se verá al ejercerla — no se amplía a ciegas.
+
+**Reversibilidad.** Total y por partes: `git apply --reverse` sobre el parche revierte los dos hunks de workflow; revocar el permiso en App/PAT devuelve el 403; revertir el hunk del mandato devuelve la frase de límite declarado. Cero estado que migrar, cero superficie `workflow_call` (no cambia inputs ni secrets ⇒ `templates/workflow-contracts.json` intacto, AP-003), cero labels.
+
+**Fecha.** 2026-07-28.
+---
