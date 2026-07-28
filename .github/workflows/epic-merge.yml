@@ -149,12 +149,27 @@ jobs:
             // clase (`auditoria`/`auditoria-completa` — no abren PRs de código,
             // ni bloquean ni son bloqueados), así que no ocupan la serie.
             let serieTomada = false;
+            // `pausado` (AP-062, nit 3): lo pone a true el retorno por
+            // kill-switch (`pause-agents`/`human-needed`). El `finally` corre
+            // TAMBIÉN en ese retorno, y un barrido que postea `@claude` tras
+            // un kill-switch es exactamente lo que el kill-switch prohíbe.
+            // El step espejo de `claude-code.yml` ya se apaga por su `if`; sin
+            // esta variable la simetría no existiría de este lado.
+            let pausado = false;
             async function armQueue(prNumber, why) {
               try {
                 const { data: queued } = await github.rest.issues.listForRepo({
                   owner, repo, state: 'open', labels: 'en-cola', sort: 'created', direction: 'asc', per_page: 5 });
                 const next = queued.filter(i => !i.pull_request)[0];
-                if (!next) return;
+                // Diagnóstico de la lectura (AP-062): sin él, un pop que no
+                // arma no distingue «la lista volvió VACÍA» (ventana de
+                // escritura de la label) de «volvió con el ítem y lo filtró
+                // `!i.pull_request`» — que son causas raíz DISTINTAS y sólo
+                // una la cierra el barrido. finplan#1702 no dejó ese rastro.
+                if (!next) {
+                  core.info(`[epic-merge] arm de cola (${why}): sin candidato — listForRepo?labels=en-cola devolvió ${queued.length} ítem(s), 0 issues tras filtrar PRs.`);
+                  return;
+                }
                 await github.rest.issues.removeLabel({ owner, repo, issue_number: next.number, name: 'en-cola' }).catch(() => {});
                 await github.rest.issues.removeLabel({ owner, repo, issue_number: next.number, name: 'stalled' }).catch(() => {});
                 await github.rest.issues.createComment({ owner, repo, issue_number: next.number,
@@ -178,13 +193,58 @@ jobs:
             // todas las escrituras de este job, que cierra la ventana.
             //
             // FAIL-CLOSED por diseño — sólo arma con identificación POSITIVA
-            // de serie libre: (a) este job no armó a nadie (`serieTomada`),
-            // (b) cero PRs `claude/*` abiertos, (c) cero `serial-activo`. Sin
-            // lista (API caída) o con cualquier titular, no-op y el detector
-            // `cola-huerfana` del watchdog conserva su cinturón.
+            // de serie libre: (a) este job no armó a nadie (`serieTomada`) ni
+            // salió por kill-switch (`pausado`), (b) cero PRs `claude/*`
+            // abiertos, (c) cero `serial-activo`, (d) ningún comentario de arm
+            // RECIENTE de otro emisor. Sin lista (API caída) o con cualquier
+            // titular, no-op —toda excepción sale por el `catch`, que NO
+            // arma— y el detector `cola-huerfana` del watchdog conserva su
+            // cinturón.
+            //
+            // Señal (d), AP-062 nit 1 — la traza de titularidad de (a) es
+            // INTRA-job: un arm posteado por OTRO emisor segundos antes
+            // (barrido de otro job, `watchdog-rearm`, sucesor de cadena de
+            // otro merge, arm manual) es invisible para (b) y (c) durante la
+            // VENTANA DE NACIMIENTO de su run — el comentario existe, pero el
+            // run aún no corre y `serial-activo` no está escrito. Sin (d),
+            // dos barridos concurrentes pueden armar DOS issues distintos, y
+            // esa clase (finplan#1298/#1299) NO la absorbe el árbitro
+            // determinista del guard (AP-033 (c)), que arbitra dos arranques
+            // del MISMO issue. La señal lee el ÚNICO hecho materializado que
+            // existe en esa ventana: el comentario de arm. Ventana de 5 min —
+            // cubre nacimiento de run + escritura de `serial-activo` con
+            // holgura, y su coste máximo es diferir el barrido un ciclo (el
+            // cinturón del watchdog sigue detrás).
+            const ARM_MARKERS = ['arm-de-cola', 'epic-auto-launch', 'epic-partial-relaunch', 'watchdog-rearm'];
+            const ARM_WINDOW_MIN = 5;
+            async function armRecienteDeOtroJob() {
+              const corte = Date.now() - ARM_WINDOW_MIN * 60000;
+              // `since` de este endpoint filtra por ÚLTIMA ACTUALIZACIÓN, no
+              // por creación: se re-filtra por `created_at` para que la
+              // EDICIÓN de un arm viejo no mute la señal.
+              const { data: cs } = await github.rest.issues.listCommentsForRepo({
+                owner, repo, sort: 'created', direction: 'desc', since: new Date(corte).toISOString(), per_page: 100 });
+              // Sólo comentarios de ISSUE: en un PR el arm es turno de Creator
+              // sobre una unidad ya en vuelo (y un PR `claude/*` abierto lo
+              // caza la señal (b)), no una adjudicación de la serie.
+              return cs.find(c => /\/issues\/\d+/.test(c.html_url || '')
+                && new Date(c.created_at).getTime() >= corte
+                && ARM_MARKERS.some(m => (c.body || '').includes(`<!-- ${m} -->`))) || null;
+            }
             async function sweepQueueAtExit() {
               try {
                 if (serieTomada) return;
+                if (pausado) {
+                  core.info('[epic-merge] barrido de cola: el job salió por kill-switch (pause-agents/human-needed); no armo.');
+                  return;
+                }
+                // La lectura de cola de aquí NO es redundante con la de
+                // `armQueue` (nit 6): es el filtro BARATO que mantiene el
+                // coste del caso común —cola vacía, la abrumadora mayoría de
+                // cierres— en UNA sola llamada REST, en vez de pagar además
+                // `pulls.list` + `serial-activo` en cada cierre de job. La
+                // segunda lectura, dentro de `armQueue`, es además la más
+                // fresca, que es la que elige el ítem.
                 const { data: queued } = await github.rest.issues.listForRepo({
                   owner, repo, state: 'open', labels: 'en-cola', sort: 'created', direction: 'asc', per_page: 5 });
                 if (!queued.some(i => !i.pull_request)) return;
@@ -198,6 +258,11 @@ jobs:
                   owner, repo, state: 'open', labels: 'serial-activo', per_page: 20 });
                 if (flagged.length) {
                   core.info(`[epic-merge] barrido de cola: serie OCUPADA por serial-activo en ${flagged.map(i => `#${i.number}`).join(', ')}; la espera es legítima.`);
+                  return;
+                }
+                const armReciente = await armRecienteDeOtroJob();
+                if (armReciente) {
+                  core.info(`[epic-merge] barrido de cola: arm RECIENTE de otro emisor (${armReciente.html_url}, ${armReciente.created_at}) — serie recién adjudicada, su run aún no la delata. No armo.`);
                   return;
                 }
                 core.warning('[epic-merge] barrido de cola al cierre: serie LIBRE con cola NO vacía — la lectura primaria de este job no vio el encolado. Armando el más antiguo.');
@@ -788,6 +853,12 @@ jobs:
               // kill-switches
               const prLabels = (pr.labels || []).map(l => l.name);
               if (prLabels.includes('pause-agents') || prLabels.includes('human-needed')) {
+                // AP-062: marca el kill-switch para que el barrido del
+                // `finally` NO postee un `@claude` en una parada. Hoy el
+                // chequeo de `held` lo taparía casi siempre (hay un PR
+                // abierto), pero eso es incidental —depende de que la rama
+                // lleve el prefijo `claude/`—, no diseño.
+                pausado = true;
                 await diag(prNumber, 'pausado (pause-agents/human-needed); no mergeo.'); return;
               }
 

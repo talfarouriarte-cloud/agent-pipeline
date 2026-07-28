@@ -1305,7 +1305,16 @@ jobs:
                 const { data: queued } = await github.rest.issues.listForRepo({
                   owner, repo, state: 'open', labels: 'en-cola', sort: 'created', direction: 'asc', per_page: 5 });
                 const next = queued.filter(i => !i.pull_request)[0];
-                if (!next) return;
+                // Diagnóstico de la lectura (AP-062, espejo del de armQueue):
+                // sin él, un pop que no arma no distingue «la lista volvió
+                // VACÍA» (ventana de escritura de la label) de «volvió con el
+                // ítem y lo filtró `!i.pull_request`» — causas raíz DISTINTAS
+                // y sólo una la cierra el barrido. finplan#1702 no dejó rastro
+                // que permitiera separarlas a posteriori.
+                if (!next) {
+                  core.info(`pop de cola (${why}): sin candidato — listForRepo?labels=en-cola devolvió ${queued.length} ítem(s), 0 issues tras filtrar PRs.`);
+                  return;
+                }
                 await github.rest.issues.removeLabel({ owner, repo, issue_number: next.number, name: 'en-cola' }).catch(() => {});
                 await github.rest.issues.removeLabel({ owner, repo, issue_number: next.number, name: 'stalled' }).catch(() => {});
                 await github.rest.issues.createComment({ owner, repo, issue_number: next.number,
@@ -2412,9 +2421,20 @@ jobs:
       #
       # FAIL-CLOSED por diseño — sólo arma con identificación POSITIVA de
       # serie libre: (a) ningún step de este job armó ya (`armed`), (b) cero
-      # PRs `claude/*` abiertos, (c) cero `serial-activo`. Con cualquier
-      # titular, o si la API falla, no-op: el detector `cola-huerfana` del
-      # watchdog conserva su cinturón. `pause-agents` lo apaga como al resto.
+      # PRs `claude/*` abiertos, (c) cero `serial-activo`, (d) ningún
+      # comentario de arm RECIENTE de otro emisor. Con cualquier titular, o si
+      # la API falla, no-op: el detector `cola-huerfana` del watchdog conserva
+      # su cinturón. `pause-agents` lo apaga como al resto.
+      #
+      # Señal (d), AP-062 nit 1 — la traza (a) es INTRA-job: un arm posteado
+      # por OTRO emisor segundos antes (barrido de otro job, `watchdog-rearm`,
+      # sucesor de cadena, arm manual) es invisible para (b) y (c) durante la
+      # VENTANA DE NACIMIENTO de su run: el comentario existe, pero el run aún
+      # no corre y `serial-activo` no está escrito. Sin (d), dos barridos
+      # concurrentes pueden armar DOS issues distintos — clase finplan#1298/
+      # #1299, que el árbitro determinista del guard NO absorbe (arbitra dos
+      # arranques del MISMO issue). Se lee el único hecho materializado que
+      # existe en esa ventana: el comentario de arm.
       - name: Barrido de cola al cierre del job (segunda lectura, AP-062)
         if: |
           always()
@@ -2444,6 +2464,25 @@ jobs:
                 owner, repo, state: 'open', labels: 'serial-activo', per_page: 20 });
               if (flagged.length) {
                 core.info(`barrido de cola: serie OCUPADA por serial-activo en ${flagged.map(i => `#${i.number}`).join(', ')}; la espera de #${next.number} es legítima.`);
+                return;
+              }
+              // (d) arm reciente de OTRO emisor. Ventana de 5 min: cubre
+              // nacimiento de run + escritura de `serial-activo` con holgura,
+              // y su coste máximo es diferir el barrido un ciclo. Sólo
+              // comentarios de ISSUE — en un PR el arm es turno de Creator
+              // sobre una unidad ya en vuelo, que además caza la señal (b).
+              const ARM_MARKERS = ['arm-de-cola', 'epic-auto-launch', 'epic-partial-relaunch', 'watchdog-rearm'];
+              const corte = Date.now() - 5 * 60000;
+              // `since` de este endpoint filtra por ÚLTIMA ACTUALIZACIÓN, no
+              // por creación: se re-filtra por `created_at` para que la
+              // EDICIÓN de un arm viejo no mute la señal.
+              const { data: recientes } = await github.rest.issues.listCommentsForRepo({
+                owner, repo, sort: 'created', direction: 'desc', since: new Date(corte).toISOString(), per_page: 100 });
+              const armReciente = recientes.find(c => /\/issues\/\d+/.test(c.html_url || '')
+                && new Date(c.created_at).getTime() >= corte
+                && ARM_MARKERS.some(m => (c.body || '').includes(`<!-- ${m} -->`)));
+              if (armReciente) {
+                core.info(`barrido de cola: arm RECIENTE de otro emisor (${armReciente.html_url}, ${armReciente.created_at}) — serie recién adjudicada, su run aún no la delata. No armo #${next.number}.`);
                 return;
               }
               await github.rest.issues.removeLabel({ owner, repo, issue_number: next.number, name: 'en-cola' }).catch(() => {});
