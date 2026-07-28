@@ -138,6 +138,17 @@ jobs:
             // merge deja la serie LIBRE (sin sucesor de cadena ni re-arm
             // parcial), se arma el issue EN COLA más antiguo — el que el
             // guard serial bloqueó y etiquetó `en-cola`. FIFO por created_at.
+            //
+            // `serieTomada` (AP-062): lo pone a true TODO camino de este job
+            // que deja la serie CON DUEÑO — el arm de cola, el re-arm de un
+            // parcial y el lanzamiento del sucesor de cadena. Un arm es el
+            // nuevo titular desde el instante en que se postea el comentario,
+            // aunque su run tarde segundos en nacer (y por tanto AÚN no tenga
+            // ni `serial-activo` ni PR `claude/*` que lo delaten). Los arms de
+            // AUDITORÍA quedan fuera a propósito: el guard serial exime esa
+            // clase (`auditoria`/`auditoria-completa` — no abren PRs de código,
+            // ni bloquean ni son bloqueados), así que no ocupan la serie.
+            let serieTomada = false;
             async function armQueue(prNumber, why) {
               try {
                 const { data: queued } = await github.rest.issues.listForRepo({
@@ -148,8 +159,52 @@ jobs:
                 await github.rest.issues.removeLabel({ owner, repo, issue_number: next.number, name: 'stalled' }).catch(() => {});
                 await github.rest.issues.createComment({ owner, repo, issue_number: next.number,
                   body: `@claude arranca — turno de cola: la serie quedó libre (${why}). Eras el más antiguo en \`en-cola\`.\n\n<!-- arm-de-cola -->` });
+                serieTomada = true;
                 await diag(prNumber, `serie libre (${why}): armado el siguiente de la cola, #${next.number}.`);
               } catch (e) { await diag(prNumber, `arm de cola falló: ${e.message}`); }
+            }
+
+            // ── Re-evaluación de la cola al CIERRE del job (AP-062, repesca
+            // finplan#1702). La cola serial se materializa en una label MUTABLE
+            // (`en-cola`) que ESCRIBE un workflow (el guard serial de
+            // `claude-code.yml`) y LEE otro (este): una lectura ÚNICA puede
+            // caer en la ventana de escritura del guard y no ver un encolado
+            // que ya existe. Medido: encolado a las 01:16:17, merge a las
+            // 01:44:40 sin armar al único de la cola, 74 min de serie LIBRE
+            // con cola NO vacía, rescatados por el cron del watchdog
+            // (`cola-huerfana`) en vez de por el pop primario — la transición
+            // primaria, de segundos de latencia, degradada a tick de cron.
+            // Esto NO toca el camino primario: es una SEGUNDA lectura, tras
+            // todas las escrituras de este job, que cierra la ventana.
+            //
+            // FAIL-CLOSED por diseño — sólo arma con identificación POSITIVA
+            // de serie libre: (a) este job no armó a nadie (`serieTomada`),
+            // (b) cero PRs `claude/*` abiertos, (c) cero `serial-activo`. Sin
+            // lista (API caída) o con cualquier titular, no-op y el detector
+            // `cola-huerfana` del watchdog conserva su cinturón.
+            async function sweepQueueAtExit() {
+              try {
+                if (serieTomada) return;
+                const { data: queued } = await github.rest.issues.listForRepo({
+                  owner, repo, state: 'open', labels: 'en-cola', sort: 'created', direction: 'asc', per_page: 5 });
+                if (!queued.some(i => !i.pull_request)) return;
+                const { data: prs } = await github.rest.pulls.list({ owner, repo, state: 'open', per_page: 100 });
+                const held = prs.filter(p => p.head.ref.startsWith('claude/')).map(p => `#${p.number}`);
+                if (held.length) {
+                  core.info(`[epic-merge] barrido de cola: serie OCUPADA por ${held.join(', ')}; la espera es legítima.`);
+                  return;
+                }
+                const { data: flagged } = await github.rest.issues.listForRepo({
+                  owner, repo, state: 'open', labels: 'serial-activo', per_page: 20 });
+                if (flagged.length) {
+                  core.info(`[epic-merge] barrido de cola: serie OCUPADA por serial-activo en ${flagged.map(i => `#${i.number}`).join(', ')}; la espera es legítima.`);
+                  return;
+                }
+                core.warning('[epic-merge] barrido de cola al cierre: serie LIBRE con cola NO vacía — la lectura primaria de este job no vio el encolado. Armando el más antiguo.');
+                await armQueue(prNumber, 'barrido de cola al cierre del job: la serie quedó libre y el encolado no era visible en la lectura primaria (AP-062)');
+              } catch (e) {
+                core.warning('[epic-merge] barrido de cola al cierre falló: ' + (e && e.message));
+              }
             }
 
             // Helper: label de estado única en el PR (estado:*) — legible de
@@ -399,6 +454,7 @@ jobs:
                   : `@claude\n\nPR parcial #${prNumber} mergeado. Continúa con el ALCANCE RESTANTE de este issue: re-verifica contra el HEAD actual qué criterios de aceptación siguen sin cubrir y cúbrelos. Si tu próximo PR completa el issue, NO lo marques parcial.\n\n<!-- epic-partial-relaunch -->`;
                 try {
                   await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body: relaunchBody });
+                  serieTomada = true; // AP-062: el re-arm parcial es el nuevo titular de la serie.
                   await diag(prNumber, `MERGEADO parcial${porEstado ? ' (abierto-por-estado)' : ''}: issue #${issueNumber} SIGUE ABIERTO, re-armado para el alcance restante (${relaunches + 1}/${process.env.IN_PARTIAL_ROUND_CAP}).`);
                 } catch (e) { await diag(prNumber, `mergeado parcial pero re-armar #${issueNumber} falló: ${e.message}`); }
                 return;
@@ -513,6 +569,7 @@ jobs:
               try {
                 await github.rest.issues.createComment({ owner, repo, issue_number: next,
                   body: `@claude\n\nArranque automático de épica tras merge de #${prNumber}.\n\n<!-- epic-auto-launch -->` });
+                serieTomada = true; // AP-062: el sucesor de cadena es el nuevo titular de la serie.
                 await diag(prNumber, `MERGEADO + lanzado #${next} (labels de bloqueo limpiadas si las había).`);
               } catch (e) { await diag(prNumber, `mergeado pero lanzar #${next} falló: ${e.message}`); }
             }
@@ -662,6 +719,7 @@ jobs:
               try {
                 await github.rest.issues.createComment({ owner, repo, issue_number: next,
                   body: `@claude\n\nArranque automático de épica tras cierre POR ESTADO de #${issueNumber} (terminal alcance-completo, sin merge — AP-031). El sentinel \`launch-next\` de una cadena que termina por estado lo consume epic-merge, no la memoria humana.\n\n<!-- epic-auto-launch -->` });
+                serieTomada = true; // AP-062: el sucesor de cadena es el nuevo titular de la serie.
                 await stateCloseMark(issueNumber, `\`launch-next\` consumido tras cierre por estado: #${next} armado (des-bloqueo aplicado si tenía \`stalled\`/\`human-needed\`).`);
               } catch (e) {
                 await stateCloseMark(issueNumber, `cierre por estado: arm de #${next} falló: ${e.message}`);
@@ -819,4 +877,13 @@ jobs:
             } catch (e) {
               core.warning('[epic-merge] excepción no esperada: ' + (e && e.message));
               await diag(prNumber, 'excepción no esperada: ' + (e && e.message));
+            } finally {
+              // AP-062: la re-evaluación de cola cuelga del `finally` a
+              // propósito — el cuerpo sale por DECENAS de `return` (evento no
+              // aplicable, gates sin satisfacer, merge fallido, camino manual,
+              // cierre por estado…) y un barrido colgado del camino feliz no
+              // cubriría precisamente los cierres en los que la serie queda
+              // libre sin que este job arme a nadie. Corre en el MISMO step,
+              // job y grupo de concurrencia que el camino primario.
+              await sweepQueueAtExit();
             }
