@@ -162,6 +162,14 @@ for (const [nombre, comentarios, decl, avisos] of CASOS) {
 // (pasarían también si el doble no llegara nunca al punto de escritura).
 const DECL = `\`stalled\` retirada de #1694 y re-arm del eslabón 1/3 allí.\n${CAPA}\n${ROL_MARK}`;
 const { MARK } = belt;
+// Mismo molde que los guards de `derivar` y del runtime: si el módulo deja de
+// exportar el marcador, el banco se pone rojo igual —por «ningún cuerpo
+// publicado contiene `undefined`»— pero sin nombrar la causa, y el caso del
+// dedupe por ventana pasaría a construir su comentario con `undefined` dentro.
+if (typeof MARK !== 'string' || !MARK) {
+  console.error('CHECK-RESOLVE-DETECTION ROJO: `resolve-cross-issue-failsafe.cjs` ya no exporta `MARK` — el dedupe por ventana y las aserciones de CUERPO quedarían juzgando `undefined`.');
+  process.exit(1);
+}
 
 // Las escrituras se registran CON el issue destino (`removeLabel#1694`): sin el
 // número, el caso del tope `MAX` —tres materializaciones de cuatro declaradas—
@@ -180,7 +188,14 @@ async function correrBelt({
     issue_url: 'https://api.github.com/repos/o/r/issues/1696',
     body: declaracion, html_url: 'https://example/1', created_at: ahora, updated_at: ahora,
   };
-  const paginate = async () => comentariosDestino;       // comentarios del DESTINO
+  // Los comentarios del destino que el caso declara «en ventana» se estampan
+  // AQUÍ, en la misma llamada que fija `run_started_at` (🔵 6 de la review):
+  // sellarlos al cargar el módulo ataba el banco al reloj de pared —si pasaban
+  // más de 60 s hasta el caso, el comentario caía fuera de `since` y los casos
+  // del dedupe se ponían rojos por una razón que no es la que prueban—. El
+  // sentinel es `created_at: null`, que `enVentana` emite y nadie más usa.
+  const delDestino = comentariosDestino.map((c) => (c.created_at == null ? { ...c, created_at: ahora } : c));
+  const paginate = async () => delDestino;               // comentarios del DESTINO
   paginate.iterator = async function* () { yield { data: [comentario] }; };
   const github = {
     paginate,
@@ -215,8 +230,10 @@ if (typeof belt !== 'function') {
 }
 
 const SKIP = 'pause-agents,human-needed';
-const AHORA = new Date().toISOString();
-const enVentana = (body) => ({ body, created_at: AHORA });
+// `created_at: null` es el sentinel que `correrBelt` estampa con SU reloj, en
+// la misma llamada que fija la ventana: el banco no depende de cuánto tarde en
+// llegar a este caso.
+const enVentana = (body) => ({ body, created_at: null });
 // Cuatro destinos declarados en cuatro segmentos: uno por segmento, porque más
 // de un `#N` en el MISMO segmento es fail-open por multi-referencia. Sirve para
 // asertar el tope `MAX` del módulo, que hoy es 3.
