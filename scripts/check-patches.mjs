@@ -51,8 +51,19 @@
 //   L2 (fail-open): si el commit declarado está PRESENTE en el clon, sus blobs
 //      deben coincidir con la pre-imagen; si no coinciden, la cabecera afirma
 //      algo FALSO ⇒ ROJO. Si el commit no está —`actions/checkout@v4` clona a
-//      `fetch-depth: 1`, así que en CI normalmente NO estará— queda un aviso
-//      nominal y CERO veredicto: nunca un silencio, nunca un rojo espurio.
+//      `fetch-depth: 1`, así que en CI normalmente NO estará— el contraste se
+//      OMITE y se dice en la línea informativa del ancla, con CERO veredicto:
+//      nunca un silencio, nunca un rojo espurio. Deliberadamente NO es
+//      `::warning`: en CI ese caso se da en TODAS las corridas, y un aviso que
+//      salta siempre deja de ser señal (por eso el nivel de esa línea lo fija
+//      L1, que sí distingue estados). Sí son `::warning` los dos casos que son
+//      anómalos de verdad: ancla ESTANCADA, y parche SIN cabecera
+//      `# verificado-contra:` o del que no se puede derivar pre-imagen.
+//
+// El veredicto del ancla viaja como VALOR (`{ vigente, contrastado, nivel }`),
+// no como substring de la prosa: enrutar el log o contar por `includes('…')`
+// acopla dos decisiones mecánicas a la redacción de una frase — la misma clase
+// AP-008 que este bloque cierra un piso más abajo (🟡 3 de la review de AP-065).
 import { readdirSync, existsSync, readFileSync } from 'fs';
 import { execFileSync } from 'child_process';
 
@@ -79,10 +90,24 @@ const git = (...args) => {
 // continuación, `index <pre>..<post>`. Los SHA vienen ABREVIADOS, así que toda
 // comparación es por prefijo (y en la dirección correcta: el declarado es el
 // corto). Un fichero nuevo lleva `0000000` como pre-imagen.
+//
+// Se trocea POR ENTRADA antes de buscar el `index` (🟡 2 de la review): un solo
+// regex con `[\s\S]*?` entre la cabecera y el `index` no está acotado a la
+// entrada, así que ante un `diff --git` SIN línea `index` —renombrado puro
+// (`similarity index 100%` no casa `^index`) o cambio de modo puro— el lazy
+// saltaría a la entrada siguiente y emparejaría el path de A con los blobs de
+// B, perdiendo B de paso. Ese emparejamiento cruzado llega hasta L2, donde un
+// blob que no casa es ROJO: un rojo espurio sobre un parche válido. Troceando,
+// cruzar es estructuralmente imposible.
 const imagenes = (txt) => {
   const out = [];
-  const re = /^diff --git a\/(\S+) b\/\S+$[\s\S]*?^index ([0-9a-f]+)\.\.([0-9a-f]+)/gm;
-  for (const m of txt.matchAll(re)) out.push({ path: m[1], pre: m[2], post: m[3] });
+  for (const bloque of txt.split(/^(?=diff --git )/m)) {
+    const cab = /^diff --git a\/(\S+) b\/\S+$/m.exec(bloque);
+    if (!cab) continue;
+    const idx = /^index ([0-9a-f]+)\.\.([0-9a-f]+)/m.exec(bloque);
+    if (!idx) continue;   // rename/modo puros: no declaran blobs, no hay nada que contrastar
+    out.push({ path: cab[1], pre: idx[1], post: idx[2] });
+  }
   return out;
 };
 
@@ -91,8 +116,16 @@ const NULO = (sha) => /^0+$/.test(sha);
 
 // Verifica el ancla de UN parche. `aplicado` decide contra qué imagen se
 // compara el árbol. Empuja a `anclas`/`errors`; nunca lanza.
+//   `vigente`     — L1 dijo que el árbol ES la imagen esperada.
+//   `contrastado` — L2 llegó a comparar contra el commit declarado (sirve de
+//                   denominador honesto: sin él, el resumen contaba como
+//                   «contrastadas» las anclas que nunca tocaron un commit).
+//   `nivel`       — 'warn' ⇒ `::warning`; 'info' ⇒ línea `·`.
 const verificarAncla = (f, sha, imgs, aplicado) => {
-  if (!imgs.length) { anclas.push(`${f}: ancla NO verificable — no se pudo derivar ninguna pre-imagen \`index <pre>..<post>\` del diff`); return; }
+  // Sin ninguna entrada con `index` (parche de solo renombrados o solo modo) L1
+  // y L2 quedan MUDAS a la vez: es la degradación total del ancla, y por eso
+  // sale con aviso propio en vez de confundirse con un veredicto emitido.
+  if (!imgs.length) { anclas.push({ f, vigente: false, contrastado: false, nivel: 'warn', msg: `${f}: ancla NO verificable — no se pudo derivar ninguna pre-imagen \`index <pre>..<post>\` del diff (¿renombrados o cambios de modo puros?): L1 y L2 quedan sin contraste, el ancla NO está comprobada` }); return; }
 
   // L1 — árbol vs imagen esperada. Se usa `git hash-object` sobre el fichero
   // del disco (no `rev-parse HEAD:<path>`) para que un árbol sucio —el de un
@@ -100,17 +133,27 @@ const verificarAncla = (f, sha, imgs, aplicado) => {
   const desfase = [];
   for (const { path, pre, post } of imgs) {
     const esperado = aplicado ? post : pre;
-    if (NULO(esperado)) { if (existsSync(path) !== aplicado) desfase.push(`${path} (fichero nuevo: presencia inesperada)`); continue; }
+    // Imagen NULA = el fichero no existe en ese lado del diff, y eso vale para
+    // las DOS combinaciones alcanzables (alta sin aplicar, borrado ya
+    // aplicado): en ambas el árbol correcto es «ausente». La condición no
+    // depende de `aplicado` — compararla contra él invertía la rama del
+    // borrado aplicado (🟡 1 de la review).
+    if (NULO(esperado)) { if (existsSync(path)) desfase.push(`${path} (debería estar ausente ${aplicado ? 'tras aplicar el borrado' : 'hasta aplicar el alta'}, y existe)`); continue; }
     const real = existsSync(path) ? git('hash-object', path) : null;
     if (!casa(real, esperado)) desfase.push(`${path} (árbol ${real ? real.slice(0, 7) : 'ausente'} ≠ ${aplicado ? 'post' : 'pre'}-imagen ${esperado})`);
   }
-  const estado = desfase.length
-    ? `ESTANCADA — el parche sigue aplicando por contexto, pero el árbol ya no es byte a byte la ${aplicado ? 'post' : 'pre'}-imagen declarada: ${desfase.join(', ')}. Regenera el parche y actualiza \`verificado-contra:\``
-    : `VIGENTE — el árbol es exactamente la ${aplicado ? 'post' : 'pre'}-imagen declarada (${imgs.length} fichero(s)); NO hay que tocar \`verificado-contra:\``;
+  const vigente = !desfase.length;
+  const nivel = vigente ? 'info' : 'warn';
+  const estado = vigente
+    ? `VIGENTE — el árbol es exactamente la ${aplicado ? 'post' : 'pre'}-imagen declarada (${imgs.length} fichero(s)); NO hay que tocar \`verificado-contra:\``
+    : `ESTANCADA — el parche sigue aplicando por contexto, pero el árbol ya no es byte a byte la ${aplicado ? 'post' : 'pre'}-imagen declarada: ${desfase.join(', ')}. Regenera el parche y actualiza \`verificado-contra:\``;
 
   // L2 — el commit declarado, si está en el clon.
-  if (!sha) { anclas.push(`${f}: ancla ${estado}. Sin \`# verificado-contra:\` en la cabecera: la provenance no se puede contrastar contra ningún commit`); return; }
-  if (git('cat-file', '-t', sha) !== 'commit') { anclas.push(`${f}: ancla ${estado}. Commit declarado \`${sha}\` NO presente en el clon (esperable con \`fetch-depth: 1\`) ⇒ contraste contra commit OMITIDO`); return; }
+  // Cabecera ausente: anómalo (el ancla no existe) ⇒ `::warning` propio, aunque
+  // L1 esté VIGENTE. Commit ausente del clon: esperado en CI en cada corrida
+  // ⇒ el nivel lo fija L1 y el dato viaja en la línea del ancla.
+  if (!sha) { anclas.push({ f, vigente, contrastado: false, nivel: 'warn', msg: `${f}: ancla ${estado}. Sin \`# verificado-contra:\` en la cabecera: la provenance no se puede contrastar contra ningún commit` }); return; }
+  if (git('cat-file', '-t', sha) !== 'commit') { anclas.push({ f, vigente, contrastado: false, nivel, msg: `${f}: ancla ${estado}. Commit declarado \`${sha}\` NO presente en el clon (esperable con \`fetch-depth: 1\`) ⇒ contraste contra commit OMITIDO` }); return; }
 
   const falsos = [];
   for (const { path, pre } of imgs) {
@@ -119,7 +162,7 @@ const verificarAncla = (f, sha, imgs, aplicado) => {
     if (!casa(enSha, pre)) falsos.push(`${path} (${sha} tiene ${enSha ? enSha.slice(0, 7) : 'nada'}, el parche declara pre-imagen ${pre})`);
   }
   if (falsos.length) errors.push(`${f}: ancla FALSA — la cabecera afirma \`verificado-contra: ${sha}\`, pero el parche NO fue generado contra ese árbol: ${falsos.join(', ')}. Corrige el SHA o regenera el parche.`);
-  else anclas.push(`${f}: ancla ${estado}. Contraste contra \`${sha}\`: pre-imagen CONFIRMADA en ese commit`);
+  else anclas.push({ f, vigente, contrastado: true, nivel, msg: `${f}: ancla ${estado}. Contraste contra \`${sha}\`: pre-imagen CONFIRMADA en ese commit` });
 };
 
 for (const f of files) {
@@ -150,9 +193,11 @@ for (const f of files) {
 if (errors.length) { console.error('CHECK-PATCHES ROJO:'); errors.forEach(e => console.error('  - ' + e)); process.exit(1); }
 for (const p of pendientes) console.log(`::warning::check-patches — ${p}`);
 aplicados.forEach(a => console.log(`  · ${a}`));
-// El ancla ESTANCADA o no contrastable se anuncia (nunca silencio); la VIGENTE
-// se informa, porque «no hay que tocar el SHA» es justo el dato que la
-// rotación de tres rondas de AP-064 no tuvo.
-for (const a of anclas) console.log(a.includes('VIGENTE') ? `  · ${a}` : `::warning::check-patches — ${a}`);
-const vigentes = anclas.filter(a => a.includes('VIGENTE')).length;
-console.log(`check-patches verde: ${files.length} parche(s) en ${DIR}/, ${pendientes.length} pendiente(s) de aplicación humana, ${aplicados.length} ya aplicado(s), 0 derivado(s), ${vigentes} ancla(s) vigente(s) de ${anclas.length} contrastada(s).`);
+// El ancla ESTANCADA, la que no se puede derivar y la que no declara commit se
+// anuncian (nunca silencio); la VIGENTE se informa, porque «no hay que tocar el
+// SHA» es justo el dato que la rotación de tres rondas de AP-064 no tuvo. El
+// nivel viene DECIDIDO en `verificarAncla`, no re-derivado de la prosa.
+for (const a of anclas) console.log(a.nivel === 'warn' ? `::warning::check-patches — ${a.msg}` : `  · ${a.msg}`);
+const vigentes = anclas.filter(a => a.vigente).length;
+const contrastadas = anclas.filter(a => a.contrastado).length;
+console.log(`check-patches verde: ${files.length} parche(s) en ${DIR}/, ${pendientes.length} pendiente(s) de aplicación humana, ${aplicados.length} ya aplicado(s), 0 derivado(s), ${vigentes} ancla(s) vigente(s) de ${anclas.length} evaluada(s), ${contrastadas} contrastada(s) contra su commit declarado.`);

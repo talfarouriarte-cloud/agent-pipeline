@@ -29,7 +29,9 @@
 #     (aviso, no rojo: el parche sigue aplicando por contexto);
 #   · si el commit declarado está en el clon, sus blobs deben casar con la
 #     pre-imagen — si no, ancla FALSA y ROJO. En CI no suele estar
-#     (`fetch-depth: 1`), y entonces ese contraste se omite con aviso.
+#     (`fetch-depth: 1`), y entonces el contraste se OMITE diciéndolo en la
+#     línea informativa del ancla (no `::warning`: ahí pasa en todas las
+#     corridas, y un aviso que salta siempre deja de ser señal).
 # Corolario práctico: este SHA solo hay que tocarlo si CAMBIA
 # `.github/workflows/watchdog.yml`. Mientras el check diga «ancla VIGENTE»,
 # está correcto aunque nombre un commit viejo — no lo rotes por costumbre.
