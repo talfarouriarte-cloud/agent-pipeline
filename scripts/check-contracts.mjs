@@ -246,9 +246,19 @@ for (const f of Object.keys(onDisk)) {
   const doc = docs[f];
   const rawWf = readFileSync(`${WFDIR}/${f}`, 'utf8');
   // Cuerpo de cada `${{ … }}` del fichero. Las expresiones de Actions no pueden
-  // contener `}}`, así que el no-greedy es exacto. Los COMENTARIOS YAML quedan
-  // fuera por construcción: solo se mira dentro de las interpolaciones.
-  const exprs = [...rawWf.matchAll(/\$\{\{([\s\S]*?)\}\}/g)].map(m => m[1].trim());
+  // contener `}}`, así que el no-greedy es exacto.
+  //
+  // Las LÍNEAS DE COMENTARIO se retiran ANTES de matchear, y no «quedan fuera
+  // por construcción»: esto corre sobre el texto crudo, no sobre el AST, así
+  // que un `${{ … }}` escrito dentro de un `#` entraría en `exprs` igual. Sin
+  // el filtro, documentar la forma canónica en un comentario —justo lo que
+  // invita a hacer el mensaje de error del guard (a)+(b)— satisfaría al guard
+  // (e) con CERO puntos de uso clampados: el detector anti-inerte se quedaría
+  // inerte él mismo (clase wmcb#20, cuarta aplicación). El criterio es «primer
+  // carácter no blanco es `#`»: un `#` a media línea puede ser contenido (una
+  // ancla `#L10`, un `Bash(gh api:*)`…), no un comentario.
+  const wfSinComentarios = rawWf.replace(/^[ \t]*#.*$/gm, '');
+  const exprs = [...wfSinComentarios.matchAll(/\$\{\{([\s\S]*?)\}\}/g)].map(m => m[1].trim());
   const wc = ((doc && doc.on) ?? (doc && doc[true])).workflow_call;
   const realDefaults = Object.fromEntries(Object.entries(wc.inputs || {})
     .map(([k, v]) => [k, v && Object.prototype.hasOwnProperty.call(v, 'default') ? v.default : undefined]));
@@ -326,7 +336,14 @@ for (const f of Object.keys(onDisk)) {
     }
 
     // ── Clamp de presupuesto (AP-061) ────────────────────────────────────
-    // (a) `max(pin, default)` solo está definido sobre un tipo ORDENADO. Un
+    // Las letras son las de AP-061 §«El gate anti-deriva» y NO el orden de
+    // ejecución: (d) lleva `continue` y tiene que ir primero, porque los demás
+    // guards no tienen sentido sobre un default sin orden. Quien cite un guard
+    // desde el ADR (§Falsable, §Riesgos) tiene que aterrizar en el mismo sitio
+    // que nombra; una permutación entre las dos casas manda al lector al guard
+    // equivocado.
+    //
+    // (d) `max(pin, default)` solo está definido sobre un tipo ORDENADO. Un
     //     lesson-bearing no numérico dejaría el clamp prometiendo una
     //     prevención que no ejecuta — mecanismo inerte EN VERDE, que es la
     //     clase que AP-052 vino a impedir un piso más arriba. ROJO, para que
@@ -335,13 +352,15 @@ for (const f of Object.keys(onDisk)) {
       errors.push(`${f}: \`${name}\` es lesson-bearing con default NO numérico (${JSON.stringify(realDefaults[name])}) — el clamp \`max(pin, default)\` no está definido sobre un tipo sin orden (AP-061); o el input deja de ser lesson-bearing, o se decide y gatea su semántica de clamp`);
       continue;
     }
-    // (b) La válvula tiene que existir: sin ella, el consumidor que quiere
+    // (c) La válvula tiene que existir: sin ella, el consumidor que quiere
     //     legítimamente MENOS presupuesto pierde la palanca sin recambio. Es
     //     el riesgo declarado de AP-061 y este input es su mitigación.
     if (!(CLAMP_VALVULA in realDefaults) || realDefaults[CLAMP_VALVULA] === undefined) {
       errors.push(`${f}: publica \`lesson_bearing\` pero no declara el input \`${CLAMP_VALVULA}\` con default — el clamp de AP-061 dejaría al consumidor sin válvula para un presupuesto menor deliberado`);
     }
-    // (c) Fidelidad de la CUARTA declaración + prohibición de uso desnudo.
+    // (a)+(b) Fidelidad de la CUARTA declaración —forma canónica exacta con el
+    //     literal del default REAL, (a)— y prohibición de uso desnudo —(b)—.
+    //     Un solo recorrido las cubre porque son la misma disyunción:
     //     Todo `${{ … }}` que toque el input o es el clamp canónico con el
     //     literal del default REAL, o es la forma de diagnóstico
     //     `toJSON(inputs.X)` — que debe llevar el pin CRUDO, porque es lo que
@@ -360,7 +379,7 @@ for (const f of Object.keys(onDisk)) {
       const corto = plano.length > 80 ? plano.slice(0, 80) + ' …' : plano;
       errors.push(`${f}: punto de uso de \`${name}\` SIN clamp — \`\${{ ${corto} }}\`. Un input lesson-bearing se consume clampado: \`\${{ (inputs.${CLAMP_VALVULA} && inputs.${name}) || (inputs.${name} >= ${realDefaults[name]} && inputs.${name}) || ${realDefaults[name]} }}\` (AP-061; el pin crudo solo viaja al mapa \`${LB_PINS_ENV}\` como \`toJSON(inputs.${name})\`)`);
     }
-    // (d) Anti-inerte (clase wmcb#20, tercera aplicación al propio detector):
+    // (e) Anti-inerte (clase wmcb#20, tercera aplicación al propio detector):
     //     una tabla lesson-bearing cuyo input no se consume clampado en NINGÚN
     //     sitio es un default que se declara pero no se impone.
     if (!tocan.some(x => canon.test(x))) {

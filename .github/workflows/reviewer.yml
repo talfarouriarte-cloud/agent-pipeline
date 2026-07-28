@@ -444,9 +444,21 @@ jobs:
           # 'needs-review' (action: labeled), activarlo rompería el flujo
           # manual. Trade-off aceptable: pierdes comment de progreso
           # visible, pero ganas robustez de invocación.
+          #
+          # `--max-turns` lleva el CLAMP AP-061 (forma canónica — ver el
+          # `timeout-minutes` del job). El comentario vive AQUÍ, fuera de
+          # `claude_args`, y no dentro: `claude_args: |` es un block scalar y
+          # YAML no reconoce comentarios dentro de él, así que una línea `#`
+          # ahí es CONTENIDO del string que recibe el action. Que hoy
+          # `claude-code-action@v1` filtre las líneas cuyo primer carácter no
+          # blanco es `#` antes de tokenizar (`stripShellComments` en
+          # `base-action/src/parse-sdk-options.ts` y en
+          # `src/modes/agent/parse-tools.ts`, con test propio) es una cortesía
+          # de su implementación, no una cláusula de su contrato de inputs: el
+          # día que deje de hacerlo, el `#` se comería `--max-turns` y
+          # `--allowedTools` EN VERDE. Coste de no depender de eso: cero.
           claude_args: |
             --model ${{ inputs.reviewer_model }}
-            # CLAMP AP-061 (forma canónica — ver el job `timeout-minutes`).
             --max-turns ${{ (inputs.budget_pin_forzado && inputs.reviewer_max_turns) || (inputs.reviewer_max_turns >= 80 && inputs.reviewer_max_turns) || 80 }}
             --allowedTools "Read,Glob,Grep,Write,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*)"
 

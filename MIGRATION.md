@@ -78,10 +78,10 @@ All inputs have defaults; stubs override per repo. Secret names are fixed by con
 | Workflow | Inputs (default) | Secrets |
 |---|---|---|
 | claude-code | runner (ubuntu-latest), default_branch (main), creator_model (claude-opus-5), creator_max_turns (200), bot_comment_cap (8), epic_label (epica), reviewer_workflow_name (Opus Reviewer) | both |
-| reviewer | runner (ubuntu-latest), reviewer_model (claude-opus-5), **reviewer_max_turns (80 — lesson-bearing, AP-025)**, **timeout_minutes (22 — lesson-bearing, AP-025)**, agent_branch_prefix (claude/), review_context ("") | both |
+| reviewer | runner (ubuntu-latest), reviewer_model (claude-opus-5), **reviewer_max_turns (80 — lesson-bearing, AP-025)**, **timeout_minutes (22 — lesson-bearing, AP-025)**, budget_pin_forzado (false — valve for the AP-061 clamp), agent_branch_prefix (claude/), review_context ("") | both |
 | epic-merge | runner, default_branch, ci_workflow_name (CI), epic_label (epica), partial_round_cap (3), partial_lifetime_cap (6), automerge (true), loose_audit (true) | PAT |
 | watchdog | runner, default_branch, ci_workflow_name (CI), creator_workflow_name (Claude Code), reviewer_workflow_name (Opus Reviewer), epic_merge_workflow_name (Epic Merge), extra_pipeline_workflows (""), epic_label (epica), resolve_model (claude-opus-5), resolve_max_turns (40), lookback_min (45), skip_labels (pause-agents,human-needed,auditoria,process-proposal,registro-decisiones) | both |
-| process-review | runner, default_branch, process_model (claude-fable-5), process_fallback_model (claude-opus-5), **process_max_turns (80 — lesson-bearing, AP-060)**, **timeout_minutes (35 — lesson-bearing, AP-060)** | both |
+| process-review | runner, default_branch, process_model (claude-fable-5), process_fallback_model (claude-opus-5), **process_max_turns (80 — lesson-bearing, AP-060)**, **timeout_minutes (35 — lesson-bearing, AP-060)**, budget_pin_forzado (false — valve for the AP-061 clamp) | both |
 
 **Lesson-bearing inputs (AP-052) and the budget clamp (AP-061).** Some defaults are not instance preferences but *lessons learned*, each with an AP behind it. The machine-readable list is `lesson_bearing` in `templates/workflow-contracts.json`; `check-contracts` keeps it faithful to the real defaults.
 
@@ -90,6 +90,8 @@ Pinning one **below** the central default used to silently cancel a fix that was
 ```
 pin-divergente: timeout_minutes=15 (default central: 22, AP-025) [clamp→22]
 ```
+
+The channel follows the outcome: a **clamp** is normal operation (the pin never governed) and goes out as `::info` — the step log, not the run summary — so do not go looking for a `::notice` there. A **forced pin** is a pre-lesson budget actually running, and stays at `::notice`. The job-summary table is written either way, with **Efectivo** and **Desenlace** columns.
 
 Why prevention and not just visibility: the notice worked exactly as designed on finplan#1704 — it was emitted, literally, with those values — and the Reviewer died anyway at 12m45s without a verdict, because a diagnosis printed inside a session cannot resize that session's own budget. "A fix that only makes the omission *visible* after the fact, without *preventing* it, is partial" (`protocol.md` §Process principles 3).
 

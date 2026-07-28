@@ -253,14 +253,25 @@ jobs:
           # PAT para que los issues creados salgan con autoría del usuario.
           # Sus bodies NUNCA llevan la mención de arm, así que no disparan nada.
           github_token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          # `--max-turns` es LESSON-BEARING: el linaje del valor (30 → 60 → 80)
+          # y la regla que lo gobierna viven JUNTO al default, en el bloque
+          # `workflow_call` de arriba — una segunda copia de la justificación
+          # aquí es la deriva que AP-052 gatea. No la dupliques. Lleva además el
+          # CLAMP AP-061 (forma canónica — ver el `timeout-minutes` del job).
+          #
+          # Estas líneas viven AQUÍ, fuera de `claude_args`, y ya no dentro:
+          # `claude_args: |` es un block scalar y YAML no reconoce comentarios
+          # dentro de él, así que una línea `#` ahí es CONTENIDO del string que
+          # recibe el action. Que hoy `claude-code-action@v1` filtre las líneas
+          # cuyo primer carácter no blanco es `#` antes de tokenizar
+          # (`stripShellComments` en `base-action/src/parse-sdk-options.ts` y en
+          # `src/modes/agent/parse-tools.ts`, con test propio) es una cortesía de
+          # su implementación, no una cláusula de su contrato de inputs: el día
+          # que deje de hacerlo, el `#` se comería `--max-turns` y
+          # `--allowedTools` EN VERDE. Coste de no depender de eso: cero.
           claude_args: |
             --model ${{ inputs.process_model }}
             --fallback-model ${{ inputs.process_fallback_model }}
-            # LESSON-BEARING: el linaje del valor (30 → 60 → 80) y la regla que
-            # lo gobierna viven JUNTO al default, en el bloque `workflow_call`
-            # de arriba — una segunda copia de la justificación aquí es la
-            # deriva que AP-052 gatea. No la dupliques.
-            # CLAMP AP-061 (forma canónica — ver el job `timeout-minutes`).
             --max-turns ${{ (inputs.budget_pin_forzado && inputs.process_max_turns) || (inputs.process_max_turns >= 80 && inputs.process_max_turns) || 80 }}
             --allowedTools "Read,Glob,Grep,Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh issue create:*),Bash(gh issue comment:*),Bash(gh api:*)"
           prompt: |
