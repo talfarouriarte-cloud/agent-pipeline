@@ -51,6 +51,11 @@ jobs:
       # sin esta línea el barrido AP-038 la excluye y `stalled` muere en
       # silencio (incidente #125/#128/#129/#131/#142, 2026-07-22/27).
       skip_labels: "pause-agents,human-needed,auditoria,registro-decisiones"
+      # AP-058: merge humano en el central (AP-012, espejo de
+      # `automerge: false` en self-epic-merge) — LGTM+gates verdes+abierto
+      # es terminal por diseño, no `turno-epic-merge-zombie`. NO es un pin
+      # redundante (clase AP-052): el default del reusable es `true`.
+      automerge: false
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       REVIEWER_GITHUB_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}

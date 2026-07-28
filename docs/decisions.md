@@ -1432,3 +1432,16 @@ La clase que motivó el hard stop serial (AP-033, incidente finplan#1298/#1299) 
 
 **Fecha.** 2026-07-28.
 ---
+
+## AP-058 — El régimen de merge es un INPUT del Watchdog (`automerge`, espejo de epic-merge): con gate humano, `LGTM`+gates verdes+PR abierto es TERMINAL POR DISEÑO, no `turno-epic-merge-zombie`; y la declaración zombie se dedupe por episodio de veredicto — 5 sesiones de resolve sobre #157 re-concluyendo «SIN ACCIÓN» en un oscilador autoalimentado: EJECUTADA
+
+**Contexto (central#157, madrugada 2026-07-27/28).** PR con `lgtm`+`ci-verde` desde las 02:14, merge humano a las 08:35 (AP-012: `automerge: false` en `self-epic-merge.yml` — el propietario es el gate). En esas ~6h, CINCO sesiones de architect-resolve (02:27, 04:50, 05:00, 07:24, 07:35) re-diagnosticaron `turno-epic-merge-zombie` y re-concluyeron «SIN ACCIÓN». La 5ª midió el mecanismo (4 de 4, sin excepción): cada comentario del watchdog dispara `issue_comment` → run de Claude Code (skipped) → su `workflow_run` → tick del Watchdog → settle → mismo estado → resolve → comentario. El detector no reportaba una anomalía: fabricaba su propio siguiente tick. Coste: 5 sesiones Opus sobre cero delta. Clase AP-050/AP-051, tercera instancia hoy: semántica de régimen (aquí: quién mergea) distinta entre central y consumidores, horneada en el reusable — la premisa «epic-merge debió mergear y no lo hizo» solo vale en régimen auto.
+
+**Decisión.** (1) Input `automerge` (boolean, default `true` — consumidores intactos; nombre espejo del input homónimo de epic-merge para que el operador declare el régimen UNA vez por repo de forma coherente). Con `false`, la rama del dispatcher que declaraba el zombie emite notice de terminal-por-diseño y sigue: cero anomalía, cero resolve, cero comentario (nada que dispare el siguiente tick). `self-watchdog.yml` lo pasa a `false` — pin NO redundante (clase AP-052: el default es `true`). (2) Cinturón para AMBOS regímenes: dedupe de la emisión `turno-epic-merge-zombie` por episodio de veredicto — si en página 1 de comentarios ya existe una declaración de la clase posterior al último veredicto, el estado no tiene delta y no se re-emite; un head nuevo trae veredicto nuevo y renueva el ancla solo. En consumidores, un zombie real se declara UNA vez y espera al resolve en lugar de oscilar.
+
+**Falsable.** (a) El próximo PR del central que quede `lgtm`+`ci-verde` pendiente de merge humano durante horas debe producir CERO sesiones de resolve y un notice de terminal-por-diseño por tick; (b) en consumidores, ningún PR debe acumular >1 declaración `turno-epic-merge-zombie` por episodio de veredicto; (c) si con `automerge: false` un PR del central queda genuinamente atascado por rotura mecánica de epic-merge, la detección recae en el humano — pérdida asumida y declarada: en régimen de gate humano el propietario mira el PR por definición del régimen.
+
+**Reversibilidad.** Total y por piezas: quitar el pin del stub restaura el comportamiento previo del central; revertir el dedupe restaura la re-emisión por tick.
+
+**Fecha.** 2026-07-28.
+---
