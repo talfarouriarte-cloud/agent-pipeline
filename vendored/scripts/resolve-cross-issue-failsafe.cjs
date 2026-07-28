@@ -69,6 +69,11 @@ const FUTURO = /\b(?:voy|vas|va|vamos|van|paso|pasamos|procedo|procedemos)\s+a\s
 // Identidad POSITIVA del emisor. Ver el bloque del filtro en `derivar` para el
 // porqué de las dos cosas (que sea del ROL y que esté en LÍNEA PROPIA).
 const ROL = /^[ \t]*<!--\s*watchdog-rol:\s*architect-resolve\s*-->[ \t]*$/m;
+// Identidad de CAPA (AP-070). NO identifica el rol —la emiten también los ~14
+// post-steps deterministas de esta misma capa—, así que no habilita ninguna
+// acción: acota el AVISO de «declaración sin marcador de rol» a la capa que
+// puede haberla emitido, y nada más. Mismo despojado que `ROL`: citar ≠ emitir.
+const CAPA_MARK = /^[ \t]*<!--\s*watchdog-capa:[^>]*-->[ \t]*$/m;
 
 // ── Derivación PURA: prosa → { declaraciones, avisos } ───────────────────────
 // Separada del runtime a propósito (AP-068): es la parte que decide QUÉ se
@@ -83,6 +88,30 @@ const ROL = /^[ \t]*<!--\s*watchdog-rol:\s*architect-resolve\s*-->[ \t]*$/m;
 // `comentarios`: [{ host, body, url }] — `host` es el issue donde se publicó.
 // Devuelve `{ decl, avisos }`; `decl` es issue destino → acciones declaradas
 // (unión de todos los segmentos), `avisos` es [{ clase, mensaje }].
+//
+// El escaneo de un cuerpo vive aparte (AP-070) porque lo comparten las DOS
+// ramas de identidad: con marcador de ROL se materializa, sin él solo se
+// anuncia. Compartirlo es el punto — el aviso mide EXACTAMENTE lo que el belt
+// habría hecho de haber reconocido al emisor, no una aproximación suya que
+// pudiera derivar de ella.
+function escanear(raw, host) {
+  const pares = [];                                        // [{ n, desStall, arm }]
+  const fallos = [];                                       // [{ clase, refs }]
+  const prosa = raw.replace(/```[\s\S]*?```/g, ' ').replace(/<!--[\s\S]*?-->/g, ' ');
+  for (const seg of prosa.split(/\r?\n|(?<=[.;!?])\s+/)) {
+    const desStall = DES_STALL.test(seg);
+    const arm = ARM.test(seg);
+    if (!desStall && !arm) continue;
+    const refs = [...new Set([...seg.matchAll(/(?:^|[\s(\[,;:«"'])#(\d+)\b/g)].map((m) => Number(m[1])))].filter((n) => n !== host);
+    if (!refs.length) continue;                            // declaración in-thread: no es esta clase
+    if (AMBIGUO.test(seg)) { fallos.push({ clase: 'negada/condicional/pospuesta', refs }); continue; }
+    if (FUTURO.test(seg)) { fallos.push({ clase: 'futuro/intención', refs }); continue; }
+    if (refs.length > 1) { fallos.push({ clase: 'multi-ref', refs }); continue; }
+    pares.push({ n: refs[0], desStall, arm });
+  }
+  return { pares, fallos };
+}
+
 function derivar(comentarios) {
   const decl = {};
   const avisos = [];
@@ -109,32 +138,37 @@ function derivar(comentarios) {
     // marcador con `body.includes(...)` y casó la review que lo citaba entre
     // backticks, sobrescribiéndola con su diag. Misma clase que AP-063:
     // EFECTUAR ≠ CITAR.
-    if (!ROL.test(raw.replace(/```[\s\S]*?```/g, ' ').replace(/`[^`\n]*`/g, ' '))) continue;
     const host = c.host;
     if (!host) continue;
-    const prosa = raw.replace(/```[\s\S]*?```/g, ' ').replace(/<!--[\s\S]*?-->/g, ' ');
-    for (const seg of prosa.split(/\r?\n|(?<=[.;!?])\s+/)) {
-      const desStall = DES_STALL.test(seg);
-      const arm = ARM.test(seg);
-      if (!desStall && !arm) continue;
-      const refs = [...new Set([...seg.matchAll(/(?:^|[\s(\[,;:«"'])#(\d+)\b/g)].map((m) => Number(m[1])))].filter((n) => n !== host);
-      if (!refs.length) continue;                          // declaración in-thread: no es esta clase
-      if (AMBIGUO.test(seg)) {
-        avisos.push({ clase: 'negada/condicional/pospuesta', mensaje: `resolve-cross-issue: #${host} declara una acción sobre #${refs.join(', #')} en una frase negada/condicional/pospuesta — no se deriva el par issue→acción; fail-open, sin actuar.` });
-        continue;
+    const despojado = raw.replace(/```[\s\S]*?```/g, ' ').replace(/`[^`\n]*`/g, ' ');
+    const { pares, fallos } = escanear(raw, host);
+    if (!ROL.test(despojado)) {
+      // AP-070 — cierre del residual (c) de AP-064. Hasta aquí la ausencia del
+      // marcador de rol dejaba al belt MUDO **y a la mudez sin señal**: un
+      // comentario sin marcador es indistinguible de «nadie declaró nada», que
+      // es exactamente la lectura falsa (silencio == cobertura) que #166 existe
+      // para cerrar — un piso por debajo de sí misma. El aviso solo se emite
+      // cuando había algo que materializar: si el escaneo no deriva ningún par
+      // issue→acción, no hay transición que se haya quedado sin red y callar es
+      // correcto. El filtro por marcador de CAPA acota el aviso a los emisores
+      // que PUEDEN ser el resolver; no lo identifica (ver `CAPA_MARK`), y por
+      // eso esto avisa y no actúa. Sin dedupe propio: la ventana es la vida del
+      // job, luego un mismo comentario no reaparece en el tick siguiente.
+      if (pares.length && CAPA_MARK.test(despojado)) {
+        const dest = [...new Set(pares.map((p) => p.n))];
+        avisos.push({ clase: 'sin-marcador-de-rol', mensaje: `resolve-cross-issue: un comentario de ESTA CAPA en #${host} (${c.url}) declara una transición sobre #${dest.join(', #')} y NO lleva el marcador de ROL en línea propia — el belt queda MUDO sobre esa sesión y no materializa nada (AP-064 residual (c), anunciado por AP-070). Si el emisor era el resolver, su transición cross-issue se quedó sin red y el mandato del marcador está incumplido; si era un post-step determinista de la capa, el aviso es ruido esperado y la atribución se resuelve abriendo el comentario citado.` });
       }
-      if (FUTURO.test(seg)) {
-        avisos.push({ clase: 'futuro/intención', mensaje: `resolve-cross-issue: #${host} declara una acción sobre #${refs.join(', #')} en futuro o de intención (anuncia la acción, no la declara ejecutada) — no se deriva el par issue→acción; fail-open, sin actuar.` });
-        continue;
-      }
-      if (refs.length > 1) {
-        avisos.push({ clase: 'multi-ref', mensaje: `resolve-cross-issue: #${host} cita ${refs.length} issues (#${refs.join(', #')}) en el mismo segmento — no se puede atribuir la acción; fail-open, sin actuar.` });
-        continue;
-      }
-      const n = refs[0];
-      const d = decl[n] || (decl[n] = { desStall: false, arm: false, host, url: c.url });
-      if (desStall) d.desStall = true;
-      if (arm) d.arm = true;
+      continue;
+    }
+    for (const f of fallos) {
+      if (f.clase === 'negada/condicional/pospuesta') avisos.push({ clase: f.clase, mensaje: `resolve-cross-issue: #${host} declara una acción sobre #${f.refs.join(', #')} en una frase negada/condicional/pospuesta — no se deriva el par issue→acción; fail-open, sin actuar.` });
+      else if (f.clase === 'futuro/intención') avisos.push({ clase: f.clase, mensaje: `resolve-cross-issue: #${host} declara una acción sobre #${f.refs.join(', #')} en futuro o de intención (anuncia la acción, no la declara ejecutada) — no se deriva el par issue→acción; fail-open, sin actuar.` });
+      else avisos.push({ clase: f.clase, mensaje: `resolve-cross-issue: #${host} cita ${f.refs.length} issues (#${f.refs.join(', #')}) en el mismo segmento — no se puede atribuir la acción; fail-open, sin actuar.` });
+    }
+    for (const p of pares) {
+      const d = decl[p.n] || (decl[p.n] = { desStall: false, arm: false, host, url: c.url });
+      if (p.desStall) d.desStall = true;
+      if (p.arm) d.arm = true;
     }
   }
   return { decl, avisos };

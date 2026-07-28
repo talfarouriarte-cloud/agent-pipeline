@@ -79,7 +79,12 @@ const CASOS = [
   ['prosa sin accion', [cmt('El diagnóstico de #1694 queda publicado en su hilo.')], {}, []],
   ['dentro de code fence', [cmt('Ejemplo de lo que NO hice:\n```\nre-arm de #1694\n```')], {}, []],
   ['mencion en marcador', [cmt('Sin acción.\n<!-- launch-next: #1694 re-arm -->')], {}, []],
-  ['(a) Creator sin marcador de rol', [cmt('Re-arm del eslabón 1/3 en #1694.', { rol: false })], {}, []],
+  // AP-070: sin marcador de ROL el belt sigue sin materializar NADA (`decl={}`,
+  // que es lo que este caso probaba y sigue probando), pero la mudez ya no es
+  // muda: se anuncia. Un comentario de la capa sin marcador era indistinguible
+  // de «nadie declaró nada» — silencio leído como cobertura, la clase de #166
+  // un piso por debajo de sí misma.
+  ['(a) declaración de la capa SIN marcador de rol', [cmt('Re-arm del eslabón 1/3 en #1694.', { rol: false })], {}, ['sin-marcador-de-rol']],
   ['(a-bis) MISMA prosa CON marcador', [cmt('Cierro el turno: el eslabón 3/3 (#1695) se armará al mergear este PR.')], {}, ['futuro/intención']],
   ['(b) intención «voy a re-armar»', [cmt('Voy a re-armar #1694 en cuanto termine aquí.')], {}, ['futuro/intención']],
   ['(b-bis) «procedo a retirar»', [cmt('Procedo a retirar la label `stalled` de #1694.')], {}, ['futuro/intención']],
@@ -89,8 +94,15 @@ const CASOS = [
   // cubría. El de AP-055 interpola encabezados ARBITRARIOS de `decisions.md`:
   // el día que una rectificación se titule con vocabulario de arm, la lista
   // negra habría dejado pasar el vector. El guard positivo no.
-  ['(f) rectificación en vuelo (AP-055) con vocabulario de arm', [{ host: 1696, body: `**watchdog**: rectificación EN VUELO — «### Revisión R·1 (2026-07-15, issue #1694) — re-arm del eslabón»\n${CAPA}` }], {}, []],
-  ['(g) circuit-breaker', [{ host: 1696, body: `**watchdog · circuit-breaker**: re-arm de #1694 suspendido.\n${CAPA}` }], {}, []],
+  // AP-070 CONGELA aquí el falso positivo del aviso, que es su coste declarado:
+  // estos dos SÍ son post-steps deterministas y el aviso no puede saberlo (el
+  // marcador de CAPA no identifica al ROL, y una lista negra de marcadores se
+  // pudre — el mismo argumento que eligió el guard positivo para las acciones).
+  // Lo que importa es la dirección del error: `decl={}` en ambos, es decir
+  // ninguna acción — el falso positivo cuesta una línea de log, y el falso
+  // NEGATIVO que cierra cuesta una cadena parada.
+  ['(f) rectificación en vuelo (AP-055) con vocabulario de arm', [{ host: 1696, body: `**watchdog**: rectificación EN VUELO — «### Revisión R·1 (2026-07-15, issue #1694) — re-arm del eslabón»\n${CAPA}` }], {}, ['sin-marcador-de-rol']],
+  ['(g) circuit-breaker', [{ host: 1696, body: `**watchdog · circuit-breaker**: re-arm de #1694 suspendido.\n${CAPA}` }], {}, ['sin-marcador-de-rol']],
   // Ronda 2, 🟡 2 / epic-merge: un marcador CITADO no es un marcador emitido
   // (misma clase que AP-063: EFECTUAR ≠ CITAR). Esta review, que cita el
   // marcador entre backticks y habla de re-armar #1694, NO es del resolver.
@@ -112,6 +124,32 @@ const CASOS = [
   // `derivar` lo recibe calculado, y un comentario sin host no puede
   // atribuirse a nadie. Caso nuevo, cubre la rama `if (!host) continue`.
   ['(k) comentario sin host derivable', [{ host: NaN, body: `Re-arm del eslabón 1/3 en #1694.\n${ROL_MARK}` }], {}, []],
+  // ── AP-070: los tres bordes que acotan el aviso nuevo ──
+  // Sin ellos el caso (a) sería una aserción sin límite: probaría que el aviso
+  // salta, no que salta SOLO donde debe. Un aviso que salta siempre deja de ser
+  // señal (misma doctrina que el nivel de log de AP-065), así que sus tres
+  // fronteras se gatean junto con él y no se dejan a la lectura del diff.
+  //
+  // (l) Fuera de la capa: un comentario del Creator o del humano puede hablar
+  // de re-armar #N sin ser jamás una declaración del resolver. Sin marcador de
+  // CAPA no hay aviso — el aviso mide una capa, no el repo entero.
+  ['(l) declaración FUERA de la capa (ni rol ni capa) ⇒ ni acción ni aviso', [{ host: 1696, body: 'Re-arm del eslabón 1/3 en #1694, como acordamos.' }], {}, []],
+  // (m) EFECTUAR ≠ CITAR, también para el marcador de capa: documentar cómo se
+  // cierra un comentario de la capa no convierte al documento en uno. Misma
+  // trampa que ya destruyó una review por `body.includes(...)` (AP-063 /
+  // `epic-merge.yml:127`). El marcador va DENTRO de un bloque cercado y en
+  // línea propia —si no, `CAPA_MARK` no casaría ni sin despojar y el caso sería
+  // vacuo respecto de lo que dice probar (lo era: lo cazó la mutación
+  // «el aviso deja de despojar el código citado», que sobrevivió)— y la frase
+  // de arm va FUERA, sin ambigüedad, para que el aviso dependa solo del
+  // despojado.
+  ['(m) marcador de CAPA citado en bloque cercado ⇒ sin aviso', [{ host: 1696, body: 'Así se cierra un comentario de esta capa:\n```\n<!-- watchdog-capa: schedule -->\n```\nY el re-arm de #1694 lo materializó el resolver.' }], {}, []],
+  // (n) El aviso anuncia lo que se habría MATERIALIZADO, no lo que se mencionó:
+  // una frase en futuro no declara ejecutada ninguna transición, luego no hay
+  // nada que se haya quedado sin red y callar es lo correcto. Comparte
+  // `escanear` con la rama que sí actúa, así que esta equivalencia no puede
+  // derivar (por eso el escaneo se factorizó en vez de duplicarse).
+  ['(n) sin rol, con capa, pero en FUTURO ⇒ sin aviso (nada que materializar)', [cmt('Voy a re-armar #1694 en cuanto termine aquí.', { rol: false })], {}, []],
 ];
 
 // `derivar` devuelve además `host`/`url` por declaración (los necesita el
@@ -180,14 +218,29 @@ async function correrBelt({
   destino = {},                // override del estado del issue DESTINO (`issues.get`)
   comentariosDestino = [],     // lo que `listComments` devuelve para el destino
   removeLabelErr,              // error que `removeLabel` lanza, si se quiere probar esa rama
+  runErr,                      // error de `getWorkflowRun` (⇒ ventana de respaldo)
+  creadoHace,                  // ms: antigüedad del `created_at` del comentario fresco
+  paginasRelleno = 0,          // páginas extra del barrido (para el tope MAX_PAGS)
+  barridoErr,                  // error del barrido paginado
 } = {}) {
   const escrituras = [];
   const cuerpos = [];
+  const avisos = [];
   const ahora = new Date().toISOString();
+  // `run_started_at` se fija aquí y se DEVUELVE: los casos de la capa de
+  // lectura contrastan contra este valor el `since` que el belt pide, en vez de
+  // re-derivarlo (que es la clase AP-008: dos cálculos del mismo dato).
+  const runStartedAt = new Date(Date.now() - 60_000).toISOString();
   const comentario = {
     issue_url: 'https://api.github.com/repos/o/r/issues/1696',
-    body: declaracion, html_url: 'https://example/1', created_at: ahora, updated_at: ahora,
+    body: declaracion, html_url: 'https://example/1',
+    // `created_at` y `updated_at` se separan a propósito: el `since` de
+    // `listCommentsForRepo` filtra por `updated_at`, así que una EDICIÓN vieja
+    // entra en la ventana con su `created_at` fuera de ella.
+    created_at: creadoHace == null ? ahora : new Date(Date.now() - creadoHace).toISOString(),
+    updated_at: ahora,
   };
+  let params = null;            // lo que el belt pide al barrido fresco
   // Los comentarios del destino que el caso declara «en ventana» se estampan
   // AQUÍ, en la misma llamada que fija `run_started_at` (🔵 6 de la review):
   // sellarlos al cargar el módulo ataba el banco al reloj de pared —si pasaban
@@ -196,11 +249,21 @@ async function correrBelt({
   // sentinel es `created_at: null`, que `enVentana` emite y nadie más usa.
   const delDestino = comentariosDestino.map((c) => (c.created_at == null ? { ...c, created_at: ahora } : c));
   const paginate = async () => delDestino;               // comentarios del DESTINO
-  paginate.iterator = async function* () { yield { data: [comentario] }; };
+  // El barrido fresco: registra lo que se le pide y sirve las páginas que el
+  // caso declare. `paginasRelleno` son páginas SIN declaración — sirven para
+  // empujar al belt contra su tope `MAX_PAGS` sin cambiar lo que deriva.
+  paginate.iterator = async function* (_fn, p) {
+    params = p;
+    if (barridoErr) throw barridoErr;
+    yield { data: [comentario] };
+    for (let i = 0; i < paginasRelleno; i++) {
+      yield { data: [{ issue_url: 'https://api.github.com/repos/o/r/issues/9', body: 'relleno', html_url: 'https://example/x', created_at: ahora, updated_at: ahora }] };
+    }
+  };
   const github = {
     paginate,
     rest: {
-      actions: { getWorkflowRun: async () => ({ data: { run_started_at: new Date(Date.now() - 60_000).toISOString() } }) },
+      actions: { getWorkflowRun: async () => { if (runErr) throw runErr; return { data: { run_started_at: runStartedAt } }; } },
       issues: {
         get: async ({ issue_number }) => ({ data: { number: issue_number, state: 'open', body: '@claude arranca', labels: labels.map((name) => ({ name })), ...destino } }),
         listComments: 'listComments',
@@ -212,7 +275,7 @@ async function correrBelt({
       },
     },
   };
-  const core = { info() {}, notice() {}, warning() {} };
+  const core = { info() {}, notice() {}, warning(m) { avisos.push(m); } };
   const context = { repo: { owner: 'o', repo: 'r' }, eventName: 'schedule', runId: 1 };
   const previo = process.env.IN_SKIP_LABELS;
   if (envSkip === undefined) delete process.env.IN_SKIP_LABELS; else process.env.IN_SKIP_LABELS = envSkip;
@@ -221,7 +284,7 @@ async function correrBelt({
   } finally {
     if (previo === undefined) delete process.env.IN_SKIP_LABELS; else process.env.IN_SKIP_LABELS = previo;
   }
-  return { escrituras, cuerpos };
+  return { escrituras, cuerpos, avisos, params, runStartedAt };
 }
 
 if (typeof belt !== 'function') {
@@ -309,6 +372,56 @@ const CONTRATO = [
   ['tope MAX por corrida: 4 declarados ⇒ 3 materializados',
     { skipLabels: SKIP, labels: ['stalled'], declaracion: DECL_4 },
     ['removeLabel#1001', 'createComment#1001', 'removeLabel#1002', 'createComment#1002', 'removeLabel#1003', 'createComment#1003']],
+
+  // ── AP-070: la capa de LECTURA, residual (c) declarado por AP-069 ──
+  // AP-069 cubrió lo que decide si el belt ESCRIBE y dejó escrito que la
+  // LECTURA seguía sin caso: la ventana de frescura, el filtro por `created_at`
+  // y el truncado del barrido. Que estén en el mismo módulo pusheable y sin
+  // gate es la misma asimetría que ya justificó cerrar los guards de escritura;
+  // la diferencia es la DIRECCIÓN de su fallo, y por eso no era coste cero:
+  // una lectura rota no materializa de más — **deja de leer**, y un belt que no
+  // ve la declaración es indistinguible de un belt que no hacía falta. Es
+  // literalmente la avería que #166 existe para que no vuelva a ser silenciosa,
+  // dentro del instrumento que la vigila.
+  ['frescura: la ventana es `run_started_at`, no un lookback fijo',
+    { skipLabels: SKIP, labels: ['stalled'] },
+    ['removeLabel#1694', 'createComment#1694'],
+    { since: 'run-started' }],
+  // Fail-open del lado correcto: si la API no da la hora de arranque, el belt
+  // NO se queda ciego —usaría una ventana vacía y no vería nada— sino que cae a
+  // la ventana de respaldo acotada, y lo dice.
+  ['frescura: `run_started_at` ilegible ⇒ respaldo de 40 min, anunciado',
+    { skipLabels: SKIP, labels: ['stalled'], runErr: err(403) },
+    ['removeLabel#1694', 'createComment#1694'],
+    { since: 'respaldo', avisa: ['ventana de respaldo'] }],
+  // El vector de DOBLE ARM. `since` de `listCommentsForRepo` filtra por
+  // `updated_at`: corregir un typo horas después reinyecta la declaración en la
+  // ventana de otro tick, con el arm de la primera vez ya fuera de la ventana
+  // del destino ⇒ el belt lo leería como no-materializado y armaría otra vez.
+  // El filtro por `created_at` es lo único que lo impide, y no tenía caso.
+  ['edición reinyectada (`updated_at` fresco, `created_at` viejo) ⇒ no se deriva',
+    { skipLabels: SKIP, labels: ['stalled'], creadoHace: 6 * 60 * 60 * 1000 },
+    []],
+  // Truncado ANUNCIADO, y mordiendo por el extremo que no importa: `desc` pone
+  // la declaración del resolver —la más reciente de la ventana por
+  // construcción, porque este belt corre al terminar su propia etapa— en la
+  // primera página. En `asc` el corte se comería justo lo que se viene a leer,
+  // y el belt quedaría mudo en el único caso en que hace falta.
+  ['barrido: más de MAX_PAGS páginas ⇒ TRUNCADO anunciado, y el corte muerde por `desc`',
+    { skipLabels: SKIP, labels: ['stalled'], paginasRelleno: 20 },
+    ['removeLabel#1694', 'createComment#1694'],
+    { avisa: ['barrido TRUNCADO'], direction: 'desc' }],
+  ['barrido que falla ⇒ sin actuar y anunciado',
+    { skipLabels: SKIP, labels: ['stalled'], barridoErr: err(500) },
+    [],
+    { avisa: ['barrido de comentarios frescos falló'] }],
+  // AP-070, la otra mitad: el aviso nuevo tiene que SALIR por `core.warning` en
+  // runtime, no solo existir en `derivar`. Un aviso que no llega al log es la
+  // misma mudez con otro nombre.
+  ['sin marcador de ROL: cero acción y aviso EN RUNTIME',
+    { skipLabels: SKIP, labels: ['stalled'], declaracion: `\`stalled\` retirada de #1694 y re-arm allí.\n${CAPA}` },
+    [],
+    { avisa: ['NO lleva el marcador de ROL'] }],
 ];
 
 for (const [nombre, opts, esperado, cuerpo] of CONTRATO) {
@@ -323,6 +436,22 @@ for (const [nombre, opts, esperado, cuerpo] of CONTRATO) {
   for (const s of cuerpo?.noContiene || []) {
     if (got.cuerpos.some((c) => c.includes(s))) { ok = false; fallos.push(`contrato — ${nombre}: un cuerpo publicado contiene ${JSON.stringify(s)} y NO debía`); }
   }
+  // AP-070 — aserciones sobre la capa de LECTURA. `avisa` mira el log (un
+  // fail-open que no se anuncia es una avería muda) y `since`/`direction` miran
+  // lo que el belt le PIDE a la API, que es donde se decide qué llega a ver.
+  for (const s of cuerpo?.avisa || []) {
+    if (!got.avisos.some((a) => a.includes(s))) { ok = false; fallos.push(`contrato — ${nombre}: ningún aviso contiene ${JSON.stringify(s)} — obtenido ${JSON.stringify(got.avisos)}`); }
+  }
+  if (cuerpo?.since === 'run-started' && got.params?.since !== got.runStartedAt) {
+    ok = false; fallos.push(`contrato — ${nombre}: el barrido no pidió \`since\` = run_started_at (${got.runStartedAt}) sino ${JSON.stringify(got.params?.since)}`);
+  }
+  if (cuerpo?.since === 'respaldo') {
+    const desvio = Math.abs(Date.parse(got.params?.since) - (Date.now() - 40 * 60 * 1000));
+    if (!(desvio < 120_000)) { ok = false; fallos.push(`contrato — ${nombre}: la ventana de respaldo no son ~40 min (\`since\`=${JSON.stringify(got.params?.since)})`); }
+  }
+  if (cuerpo?.direction && got.params?.direction !== cuerpo.direction) {
+    ok = false; fallos.push(`contrato — ${nombre}: el barrido pidió direction=${JSON.stringify(got.params?.direction)} y no ${JSON.stringify(cuerpo.direction)} — el truncado mordería por el extremo equivocado`);
+  }
   lineas.push(`  ${ok ? '·' : '✗'} contrato: ${nombre.padEnd(56)} escrituras=${JSON.stringify(got.escrituras)}`);
 }
 
@@ -332,4 +461,4 @@ if (fallos.length) {
   fallos.forEach((f) => console.error('  - ' + f));
   process.exit(1);
 }
-console.log(`check-resolve-detection verde: ${CASOS.length} casos del banco de AP-064 sobre la derivación REAL de ${fuente} (no una copia) + ${CONTRATO.length} aserciones de runtime ejecutando \`run\` contra un doble de la API (costura módulo↔stub, dedupe por ventana, destino fuera de alcance, issue virgen, 404 benigno de removeLabel y tope MAX — AP-069 cierra el residual (d) de AP-068).`);
+console.log(`check-resolve-detection verde: ${CASOS.length} casos del banco de AP-064 sobre la derivación REAL de ${fuente} (no una copia) + ${CONTRATO.length} aserciones de runtime ejecutando \`run\` contra un doble de la API — ESCRITURA (costura módulo↔stub, dedupe por ventana, destino fuera de alcance, issue virgen, 404 benigno de removeLabel, tope MAX: AP-069 cerró el residual (d) de AP-068) y LECTURA (ventana \`run_started_at\` y su respaldo, filtro por \`created_at\` contra la edición reinyectada, truncado \`desc\` anunciado y fallo del barrido: AP-070 cierra el residual (c) de AP-069).`);
