@@ -41,10 +41,10 @@
 # (`git apply --check` limpio contra ese árbol; el ancla la comprueba
 # `check-patches` contra la PRE-IMAGEN de los blobs, AP-065.)
 diff --git a/.github/workflows/claude-code.yml b/.github/workflows/claude-code.yml
-index c12d8b7..fc5c7b6 100644
+index c12d8b7..aaf1c6d 100644
 --- a/.github/workflows/claude-code.yml
 +++ b/.github/workflows/claude-code.yml
-@@ -848,6 +848,27 @@ jobs:
+@@ -848,6 +848,32 @@ jobs:
          uses: anthropics/claude-code-action@v1
          with:
            claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -53,10 +53,15 @@ index c12d8b7..fc5c7b6 100644
 +          # invocan el action donde el input surte efecto: `setupGitHubToken()`
 +          # hace RETURN TEMPRANO si `github_token` viene puesto
 +          # (`OVERRIDE_GITHUB_TOKEN`) y solo llama a `parseAdditionalPermissions()`
-+          # en la ruta OIDC. El Creator NO pasa `github_token` ⇒ corre con token
-+          # de App ⇒ aquí sí. Auditor, Reviewer y Watchdog pasan el PAT y para
-+          # ellos este input sería LETRA MUERTA: su `actions:read` se concede en
-+          # el PAT, no aquí (ver AP-066 § «dos tokens, dos concesiones»).
++          # en la ruta OIDC. Este reusable NO pasa `github_token` ⇒ corre con
++          # token de App ⇒ aquí sí. Y quien lo necesita corre AQUÍ: el
++          # **epic-auditor** —autor del ledger cegado— se arma como sesión de
++          # Creator de este mismo workflow (los issues `auditoria`; ver el step
++          # del guard serial, «arm de auditoría … exento del régimen serial»).
++          # No confundirlo con el **process-reviewer** de `process-review.yml`,
++          # que es otro actor: ése, el Reviewer y el Watchdog pasan el PAT, y
++          # para ellos este input sería LETRA MUERTA — su `actions:read` se
++          # concede en el PAT (ver AP-066 § «dos tokens, dos concesiones»).
 +          #
 +          # ORDEN OBLIGATORIO — este bloque NO es fail-open, al revés de lo que
 +          # supuso el issue #169. Fijar el input cambia el intercambio de «sin
@@ -73,10 +78,10 @@ index c12d8b7..fc5c7b6 100644
            # claude-opus-5 desde 2026-07-27 (mismo precio que 4.8, mejor
            # coding y verificación del propio trabajo). El modelo se gobierna
 diff --git a/.github/workflows/process-review.yml b/.github/workflows/process-review.yml
-index 752a686..e052cac 100644
+index 752a686..f5a5e9f 100644
 --- a/.github/workflows/process-review.yml
 +++ b/.github/workflows/process-review.yml
-@@ -259,6 +259,19 @@ jobs:
+@@ -259,6 +259,26 @@ jobs:
            allowed_bots: "claude"
            # PAT para que los issues creados salgan con autoría del usuario.
            # Sus bodies NUNCA llevan la mención de arm, así que no disparan nada.
@@ -86,17 +91,24 @@ index 752a686..e052cac 100644
 +          # `setupGitHubToken()` del action retorne ANTES de mirar
 +          # `additional_permissions` (`OVERRIDE_GITHUB_TOKEN` ⇒ return temprano;
 +          # `parseAdditionalPermissions()` solo se llama en la ruta OIDC). El
-+          # token de la sesión del Auditor ES este PAT. Luego el `actions: read`
-+          # que el ledger de valor necesita para enumerar la clase SENSOR se
-+          # concede EN EL PAT («Actions: Read-only» en el fine-grained), no con
-+          # un input del action: puesto aquí sería letra muerta que APARENTA
-+          # arreglar el 403 de aud. finplan#1705/#1711/#1714. Escrito porque el
-+          # síntoma —«403 Resource not accessible by integration»— nombra
-+          # «integration» y lee como token de App aunque el emisor sea el PAT.
++          # token de la sesión del process-reviewer ES este PAT ⇒ su
++          # `actions: read` se concede EN EL PAT («Actions: Read-only» en el
++          # fine-grained), no con un input del action: puesto aquí sería letra
++          # muerta que APARENTA arreglar el 403.
++          #
++          # OJO al nombre: el ledger de valor que dispara AP-066 es del
++          # **epic-auditor** (aud. finplan#1705/#1711/#1714), que NO corre aquí
++          # sino como sesión de Creator de `claude-code.yml` — y allí sí lleva
++          # `additional_permissions`. Este sitio es el process-reviewer, otro
++          # actor. Colapsar los dos bajo «el Auditor» es lo que hizo que la
++          # propuesta original (#169) apuntara al reusable equivocado.
++          # El síntoma engaña además por su literal: «403 Resource not
++          # accessible by integration» nombra «integration» y lee como token de
++          # App aunque aquí el emisor sea el PAT.
            github_token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
            # `--max-turns` es LESSON-BEARING: el linaje del valor (30 → 60 → 80)
            # y la regla que lo gobierna viven JUNTO al default, en el bloque
-@@ -280,7 +293,7 @@ jobs:
+@@ -280,7 +300,7 @@ jobs:
              --model ${{ inputs.process_model }}
              --fallback-model ${{ inputs.process_fallback_model }}
              --max-turns ${{ (inputs.budget_pin_forzado && inputs.process_max_turns) || (inputs.process_max_turns >= 80 && inputs.process_max_turns) || 80 }}
