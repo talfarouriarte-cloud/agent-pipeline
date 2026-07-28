@@ -461,11 +461,14 @@ jobs:
           # El pin culpable, si lo hay, como línea propia (formato fijo AP-052:
           # `pin-divergente: <input>=<recibido> (default central: <def>, <AP>)`).
           # Vacío ⇒ no se imprime nada: sin párrafo huérfano.
+          # Separador por DELANTE, jamás por detrás: `$(...)` come los saltos de
+          # línea FINALES, así que un `printf '%s\n\n'` aquí pegaría este párrafo
+          # con el siguiente (verificado en dry-run). Los iniciales sobreviven.
           PIN_LINEA=""
           if [ -n "${PIN_DIVERGENTE}" ]; then
-            PIN_LINEA=$(printf '%s\n\n' "\`${PIN_DIVERGENTE}\` — el stub de este repo pisa por debajo un default *lesson-bearing* del central, así que esta sesión corrió con el presupuesto PRE-lección. Si el diagnóstico de arriba es muerte por presupuesto (timeout del job a ${TIMEOUT_MIN} min, o \`error_max_turns\`), ése es el primer sospechoso. Los stubs son territorio HUMANO (ADR-020): ningún agente los edita.")
+            PIN_LINEA=$(printf '\n\n%s' "\`${PIN_DIVERGENTE}\` — el stub de este repo pisa por debajo un default *lesson-bearing* del central, así que esta sesión corrió con el presupuesto PRE-lección. Si el diagnóstico de arriba es muerte por presupuesto (timeout del job a ${TIMEOUT_MIN} min, o \`error_max_turns\`), ése es el primer sospechoso. Los stubs son territorio HUMANO (ADR-020): ningún agente los edita.")
           fi
-          BODY=$(printf '%s\n\n%s%s\n\n%s' \
+          BODY=$(printf '%s%s\n\n%s\n\n%s' \
             "**process-review · resultado AUSENTE** — el run terminó sin materializar la revisión de proceso en este panel (ningún comentario con el marcador de resultado). Diagnóstico: ${DIAG}. Run: ${RUN_URL}." \
             "${PIN_LINEA}" \
             "Re-arme: retirar y re-aplicar \`auditoria-completa\` (con PAT — los eventos del token default no disparan workflows). Precaución antes del siguiente ciclo: puede haber efectos parciales sin publicar (commits \`skill(loop):\` en la rama por defecto posteriores a la última auditoría)." \
