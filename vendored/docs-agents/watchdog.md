@@ -234,6 +234,52 @@ Las métricas del Auditor (tasa de `autonomous-decision`, rondas,
 `rounds-cap-reached`) vigilan el agregado; el process-reviewer propone si
 el patrón por-épica degenera.
 
+## Orden de ejecución: la transición CROSS-ISSUE va PRIMERO (AP-064)
+
+Cuando tu ruling toca un issue DISTINTO del que estás comentando (retirar
+`stalled` allí, armar el eslabón de allí), **ejecuta esas dos acciones
+ANTES de producir el artefacto caro** (editar el bloque de invariantes,
+redactar el diagnóstico largo, re-dimensionar el restante). Son el paso
+más barato de tu sesión y el único cuyo portador, si no lo ejecutas, es
+tu prosa: nadie las materializa por ti.
+
+Es una instancia medida, no una precaución teórica: el 2026-07-28 una
+corrida declaró en el hilo de finplan#1696 «`stalled` retirada de #1694 y
+re-arm del eslabón 1/3 allí» **tras** editar el bloque de invariantes, y
+murió antes de ejecutar ninguna de las dos — 4 h 15 min de cadena parada
+y 3 corridas de resolver, de las que una existió solo para absorber a la
+anterior (clase AP-011: el paso procedimental barato al final, donde
+muere el presupuesto).
+
+**Actúa como si NO hubiera red.** Existe un post-step determinista
+—`resolve-cross-issue-failsafe`, AP-064— que al cerrar el job compara lo
+que DECLARASTE contra el estado real del issue citado y materializa la
+diferencia (marcador `<!-- resolve-cross-issue-materializado -->`; el arm
+entra por el guard serial como cualquier otro). Pero **puede no estar
+desplegado**: la GitHub App no puede pushear workflows (ADR-020), así que
+nació como parche pendiente de aplicación humana, y tú no puedes
+comprobarlo desde tu checkout (tu `watchdog.yml` es un stub que llama al
+reusable del central). No hay nada que consultar y nada que asumir: la
+regla operativa es una sola, **ejecuta la transición cross-issue tú
+mismo, primero**.
+
+Y si el belt está vivo, tampoco te exime: solo materializa lo que tu
+prosa deja derivar con confianza. Es fail-open DELIBERADO —warning
+nominal y cero acción— ante una frase negada, condicional o pospuesta,
+ante el futuro o la intención («se armará», «voy a re-armar», «procedo a
+retirar»), ante dos `#N` en el mismo segmento, y ante un comentario tuyo
+SIN el marcador de ROL `<!-- watchdog-rol: architect-resolve -->` **en su
+propia línea** (que es la ÚNICA señal de identidad que lee: el login del
+token no distingue tus comentarios de los del Creator ni de los del
+humano, y el marcador de CAPA lo llevan también los post-steps
+deterministas de esta misma capa). Un issue virgen —sin ningún `@claude`
+en su cuerpo ni en ningún comentario— no se arma nunca. Declara **una
+acción por frase, con UN solo `#N`, en pasado y con el marcador de rol**
+(«`stalled` retirada de #1694»;
+«re-arm del eslabón 1/3 de #1694»): es lo que hace verificable tu
+declaración, y cada materialización del belt es un hallazgo del Auditor
+contra tu corrida.
+
 ## Heartbeat — quién vigila al vigilante
 
 `watchdog-heartbeat.yml` (cron propio desplazado, cero LLM) revive este

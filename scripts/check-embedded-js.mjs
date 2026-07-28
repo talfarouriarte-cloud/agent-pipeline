@@ -65,4 +65,30 @@ if (errors.length) {
   errors.forEach(e => console.error('  - ' + e));
   process.exit(1);
 }
+// El «verde» de este paso NO se imprime aquí: el paso incluye los dos checks
+// colgados abajo, y anunciarlo antes de correrlos deja el primer renglón de un
+// run ROJO afirmando verde (🔵 5 de la ronda 3 de la review de AP-064). Se
+// imprime al final, cuando ya es cierto.
+
+// ── Piggyback deliberado (2026-07-28, 🔵 6 de la ronda 2 de la review de
+// AP-064) ────────────────────────────────────────────────────────────────────
+// Estos dos checks vigilan el JS embebido de los workflows igual que el de
+// arriba, solo que en su forma PENDIENTE: un cambio de `.github/workflows/**`
+// hecho por un agente no se puede pushear (la App no tiene `workflows`,
+// ADR-020) y viaja como `docs/patches/*.patch`. Su paso propio de `ci.yml`
+// viajaría DENTRO de ese mismo parche — es decir, el consumidor del pendiente
+// viviría dentro del pendiente que vigila y no correría hasta que un humano lo
+// aplicara, que era el fallo entero. Colgarlos de un script que `ci.yml` YA
+// cablea los pone vivos hoy, sin humano ni permiso nuevo.
+//
+// Es feo a propósito y la doctrina de la casa prefiere feo-y-vivo a
+// limpio-y-pendiente. Al conceder `workflows` a la App (o al aplicar el
+// parche), esto se sustituye por dos pasos propios en `ci.yml` y se borran
+// estas líneas — no antes, o el gate vuelve a apagarse. Cuidado con el doble
+// conteo: si se añaden los pasos, hay que quitar esto en el mismo cambio.
+for (const s of ['check-patches.mjs', 'check-resolve-detection.mjs']) {
+  try { execFileSync('node', [`scripts/${s}`], { stdio: 'inherit' }); }
+  catch { process.exit(1); }   // el exit code se propaga: el rojo de esos checks es el rojo de este paso
+}
+
 console.log(`check-embedded-js verde: ${checked} scripts embebidos parsean.`);
