@@ -336,6 +336,34 @@ La cadena es autocontenida frente a señales objetivas (CI, Reviewer, nits) y es
 - **CHANGELOG**: si el PR produce cambio visible para el caller del paquete → entrada en `packages/<paquete>/CHANGELOG.md` (CLAUDE.md § "CHANGELOG y docs de diseño"). Refactor interno puro: no requiere.
 - **Status headers de docs/design**: si el PR cambia el status estructural de una sección de un área con doc (`docs/design/<área>.md`) → actualizar el status header.
 - **Auth blindaje**: el step `Run Claude Code` del workflow tiene `env: ANTHROPIC_API_KEY: ""` para forzar OAuth-only. NO removerlo. Si OAuth Max falla, el job debe fallar (rojo) en lugar de caer a API key facturada silenciosamente.
+- **Rectificación numérica de un ADR**: si el PR enmienda una cláusula CUANTITATIVA de un ADR (banda, umbral, constante, estimador, tamaño de muestra, fórmula), el barrido del literal SUPERSEDIDO sobre el árbol de código —tests incluidos— es DoD, y su salida se pega como evidencia. Ver § "Rectificación numérica de un ADR: barrido del literal supersedido".
+
+## Rectificación numérica de un ADR: barrido del literal supersedido (DoD, AP-063)
+
+Cuando tu PR **enmienda una cláusula CUANTITATIVA** de un ADR —banda, umbral, constante, estimador (media→mínimo, mediana→p95), tamaño de muestra, fórmula—, materializar la rectificación en el fichero que la motivó **NO cierra el alcance**: el número tachado sigue vivo en toda aserción que lo citaba y que tu diff no tocó. Esa aserción no se cae al mergear —sigue verde porque el código aún la satisface por casualidad, o la satisface con el estimador viejo—, así que el fallo no se materializa en tu PR: aparece **después**, como flaky en otra épica, cuando el CI corre con workers paralelos o con otra carga.
+
+Es la misma clase «retirada sin barrer» que ya se exige para el REGISTRO (retirar un módulo ⇒ el grep vacío ES la evidencia), aplicada a las **aserciones ejecutables**.
+
+> **Caso que funda la regla (repesca finplan#1707, aud. finplan#1711).** La enmienda de la cláusula A5 de ADR-210·R·13 re-decidió banda Y estimador («el **mínimo** de N=400 muestras, no la mediana») y se materializó SOLO en `decomposed-visor-schedule.test.ts`. `decomposed-anchored-family.test.ts:345` siguió asertando la banda tachada (`< 50 µs`) por **MEDIA** de N=5.000: bajo CI con workers paralelos la contención infla la media sin regresión real. Coste: CI rojo, un retry del `watchdog-ci-retry`, un slot del Watchdog, hueco de auditoría y un ciclo de correctivo. Un literal muerto de un ADR, no un bug.
+
+**DoD.** Todo PR que rectifique una cláusula numérica de un ADR pega —en el body del PR, junto a la evidencia de tests— la salida LITERAL de un grep del literal **supersedido** sobre el árbol de código vivo, **tests incluidos** (`packages/**` en los consumidores; `vendored/`, `scripts/` y `templates/` en el central):
+
+```bash
+# La cláusula pasa de «MEDIA de N=5.000 < 50 µs» a «MÍNIMO de N=400 < X µs»:
+grep -rn "50 µs" packages/ --include=*.ts --include=*.tsx
+grep -rn "N=5\.000\|5_000\|5000" packages/ --include=*.test.ts
+```
+
+Dos desenlaces admisibles, ninguno más:
+
+- **Vacío** ⇒ la rectificación está completa. Pega la salida vacía: el grep que no imprime nada ES la evidencia, exactamente igual que en las retiradas de módulo.
+- **Con matches** ⇒ **cada uno se reconcilia en el MISMO PR**: o se actualiza a la cláusula nueva, o se declara junto al match por qué es un uso legítimo del mismo número (constante no relacionada, caso ajeno a la cláusula). Un match reconciliado con razón escrita satisface el DoD igual que un grep vacío. Un match que decides diferir es **alcance restante**, no un detalle: va en la sección «Alcance restante» del body con su `fichero:línea`, nunca en silencio.
+
+**Cómo elegir el literal (evita el falso positivo).** No grepees el número desnudo (`50`, `400`): grepea el número **con su unidad o su contexto** — `50 µs`, `N=5.000`, `p90`, o el nombre de la constante/helper que lo encapsula. El objetivo es que el grep sea legible como evidencia, no que salga vacío a base de estrechar el patrón: un patrón tan específico que no pueda casar nada es una evidencia falsa.
+
+**Barre también el ESTIMADOR, no solo la banda.** Si la cláusula rectifica *cómo se mide* (media→mínimo, mediana→p95, N de la muestra) y no solo el umbral, el barrido incluye el estimador viejo (`mean(`, `media`, el `reduce` que promedia la muestra) en los ficheros que asierten esa cláusula. En el caso de arriba sobrevivieron la banda tachada Y la media, y era la **media** —no la banda— la que volvía el test flaky bajo paralelismo: un barrido que solo hubiera perseguido `50 µs` habría dejado la mitad cara.
+
+**Fuera de alcance.** Rectificaciones puramente CUALITATIVAS (nombres, condiciones de rama, redacción): ahí el gate sigue siendo el contraste cláusula-a-cláusula del Reviewer, sin barrido obligatorio.
 
 ## Persistencia incremental: commit + push tras cada sección
 
