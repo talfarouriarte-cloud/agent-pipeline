@@ -189,6 +189,7 @@ jobs:
             } catch (e) {
               // Fail-open: sin aviso, pero la revisión sigue. Nunca al revés.
               core.warning(`AP-052: comparación pin↔default no evaluable (${e.message}) — se continúa sin aviso.`);
+              core.setOutput('linea', '');
             }
 
       - name: Run process review
@@ -227,10 +228,17 @@ jobs:
             Protocolo:
             1. Lee `.claude/skills/pipeline-map/SKILL.md` (mapa del sistema
                y clases de fallo conocidas) y `docs/agents/protocol.md`.
-            2. Con `gh issue list --label auditoria --state closed --limit 4`
+            2. Con `gh issue list --label auditoria --state all --limit 4`
                y `gh issue view <n> --comments`, lee los informes de las
                últimas auditorías, en especial sus bloques
                «## Métricas de proceso» y «## Observaciones de proceso».
+               `--state all`, no `closed`, por el MISMO motivo que el sweep
+               6a: una auditoría cuyo ciclo murió puede seguir ABIERTA (el
+               gate de co-presencia de marcadores no la auto-archiva), y son
+               justo esos ciclos los que más tienen que decir sobre
+               regresiones. Los dos pasos deben leer el MISMO conjunto: una
+               métrica que no leíste no puede explicarte el anuncio que 6a te
+               obliga a retomar.
             3. Compara métricas entre épicas. Busca REGRESIONES o fricciones
                repetidas (≥2 épicas): PRs/issue al alza, rondas de review al
                alza, stalls, intervenciones humanas que el sistema debería
@@ -353,6 +361,16 @@ jobs:
                  / caducado + racional) y la evidencia, terminado en
                  `<!-- autonomous-decision -->`. Sin este reporte la repesca es
                  invisible para el 5-whys del Auditor.
+                 **El reporte lleva, POR CADA retomada, la MISMA marca que su
+                 desenlace puso en el comentario original: el SHA cuando se
+                 ejecutó o se anotó, y `<!-- skill-edit-caducado -->` cuando se
+                 declaró caducidad.** El reporte es él mismo un comentario
+                 terminado en `<!-- autonomous-decision -->` que enlaza
+                 skill-edits: sin esas marcas, el sweep del ciclo siguiente lo
+                 clasificaría como PENDIENTE por la definición literal y
+                 re-abriría decisiones ya cerradas. Queda fuera del conjunto
+                 pendiente por la MISMA regla que todo lo demás, no por una
+                 excepción que haya que recordar.
                - **Cap COMPARTIDO y con prioridad.** Las retomadas consumen del
                  mismo cap de 2 ediciones/época que las nuevas, y van PRIMERO:
                  una retomada es una decisión ya tomada y ya vetable, una
