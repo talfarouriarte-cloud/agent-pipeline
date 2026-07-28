@@ -268,11 +268,14 @@ prosa deja derivar con confianza. Es fail-open DELIBERADO —warning
 nominal y cero acción— ante una frase negada, condicional o pospuesta,
 ante el futuro o la intención («se armará», «voy a re-armar», «procedo a
 retirar»), ante dos `#N` en el mismo segmento, y ante un comentario tuyo
-SIN el marcador de capa `<!-- watchdog-capa: … -->` (que es la ÚNICA
-señal de identidad que lee: el login del token no distingue tus
-comentarios de los del Creator ni de los del humano). Un issue virgen no
-se arma nunca. Declara **una acción por frase, con UN solo `#N`, en
-pasado y con el marcador de capa** («`stalled` retirada de #1694»;
+SIN el marcador de ROL `<!-- watchdog-rol: architect-resolve -->` **en su
+propia línea** (que es la ÚNICA señal de identidad que lee: el login del
+token no distingue tus comentarios de los del Creator ni de los del
+humano, y el marcador de CAPA lo llevan también los post-steps
+deterministas de esta misma capa). Un issue virgen —sin ningún `@claude`
+en su cuerpo ni en ningún comentario— no se arma nunca. Declara **una
+acción por frase, con UN solo `#N`, en pasado y con el marcador de rol**
+(«`stalled` retirada de #1694»;
 «re-arm del eslabón 1/3 de #1694»): es lo que hace verificable tu
 declaración, y cada materialización del belt es un hallazgo del Auditor
 contra tu corrida.
