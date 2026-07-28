@@ -1447,7 +1447,7 @@ jobs:
               core.warning(`#${n}: ping-creator sin mención de arm — arm materializado.`);
             }
 
-  # ── Belt del propio detector (AP-058, repesca finplan#1684 / aud. fp#1700) ──
+  # ── Belt del propio detector (AP-059, repesca finplan#1684 / aud. fp#1700) ──
   # El FALLO del detector no tenía CONSUMIDOR. 2026-07-27: `detect` murió en
   # `Scan for stalled work` («Resource not accessible by integration», causa
   # inmediata cerrada por AP-056) en TODOS los ticks durante ~1 h. El evento
@@ -1577,8 +1577,39 @@ jobs:
               abiertas = await github.paginate(github.rest.issues.listForRepo,
                 { ...O, labels: 'human-needed', state: 'open', per_page: 100 });
             } catch (e) { core.warning(`no se pudo listar escaladas abiertas (${e.message}): sigo, prefiero duplicar a callar.`); }
-            if (abiertas.some(i => !i.pull_request && (i.body || '').includes(MARK))) {
-              core.info('escalada de watchdog ya abierta (mismo marcador): no duplico.');
+            const abierta = abiertas.find(i => !i.pull_request && (i.body || '').includes(MARK));
+            if (abierta) {
+              core.info(`escalada de watchdog ya abierta (#${abierta.number}, mismo marcador): no duplico.`);
+              // Pero la TRANSICIÓN de modo no se pierde. El marcador de dedupe
+              // es común a los tres emisores, luego una escalada abierta en el
+              // modo «parado e irreanimable» silenciaba por completo este modo
+              // — un cambio de estado del vigilante perdido justo donde el
+              // valor declarado es «fallo SILENCIOSO ⇒ estado DECLARADO con
+              // dueño». «UN solo issue a la vez» se mantiene: la transición
+              // entra como COMENTARIO con el marcador del MODO, idempotente
+              // por ese mismo marcador (body + comentarios).
+              if (!(abierta.body || '').includes(MODE)) {
+                let previos = [];
+                try {
+                  previos = await github.paginate(github.rest.issues.listComments,
+                    { ...O, issue_number: abierta.number, per_page: 100 });
+                } catch (e) {
+                  core.warning(`no se pudieron listar los comentarios de #${abierta.number} (${e.message}): no comento (aquí prefiero callar a repetir cada tick).`);
+                  return;
+                }
+                if (!previos.some(c => (c.body || '').includes(MODE))) {
+                  await github.rest.issues.createComment({ ...O, issue_number: abierta.number, body: [
+                    `**Transición de modo.** El Watchdog ha pasado al modo «el detector **corre y FALLA**» (${streak} corridas consecutivas en rojo, umbral K=${K}) mientras esta escalada seguía abierta por otro modo. Un solo issue a propósito; esto declara el cambio de estado en vez de silenciarlo.`,
+                    ``,
+                    `**Fallo de este tick.**${detalle || ' (sin detalle recuperable — abre el run)'}`,
+                    ``,
+                    `**Run:** ${self.html_url}`,
+                    ``,
+                    MODE,
+                  ].join('\n') });
+                  core.warning(`Detector del watchdog en rojo ${streak} ticks: transición de modo declarada en #${abierta.number}.`);
+                }
+              }
               return;
             }
 
@@ -1596,7 +1627,9 @@ jobs:
               `2. ¿\`SyntaxError\` en un script embebido? \`node scripts/check-embedded-js.mjs\` en agent-pipeline.`,
               `3. ¿404 / cambio de API? El log del step citado arriba lo dice.`,
               ``,
-              `**Por qué termina en humano y no en un agente.** Arreglar un watchdog roto suele exigir tocar \`.github/workflows/**\` o permisos, que es gate humano de todas formas, y su resolutor autónomo (architect-resolve) es precisamente la etapa que no corre. Al cerrar este issue el belt vuelve a armarse: la racha se recuenta desde cero.`,
+              `**Por qué termina en humano y no en un agente.** Arreglar un watchdog roto suele exigir tocar \`.github/workflows/**\` o permisos, que es gate humano de todas formas, y su resolutor autónomo (architect-resolve) es precisamente la etapa que no corre.`,
+              ``,
+              `**Cerrar este issue NO resetea la racha.** La racha se deriva de la \`conclusion\` de las corridas, no del estado de los issues: cerrar esto solo retira el supresor de dedupe. El ÚNICO reset es una corrida \`success\` del Watchdog. Si lo cierras con el detector aún en rojo, el siguiente tick reabrirá la escalada.`,
               ``,
               MODE,
               MARK,
