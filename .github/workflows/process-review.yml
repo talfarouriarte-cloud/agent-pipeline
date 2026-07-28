@@ -328,9 +328,11 @@ jobs:
                  terminados en `<!-- autonomous-decision -->` que anuncien una
                  skill-edit. **PENDIENTE := ni SHA de commit ni
                  `<!-- skill-edit-caducado -->` en el cuerpo del comentario.**
-                 Ésa es la única clave de estado; no hay marcador nuevo que
-                 mantener, y es la que ya define la via negativa de #1258
-                 («un anuncio sin SHA final = edición no ejecutada»).
+                 El ESTADO pendiente no estrena vocabulario: se DERIVA de la
+                 ausencia de SHA, la via negativa de #1258 («un anuncio sin
+                 SHA final = edición no ejecutada»). El marcador de la salida
+                 (c) sí es vocabulario nuevo, y por eso está registrado en la
+                 tabla de `docs/agents/protocol.md` (AP-060, append-only).
                - **Verifica el ÁRBOL antes de nada** (mitigación de la
                  doble-ejecución si dos ciclos retoman el mismo anuncio): lee
                  con `gh api` el fichero de la skill en la rama por defecto y
