@@ -1,0 +1,75 @@
+# AP-067 — `Bash(gh run list:*)` y `Bash(gh run view:*)` en el allowlist del
+# Creator/epic-auditor de `claude-code.yml` (step único `Run Claude Code`).
+#
+# POR QUÉ: AP-066 volvió la enumeración de la clase SENSOR por la API de
+# Actions un paso OBLIGATORIO del mandato del epic-auditor («inténtalo SIEMPRE
+# antes de declarar nada», `vendored/docs-agents/epic-auditor.md:102` y `:106`)
+# y auditó los allowlists de `watchdog.yml:1357` y `reviewer.yml:469` — pero no
+# el del actor que ejecuta ese mandato. El epic-auditor no tiene step propio:
+# corre por la invocación única de `claude-code.yml:848` (la label `auditoria`
+# solo lo exime del régimen serial, `:561`), luego `:880` ES su toolbox.
+#
+# Es la clase 5 (mandate/toolbox drift) que el propio bloque de comentarios
+# contiguo declara perseguir, y el precedente que lo resuelve está 20 líneas
+# más arriba, del mismo día: AP-057 añadió `Bash(gh pr ready:*)` por esta misma
+# razón —doctrina que vuelve una herramienta load-bearing— aun sabiendo que
+# `bypassPermissions` la hacía no vinculante en la práctica, «porque el
+# allowlist es central en el reusable ⇒ uniforme para toda la flota».
+#
+# EFECTO EN RUNTIME HOY: NINGUNO. Con `--permission-mode bypassPermissions`
+# (`:879`) el allowlist no restringe; el mandato de AP-066 ya funciona. Esto es
+# la DECLARACIÓN de la herramienta donde la flota la lee, no una habilitación.
+# Cero superficie `workflow_call` (verificado: `check-contracts` verde con el
+# parche aplicado) ⇒ `templates/workflow-contracts.json` intacto (AP-003).
+# Cero permisos de token, cero concesiones humanas: `gh run list` usa el
+# `GH_TOKEN` de la sesión, que AP-066 midió suficiente (200 en el central).
+#
+# PENDIENTE DE APLICACIÓN HUMANA: la GitHub App de claude-code-action no tiene
+# permiso `workflows` (ADR-020, remedido en AP-064), luego este cambio no se
+# puede pushear desde una sesión de agente. Lo aplica un humano con:
+#     git apply docs/patches/AP-067-auditor-allowlist-gh-run.patch
+# Rollback: `git apply --reverse` del mismo fichero. Sin orden de aplicación
+# respecto de nada más — no depende de ninguna concesión previa (a diferencia
+# del parche que AP-066 retiró).
+#
+# verificado-contra: 1dbb8d9da839fdf7db80a1a21cff6382895b11aa
+# (`git apply --check` limpio contra ese árbol; el blob declarado como
+# pre-imagen abajo, `c12d8b7`, ES `HEAD:.github/workflows/claude-code.yml` en
+# ese commit — comprobado, no tecleado.) Lo que el ancla fija es la PRE-IMAGEN,
+# no «el commit en que se escribió el parche» (AP-065): mientras
+# `check-patches` diga «ancla VIGENTE», este SHA es correcto aunque nombre un
+# commit viejo — NO lo rotes por costumbre. Solo hay que tocarlo si cambia
+# `.github/workflows/claude-code.yml`.
+diff --git a/.github/workflows/claude-code.yml b/.github/workflows/claude-code.yml
+index c12d8b7..819b424 100644
+--- a/.github/workflows/claude-code.yml
++++ b/.github/workflows/claude-code.yml
+@@ -873,11 +873,27 @@ jobs:
+           # Explícito además del `bypassPermissions` ya activo: el allowlist es
+           # central en el reusable ⇒ uniforme para toda la flota (clase 5
+           # mandate/toolbox drift).
++          # `Bash(gh run list:*)` + `Bash(gh run view:*)` (2026-07-28, AP-067):
++          # MISMA clase, mismo día, un actor más abajo. AP-066 volvió la
++          # enumeración de la clase SENSOR por la API de Actions un paso
++          # OBLIGATORIO del epic-auditor («inténtalo SIEMPRE antes de declarar
++          # nada», `vendored/docs-agents/epic-auditor.md:102`,`:106`) y auditó
++          # los allowlists de `watchdog.yml:1357` (ya los tenía) y
++          # `reviewer.yml:469` (no se amplía: ningún mandato suyo enumera) —
++          # pero NO el del actor que ejecuta ese mandato. El epic-auditor NO
++          # tiene step propio: corre por esta misma invocación (la única del
++          # fichero; la label `auditoria` solo lo exime del régimen serial,
++          # `:561`), luego este allowlist ES su toolbox. Igual que con
++          # `gh pr ready`: hoy no restringe nada (`bypassPermissions`), y por
++          # eso justamente el hueco es invisible hasta que algún día deje de
++          # estarlo — se declara donde la flota lo lee. `gh run view` viaja con
++          # él porque el censo sin duraciones no cierra el ledger (AP-066: es
++          # la única fuente de duración de los actores sin tracking comment).
+           claude_args: |
+             --model ${{ inputs.creator_model }}
+             --max-turns ${{ inputs.creator_max_turns }}
+             --permission-mode bypassPermissions
+-            --allowedTools "Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr edit:*),Bash(gh pr ready:*),Bash(gh pr checks:*),Bash(gh pr merge:*),Bash(gh api:*)"
++            --allowedTools "Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr edit:*),Bash(gh pr ready:*),Bash(gh pr checks:*),Bash(gh pr merge:*),Bash(gh api:*),Bash(gh run list:*),Bash(gh run view:*)"
+ 
+       # Auto-labeling según tag de cierre del Creator. ADR-063.
+       # Solo en contextos de PR (los tags solo aplican en loop con Reviewer).
