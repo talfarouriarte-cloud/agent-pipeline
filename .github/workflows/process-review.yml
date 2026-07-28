@@ -34,10 +34,12 @@ on:
         default: claude-opus-5
       process_max_turns:
         # LESSON-BEARING (AP-052): este default NO es una preferencia de
-        # instancia — es una lección aprendida. Si lo cambias, actualiza la tabla
-        # del step «Divergencia pin↔default» (abajo) y el bloque `lesson_bearing`
-        # de templates/workflow-contracts.json EN EL MISMO PR: check-contracts
-        # exige fidelidad de las tres declaraciones.
+        # instancia — es una lección aprendida. Si lo cambias, actualiza EN EL
+        # MISMO PR las otras TRES declaraciones: la tabla del step «Divergencia
+        # pin↔default» (abajo), el bloque `lesson_bearing` de
+        # templates/workflow-contracts.json, y el literal de cada expresión de
+        # CLAMP donde se consume el input (AP-061). check-contracts exige
+        # fidelidad de las cuatro.
         #
         # 80 y no 60 (AP-060). Linaje: 30 → 60 el 2026-07-09 al entrar el loop
         # de skills (ADR-212), tras morir en `error_max_turns` el run inaugural.
@@ -63,6 +65,21 @@ on:
         # A diferencia del bump de turns, éste ataca la causa MEDIDA.
         type: number
         default: 35
+      budget_pin_forzado:
+        # VÁLVULA del clamp de presupuesto (AP-061, repesca finplan#1704) —
+        # gemela de la de `reviewer.yml`, misma semántica.
+        #
+        # Por defecto el reusable toma `max(pin, default)` en todo input
+        # lesson-bearing: un `with:` que pinea por debajo ya no pisa la lección,
+        # y la divergencia se sigue anotando como registro con su desenlace.
+        # `true` honra el pin bajo responsabilidad del consumidor (control de
+        # coste deliberado) — no apaga la anotación, la cambia a `[pin forzado]`.
+        #
+        # Instancia viva el día del merge: el stub de finplan pinea
+        # `timeout_minutes: 20` (el valor PRE-AP-060, fichero congelado por
+        # ADR-020) y con esto pasa a correr con los 35 que el central calibró.
+        type: boolean
+        default: false
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
@@ -77,7 +94,10 @@ jobs:
   review:
     name: Process review
     runs-on: ${{ inputs.runner }}
-    timeout-minutes: ${{ inputs.timeout_minutes }}
+    # CLAMP de presupuesto (AP-061). `timeout-minutes` de JOB se resuelve antes
+    # de que corra ningún step ⇒ el clamp va en la expresión, no en un step.
+    # Forma canónica gateada por check-contracts (ver `reviewer.yml`).
+    timeout-minutes: ${{ (inputs.budget_pin_forzado && inputs.timeout_minutes) || (inputs.timeout_minutes >= 35 && inputs.timeout_minutes) || 35 }}
     if: |
       github.event.label.name == 'auditoria-completa'
       && contains(github.event.issue.labels.*.name, 'auditoria')
@@ -148,11 +168,20 @@ jobs:
               "process_max_turns": ${{ toJSON(inputs.process_max_turns) }},
               "timeout_minutes": ${{ toJSON(inputs.timeout_minutes) }}
             }
+          # Estado de la válvula (AP-061). Decide el DESENLACE que se anota, no
+          # si se anota: una divergencia se registra siempre.
+          FORZADO: ${{ toJSON(inputs.budget_pin_forzado) }}
         with:
           script: |
             try {
               const tabla = JSON.parse(process.env.LESSON_BEARING || '[]');
               const pins = JSON.parse(process.env.PINS_RECIBIDOS || '{}');
+              // La válvula se lee CERRADA salvo `true` exacto (AP-061): el
+              // desenlace anotado tiene que ser el que las expresiones de clamp
+              // ejecutan de verdad, y ésas solo honran el pin con el booleano
+              // puesto.
+              let forzado = false;
+              try { forzado = JSON.parse(process.env.FORZADO || 'false') === true; } catch { forzado = false; }
               const div = [];
               for (const e of tabla) {
                 const got = pins[e.input];
@@ -163,33 +192,51 @@ jobs:
                 // la lección (acota falsos positivos). No numérico ⇒ distinto.
                 const esNum = Number.isFinite(nGot) && Number.isFinite(nDef);
                 const diverge = esNum ? nGot < nDef : String(got) !== String(e.default);
-                if (diverge) div.push({ ...e, recibido: got });
+                if (!diverge) continue;
+                // `max(pin, default)` solo está definido sobre un tipo ORDENADO.
+                // check-contracts exige que todo lesson-bearing sea numérico,
+                // justo para que el clamp no prometa lo que no hace.
+                const clampado = !forzado && esNum;
+                div.push({ ...e, recibido: got, efectivo: clampado ? e.default : got, clampado });
               }
               if (!div.length) {
                 core.info('AP-052: sin divergencia pin↔default en los inputs lesson-bearing.');
                 core.setOutput('linea', '');
+                core.setOutput('efecto', '');
                 return;
               }
-              // Formato fijo (lo cita el 5-whys del Auditor y lo reusa el
-              // post-step): `input=<recibido> (default central: <def>, <AP>)`.
+              // Formato fijo de AP-052 — `input=<recibido> (default central:
+              // <def>, <AP>)` — con el DESENLACE de AP-061 detrás. El prefijo NO
+              // se toca: lo citan el 5-whys del Auditor y los greps de la flota.
               const linea = 'pin-divergente: ' + div
-                .map(d => `${d.input}=${d.recibido} (default central: ${d.default}, ${d.ap})`)
+                .map(d => `${d.input}=${d.recibido} (default central: ${d.default}, ${d.ap}) ${d.clampado ? `[clamp→${d.efectivo}]` : '[pin forzado]'}`)
                 .join('; ');
-              core.notice(`AP-052 · ${linea} — el stub de este repo pisa un default que el central corrigió por lección aprendida; el fix del central NO rige aquí. Revisa el \`with:\` del stub (territorio HUMANO, ADR-020).`);
+              const hayForzado = div.some(d => !d.clampado);
+              const cola = hayForzado
+                ? `\`budget_pin_forzado\` HONRA el pin: este ciclo corre con el presupuesto PRE-lección, bajo responsabilidad del consumidor.`
+                : `el reusable ELEVÓ el presupuesto al default del central (clamp AP-061): el pin no rige y la lección no se ha perdido. Retirar la línea del \`with:\` del stub apaga este aviso.`;
+              const msg = `AP-052/AP-061 · ${linea} — ${cola} Los stubs son territorio HUMANO (ADR-020): ningún agente los edita.`;
+              // Un clamp es operativa NORMAL (el pin no llegó a regir): `info`.
+              // Un pin forzado sí es presupuesto pre-lección corriendo: `notice`.
+              if (hayForzado) core.notice(msg); else core.info(msg);
               await core.summary
-                .addHeading('Divergencia pin↔default (AP-052)', 3)
-                .addRaw(`El stub de este repo pinea ${div.length} input(s) *lesson-bearing* por debajo del default del central. El fix desplegado en el central **no rige** en este consumidor:`)
+                .addHeading('Divergencia pin↔default (AP-052 · clamp AP-061)', 3)
+                .addRaw(`El stub de este repo pinea ${div.length} input(s) *lesson-bearing* por debajo del default del central. Columna **Efectivo** = presupuesto con el que este job corre de verdad:`)
                 .addTable([
-                  [{ data: 'Input', header: true }, { data: 'Pin del stub', header: true }, { data: 'Default central', header: true }, { data: 'AP', header: true }, { data: 'Lección', header: true }],
-                  ...div.map(d => [d.input, String(d.recibido), String(d.default), d.ap, d.leccion || '']),
+                  [{ data: 'Input', header: true }, { data: 'Pin del stub', header: true }, { data: 'Default central', header: true }, { data: 'Efectivo', header: true }, { data: 'Desenlace', header: true }, { data: 'AP', header: true }, { data: 'Lección', header: true }],
+                  ...div.map(d => [d.input, String(d.recibido), String(d.default), String(d.efectivo), d.clampado ? 'clamp ↑' : 'pin forzado', d.ap, d.leccion || '']),
                 ])
-                .addRaw('Los stubs son territorio humano (ADR-020): ningún agente los edita. Pinear un input con default central exige anotación (motivo + referencia AP) — ver `MIGRATION.md` §A5.')
+                .addRaw('Los stubs son territorio humano (ADR-020): ningún agente los edita. Un presupuesto *lesson-bearing* no se pinea (se hereda); pinarlo por debajo exige `budget_pin_forzado: true` para que rija, y anotación con motivo y fecha — ver `MIGRATION.md` §A5.')
                 .write();
               core.setOutput('linea', linea);
+              core.setOutput('efecto', hayForzado ? 'forzado' : 'clamp');
             } catch (e) {
               // Fail-open: sin aviso, pero la revisión sigue. Nunca al revés.
+              // El clamp NO depende de este step (vive en las expresiones de los
+              // puntos de uso): aquí se pierde el REGISTRO, jamás la prevención.
               core.warning(`AP-052: comparación pin↔default no evaluable (${e.message}) — se continúa sin aviso.`);
               core.setOutput('linea', '');
+              core.setOutput('efecto', '');
             }
 
       - name: Run process review
@@ -213,7 +260,8 @@ jobs:
             # lo gobierna viven JUNTO al default, en el bloque `workflow_call`
             # de arriba — una segunda copia de la justificación aquí es la
             # deriva que AP-052 gatea. No la dupliques.
-            --max-turns ${{ inputs.process_max_turns }}
+            # CLAMP AP-061 (forma canónica — ver el job `timeout-minutes`).
+            --max-turns ${{ (inputs.budget_pin_forzado && inputs.process_max_turns) || (inputs.process_max_turns >= 80 && inputs.process_max_turns) || 80 }}
             --allowedTools "Read,Glob,Grep,Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh issue create:*),Bash(gh issue comment:*),Bash(gh api:*)"
           prompt: |
             REPO: ${{ github.repository }}
@@ -455,7 +503,10 @@ jobs:
           REPO: ${{ github.repository }}
           ISSUE: ${{ github.event.issue.number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          TIMEOUT_MIN: ${{ inputs.timeout_minutes }}
+          # El timeout EFECTIVO (post-clamp AP-061), no el pin recibido: este
+          # valor se imprime en el comentario de escalada, y anunciar ahí un
+          # presupuesto que no fue el que corrió desvía el diagnóstico.
+          TIMEOUT_MIN: ${{ (inputs.budget_pin_forzado && inputs.timeout_minutes) || (inputs.timeout_minutes >= 35 && inputs.timeout_minutes) || 35 }}
           # Divergencia pin↔default ya calculada por el step determinista de
           # arriba (AP-052/AP-060). Cadena vacía si no hay divergencia o si el
           # step falló (continue-on-error). Se cita SOLO aquí — el momento
@@ -463,6 +514,10 @@ jobs:
           # algo — para que el pin culpable viaje en el MISMO comentario que
           # pide actuar, en vez de exigir arqueología entre repos.
           PIN_DIVERGENTE: ${{ steps.pindiv.outputs.linea }}
+          # Desenlace del pin (AP-061): `clamp` | `forzado` | ''. Con clamp el
+          # pin NO rigió, así que señalarlo como sospechoso sería una atribución
+          # FALSA en el comentario que pide actuar — peor que ninguna.
+          PIN_EFECTO: ${{ steps.pindiv.outputs.efecto }}
         run: |
           CUERPOS=$(gh api "repos/${REPO}/issues/${ISSUE}/comments" \
                --paginate --jq '.[].body')
@@ -486,7 +541,15 @@ jobs:
           # con el siguiente (verificado en dry-run). Los iniciales sobreviven.
           PIN_LINEA=""
           if [ -n "${PIN_DIVERGENTE}" ]; then
-            PIN_LINEA=$(printf '\n\n%s' "\`${PIN_DIVERGENTE}\` — el stub de este repo pisa por debajo un default *lesson-bearing* del central, así que esta sesión corrió con el presupuesto PRE-lección. Si el diagnóstico de arriba es muerte por presupuesto (timeout del job a ${TIMEOUT_MIN} min, o \`error_max_turns\`), ése es el primer sospechoso. Los stubs son territorio HUMANO (ADR-020): ningún agente los edita.")
+            # AP-061: la atribución depende del DESENLACE. Con clamp el pin no
+            # rigió y decirlo importa — el presupuesto que corrió (${TIMEOUT_MIN})
+            # ya es el post-lección, así que el sospechoso es otro.
+            if [ "${PIN_EFECTO}" = "forzado" ]; then
+              PIN_COLA="\`budget_pin_forzado: true\` HONRA el pin, así que este ciclo corrió con el presupuesto PRE-lección. Si el diagnóstico de arriba es muerte por presupuesto (timeout del job a ${TIMEOUT_MIN} min, o \`error_max_turns\`), ése es el primer sospechoso."
+            else
+              PIN_COLA="el reusable elevó el presupuesto al default del central (clamp AP-061), así que este ciclo corrió con ${TIMEOUT_MIN} min y el pin **no** explica la muerte. Retirar la línea del \`with:\` del stub apaga este aviso."
+            fi
+            PIN_LINEA=$(printf '\n\n%s' "\`${PIN_DIVERGENTE}\` — el stub de este repo pinea por debajo un default *lesson-bearing* del central: ${PIN_COLA} Los stubs son territorio HUMANO (ADR-020): ningún agente los edita.")
           fi
           BODY=$(printf '%s%s\n\n%s\n\n%s' \
             "**process-review · resultado AUSENTE** — el run terminó sin materializar la revisión de proceso en este panel (ningún comentario con el marcador de resultado). Diagnóstico: ${DIAG}. Run: ${RUN_URL}." \

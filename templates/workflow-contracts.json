@@ -1,6 +1,7 @@
 {
   "_comment": "Contrato PUBLICADO de los workflows reusables del central (workflow_call servidos a finplan y wmcb). check-contracts.mjs lo verifica contra los ficheros reales con semántica asimétrica: input nuevo con-default pasa en silencio; eliminar/renombrar un input, pasarlo a required, quitarle el default, o volver un secret required son ROTURAS y exigen editar este fichero a propósito (2026-07-12, AP-003). Al hacer un cambio ROMPEDOR en un reusable, actualiza su entrada aquí en el MISMO PR.",
   "_comment_lesson_bearing": "`lesson_bearing` (AP-052, repesca finplan#1674) publica los inputs cuyo default NO es preferencia de instancia sino LECCIÓN APRENDIDA, con su valor y la AP que la registra. Un stub que los pinea por debajo anula un fix ya desplegado en el central sin dejar rastro legible; el step «Divergencia pin↔default» de cada reusable lo materializa en runtime (::notice + job summary) leyendo su propia copia de la tabla. check-contracts exige fidelidad de las TRES declaraciones (default real del workflow_call ≡ tabla del step ≡ este bloque) en los campos MÁQUINA —`default` y `ap`—: subir un default sin actualizar los otros dos es rojo, no un aviso callado. `leccion` queda deliberadamente FUERA de la comparación: es prosa, y la del step es la versión corta que alimenta una celda del job summary mientras esta puede llevar el contexto largo (repescas, incidentes derivados). Que diverjan es esperado, no deriva — si algún día se quiere fidelidad también aquí, se añade el campo al gate, no una convención no verificada. Fuente de los release notes cuando un default cambia por lección (README §13).",
+  "_comment_clamp": "`budget_pin_forzado` (AP-061, repesca finplan#1704) es la VÁLVULA del clamp de presupuesto. Todo reusable que publique `lesson_bearing` toma `max(pin, default)` en esos inputs: un `with:` del consumidor que pinea por debajo ya no pisa la lección — se eleva al default y la divergencia se anota con su desenlace (`[clamp→N]`). `true` honra el pin bajo responsabilidad del consumidor (`[pin forzado]`). Motivo: AP-052 hizo la divergencia VISIBLE y la clase recurrió igual (el Reviewer murió a los 12m45s sobre finplan#1704 emitiendo LITERAL su propio aviso `pin-divergente: timeout_minutes=15`) — «un fix que solo hace visible la omisión a posteriori, sin prevenirla, es parcial». El clamp NO puede vivir en un step porque `timeout-minutes` es de nivel JOB (se resuelve antes de que corra ningún step): va en la expresión de cada punto de uso, lo que convierte el default en una CUARTA declaración. check-contracts la gatea igual que las otras tres: forma canónica exacta, literal del default fiel, y prohibición de `inputs.<lesson-bearing>` desnudo fuera del mapa de diagnóstico. Corolario del gate: un input lesson-bearing tiene que ser NUMÉRICO — `max` no está definido sobre un tipo sin orden, y un clamp que no clampa es la clase de mecanismo inerte que AP-052 vino a impedir.",
   "_comment_permissions": "`permissions_required` (AP-022, incidente #57) modela el bloque `permissions` del job del reusable como superficie de contrato: es la unión (máximo scope por clave) de los permisos que sus jobs piden al caller. check-contracts exige FIDELIDAD exacta reusable↔contrato (cualquier permiso nuevo en el job del reusable rompe la flota con startup_failure si un stub no lo concede — GitHub obliga callee ⊆ caller) y que cada stub del central conceda ⊇ este set. Congelado por doctrina (AP-022 prop.2): capacidad nueva que requiera permisos ⇒ PAT-en-env o migración de flota explícita (stubs primero), NUNCA un permiso nuevo aquí sin migración.",
   "claude-code.yml": {
     "inputs": {
@@ -112,6 +113,10 @@
       "timeout_minutes": {
         "has_default": true,
         "required": false
+      },
+      "budget_pin_forzado": {
+        "has_default": true,
+        "required": false
       }
     },
     "secrets_required": [
@@ -158,6 +163,10 @@
         "required": false
       },
       "timeout_minutes": {
+        "has_default": true,
+        "required": false
+      },
+      "budget_pin_forzado": {
         "has_default": true,
         "required": false
       }
