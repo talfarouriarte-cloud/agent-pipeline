@@ -8,12 +8,12 @@
 // `${{ ... }}` se sustituyen por un placeholder (GitHub las interpola antes
 // del runtime). Verde: exit 0.
 //
-// AP-058 (2026-07-28): cubre TAMBIÉN `templates/**` — no solo los workflows
+// AP-059 (2026-07-28): cubre TAMBIÉN `templates/**` — no solo los workflows
 // propios. `templates/watchdog-heartbeat.template.yml` es un workflow completo
 // con ~150 líneas de github-script que el consumidor copia TAL CUAL, y no lo
 // miraba ningún check: un SyntaxError ahí se despliega a mano y mata al
 // vigilante del vigilante en silencio, que es la clase exacta que este script
-// nació para cerrar (un piso más arriba). El propio AP-058 introdujo la
+// nació para cerrar (un piso más arriba). El propio AP-059 introdujo la
 // regresión —un comentario JS abierto con `#` en vez de `//`— al editar ese
 // template, y solo la cazó al extender esta cobertura.
 import { readFileSync, readdirSync, writeFileSync, mkdtempSync } from 'fs';
@@ -22,14 +22,19 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import yaml from 'js-yaml';
 
-const DIRS = ['.github/workflows', 'templates', 'templates/stubs'];
+// Barrido RECURSIVO (`recursive: true`, Node ≥ 20) y no una lista horneada de
+// subdirectorios: con `['…/workflows', 'templates', 'templates/stubs']` no
+// recursivo, un `templates/<subdir-nuevo>/*.yml` quedaba fuera de cobertura EN
+// SILENCIO y el único guard era un criterio falsable del AP («debe reportar N
+// scripts») — mandato de memoria donde cabe mecanismo.
+const DIRS = ['.github/workflows', 'templates'];
 const tmp = mkdtempSync(join(tmpdir(), 'ejs-'));
 const errors = [];
 let checked = 0;
 
 const files = DIRS.flatMap(d => {
   let names = [];
-  try { names = readdirSync(d); } catch { return []; }   // directorio ausente: nada que validar
+  try { names = readdirSync(d, { recursive: true }); } catch { return []; }   // directorio ausente: nada que validar
   return names.filter(f => /\.ya?ml$/.test(f)).sort().map(f => [d, f]);
 });
 

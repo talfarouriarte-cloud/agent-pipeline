@@ -16,7 +16,7 @@
 // 19000 (aviso, no rojo) para dar margen antes del acantilado.
 // Verde: exit 0. Corre en el CI del central.
 //
-// AP-058 (2026-07-28): cubre TAMBIÉN `templates/**`. `watchdog-heartbeat.
+// AP-059 (2026-07-28): cubre TAMBIÉN `templates/**`. `watchdog-heartbeat.
 // template.yml` es un workflow COMPLETO que el consumidor copia tal cual (no es
 // `workflow_call` a propósito: vigila al Watchdog desde infraestructura
 // independiente) y ningún check lo miraba — un YAML roto ahí se aplica a mano y
@@ -25,12 +25,17 @@
 import { readFileSync, readdirSync } from 'fs';
 import yaml from 'js-yaml';
 
-const DIRS = ['.github/workflows', 'templates', 'templates/stubs'];
+// Barrido RECURSIVO (`recursive: true`, Node ≥ 20) y no una lista horneada de
+// subdirectorios: con `['…/workflows', 'templates', 'templates/stubs']` no
+// recursivo, un `templates/<subdir-nuevo>/*.yml` quedaba fuera de cobertura EN
+// SILENCIO y el único guard era un criterio falsable del AP («debe reportar N
+// ficheros») — mandato de memoria donde cabe mecanismo.
+const DIRS = ['.github/workflows', 'templates'];
 const HARD = 21000;   // límite real de Actions por expresión/plantilla
 const SOFT = 19000;   // margen de aviso
 const files = DIRS.flatMap(d => {
   let names = [];
-  try { names = readdirSync(d); } catch { return []; }   // directorio ausente: nada que validar
+  try { names = readdirSync(d, { recursive: true }); } catch { return []; }   // directorio ausente: nada que validar
   return names.filter(f => /\.ya?ml$/.test(f)).sort().map(f => `${d}/${f}`);
 });
 
