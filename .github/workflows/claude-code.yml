@@ -1185,6 +1185,7 @@ jobs:
             core.warning(`open-review-failsafe: PR #${pr.number} sin run del Reviewer para ${pr.head.sha.slice(0,7)} — needs-review aplicada por PAT (opened perdido).`);
 
       - name: Materializar muerte del Creator sin PR (post-step determinista)
+        id: post_muerte_sin_pr
         # 2026-07-13, incidente finplan#1318: el Creator murió por max_turns a
         # las 11:42 tras commitear 9 commits y ANTES de abrir el PR. El
         # detector issue-armed-no-pr del watchdog lo habría cazado en su
@@ -1294,16 +1295,31 @@ jobs:
             }
             // Pop de la cola serial (espejo del armQueue de epic-merge — si
             // tocas uno, toca el otro): arma el en-cola más antiguo (FIFO).
+            // AP-062: el `armed` que publica al armar es lo que apaga el
+            // barrido de cola del cierre del job (step «Barrido de cola al
+            // cierre») — un arm de este step ES el nuevo titular de la serie
+            // desde que se postea el comentario, aunque su run tarde segundos
+            // en nacer y todavía no tenga `serial-activo` ni PR que lo delaten.
             async function popQueue(fromIssue, why) {
               try {
                 const { data: queued } = await github.rest.issues.listForRepo({
                   owner, repo, state: 'open', labels: 'en-cola', sort: 'created', direction: 'asc', per_page: 5 });
                 const next = queued.filter(i => !i.pull_request)[0];
-                if (!next) return;
+                // Diagnóstico de la lectura (AP-062, espejo del de armQueue):
+                // sin él, un pop que no arma no distingue «la lista volvió
+                // VACÍA» (ventana de escritura de la label) de «volvió con el
+                // ítem y lo filtró `!i.pull_request`» — causas raíz DISTINTAS
+                // y sólo una la cierra el barrido. finplan#1702 no dejó rastro
+                // que permitiera separarlas a posteriori.
+                if (!next) {
+                  core.info(`pop de cola (${why}): sin candidato — listForRepo?labels=en-cola devolvió ${queued.length} ítem(s), 0 issues tras filtrar PRs.`);
+                  return;
+                }
                 await github.rest.issues.removeLabel({ owner, repo, issue_number: next.number, name: 'en-cola' }).catch(() => {});
                 await github.rest.issues.removeLabel({ owner, repo, issue_number: next.number, name: 'stalled' }).catch(() => {});
                 await github.rest.issues.createComment({ owner, repo, issue_number: next.number,
                   body: `@claude arranca — turno de cola: la serie quedó libre (${why}). Eras el más antiguo en \`en-cola\`.\n\n<!-- arm-de-cola -->` });
+                core.setOutput('armed', 'true');
                 core.notice(`cola: #${next.number} armado (${why}).`);
               } catch (e) { core.warning(`pop de cola falló: ${e.message}`); }
             }
@@ -2325,6 +2341,7 @@ jobs:
             core.notice(`re-review por estado: push detectado (${before.slice(0,7)} → ${pr.head.sha.slice(0,7)}) — needs-review aplicada.`);
 
       - name: Launch next epic issue (Creator's closing sentinel)
+        id: launch_next
         if: |
           success()
           && steps.check_pause.outputs.paused != 'true'
@@ -2379,4 +2396,100 @@ jobs:
               issue_number: nextIssue,
               body: '@claude',
             });
+            // AP-062: el sucesor de cadena ocupa la serie ⇒ apaga el barrido
+            // de cola del cierre del job (espejo del `armed` de popQueue).
+            core.setOutput('armed', 'true');
             core.notice(`Épica: lanzado el siguiente issue #${nextIssue}.`);
+
+      # ── Barrido de cola al CIERRE del job (AP-062, repesca finplan#1702) ──
+      # ESPEJO del `sweepQueueAtExit` de `epic-merge.yml` (protocol.md, fila
+      # `arm-de-cola`: «si tocas uno, toca el otro»). La cola serial se
+      # materializa en una label MUTABLE (`en-cola`) que ESCRIBE el guard
+      # serial de este mismo workflow y LEEN dos consumidores distintos
+      # (`popQueue` aquí, `armQueue` en epic-merge): una lectura ÚNICA puede
+      # caer dentro de la ventana de escritura del guard y no ver un encolado
+      # que ya existe. Medido en el central de finplan: 74 min de serie LIBRE
+      # con cola NO vacía, rescatados por el cron del watchdog en vez de por
+      # el pop primario (transición de segundos degradada a tick de cron).
+      #
+      # Por qué un STEP y no un `finally` dentro del script de popQueue: el
+      # barrido tiene que cubrir TODAS las salidas del job, no sólo las de un
+      # step — incluidos los terminales que arman desde otros steps y los
+      # cierres en los que `popQueue` ni siquiera corre (su `if` excluye
+      # auditorías y contextos de PR). Como step `always()` al final, es la
+      # SEGUNDA lectura del job tras todas sus escrituras, para todo camino.
+      #
+      # FAIL-CLOSED por diseño — sólo arma con identificación POSITIVA de
+      # serie libre: (a) ningún step de este job armó ya (`armed`), (b) cero
+      # PRs `claude/*` abiertos, (c) cero `serial-activo`, (d) ningún
+      # comentario de arm RECIENTE de otro emisor. Con cualquier titular, o si
+      # la API falla, no-op: el detector `cola-huerfana` del watchdog conserva
+      # su cinturón. `pause-agents` lo apaga como al resto.
+      #
+      # Señal (d), AP-062 nit 1 — la traza (a) es INTRA-job: un arm posteado
+      # por OTRO emisor segundos antes (barrido de otro job, `watchdog-rearm`,
+      # sucesor de cadena, arm manual) es invisible para (b) y (c) durante la
+      # VENTANA DE NACIMIENTO de su run: el comentario existe, pero el run aún
+      # no corre y `serial-activo` no está escrito. Sin (d), dos barridos
+      # concurrentes pueden armar DOS issues distintos — clase finplan#1298/
+      # #1299, que el árbitro determinista del guard NO absorbe (arbitra dos
+      # arranques del MISMO issue). Se lee el único hecho materializado que
+      # existe en esa ventana: el comentario de arm.
+      - name: Barrido de cola al cierre del job (segunda lectura, AP-062)
+        if: |
+          always()
+          && steps.check_pause.outputs.paused != 'true'
+          && steps.post_muerte_sin_pr.outputs.armed != 'true'
+          && steps.launch_next.outputs.armed != 'true'
+        uses: actions/github-script@v7
+        with:
+          # PAT, NO GITHUB_TOKEN: el `@claude` posteado debe disparar la
+          # corrida del Creator desencolado — con el token default el evento
+          # no se emite (anti-loop de GitHub) y el arm sería inerte.
+          github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            try {
+              const { data: queued } = await github.rest.issues.listForRepo({
+                owner, repo, state: 'open', labels: 'en-cola', sort: 'created', direction: 'asc', per_page: 5 });
+              const next = queued.filter(i => !i.pull_request)[0];
+              if (!next) return;
+              const { data: prs } = await github.rest.pulls.list({ owner, repo, state: 'open', per_page: 100 });
+              const held = prs.filter(p => p.head.ref.startsWith('claude/')).map(p => `#${p.number}`);
+              if (held.length) {
+                core.info(`barrido de cola: serie OCUPADA por ${held.join(', ')}; la espera de #${next.number} es legítima.`);
+                return;
+              }
+              const { data: flagged } = await github.rest.issues.listForRepo({
+                owner, repo, state: 'open', labels: 'serial-activo', per_page: 20 });
+              if (flagged.length) {
+                core.info(`barrido de cola: serie OCUPADA por serial-activo en ${flagged.map(i => `#${i.number}`).join(', ')}; la espera de #${next.number} es legítima.`);
+                return;
+              }
+              // (d) arm reciente de OTRO emisor. Ventana de 5 min: cubre
+              // nacimiento de run + escritura de `serial-activo` con holgura,
+              // y su coste máximo es diferir el barrido un ciclo. Sólo
+              // comentarios de ISSUE — en un PR el arm es turno de Creator
+              // sobre una unidad ya en vuelo, que además caza la señal (b).
+              const ARM_MARKERS = ['arm-de-cola', 'epic-auto-launch', 'epic-partial-relaunch', 'watchdog-rearm'];
+              const corte = Date.now() - 5 * 60000;
+              // `since` de este endpoint filtra por ÚLTIMA ACTUALIZACIÓN, no
+              // por creación: se re-filtra por `created_at` para que la
+              // EDICIÓN de un arm viejo no mute la señal.
+              const { data: recientes } = await github.rest.issues.listCommentsForRepo({
+                owner, repo, sort: 'created', direction: 'desc', since: new Date(corte).toISOString(), per_page: 100 });
+              const armReciente = recientes.find(c => /\/issues\/\d+/.test(c.html_url || '')
+                && new Date(c.created_at).getTime() >= corte
+                && ARM_MARKERS.some(m => (c.body || '').includes(`<!-- ${m} -->`)));
+              if (armReciente) {
+                core.info(`barrido de cola: arm RECIENTE de otro emisor (${armReciente.html_url}, ${armReciente.created_at}) — serie recién adjudicada, su run aún no la delata. No armo #${next.number}.`);
+                return;
+              }
+              await github.rest.issues.removeLabel({ owner, repo, issue_number: next.number, name: 'en-cola' }).catch(() => {});
+              await github.rest.issues.removeLabel({ owner, repo, issue_number: next.number, name: 'stalled' }).catch(() => {});
+              await github.rest.issues.createComment({ owner, repo, issue_number: next.number,
+                body: `@claude arranca — turno de cola: la serie quedó libre (barrido de cola al cierre del job: el encolado no era visible en la lectura primaria — AP-062). Eras el más antiguo en \`en-cola\`.\n\n<!-- arm-de-cola -->` });
+              core.warning(`barrido de cola al cierre: serie LIBRE con cola NO vacía — armado #${next.number} (la lectura primaria de este job no vio el encolado).`);
+            } catch (e) {
+              core.warning(`barrido de cola al cierre falló: ${e.message}`);
+            }
