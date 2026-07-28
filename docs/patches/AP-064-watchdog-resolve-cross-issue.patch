@@ -14,8 +14,25 @@
 # que desdoblar: el gate sigue siendo uno solo.
 #
 # verificado-contra: cc3c4403d0a24f83862323fd3f9354b77b6bc3f1
-# (`git apply --check` limpio contra ese árbol; `scripts/check-patches.mjs` lo
-#  revalida en cada corrida de CI y se pone ROJO si el parche DERIVA.)
+# (`git apply --check` limpio contra ese árbol.)
+#
+# AP-065 — QUÉ significa este SHA y quién lo comprueba. Lo que el ancla fija NO
+# es «el commit en que se escribió el parche» —ese es inalcanzable por
+# construcción: teclear el SHA cambia el árbol y produce otro SHA, y de ahí la
+# rotación de tres rondas de AP-064, siempre un commit por detrás— sino la
+# PRE-IMAGEN: los blobs `index <pre>..<post>` que el diff declara más abajo.
+# Eso sí es un hecho estable, y desde AP-065 `scripts/check-patches.mjs` lo
+# COMPRUEBA de verdad (antes solo lo imprimía, y la frase que aquí decía «lo
+# revalida en cada corrida de CI» era falsa):
+#   · el árbol debe ser byte a byte la pre-imagen mientras el parche esté
+#     PENDIENTE, y la post-imagen una vez aplicado — si no, ancla ESTANCADA
+#     (aviso, no rojo: el parche sigue aplicando por contexto);
+#   · si el commit declarado está en el clon, sus blobs deben casar con la
+#     pre-imagen — si no, ancla FALSA y ROJO. En CI no suele estar
+#     (`fetch-depth: 1`), y entonces ese contraste se omite con aviso.
+# Corolario práctico: este SHA solo hay que tocarlo si CAMBIA
+# `.github/workflows/watchdog.yml`. Mientras el check diga «ancla VIGENTE»,
+# está correcto aunque nombre un commit viejo — no lo rotes por costumbre.
 diff --git a/.github/workflows/watchdog.yml b/.github/workflows/watchdog.yml
 index 369b9f3..da67c5d 100644
 --- a/.github/workflows/watchdog.yml
