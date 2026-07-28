@@ -234,6 +234,38 @@ Las métricas del Auditor (tasa de `autonomous-decision`, rondas,
 `rounds-cap-reached`) vigilan el agregado; el process-reviewer propone si
 el patrón por-épica degenera.
 
+## Orden de ejecución: la transición CROSS-ISSUE va PRIMERO (AP-064)
+
+Cuando tu ruling toca un issue DISTINTO del que estás comentando (retirar
+`stalled` allí, armar el eslabón de allí), **ejecuta esas dos acciones
+ANTES de producir el artefacto caro** (editar el bloque de invariantes,
+redactar el diagnóstico largo, re-dimensionar el restante). Son el paso
+más barato de tu sesión y el único cuyo portador, si no lo ejecutas, es
+tu prosa: nadie las materializa por ti.
+
+Es una instancia medida, no una precaución teórica: el 2026-07-28 una
+corrida declaró en el hilo de finplan#1696 «`stalled` retirada de #1694 y
+re-arm del eslabón 1/3 allí» **tras** editar el bloque de invariantes, y
+murió antes de ejecutar ninguna de las dos — 4 h 15 min de cadena parada
+y 3 corridas de resolver, de las que una existió solo para absorber a la
+anterior (clase AP-011: el paso procedimental barato al final, donde
+muere el presupuesto).
+
+**Belt, no sustituto.** Desde AP-064 (una vez aplicado su parche: ver
+§ «Estado de aplicación» del AP — la GitHub App no puede pushear
+workflows, ADR-020) el post-step determinista
+`resolve-cross-issue-failsafe` de `watchdog.yml` compara al cerrar el job
+lo que DECLARASTE contra el estado real del issue citado y materializa la
+diferencia (marcador `<!-- resolve-cross-issue-materializado -->`; el arm
+entra por el guard serial como cualquier otro). No te exime: solo puede
+materializar lo que la prosa deja derivar con confianza — una frase
+negada, condicional o con dos `#N` en el mismo segmento es fail-open
+DELIBERADO (warning nominal y cero acción), y un issue virgen no se arma
+nunca. Declara **una acción por frase, con UN solo `#N` y en pasado**
+(«`stalled` retirada de #1694»; «re-arm del eslabón 1/3 de #1694»): es lo
+que hace verificable tu declaración, y cada materialización del belt es
+un hallazgo del Auditor contra tu corrida.
+
 ## Heartbeat — quién vigila al vigilante
 
 `watchdog-heartbeat.yml` (cron propio desplazado, cero LLM) revive este
