@@ -7,7 +7,9 @@
   "scripts": {
     "check-labels": "node scripts/check-labels.mjs",
     "check-yaml": "node scripts/check-yaml.mjs",
-    "check-contracts": "node scripts/check-contracts.mjs"
+    "check-contracts": "node scripts/check-contracts.mjs",
+    "check-embedded-js": "node scripts/check-embedded-js.mjs",
+    "check-hooks": "node scripts/check-hooks.mjs"
   },
   "dependencies": {
     "js-yaml": "4.3.0"

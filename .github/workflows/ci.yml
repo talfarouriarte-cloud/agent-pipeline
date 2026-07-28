@@ -60,6 +60,14 @@ jobs:
       # consumidor nuevo se provisiona desde labels.json — si falta una, nace roto.
       - name: check-labels
         run: node scripts/check-labels.mjs
+      # Anti-drift de la capa de hooks vendored (2026-07-28, AP-057): todo
+      # `command` de vendored/claude/settings.json apunta a un .sh existente,
+      # ningún .sh queda huérfano y todos pasan `bash -n`. El graft (AP-009)
+      # sirve vendored/claude/** EN VIVO a los dos consumidores: un rename sin
+      # tocar settings.json, o un error de sintaxis, se desplegaba con CI verde
+      # y efecto en runtime = silencio.
+      - name: check-hooks
+        run: node scripts/check-hooks.mjs
 
       - name: Marcar ci-verde
         if: github.event_name == 'pull_request'

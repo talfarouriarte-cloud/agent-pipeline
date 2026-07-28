@@ -862,6 +862,14 @@ jobs:
           # el comentario SEPARADO vía `gh api` con marcador HTML queda como
           # belt aceptado — `gh api` sigue en el allowlist por él y por el
           # body declarado de AP-030.
+          # `Bash(gh pr ready:*)` (2026-07-28, AP-057): con draft-first el
+          # `ready` es el ACTO DE CIERRE del flujo entero (el draft lo abre el
+          # hook; la review se materializa en la transición a ready). Faltaba
+          # del allowlist mientras la doctrina lo volvía load-bearing —
+          # exactamente la clase 5 (mandate/toolbox drift) que este bloque
+          # declara perseguir. No restringía nada en la práctica
+          # (`bypassPermissions` activo), y el pipeline nunca lo había
+          # ejercitado: con 0/7 drafts, ningún `ready` real había corrido.
           # Explícito además del `bypassPermissions` ya activo: el allowlist es
           # central en el reusable ⇒ uniforme para toda la flota (clase 5
           # mandate/toolbox drift).
@@ -869,7 +877,7 @@ jobs:
             --model ${{ inputs.creator_model }}
             --max-turns ${{ inputs.creator_max_turns }}
             --permission-mode bypassPermissions
-            --allowedTools "Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr edit:*),Bash(gh pr checks:*),Bash(gh pr merge:*),Bash(gh api:*)"
+            --allowedTools "Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr edit:*),Bash(gh pr ready:*),Bash(gh pr checks:*),Bash(gh pr merge:*),Bash(gh api:*)"
 
       # Auto-labeling según tag de cierre del Creator. ADR-063.
       # Solo en contextos de PR (los tags solo aplican en loop con Reviewer).

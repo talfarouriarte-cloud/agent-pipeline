@@ -20,7 +20,20 @@ else
 fi
 [ -n "$cmd" ] || exit 0
 
-printf '%s' "$cmd" | grep -Eq 'gh[[:space:]]+pr[[:space:]]+create' || exit 0
+# Detección ANCLADA a inicio de segmento del shell, jamás substring (AP-057;
+# clase de fallo «regex-polarity», PR #1133). Con el substring, cualquier
+# comando que solo CITE el literal —un `grep 'gh pr create'`, un heredoc que
+# documente el flujo, un script de test que lo stubee— quedaba bloqueado por un
+# body inexistente; medido en vivo al construir el hook hermano
+# `draft-pr-on-push`. Se parte el comando por separadores de shell (`;`, `&&`,
+# `||`, `|`, salto de línea) y por aperturas de sustitución (`$(`, backtick), y
+# se exige que el segmento EMPIECE por la invocación (tolerando prefijos de
+# entorno `VAR=x` y rutas absolutas).
+seg_match() { # $1 = patrón anclado del ejecutable+subcomando
+  printf '%s\n' "$cmd" | sed 's/\$(/\n/g; s/`/\n/g' | tr ';|&\n' '\n\n\n\n' \
+    | grep -Eq "^[[:space:]]*[({]?[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:]]*/)?$1([[:space:]]|$)"
+}
+seg_match 'gh[[:space:]]+pr[[:space:]]+create' || exit 0
 
 # Cuerpo efectivo: inline o fichero (--body-file).
 body="$cmd"
