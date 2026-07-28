@@ -89,11 +89,14 @@ Perder esto es la causa raíz de trabajo repetido y ramas huérfanas.
   Si una tarea depende de un adjunto, el humano lo subirá
   directamente al repo en una rama de trabajo y te lo indicará en
   el comentario. NO insistas con curl/wget — fallará con 404.
-- **El Reviewer auto-dispara en PRs creados por
-  `claude[bot]`** (ADR-025). El
-  Reviewer correrá solo cuando lo abras. No es tu trabajo añadir
-  label — eso lo decide el humano para sus propios PRs (no para los
-  tuyos).
+- **El Reviewer auto-dispara en PRs NO-draft creados por
+  `claude[bot]`** (ADR-025), y **NUNCA sobre un draft** (guard de
+  draft en `reviewer.yml`, AP-047). Con draft-first (§ «PR
+  creation») esto significa que el draft de tu primer hito no
+  levanta al Reviewer: la review llega cuando marcas `ready` al
+  cerrar, materializada por estado (`open-review-failsafe` aplica
+  `needs-review` con PAT). No es tu trabajo añadir label — eso lo
+  decide el humano para sus propios PRs (no para los tuyos).
 - Si una tarea parece estar consumiendo turnos sin avanzar, repasa si
   estás chocando con una de las limitaciones anteriores antes de
   seguir iterando.
@@ -156,9 +159,14 @@ with red CI, outside the watchdog's radar — same bug class already fixed
 for `@claude` in ADR-064.)
 
 **Initial PR open from an issue:** you don’t need to add any closing
-tag. Opening the PR triggers the Reviewer automatically (via the
-`opened` event, condition on `claude[bot]` as author). The closing
-tags only apply when responding inside a PR loop.
+tag. The closing tags only apply when responding inside a PR loop.
+Note that under draft-first (§ «PR creation») the DRAFT you open in
+your first milestone does NOT summon the Reviewer (draft guard in
+`reviewer.yml`, AP-047): the review is materialized by state when
+you mark it `ready` at close. Only a PR opened NON-draft triggers
+the Reviewer via the `opened` event (condition on `claude[bot]` as
+author) — that is the residual path (post-step opening from state),
+not your normal flow.
 
 **If the Reviewer issues verdict `LGTM` or `NITS` (no `@claude` ping):**
 do not respond. The loop ends silently and the human decides the
@@ -193,33 +201,76 @@ end with `@reviewer`.
 See ADR-064 (which supersedes ADR-063) in `decisions.md` for the
 full rationale.
 
-## PR creation: open the PR explicitly (OBLIGATORIO)
+## PR creation: draft en el PRIMER push de hito (OBLIGATORIO)
 
-When you finish work on an issue and have committed + pushed your
-branch, **open the PR yourself** with `gh pr create` rather than
-relying on `claude-code-action`’s auto-PR behavior, which is
-unreliable when invoked via `@claude` in issue bodies (documented
-gap in skill `sandbox-actions`). Without this step the PR ends up
-authored by the human who clicks the compare URL, which breaks the
-Reviewer auto-trigger.
+**El PR se abre en tu PRIMER push de hito, en modo DRAFT — NO al
+final de la sesión** (AP-047; mecanizado por AP-057). Esta sección
+sustituye al flujo anterior de «abre el PR cuando termines», que
+enseñaba la apertura como última acción discrecional de la sesión:
+la clase de fallo que más cadenas ha costado es el Creator que
+termina en `success` con la rama pusheada y sin PR, porque el
+presupuesto se agotó justo después de commitear. Un hito pusheado
+sin PR es una **anomalía verificable por estado**, no una omisión de
+prosa que haya que recordar.
 
-```bash
-gh pr create \
-  --base <rama-base> \
-  --head "$(git branch --show-current)" \
-  --title "<concise descriptive title>" \
-  --body "<body con `Closes #<issue>`, resumen de cambios y el MARCADOR DE POLARIDAD>"
-```
+**Lo normal es que NO tengas que ejecutar `gh pr create`.** El hook
+vendored `draft-pr-on-push` (PostToolUse-Bash) abre el draft por ti
+en cuanto tu primer `git push` cuaja sobre una rama
+`claude/issue-<N>-*` sin PR: `--draft`, `Refs #<N>` derivado de la
+rama, polaridad provisional `<!-- partial-pr -->`, sección «Alcance
+restante» y huella `pre-reviewer:`. Te lo comunica en el resultado
+del propio push. Si lo ves, **no abras otro PR**: edita ese.
 
-**Polaridad obligatoria en el body de TODO PR** (el hook `pr-polarity`
-bloquea `gh pr create` sin ella): `<!-- full-pr -->` si completa TODO
-el alcance del issue; `<!-- partial-pr -->` si es híbrido/parcial. Sin
-declaración, epic-merge trata el PR como parcial. Terminar la sesión
-con un enlace «Create PR» prellenado en vez de crear el PR INCUMPLE
-esta sección: rompe la cadena (clase de fallo «PR huérfano»,
-what-money-cant-buy #7/#6, 2026-07-11).
+Flujo de los tres momentos:
 
-Do NOT merge — only open. The PR being opened by you (`claude[bot]`)
-is what makes the Reviewer auto-fire via the `opened` event trigger
-in `reviewer.yml`.
+1. **Primer push de hito → el draft existe.** Si el hook lo abrió,
+   sigue. Si NO lo abrió (fail-open: `gh` sin auth, rama que no
+   parsea, PR ya cerrado para esa rama), ábrelo tú en ese mismo
+   momento — no al final:
+
+   ```bash
+   gh pr create --draft \
+     --base <rama-base> \
+     --head "$(git branch --show-current)" \
+     --title "<título descriptivo>" \
+     --body "<`Refs #<issue>` + `<!-- partial-pr -->` + «Alcance restante» + línea `pre-reviewer:`>"
+   ```
+
+2. **Hitos siguientes → actualiza el body del draft** con
+   `gh pr edit --body-file <fichero>`. El body del PR es tu
+   ARTEFACTO DE FIDELIDAD: si mueres a mitad, el draft queda con el
+   estado de tu último hito (parcial fiel por construcción) y el
+   post-step lo materializa `ready` por estado.
+3. **Cierre → `gh pr ready`** tras editar el body a su polaridad
+   DEFINITIVA y actualizar el título y la huella
+   `pre-reviewer: ejecutado · N hallazgos · M aplicados`.
+
+**Polaridad obligatoria en el body de TODO PR** (el hook
+`pr-polarity` bloquea `gh pr create` sin ella): `<!-- full-pr -->` +
+`Closes #<issue>` si completa TODO el alcance del issue;
+`<!-- partial-pr -->` + `Refs #<issue>` + sección «Alcance restante»
+si es híbrido/parcial. Sin declaración, epic-merge trata el PR como
+parcial. **Nunca `Closes` en un draft de hito** (aún no sabes si
+cierras el alcance) y nunca en un parcial (el autoclose cerraría el
+issue al mergear, lección #1097). `gh pr ready`/`gh pr edit` NO
+pasan por el hook: la polaridad definitiva del cierre es tuya.
+
+Terminar la sesión con un enlace «Create PR» prellenado en vez de
+tener el PR abierto INCUMPLE esta sección: rompe la cadena (clase de
+fallo «PR huérfano», what-money-cant-buy #7/#6, 2026-07-11). Tampoco
+dependas del auto-PR de `claude-code-action`, poco fiable cuando se
+invoca por `@claude` en el body de un issue (hueco documentado en la
+skill `sandbox-actions`): el PR debe estar abierto por ti o por el
+hook —ambos `claude[bot]`—, porque eso es lo que hace que el
+Reviewer auto-dispare.
+
+Do NOT merge — only open. **Un draft NO despierta al Reviewer**
+(guard de draft en `reviewer.yml`, AP-047): no quemas una sesión
+Opus sobre un diff a medias. La review llega UNA sola vez, en la
+transición a `ready`.
+
+> Detalle completo del flujo (qué va en el body de cada hito, qué
+> pasa si mueres antes o después de abrir el draft, cómo se
+> materializa la review): `docs/agents/creator.md` § «Cuándo abrir
+> el PR».
 
