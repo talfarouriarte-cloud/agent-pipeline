@@ -9,7 +9,7 @@ name: Watchdog Heartbeat
 # best-effort (observado: 2 runs en 5h pese al */20) y workflow_run solo
 # dispara si ALGO corre — silencio total del pipeline es su punto ciego.
 #
-# Este workflow, con cron propio e independiente, hace dos cosas baratas
+# Este workflow, con cron propio e independiente, hace tres cosas baratas
 # y deterministas (cero LLM):
 #
 #   1. REVIVIR: si el último run del Watchdog envejece > STALE_MIN,
@@ -20,6 +20,26 @@ name: Watchdog Heartbeat
 #      `human-needed`. Única vía nueva a humano, y genuinamente
 #      terminal: un watchdog irreanimable suele implicar tocar
 #      workflows, que es gate humano de todas formas.
+#
+#   1-bis. CONCLUSIONES (AP-059, repesca finplan#1684 / aud. fp#1700): la
+#      EDAD del último run no distingue «vivo» de «corre y falla». El
+#      2026-07-27 el `detect` del Watchdog de finplan murió en todos los
+#      ticks durante ~1 h (permiso del cap del job, AP-056): el run nacía
+#      fresco cada 20 min, este heartbeat lo veía VIVO y el revival por
+#      dispatch habría sido inútil de todas formas (el run nace y vuelve
+#      a morir). Coste: 48 min de cadena parada + des-stall humano. Ahora,
+#      además de la edad, se mira la CONCLUSIÓN: K corridas completadas
+#      consecutivas en rojo ⇒ escalada por la MISMA vía `escalate()`, sin
+#      intentar revival (no aplica a este modo). El reusable del central
+#      lleva su propio belt `if: failure()` en el job `detect`, más rápido
+#      (~K ticks) y con el error citado; ESTE es el belt de 2º orden que
+#      cubre el residual en que aquel muere con el runner o el run entero
+#      no llega a arrancar (`startup_failure` — clase AP-022/#57). Ambos
+#      comparten marcador de dedupe: no pueden duplicar el issue.
+#      La rama exige racha en rojo Y run FRESCO (`age <= STALE_MIN`): la
+#      frescura es la propiedad definitoria del modo, y sin ella la racha
+#      —historial inmutable— canibalizaría el revival del punto 1, que es
+#      el único mecanismo capaz de producir el `success` que la resetea.
 #
 #   2. DIGEST: sincroniza los comentarios <!-- autonomous-decision --> y
 #      <!-- derived-decision --> recientes al issue-registro (label
@@ -52,14 +72,30 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
-      - name: Revivir watchdog si está muerto
+      - name: Revivir watchdog si está muerto (o escalar si corre y falla)
         uses: actions/github-script@v7
         with:
           script: |
             const owner = context.repo.owner, repo = context.repo.repo;
             const WF = 'watchdog.yml';
             const STALE_MIN = 90;   // watchdog: cron */20 + workflow_run → 90 min de silencio = muerto
+            const STREAK_K = 3;     // AP-059: corridas COMPLETADAS consecutivas en rojo ⇒ «corre y falla»
             const now = Date.now();
+            const MARK = '<!-- watchdog-heartbeat-escalation -->';   // dedupe COMPARTIDO con el belt del reusable
+            const MODE_RED = '<!-- watchdog-detect-red-streak -->';  // modo «corre y FALLA»
+            const MODE_DEAD = '<!-- watchdog-dead-unrevivable -->';  // modo «parado e irreanimable»
+
+            // Conclusiones que cuentan como «el watchdog está roto». `success`
+            // es el ÚNICO reset. `cancelled`/`skipped` NO cuentan y NO rompen
+            // la racha: el grupo de concurrencia del watchdog poda su cola en
+            // cada ráfaga de eventos y produce cancelaciones RUTINARIAS —
+            // tratarlas como reset dejaría este belt indisparable justo en los
+            // picos de actividad. `startup_failure` sí cuenta, y es el valor
+            // añadido de mirar desde AQUÍ: un run que muere antes de crear
+            // ningún job (permiso nuevo del reusable que el stub no concede,
+            // clase AP-022/#57) nace fresco, luego pasa el chequeo de edad, y
+            // el belt `if: failure()` del propio reusable no llega a existir.
+            const HARD = new Set(['failure', 'timed_out', 'startup_failure']);
 
             async function latestRunAgeMin() {
               const { data } = await github.rest.actions.listWorkflowRuns({
@@ -68,26 +104,140 @@ jobs:
               return (now - new Date(data.workflow_runs[0].created_at).getTime()) / 60000;
             }
 
-            async function escalate(reason) {
-              // Dedupe: no abrir un segundo issue si ya hay uno abierto.
-              const q = `repo:${owner}/${repo} is:issue is:open in:title "Watchdog muerto"`;
-              const { data: found } = await github.rest.search.issuesAndPullRequests({ q });
-              if (found.total_count > 0) { core.info('escalada ya abierta, no duplico'); return; }
-              await github.rest.issues.create({ owner, repo,
-                title: 'Watchdog muerto e irreanimable — intervención humana',
-                labels: ['human-needed'],
-                body: `El heartbeat detectó el Watchdog parado (último run hace >${STALE_MIN} min) y el revival automático falló: ${reason}\n\nComprobar: Actions → Watchdog (¿workflow deshabilitado?), quota, y los runs recientes de este heartbeat.\n\n<!-- watchdog-heartbeat-escalation -->` });
-              core.warning('Watchdog irreanimable: issue human-needed creado.');
+            // Racha de corridas COMPLETADAS en rojo (aquí no hay run propio que
+            // contar: el que corre es este heartbeat, no el watchdog).
+            async function redStreak() {
+              const { data } = await github.rest.actions.listWorkflowRuns({
+                owner, repo, workflow_id: WF, status: 'completed', per_page: 20 });
+              let n = 0;
+              for (const r of (data.workflow_runs || [])) {
+                if (r.conclusion === 'success') break;
+                if (!HARD.has(r.conclusion)) continue;
+                n++;
+                if (n >= STREAK_K) break;
+              }
+              return n;
             }
+
+            // Dedupe por MARCADOR y con listForRepo, no por título ni con la
+            // API de búsqueda (AP-059): (a) hay dos modos de escalada con
+            // títulos distintos y UN solo issue debe existir — el marcador es
+            // el canal común, también con el belt del reusable, que escala por
+            // su cuenta; (b) el índice de búsqueda tarda minutos en ver un
+            // issue recién creado, y belt y heartbeat pueden coincidir dentro
+            // de esa ventana. `listForRepo` lee estado, no índice.
+            //
+            // El listado va en `try/catch`, SIMÉTRICO al belt del reusable: un
+            // throw aquí propagaría por `escalate()` y mataría el step, y el
+            // rojo de ESTE workflow no tiene consumidor (el heartbeat es el
+            // suelo de la pila de vigilancia). Degradación declarada: prefiero
+            // duplicar a callar.
+            async function openEscalation() {
+              let open = [];
+              try {
+                open = await github.paginate(github.rest.issues.listForRepo,
+                  { owner, repo, labels: 'human-needed', state: 'open', per_page: 100 });
+              } catch (e) {
+                core.warning(`no se pudo listar escaladas abiertas (${e.message}): sigo, prefiero duplicar a callar.`);
+                return null;
+              }
+              return open.find(i => !i.pull_request && (i.body || '').includes(MARK)) || null;
+            }
+
+            // Transición de MODO sin duplicar el issue. El marcador de dedupe
+            // es COMÚN a los tres emisores, luego una escalada abierta en el
+            // modo A silenciaba por completo el modo B (rojo ⇒ muerto, y al
+            // revés): un cambio de estado del vigilante perdido justo donde el
+            // valor declarado es «fallo SILENCIOSO ⇒ estado DECLARADO con
+            // dueño». «UN solo issue a la vez» se mantiene; lo que deja de
+            // perderse es la transición, que entra como COMENTARIO con el
+            // marcador del modo nuevo (idempotente por ese mismo marcador).
+            async function declareMode(issue, mode, texto) {
+              if ((issue.body || '').includes(mode)) return;
+              let comments = [];
+              try {
+                comments = await github.paginate(github.rest.issues.listComments,
+                  { owner, repo, issue_number: issue.number, per_page: 100 });
+              } catch (e) {
+                core.warning(`no se pudieron listar los comentarios de #${issue.number} (${e.message}): no comento (aquí sí prefiero callar a repetir cada tick).`);
+                return;
+              }
+              if (comments.some(c => (c.body || '').includes(mode))) return;
+              await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
+                body: `${texto}\n\n${mode}` });
+              core.warning(`Watchdog: transición de modo declarada en #${issue.number}.`);
+            }
+
+            async function escalate(title, body, mode, transicion) {
+              const abierta = await openEscalation();
+              if (abierta) {
+                core.info(`escalada de watchdog ya abierta (#${abierta.number}), no duplico`);
+                await declareMode(abierta, mode, transicion);
+                return;
+              }
+              await github.rest.issues.create({ owner, repo, title,
+                labels: ['human-needed'], body: `${body}\n\n${mode}\n${MARK}` });
+              core.warning(`Watchdog: escalada abierta — ${title}`);
+            }
+
+            const DEAD_TITLE = 'Watchdog muerto e irreanimable — intervención humana';
+            const deadBody = reason =>
+              `El heartbeat detectó el Watchdog parado (último run hace >${STALE_MIN} min) y el revival automático falló: ${reason}\n\nComprobar: Actions → Watchdog (¿workflow deshabilitado?), quota, y los runs recientes de este heartbeat.`;
+            const DEAD_TRANSITION =
+              `**Transición de modo.** El Watchdog ha pasado al modo «parado e IRREANIMABLE» (último run hace >${STALE_MIN} min y el revival por \`workflow_dispatch\` no lo levantó) mientras esta escalada seguía abierta por otro modo. Un solo issue a propósito; esto declara el cambio de estado en vez de silenciarlo.`;
 
             const age = await latestRunAgeMin();
             core.info(`Último run del watchdog: hace ${Math.round(age)} min`);
+
+            // Belt de 2º orden ANTES del chequeo de edad, pero CONDICIONADO a
+            // la frescura del run: el modo «corre y falla» es indistinguible
+            // de la salud POR EDAD (el run es FRESCO), y ahí el revival por
+            // dispatch no aplica — nacería y volvería a morir. Es un modo
+            // TERMINAL-humano.
+            //
+            // La conjunción con `age <= STALE_MIN` NO es defensiva: la
+            // frescura es la propiedad DEFINITORIA del modo. `redStreak()` se
+            // computa sobre historial INMUTABLE, luego sin ella la condición
+            // sería permanentemente verdadera hasta que existiera un run
+            // `success` — y con `return` duro delante del gate de edad dejaría
+            // MUERTO el revival por `workflow_dispatch`, que es el único
+            // mecanismo capaz de producir ese `success`. «Rojo antiguo +
+            // silencio» sería un punto fijo: cron throttleado (observado: 2
+            // runs en 5h pese al */20) ⇒ ningún run nuevo ⇒ ningún reset, y la
+            // escalada además diagnosticaría el modo EQUIVOCADO («corre y
+            // falla» sobre un watchdog que no está corriendo en absoluto).
+            // Con la conjunción: fresco+rojo ⇒ escalada sin revival (intención
+            // intacta); parado+rojo ⇒ se intenta el revival, y si el run nace
+            // y vuelve a morir, el tick siguiente ya lo ve fresco+rojo y
+            // escala. Ninguna cobertura se pierde; el revival deja de
+            // canibalizarse.
+            const streak = await redStreak();
+            core.info(`Corridas completadas consecutivas en rojo: ${streak} · umbral K=${STREAK_K}`);
+            if (streak >= STREAK_K && age <= STALE_MIN) {
+              core.warning(`Watchdog corre pero FALLA (${streak} corridas en rojo). Escalo sin intentar revival.`);
+              await escalate('Watchdog roto: el detector corre y FALLA — intervención humana', [
+                `El Watchdog **corre y falla**: sus últimas **${streak} corridas completadas** concluyeron en rojo (umbral K=${STREAK_K}). El evento dispara, el run nace y el run muere.`,
+                ``,
+                `Este heartbeat lo veía VIVO hasta AP-059 porque solo miraba la EDAD del último run — y el revival por \`workflow_dispatch\` no aplica a este modo: el run nacería y volvería a morir. Precedente: finplan#1684, 48 min de cadena parada y des-stall humano.`,
+                ``,
+                `**Consecuencia mientras dure.** Las capas 2 y 3 de vigilancia están caídas: todo ítem \`stalled\` cuyo único consumidor es architect-resolve espera a un resolutor que no va a llegar.`,
+                ``,
+                `**Qué comprobar.** Actions → Watchdog → el último run en rojo, y el step que falla: (1) \`Resource not accessible by integration\` ⇒ permisos (el cap del job del reusable, o este stub concediendo menos que \`permissions_required\` del contrato — AP-056, AP-022/#57); (2) \`SyntaxError\` ⇒ script embebido del reusable; (3) el run muere SIN jobs (\`startup_failure\`) ⇒ el stub no concede algún permiso que el reusable pide.`,
+                ``,
+                `Terminal-humano a propósito: arreglar esto suele exigir tocar \`.github/workflows/**\` o permisos (gate humano de todas formas).`,
+                ``,
+                `**Cerrar este issue NO resetea la racha.** La racha se deriva de la \`conclusion\` de las corridas, no del estado de los issues: cerrar esto solo retira el supresor de dedupe. El ÚNICO reset es una corrida \`success\` del Watchdog. Si lo cierras con el detector aún en rojo, el siguiente tick reabrirá la escalada.`,
+              ].join('\n'), MODE_RED,
+                `**Transición de modo.** El Watchdog ha pasado al modo «corre y FALLA» (${streak} corridas completadas en rojo, umbral K=${STREAK_K}) mientras esta escalada seguía abierta por otro modo. Un solo issue a propósito; esto declara el cambio de estado en vez de silenciarlo.`);
+              return;
+            }
+
             if (age <= STALE_MIN) return;
 
             core.warning(`Watchdog parado (${Math.round(age)} min). Intento revival via workflow_dispatch.`);
             try {
               await github.rest.actions.createWorkflowDispatch({ owner, repo, workflow_id: WF, ref: '__DEFAULT_BRANCH__' });
-            } catch (e) { await escalate(`el dispatch lanzó error: ${e.message}`); return; }
+            } catch (e) { await escalate(DEAD_TITLE, deadBody(`el dispatch lanzó error: ${e.message}`), MODE_DEAD, DEAD_TRANSITION); return; }
 
             // Verificar que el run nace (hasta ~2 min). Si no, escalar.
             let revived = false;
@@ -96,7 +246,7 @@ jobs:
               if (await latestRunAgeMin() < STALE_MIN) { revived = true; break; }
             }
             if (revived) core.notice('Watchdog revivido por dispatch.');
-            else await escalate('el dispatch no produjo ningún run en 2 min.');
+            else await escalate(DEAD_TITLE, deadBody('el dispatch no produjo ningún run en 2 min.'), MODE_DEAD, DEAD_TRANSITION);
 
       - name: Digest de decisiones autónomas
         if: always()

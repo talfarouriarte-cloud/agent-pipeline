@@ -174,6 +174,10 @@
   },
   "watchdog.yml": {
     "inputs": {
+      "automerge": {
+        "has_default": true,
+        "required": false
+      },
       "ci_workflow_name": {
         "has_default": true,
         "required": false
@@ -215,6 +219,10 @@
         "required": false
       },
       "runner": {
+        "has_default": true,
+        "required": false
+      },
+      "skip_labels": {
         "has_default": true,
         "required": false
       }

@@ -1446,3 +1446,197 @@ jobs:
                 body: `@claude — retoma según el diagnóstico del comentario anterior del watchdog (ping-creator sin mención de arm: co-ocurrencia materializada mecánicamente, fp#1344).\n\n<!-- ping-creator-materializado -->\n<!-- watchdog-capa: ${context.eventName} -->` });
               core.warning(`#${n}: ping-creator sin mención de arm — arm materializado.`);
             }
+
+  # ── Belt del propio detector (AP-059, repesca finplan#1684 / aud. fp#1700) ──
+  # El FALLO del detector no tenía CONSUMIDOR. 2026-07-27: `detect` murió en
+  # `Scan for stalled work` («Resource not accessible by integration», causa
+  # inmediata cerrada por AP-056) en TODOS los ticks durante ~1 h. El evento
+  # disparaba, el run NACÍA y el run moría — y para `watchdog-heartbeat.yml`,
+  # que solo mira la EDAD del último run, eso es un watchdog VIVO. Un `stalled`
+  # cuyo único consumidor es architect-resolve esperó 48 min a un resolutor que
+  # vive DENTRO del sistema caído, hasta que el propietario lo absorbió a mano.
+  #
+  # Este job cierra la CLASE, no la instancia: cualquier regresión futura que
+  # ponga detect en rojo (permiso nuevo — el ítem abierto «nadie verifica job ⊇
+  # escrituras del propio código» de AP-056—, cambio de API, SyntaxError
+  # embebido) pasa a ser estado DECLARADO con dueño en ≤K ticks.
+  #
+  # Terminal-humano por la MISMA doctrina que el heartbeat: arreglar un
+  # watchdog roto suele exigir tocar workflows o permisos (gate humano de todas
+  # formas) y su resolutor autónomo no puede autorrepararse. No abre ninguna
+  # vía nueva a humano: reutiliza la escalada ya doctrinal del heartbeat
+  # (mismo marcador de dedupe ⇒ belt y heartbeat NO pueden duplicar el issue).
+  detect-failure-belt:
+    needs: [detect]
+    if: failure()
+    # `ubuntu-latest` EXPLÍCITO y no `inputs.runner` (misma doctrina que
+    # watchdog-heartbeat.yml, MIGRATION §A5: el vigilante del vigilante corre
+    # en infraestructura independiente de lo que vigila). github-script no
+    # necesita nada del runner del consumidor ⇒ la independencia sale gratis y
+    # resta un modo de fallo compartido. El residual —runners GitHub-hosted
+    # caídos, o el runner muriendo con el job— lo cubre el heartbeat.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      # ⊆ ESTRICTO de la unión que el contrato YA publica (detect pide
+      # `actions: write` e `issues: write`): `requiredPermissions` de
+      # check-contracts toma el MÁXIMO por clave, luego esto no mueve
+      # `permissions_required` ni exige editar un solo stub. Declarar aquí una
+      # clave NUEVA (p. ej. `checks: read`) sería startup_failure de flota
+      # instantáneo en todo stub con bloque `permissions` explícito (AP-022,
+      # clase #57) — por eso el error del step se lee del LOG del job
+      # (`actions: read`) y no de las anotaciones del check-run.
+      actions: read
+      issues: write
+    steps:
+      - name: Escalar si el detector acumula K ticks en rojo
+        uses: actions/github-script@v7
+        env:
+          # K=3 corridas consecutivas en rojo, el run actual incluido: ≈40 min
+          # con el cron */20 (menos con los ticks por workflow_run), contra los
+          # 48 min que tardó el humano en fp#1684. Umbral ANTI-FLAKE: un fallo
+          # transitorio no despierta a nadie. No es input del `workflow_call` a
+          # propósito (AP-052): es presupuesto calibrado del central, no verdad
+          # de instancia — un consumidor que lo pinee lo congela.
+          STREAK_K: '3'
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const O = { owner, repo };
+            const K = Number(process.env.STREAK_K) || 3;
+            // MISMO marcador que el heartbeat, a propósito: es el canal de
+            // dedupe compartido (el riesgo «doble escalada belt+heartbeat» de
+            // la propuesta) y ya está clasificado como rescate/repesca en
+            // epic-auditor.md § tabla de marcadores ⇒ 5-whys obligatorio.
+            const MARK = '<!-- watchdog-heartbeat-escalation -->';
+            const MODE = '<!-- watchdog-detect-red-streak -->';   // atribución del MODO
+
+            // Conclusiones que cuentan como «el detector está roto».
+            // `success` es el ÚNICO reset: prueba que el detector funciona.
+            // `cancelled`/`skipped`/`neutral` NO cuentan y NO rompen la racha:
+            // el grupo de concurrencia del watchdog poda su cola en cada
+            // ráfaga de eventos y produce cancelaciones RUTINARIAS — tratarlas
+            // como reset dejaría este belt INDISPARABLE justo en los picos de
+            // actividad, que es cuando la vigilancia importa. `startup_failure`
+            // sí cuenta: es la clase #57/AP-022 (el run muere antes de que
+            // exista ningún job, luego este belt no llega a correr en ESE tick,
+            // pero sí lo ve como historia desde el siguiente que arranque).
+            const HARD = new Set(['failure', 'timed_out', 'startup_failure']);
+
+            // ── 1. Racha ────────────────────────────────────────────────────
+            // El run ACTUAL es el primer eslabón (estamos aquí porque detect
+            // falló) y NO aparece en el listado `status: completed`: sigue en
+            // vuelo. `workflow_id` se deriva del run en curso, no de un nombre
+            // de fichero horneado: el reusable corre bajo el STUB del
+            // consumidor y su nombre de fichero no es cognoscible aquí.
+            const { data: self } = await github.rest.actions.getWorkflowRun({ ...O, run_id: context.runId });
+            const { data: hist } = await github.rest.actions.listWorkflowRuns({
+              ...O, workflow_id: self.workflow_id, status: 'completed', per_page: 20 });
+            let streak = 1;
+            for (const r of (hist.workflow_runs || [])) {
+              if (r.id === context.runId) continue;
+              if (r.conclusion === 'success') break;
+              if (!HARD.has(r.conclusion)) continue;
+              streak++;
+              if (streak >= K) break;
+            }
+            core.info(`Racha de corridas en rojo (incluida la actual): ${streak} · umbral K=${K}`);
+            if (streak < K) {
+              core.warning(`detect en rojo, pero la racha (${streak}) no llega a K=${K}: no escalo todavía (umbral anti-flake).`);
+              return;
+            }
+
+            // ── 2. Nombrar el step fallido y su error ───────────────────────
+            // El «qué falló», no solo el «que falló»: sin esto la escalada
+            // obliga al humano a abrir Actions, que es exactamente la
+            // intervención manual que este belt existe para ahorrar.
+            let detalle = '';
+            try {
+              const { data: jl } = await github.rest.actions.listJobsForWorkflowRun({
+                ...O, run_id: context.runId, per_page: 50 });
+              for (const j of (jl.jobs || []).filter(j => j.conclusion === 'failure')) {
+                const steps = (j.steps || []).filter(s => s.conclusion === 'failure').map(s => s.name);
+                detalle += `\n- job \`${j.name}\` → step ${steps.length ? steps.map(s => '`' + s + '`').join(', ') : '(no identificado)'}`;
+                try {
+                  const log = await github.rest.actions.downloadJobLogsForWorkflowRun({ ...O, job_id: j.id });
+                  const lines = String(log.data || '').split('\n')
+                    .filter(l => /##\[error\]|HttpError|\bError:/.test(l))
+                    .slice(-4)
+                    .map(l => l.replace(/^\S+Z\s+/, '').trim().slice(0, 240));
+                  if (lines.length) detalle += '\n  ```\n  ' + lines.join('\n  ') + '\n  ```';
+                } catch (e) { core.info(`log de \`${j.name}\` no recuperable: ${e.message}`); }
+              }
+            } catch (e) { detalle = `\n- (no se pudieron enumerar los jobs: ${e.message})`; }
+
+            // ── 3. Dedupe y escalada ────────────────────────────────────────
+            // `listForRepo` y NO la API de búsqueda: su índice tarda minutos en
+            // ver un issue recién creado, y el dedupe belt↔heartbeat necesita
+            // ser INMEDIATO (pueden coincidir dentro de la misma ventana).
+            let abiertas = [];
+            try {
+              abiertas = await github.paginate(github.rest.issues.listForRepo,
+                { ...O, labels: 'human-needed', state: 'open', per_page: 100 });
+            } catch (e) { core.warning(`no se pudo listar escaladas abiertas (${e.message}): sigo, prefiero duplicar a callar.`); }
+            const abierta = abiertas.find(i => !i.pull_request && (i.body || '').includes(MARK));
+            if (abierta) {
+              core.info(`escalada de watchdog ya abierta (#${abierta.number}, mismo marcador): no duplico.`);
+              // Pero la TRANSICIÓN de modo no se pierde. El marcador de dedupe
+              // es común a los tres emisores, luego una escalada abierta en el
+              // modo «parado e irreanimable» silenciaba por completo este modo
+              // — un cambio de estado del vigilante perdido justo donde el
+              // valor declarado es «fallo SILENCIOSO ⇒ estado DECLARADO con
+              // dueño». «UN solo issue a la vez» se mantiene: la transición
+              // entra como COMENTARIO con el marcador del MODO, idempotente
+              // por ese mismo marcador (body + comentarios).
+              if (!(abierta.body || '').includes(MODE)) {
+                let previos = [];
+                try {
+                  previos = await github.paginate(github.rest.issues.listComments,
+                    { ...O, issue_number: abierta.number, per_page: 100 });
+                } catch (e) {
+                  core.warning(`no se pudieron listar los comentarios de #${abierta.number} (${e.message}): no comento (aquí prefiero callar a repetir cada tick).`);
+                  return;
+                }
+                if (!previos.some(c => (c.body || '').includes(MODE))) {
+                  await github.rest.issues.createComment({ ...O, issue_number: abierta.number, body: [
+                    `**Transición de modo.** El Watchdog ha pasado al modo «el detector **corre y FALLA**» (${streak} corridas consecutivas en rojo, umbral K=${K}) mientras esta escalada seguía abierta por otro modo. Un solo issue a propósito; esto declara el cambio de estado en vez de silenciarlo.`,
+                    ``,
+                    `**Fallo de este tick.**${detalle || ' (sin detalle recuperable — abre el run)'}`,
+                    ``,
+                    `**Run:** ${self.html_url}`,
+                    ``,
+                    MODE,
+                  ].join('\n') });
+                  core.warning(`Detector del watchdog en rojo ${streak} ticks: transición de modo declarada en #${abierta.number}.`);
+                }
+              }
+              return;
+            }
+
+            const body = [
+              `El job \`detect\` del Watchdog ha concluido en **ROJO en las últimas ${streak} corridas consecutivas** (umbral K=${K}). El evento dispara, el run NACE y el run muere: para \`watchdog-heartbeat.yml\`, que solo mira la EDAD del último run, esto es un watchdog VIVO — de ahí el silencio que motiva este belt.`,
+              ``,
+              `**Consecuencia mientras dure.** Las capas 2 y 3 de vigilancia están caídas. Todo ítem \`stalled\` cuyo único consumidor es architect-resolve espera a un resolutor que NO va a llegar, y el resolutor vive dentro del sistema caído (precedente: finplan#1684, 48 min de parada de cadena + des-stall humano).`,
+              ``,
+              `**Fallo de este tick.**${detalle || ' (sin detalle recuperable — abre el run)'}`,
+              ``,
+              `**Run:** ${self.html_url}`,
+              ``,
+              `**Qué comprobar, en este orden.**`,
+              `1. ¿El error es de PERMISOS (\`Resource not accessible by integration\`)? El job \`detect\` escribe algo que su bloque \`permissions\` no concede, o el stub de este repo concede menos que \`permissions_required\` del contrato del central. Precedentes: AP-056 (cap del job) y AP-022/#57 (stub ⊇ job).`,
+              `2. ¿\`SyntaxError\` en un script embebido? \`node scripts/check-embedded-js.mjs\` en agent-pipeline.`,
+              `3. ¿404 / cambio de API? El log del step citado arriba lo dice.`,
+              ``,
+              `**Por qué termina en humano y no en un agente.** Arreglar un watchdog roto suele exigir tocar \`.github/workflows/**\` o permisos, que es gate humano de todas formas, y su resolutor autónomo (architect-resolve) es precisamente la etapa que no corre.`,
+              ``,
+              `**Cerrar este issue NO resetea la racha.** La racha se deriva de la \`conclusion\` de las corridas, no del estado de los issues: cerrar esto solo retira el supresor de dedupe. El ÚNICO reset es una corrida \`success\` del Watchdog. Si lo cierras con el detector aún en rojo, el siguiente tick reabrirá la escalada.`,
+              ``,
+              MODE,
+              MARK,
+            ].join('\n');
+
+            await github.rest.issues.create({ ...O,
+              title: 'Watchdog roto: el detector corre y FALLA — intervención humana',
+              labels: ['human-needed'],
+              body });
+            core.warning(`Detector del watchdog en rojo ${streak} ticks: issue human-needed creado.`);

@@ -244,6 +244,71 @@ corrida. También sincroniza los comentarios `autonomous-decision` /
 `derived-decision` de todo el repo al issue-registro
 (label `registro-decisiones`) — el lugar único del veto asíncrono.
 
+### El modo «corre y FALLA» (AP-059)
+
+La EDAD del último run no distingue un watchdog VIVO de uno que **corre y
+falla**. El 2026-07-27 el `detect` de finplan murió en `Scan for stalled
+work` («Resource not accessible by integration» — cap de permisos del job,
+causa inmediata cerrada por AP-056) en TODOS los ticks durante ~1 h: el
+evento disparaba, el run NACÍA fresco y el run moría. Para el heartbeat eso
+era un watchdog vivo, y el revival por dispatch habría sido inútil de todas
+formas (el run nace y vuelve a morir). Coste: 48 min de cadena parada —un
+`stalled` cuyo único consumidor es architect-resolve esperando a un resolutor
+que vive DENTRO del sistema caído— y un des-stall humano.
+
+Desde AP-059 ese modo tiene dueño, por dos vías con el MISMO marcador de
+dedupe (⇒ un solo issue abierto a la vez, jamás doble escalada):
+
+1. **`detect-failure-belt`, job terminal del propio reusable** (`needs:
+   [detect]`, `if: failure()`, `ubuntu-latest` para no compartir el runner
+   que vigila). Cuando la racha de corridas en rojo alcanza **K=3 con la
+   actual incluida** (≈40 min con el cron `*/20`; umbral ANTI-FLAKE: un
+   fallo transitorio no despierta a nadie), abre la escalada citando job,
+   step fallido y las líneas de error del LOG. Es el camino rápido y el
+   único que sabe QUÉ falló.
+2. **Belt de conclusiones del heartbeat**, 2º orden: además de la edad,
+   K=3 corridas COMPLETADAS consecutivas en rojo **y run FRESCO**
+   (`age <= STALE_MIN`) ⇒ escalada por la misma vía `escalate()`, sin
+   intentar revival. Cubre el residual en que el belt del reusable muere
+   con el runner y —sobre todo— el modo `startup_failure`, en el que el
+   run muere ANTES de crear jobs (stub que no concede un permiso que el
+   reusable pide, clase AP-022/#57) y por tanto el belt del punto 1 no
+   llega a existir.
+
+   La frescura no es una guarda defensiva: es la propiedad DEFINITORIA del
+   modo (el run nace fresco y muere). Sin ella, la racha —que se computa
+   sobre historial INMUTABLE— sería verdadera para siempre hasta que
+   existiera un run `success`, y con la rama delante del gate de edad
+   dejaría MUERTO el revival por `workflow_dispatch`, que es justamente el
+   único mecanismo capaz de producir ese `success`: «rojo antiguo +
+   silencio» sería un punto fijo (el cron es best-effort: 2 runs en 5h
+   observados pese al `*/20`), y la escalada diagnosticaría además el modo
+   equivocado. Con la conjunción: fresco+rojo ⇒ escalada sin revival;
+   parado+rojo ⇒ se intenta el revival, y si el run nace y vuelve a morir,
+   el tick siguiente lo ve fresco+rojo y escala.
+
+En ambos casos `success` es el ÚNICO reset de la racha; `cancelled` y
+`skipped` no cuentan y NO la rompen (el grupo de concurrencia del watchdog
+poda su cola en cada ráfaga de eventos: tratarlos como reset dejaría los dos
+belts indisparables justo en los picos de actividad, que es cuando la
+vigilancia importa).
+
+**Los dos modos tienen marcador y la transición entre ellos es legible.**
+`<!-- watchdog-detect-red-streak -->` («corre y FALLA») y
+`<!-- watchdog-dead-unrevivable -->` («parado e irreanimable») acompañan
+siempre a `<!-- watchdog-heartbeat-escalation -->`, que es quien deduplica.
+Como el marcador de dedupe es COMÚN a los tres emisores, una escalada
+abierta en un modo silenciaría el otro; por eso, cuando el modo que se
+quiere declarar no es el del issue abierto, el emisor **comenta en ese
+issue** con el marcador del modo nuevo (idempotente por ese marcador) en
+vez de retornar en silencio. Un solo issue, transición declarada.
+
+**Cerrar la escalada NO resetea la racha.** La racha se deriva de la
+`conclusion` de las corridas, no del estado de los issues: cerrar el issue
+solo retira el supresor de dedupe. El único reset es una corrida `success`
+del Watchdog — si se cierra con el detector aún en rojo, el siguiente tick
+reabre la escalada.
+
 Quedan fuera de la autonomía (gates humanos permanentes): commits de
 `.github/workflows/*` (el PAT no modifica su propia supervisión),
 promoción de la rama por defecto a producción, y el cortacircuito anterior.
