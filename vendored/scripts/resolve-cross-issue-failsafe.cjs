@@ -317,5 +317,12 @@ async function run({ github, context, core, skipLabels }) {
 
 module.exports = run;
 module.exports.derivar = derivar;
-module.exports.PATRONES = { DES_STALL, ARM, AMBIGUO, FUTURO, ROL };
+// `PATRONES` es el vocabulario de decisión COMPLETO, y «completo» es lo único
+// que lo hace útil: un banco futuro que lo consuma creyendo que están todos y
+// se encuentre uno de menos juzga menos de lo que cree. `CAPA_MARK` entró en
+// AP-070 y se quedó fuera de aquí (🔵 3 de la review de ese PR); no se arregla
+// solo añadiéndolo —eso es el mismo mandato de memoria para el siguiente
+// patrón— sino con el gate de `check-resolve-detection.mjs` que contrasta esta
+// lista contra los `const X = /…/` del FUENTE y se pone rojo si divergen.
+module.exports.PATRONES = { DES_STALL, ARM, AMBIGUO, FUTURO, ROL, CAPA_MARK };
 module.exports.MARK = MARK;

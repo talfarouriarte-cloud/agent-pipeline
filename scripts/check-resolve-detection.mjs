@@ -25,7 +25,7 @@
 // —no solo de regex— se juzga aquí.
 //
 // Verde: exit 0. Rojo: la derivación real cambió y el banco lo nota.
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { createRequire } from 'module';
 import { resolve } from 'path';
 
@@ -60,6 +60,30 @@ if (typeof derivar !== 'function') {
   process.exit(1);
 }
 
+// `PATRONES` COMPLETO — 🔵 3 de la review de AP-070. El módulo exporta su
+// vocabulario de decisión bajo un nombre que promete «todos»; `CAPA_MARK`
+// entró en AP-070 y se quedó fuera, sin que nada se pusiera rojo, porque hoy
+// ese export no tiene consumidor. Un export sin consumidor no se cae: se
+// PUDRE, y el día que un banco futuro lo consuma creyendo la promesa juzgará
+// menos de lo que cree, en silencio. Añadir `CAPA_MARK` a mano habría sido el
+// mismo mandato de memoria para el patrón siguiente; el gate es contrastar la
+// lista contra el FUENTE. Es la única aserción del banco que mira el TEXTO del
+// módulo y no su comportamiento — a propósito: lo que se juzga aquí es
+// precisamente que la declaración y el código no divergen.
+const fuenteTxt = readFileSync(fuente, 'utf8');
+const REGEX_DECL = [...fuenteTxt.matchAll(/^const ([A-Z][A-Z_0-9]*) = \//gm)].map((m) => m[1]);
+const PATRONES = belt.PATRONES || {};
+const faltan = REGEX_DECL.filter((n) => !(n in PATRONES));
+const sobran = Object.keys(PATRONES).filter((n) => !REGEX_DECL.includes(n));
+if (faltan.length || sobran.length) {
+  console.error(`CHECK-RESOLVE-DETECTION ROJO: \`PATRONES\` no es el vocabulario de decisión completo de ${fuente}${faltan.length ? ` — falta(n) ${faltan.join(', ')}` : ''}${sobran.length ? ` — sobra(n) ${sobran.join(', ')}` : ''}. Un export que promete «los patrones» y no los trae todos es lo que un banco futuro consumiría con confianza.`);
+  process.exit(1);
+}
+if (!REGEX_DECL.length) {
+  console.error(`CHECK-RESOLVE-DETECTION ROJO: no encuentro ningún \`const X = /…/\` en ${fuente} — la aserción de \`PATRONES\` sería vacua (pasaría con el módulo entero reescrito).`);
+  process.exit(1);
+}
+
 const ROL_MARK = '<!-- watchdog-rol: architect-resolve -->';
 const CAPA = '<!-- watchdog-capa: schedule -->';
 const cmt = (body, { host = 1696, rol = true } = {}) => ({ host, body: `${body}\n\n${CAPA}${rol ? `\n${ROL_MARK}` : ''}` });
@@ -89,20 +113,39 @@ const CASOS = [
   ['(b) intención «voy a re-armar»', [cmt('Voy a re-armar #1694 en cuanto termine aquí.')], {}, ['futuro/intención']],
   ['(b-bis) «procedo a retirar»', [cmt('Procedo a retirar la label `stalled` de #1694.')], {}, ['futuro/intención']],
   ['(d) pretérito «retiré/re-armé»', [cmt('Retiré la label `stalled` de #1694 y re-armé el eslabón 1/3 allí.')], { 1694: { desStall: true, arm: true } }, []],
-  ['(e) post-step hermano ping-creator', [{ host: 1696, body: `**watchdog · ping-creator**: arm materializado en #1694.\n<!-- ping-creator-materializado -->\n${CAPA}` }], {}, []],
+  // 🟡 2 de la review de AP-070 — CUERPOS VERBATIM, no prosa inventada. Estos
+  // dos casos nacieron en AP-064 con fixtures aproximados, y AP-070 los estaba
+  // promoviendo a «coste medido y congelado» sin contrastarlos contra el
+  // emisor real: peso normativo sobre un cuerpo que nadie publica. Los de
+  // abajo son literales de `.github/workflows/watchdog.yml` —`:1446`
+  // (ping-creator) y `:281`/`:361` (circuit-breaker)—, con el `${CAPA}` que
+  // ambos emiten. Los dos callan, y por razones que conviene tener escritas:
+  // el de ping-creator porque «arm» suelto NO casa `ARM` (que exige
+  // `arm{o,é,a,ar,ado}`) y porque `fp#1344` no casa el patrón de refs (le
+  // precede `p`, no espacio ni puntuación); el del circuit-breaker porque no
+  // trae ningún `#N` ni vocabulario de acción. Lo que asertan ahora es que los
+  // emisores REALES de la capa no disparan el aviso — que es el dato que el AP
+  // creía tener y no tenía.
+  ['(e) post-step hermano ping-creator (cuerpo REAL, watchdog.yml:1446)', [{ host: 1696, body: `@claude — retoma según el diagnóstico del comentario anterior del watchdog (ping-creator sin mención de arm: co-ocurrencia materializada mecánicamente, fp#1344).\n\n<!-- ping-creator-materializado -->\n${CAPA}` }], {}, []],
+  ['(g) circuit-breaker (cuerpo REAL, watchdog.yml:281/:361)', [{ host: 1696, body: `Doble rebote tras recuperación autónoma: cortacircuito. Requiere decisión humana.\n\n<!-- watchdog-circuit-breaker -->\n${CAPA}` }], {}, []],
   // Ronda 2, 🟡 2: los OTROS emisores de `watchdog-capa:` que la lista negra no
   // cubría. El de AP-055 interpola encabezados ARBITRARIOS de `decisions.md`:
   // el día que una rectificación se titule con vocabulario de arm, la lista
   // negra habría dejado pasar el vector. El guard positivo no.
-  // AP-070 CONGELA aquí el falso positivo del aviso, que es su coste declarado:
-  // estos dos SÍ son post-steps deterministas y el aviso no puede saberlo (el
-  // marcador de CAPA no identifica al ROL, y una lista negra de marcadores se
-  // pudre — el mismo argumento que eligió el guard positivo para las acciones).
-  // Lo que importa es la dirección del error: `decl={}` en ambos, es decir
-  // ninguna acción — el falso positivo cuesta una línea de log, y el falso
-  // NEGATIVO que cierra cuesta una cadena parada.
+  // AQUÍ, y solo aquí, queda CONGELADO el falso positivo del aviso — su coste
+  // declarado. `(f)` es el único emisor REAL que lo dispara hoy: el diag de
+  // AP-055 (`watchdog.yml:595`) interpola `${lista}`, cuyo `headTxt` (`:552`)
+  // es el texto CRUDO de la línea de rectificación de `decisions.md`, luego un
+  // encabezado con `#N` y vocabulario de arm sale verbatim en el cuerpo.
+  // `(g-bis)` es HIPOTÉTICO y se marca como tal: representa la clase «post-step
+  // determinista hermano cuya prosa sí deriva» para que el día que nazca uno el
+  // banco ya diga qué pasa, no para medir el ruido de hoy. En los dos, `decl={}`
+  // — cero acción: el falso positivo cuesta una línea de log y el falso NEGATIVO
+  // que este AP cierra costaba una cadena parada. No se filtran con lista negra
+  // de marcadores hermanos: se pudre en silencio (mismo argumento que eligió el
+  // guard positivo para las acciones).
   ['(f) rectificación en vuelo (AP-055) con vocabulario de arm', [{ host: 1696, body: `**watchdog**: rectificación EN VUELO — «### Revisión R·1 (2026-07-15, issue #1694) — re-arm del eslabón»\n${CAPA}` }], {}, ['sin-marcador-de-rol']],
-  ['(g) circuit-breaker', [{ host: 1696, body: `**watchdog · circuit-breaker**: re-arm de #1694 suspendido.\n${CAPA}` }], {}, ['sin-marcador-de-rol']],
+  ['(g-bis) hermano determinista HIPOTÉTICO con vocabulario de arm', [{ host: 1696, body: `**watchdog · hermano determinista**: re-arm de #1694 suspendido.\n${CAPA}` }], {}, ['sin-marcador-de-rol']],
   // Ronda 2, 🟡 2 / epic-merge: un marcador CITADO no es un marcador emitido
   // (misma clase que AP-063: EFECTUAR ≠ CITAR). Esta review, que cita el
   // marcador entre backticks y habla de re-armar #1694, NO es del resolver.
@@ -407,7 +450,12 @@ const CONTRATO = [
   // construcción, porque este belt corre al terminar su propia etapa— en la
   // primera página. En `asc` el corte se comería justo lo que se viene a leer,
   // y el belt quedaría mudo en el único caso en que hace falta.
-  ['barrido: más de MAX_PAGS páginas ⇒ TRUNCADO anunciado, y el corte muerde por `desc`',
+  // El nombre dice lo que la aserción PRUEBA (🔵 4 de la review): el doble
+  // sirve la declaración en la primera página sea cual sea el `direction`, así
+  // que lo asertado es que el belt PIDE `desc` — no que el corte haya mordido.
+  // Que pedir `desc` sea lo correcto es el porqué de arriba; el nombre es lo
+  // que se lee en la salida verde y no puede prometer más.
+  ['barrido: más de MAX_PAGS páginas ⇒ TRUNCADO anunciado, y el barrido pide `direction: desc`',
     { skipLabels: SKIP, labels: ['stalled'], paginasRelleno: 20 },
     ['removeLabel#1694', 'createComment#1694'],
     { avisa: ['barrido TRUNCADO'], direction: 'desc' }],

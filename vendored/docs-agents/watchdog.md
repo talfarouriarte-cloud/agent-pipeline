@@ -304,13 +304,18 @@ contra tu corrida.
 aquí, un comentario tuyo sin el marcador dejaba al belt mudo **y a la
 mudez sin señal**: era indistinguible de «no declaraste nada», que es la
 misma lectura falsa —silencio leído como cobertura— que este belt existe
-para cerrar, un piso por debajo de sí misma. Ahora, cuando un comentario
-de esta capa declara una transición cross-issue derivable y NO lleva el
-marcador en línea propia, el belt emite un `::warning`
-(`sin-marcador-de-rol`) citando el comentario. Sigue sin materializar
-nada —el guard de identidad no se relaja, y ese aviso NO es una acción—,
-pero tu incumplimiento del mandato queda en el log de la corrida, que es
-lo que el Auditor lee. El aviso mide la CAPA, no el rol: si lo dispara un
+para cerrar, un piso por debajo de sí misma. Ahora —**cuando la
+invocación esté aplicada**; hasta entonces el belt no corre y esto no
+emite nada, igual que el resto de la sección—, si un comentario de esta
+capa declara una transición cross-issue derivable y NO lleva el marcador
+en línea propia, el belt emite un `::warning` (`sin-marcador-de-rol`)
+citando el comentario. Sigue sin materializar nada —el guard de identidad
+no se relaja, y ese aviso NO es una acción—, pero tu incumplimiento del
+mandato deja de ser invisible: queda como ANOTACIÓN de la corrida, que el
+epic-auditor cosecha por API sobre los mismos runs que ya censa
+(`epic-auditor.md` § ledger, clase SENSOR — mandato añadido por AP-070 en
+el mismo PR: antes de él este aviso no tenía ningún consumidor mecánico,
+solo un lector humano). El aviso mide la CAPA, no el rol: si lo dispara un
 post-step determinista hermano, es ruido esperado y la atribución se
 resuelve abriendo el comentario citado.
 
