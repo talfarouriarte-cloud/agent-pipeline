@@ -135,10 +135,83 @@ for (const [nombre, comentarios, decl, avisos] of CASOS) {
   lineas.push(`  ${okDecl && okAviso ? '·' : '✗'} ${nombre.padEnd(46)} decl=${JSON.stringify(gotDecl)} avisos=${JSON.stringify(gotClases)}`);
 }
 
+// ── Contrato de ENTRADA del belt: la costura módulo↔stub (AP-068, ronda 1 🟡 3)
+// El banco de arriba juzga la DERIVACIÓN; esto juzga la COSTURA, que es el único
+// punto del mecanismo sin gate y con deriva ASIMÉTRICA: el stub que invoca el
+// módulo vive en `watchdog.yml` (parche pendiente, no pusheable por un agente,
+// no parseado mientras lo esté) y el módulo sí es pusheable. Un rename de
+// `skipLabels` pasaba el banco y el CI en verde y apagaba el kill-switch por
+// label de exclusión EN RUNTIME, en silencio. Se ejecuta `run` de verdad contra
+// un doble mínimo de la API de GitHub y se asiertan las escrituras.
+//
+// El caso de CONTROL no es decorativo: sin él los dos casos negativos serían
+// vacuos (pasarían también si el doble no llegara nunca al punto de escritura).
+const DECL = `\`stalled\` retirada de #1694 y re-arm del eslabón 1/3 allí.\n${CAPA}\n${ROL_MARK}`;
+
+async function correrBelt({ skipLabels, envSkip, labels }) {
+  const escrituras = [];
+  const ahora = new Date().toISOString();
+  const comentario = {
+    issue_url: 'https://api.github.com/repos/o/r/issues/1696',
+    body: DECL, html_url: 'https://example/1', created_at: ahora, updated_at: ahora,
+  };
+  const paginate = async () => [];                       // comentarios del DESTINO: ninguno
+  paginate.iterator = async function* () { yield { data: [comentario] }; };
+  const github = {
+    paginate,
+    rest: {
+      actions: { getWorkflowRun: async () => ({ data: { run_started_at: new Date(Date.now() - 60_000).toISOString() } }) },
+      issues: {
+        get: async () => ({ data: { number: 1694, state: 'open', body: '@claude arranca', labels: labels.map((name) => ({ name })) } }),
+        listComments: 'listComments',
+        listCommentsForRepo: 'listCommentsForRepo',
+        removeLabel: async () => { escrituras.push('removeLabel'); },
+        createComment: async () => { escrituras.push('createComment'); },
+      },
+    },
+  };
+  const core = { info() {}, notice() {}, warning() {} };
+  const context = { repo: { owner: 'o', repo: 'r' }, eventName: 'schedule', runId: 1 };
+  const previo = process.env.IN_SKIP_LABELS;
+  if (envSkip === undefined) delete process.env.IN_SKIP_LABELS; else process.env.IN_SKIP_LABELS = envSkip;
+  try {
+    await belt({ github, context, core, skipLabels });
+  } finally {
+    if (previo === undefined) delete process.env.IN_SKIP_LABELS; else process.env.IN_SKIP_LABELS = previo;
+  }
+  return escrituras;
+}
+
+if (typeof belt !== 'function') {
+  console.error('CHECK-RESOLVE-DETECTION ROJO: `resolve-cross-issue-failsafe.cjs` ya no exporta el runtime como función — el stub de `watchdog.yml` hace `belt({...})` y reventaría en cada corrida.');
+  process.exit(1);
+}
+
+const CONTRATO = [
+  ['control: sin label de exclusión, el belt SÍ materializa',
+    { skipLabels: 'pause-agents,human-needed', envSkip: undefined, labels: ['stalled'] },
+    ['removeLabel', 'createComment']],
+  ['kill-switch por el parámetro que pasa el stub',
+    { skipLabels: 'pause-agents,human-needed', envSkip: undefined, labels: ['stalled', 'pause-agents'] },
+    []],
+  ['kill-switch por el env del stub (rename del parámetro inocuo)',
+    { skipLabels: undefined, envSkip: 'pause-agents,human-needed', labels: ['stalled', 'pause-agents'] },
+    []],
+];
+
+for (const [nombre, opts, esperado] of CONTRATO) {
+  let got;
+  try { got = await correrBelt(opts); }
+  catch (e) { fallos.push(`contrato — ${nombre}: \`run\` lanzó (${e.message})`); continue; }
+  const ok = JSON.stringify(got) === JSON.stringify(esperado);
+  if (!ok) fallos.push(`contrato — ${nombre}: esperado escrituras=${JSON.stringify(esperado)} — obtenido ${JSON.stringify(got)}`);
+  lineas.push(`  ${ok ? '·' : '✗'} contrato: ${nombre.padEnd(46)} escrituras=${JSON.stringify(got)}`);
+}
+
 if (process.env.RESOLVE_DETECTION_VERBOSE) lineas.forEach((l) => console.log(l));
 if (fallos.length) {
   console.error(`CHECK-RESOLVE-DETECTION ROJO (derivación real de ${fuente}):`);
   fallos.forEach((f) => console.error('  - ' + f));
   process.exit(1);
 }
-console.log(`check-resolve-detection verde: ${CASOS.length} casos del banco de AP-064 sobre la derivación REAL de ${fuente} (no una copia).`);
+console.log(`check-resolve-detection verde: ${CASOS.length} casos del banco de AP-064 sobre la derivación REAL de ${fuente} (no una copia) + ${CONTRATO.length} aserciones de la costura módulo↔stub (kill-switch por parámetro y por env).`);

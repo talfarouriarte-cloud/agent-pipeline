@@ -144,7 +144,20 @@ function derivar(comentarios) {
 async function run({ github, context, core, skipLabels }) {
   const { owner, repo } = context.repo;
   const CAPA = `<!-- watchdog-capa: ${context.eventName} -->`;
-  const SKIP_LABELS = (skipLabels || '').split(',').map((x) => x.trim()).filter(Boolean);
+  // COSTURA módulo↔stub (AP-068, ronda 1 de la review). El sitio que invoca esta
+  // función vive en `.github/workflows/watchdog.yml` —parche pendiente, NO
+  // pusheable por un agente y no parseado por `check-embedded-js` mientras lo
+  // esté—; este módulo SÍ es pusheable y SÍ está gateado. La deriva es asimétrica
+  // por construcción: un agente puede renombrar este parámetro y no puede tocar
+  // —ni ver gateado— el `belt({ …, skipLabels: process.env.IN_SKIP_LABELS })` que
+  // lo pasa. Ese rename dejaría `SKIP_LABELS` vacío en runtime con banco y CI
+  // VERDES ⇒ el kill-switch por label de exclusión desaparecería en silencio y el
+  // belt materializaría sobre issues excluidos: «el belt actúa donde no debía»,
+  // el peor fallo de su clase. El fallback al env que el stub ya exporta hace el
+  // rename inocuo — el NOMBRE del parámetro deja de ser load-bearing —, y
+  // `check-resolve-detection` asierta además el contrato ejecutando `run` con un
+  // doble mínimo de la API.
+  const SKIP_LABELS = (skipLabels ?? process.env.IN_SKIP_LABELS ?? '').split(',').map((x) => x.trim()).filter(Boolean);
 
   // Frescura (lección #180): la ventana es la VIDA DE ESTE JOB, no un lookback
   // fijo. Sin ella, una declaración ya materializada por la corrida anterior se

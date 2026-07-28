@@ -265,13 +265,23 @@ cross-issue tú mismo, primero**.
 
 **Enmienda (2026-07-28, AP-068).** Lo que sigue pendiente de un humano es
 solo la INVOCACIÓN (31 líneas de `watchdog.yml`), no el belt: su cuerpo
-vive desde AP-068 en `vendored/scripts/resolve-cross-issue-failsafe.cjs`,
-que el graft sirve a tu workspace en cada run. Eso NO cambia la regla
-operativa de arriba —hasta que la invocación se aplique, el belt no corre
-y sigues sin red—, pero sí cambia quién puede arreglarlo: un agente. Si
-detectas que el belt dejó pasar una declaración tuya bien formada, el
-arreglo es un PR normal sobre ese módulo y su banco de casos
-(`scripts/check-resolve-detection.mjs`), no un parche pendiente.
+vive desde AP-068 en el repo CENTRAL (`agent-pipeline`), en
+`vendored/scripts/resolve-cross-issue-failsafe.cjs`, y el graft (AP-009)
+te lo sirve como **`scripts/resolve-cross-issue-failsafe.cjs`** en el
+workspace de cada run. Esa copia de tu checkout es injertada y queda
+registrada en `.git/info/exclude` igual que `adr-lint.mjs`: **no la
+edites ahí — git no verá tu cambio y tu PR saldría vacío** (que es
+justamente la clase «prosa que afirma un estado no materializado» que
+este belt existe para cerrar). Eso tampoco cambia la regla operativa de
+arriba —hasta que la invocación se aplique, el belt no corre y sigues sin
+red—, pero sí cambia quién puede arreglarlo: un agente, no un humano con
+un parche. Si detectas que el belt dejó pasar una declaración tuya bien
+formada, el arreglo es un PR **en `agent-pipeline`** sobre el fichero
+FUENTE de `vendored/scripts/` y su banco de casos
+(`scripts/check-resolve-detection.mjs`, que solo existe allí); ya no es
+un parche pendiente. Si estás en el central, ese PR es tuyo; si estás en
+un consumidor, desde tu repo no puedes abrirlo — lo que abres es la
+escalada, y su insumo es la prosa literal que el belt no derivó.
 
 Y si el belt está vivo, tampoco te exime: solo materializa lo que tu
 prosa deja derivar con confianza. Es fail-open DELIBERADO —warning
