@@ -126,8 +126,15 @@ como PARCIAL (el issue queda abierto y se re-arma).
 pre-reviewer: no ejecutado — pendiente (draft de hito)
 EOF
 
-url=$(gh pr create --draft --base "$base" --head "$branch" --title "$title" --body-file "$tmp" 2>&1) || { rm -f "$tmp"; exit 0; }
+# stdout SOLO: `gh` puede escribir avisos en stderr Y salir 0, y esa mezcla
+# viajaría tal cual al `additionalContext` que lee el Creator (el mensaje es lo
+# único que le dice dónde está su draft). El rc lo gobierna `gh`, no un pipe.
+out=$(gh pr create --draft --base "$base" --head "$branch" --title "$title" --body-file "$tmp" 2>/dev/null) || { rm -f "$tmp"; exit 0; }
 rm -f "$tmp"
+url=$(printf '%s\n' "$out" | grep -oE 'https://[^[:space:]]+/pull/[0-9]+' | tail -1)
+# El PR YA existe aunque la URL no sea legible: se avisa igual (no avisar sería
+# el peor desenlace — Creator sin saberlo, intentando abrir otro).
+[ -n "${url:-}" ] || url="URL no legible en la salida de gh; búscalo con 'gh pr view'"
 
 # ── 8. Avisar al modelo por el canal informativo (no es un error).
 msg="Hook draft-pr-on-push (AP-057): tu primer push de hito abrió AUTOMÁTICAMENTE el PR en DRAFT contra '${base}' (${url}). NO ejecutes 'gh pr create' — ya existe. A partir de ahora: (1) en cada hito actualiza el body con 'gh pr edit --body-file'; (2) al cerrar, fija la polaridad definitiva (<!-- full-pr --> + Closes #${issue} si completas el alcance, o <!-- partial-pr --> + Refs #${issue} + «Alcance restante»), actualiza la huella 'pre-reviewer:' y el título, y marca 'gh pr ready'. El draft NO despierta al Reviewer (guard AP-047)."
