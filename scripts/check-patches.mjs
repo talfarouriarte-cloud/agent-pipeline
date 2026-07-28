@@ -64,14 +64,46 @@
 // no como substring de la prosa: enrutar el log o contar por `includes('…')`
 // acopla dos decisiones mecánicas a la redacción de una frase — la misma clase
 // AP-008 que este bloque cierra un piso más abajo (🟡 3 de la review de AP-065).
+// ─── L3: los ESPEJOS del ancla en el corpus (2026-07-28, AP-069) ─────────────
+//
+// AP-065 dejó declarado el residual (b): «la cita del SHA en el cuerpo de
+// AP-064 sigue siendo un espejo a mano sin consumidor; bajo AP-065 ya no hay
+// que rotarlo, así que su forma de fallo pasa de "se pudre cada ronda" a "se
+// pudre solo si `watchdog.yml` cambia", pero no se cierra aquí». Se pudrió en
+// la ronda SIGUIENTE: AP-068 regeneró el parche de AP-064 (239 → 31 líneas) y
+// movió su `# verificado-contra:` a `b6de3e3`, mientras `decisions.md` seguía
+// afirmando «`cc3c440` sigue siendo correcto» — un enunciado FALSO sobre el
+// ancla, en el registro normativo, dentro del propio AP que existe para que
+// nadie lea un dato sin consumidor.
+//
+// El arreglo NO es rotar el espejo a mano otra vez (eso es lo que AP-065
+// demostró que no converge): es darle consumidor. Un espejo se declara con un
+// marcador anclado en `docs/decisions.md`,
+//   ancla-espejo: <fichero>.patch = <sha>
+// y este check exige que case con la cabecera `# verificado-contra:` del
+// parche, que es la copia NORMATIVA. Mentir en el corpus pasa a ser ROJO.
+//
+// Dos precauciones, las dos con precedente en este repo:
+//   · El marcador se exige en LÍNEA PROPIA y tras despojar los bloques
+//     cercados, porque un marcador CITADO no es un marcador EMITIDO (clase
+//     AP-063: EFECTUAR ≠ CITAR; en la ronda 2 de AP-064 un `body.includes(…)`
+//     casó una review que citaba el marcador entre backticks y la sobrescribió).
+//     Así el propio AP-069 puede DOCUMENTAR el marcador sin dispararlo.
+//   · NO se exige que exista espejo: un AP puede no citar el SHA, y forzarlo
+//     sería una política que este check no toma (misma forma que el residual
+//     (c) de AP-065 sobre la cabecera ausente). Lo que se prohíbe es el espejo
+//     que MIENTE, no el espejo que falta.
 import { readdirSync, existsSync, readFileSync } from 'fs';
 import { execFileSync } from 'child_process';
 
 const DIR = 'docs/patches';
+const CORPUS = 'docs/decisions.md';
 const errors = [];
 const pendientes = [];
 const aplicados = [];
 const anclas = [];
+const espejos = [];
+const shaDeclarado = new Map();   // parche → SHA de su cabecera (la copia normativa)
 
 const files = existsSync(DIR) ? readdirSync(DIR).filter(f => f.endsWith('.patch')).sort() : [];
 
@@ -171,6 +203,7 @@ for (const f of files) {
   const txt = readFileSync(`${DIR}/${f}`, 'utf8');
   const cab = txt.split('diff --git')[0];
   const sha = /verificado-contra:\s*([0-9a-f]{7,40})/i.exec(cab);
+  if (sha) shaDeclarado.set(f, sha[1]);
   const ref = sha ? ` (verificado contra ${sha[1]})` : '';
   const imgs = imagenes(txt);
   const fwd = aplica(f, false);
@@ -190,6 +223,23 @@ for (const f of files) {
   errors.push(`${f}: DERIVADO — ni aplica ni reverse-aplica contra el árbol actual; el pendiente que transporta ya no es ejecutable. Regenéralo o bórralo. (git apply: ${fwd})`);
 }
 
+// ── L3 — espejos del ancla en el corpus ──
+// El marcador se busca en LÍNEA PROPIA y sobre el texto con los bloques
+// cercados fuera: un marcador citado no es un marcador emitido (AP-063).
+if (existsSync(CORPUS)) {
+  const corpus = readFileSync(CORPUS, 'utf8').replace(/```[\s\S]*?```/g, '\n');
+  const RE = /^[ \t]*<!--\s*ancla-espejo:\s*([A-Za-z0-9._-]+\.patch)\s*=\s*([0-9a-f]{7,40})\s*-->[ \t]*$/gm;
+  for (const [, f, espejo] of corpus.matchAll(RE)) {
+    if (!files.includes(f)) { errors.push(`${CORPUS}: espejo \`ancla-espejo: ${f}\` — ese parche NO existe en ${DIR}/. O se renombró y el espejo se quedó atrás, o el parche ya se aplicó y se borró: retira el espejo con él.`); continue; }
+    const normativo = shaDeclarado.get(f);
+    if (!normativo) { errors.push(`${CORPUS}: espejo \`ancla-espejo: ${f} = ${espejo}\` — el parche NO declara \`# verificado-contra:\` en su cabecera, luego el espejo no refleja nada: no hay copia normativa contra la que contrastarlo.`); continue; }
+    // El espejo puede venir abreviado (el corpus cita 7 caracteres a menudo);
+    // la comparación es por prefijo y en la dirección correcta.
+    if (!casa(normativo, espejo)) { errors.push(`${CORPUS}: espejo DESFASADO de \`${f}\` — el corpus declara \`${espejo}\` y la cabecera normativa del parche declara \`${normativo}\`. La cabecera manda (AP-065): actualiza el espejo a \`<!-- ancla-espejo: ${f} = ${normativo} -->\`.`); continue; }
+    espejos.push(`${CORPUS}: espejo de \`${f}\` FIEL a la cabecera normativa (\`${espejo}\`)`);
+  }
+}
+
 if (errors.length) { console.error('CHECK-PATCHES ROJO:'); errors.forEach(e => console.error('  - ' + e)); process.exit(1); }
 for (const p of pendientes) console.log(`::warning::check-patches — ${p}`);
 aplicados.forEach(a => console.log(`  · ${a}`));
@@ -198,6 +248,7 @@ aplicados.forEach(a => console.log(`  · ${a}`));
 // SHA» es justo el dato que la rotación de tres rondas de AP-064 no tuvo. El
 // nivel viene DECIDIDO en `verificarAncla`, no re-derivado de la prosa.
 for (const a of anclas) console.log(a.nivel === 'warn' ? `::warning::check-patches — ${a.msg}` : `  · ${a.msg}`);
+espejos.forEach(e => console.log(`  · ${e}`));
 const vigentes = anclas.filter(a => a.vigente).length;
 const contrastadas = anclas.filter(a => a.contrastado).length;
-console.log(`check-patches verde: ${files.length} parche(s) en ${DIR}/, ${pendientes.length} pendiente(s) de aplicación humana, ${aplicados.length} ya aplicado(s), 0 derivado(s), ${vigentes} ancla(s) vigente(s) de ${anclas.length} evaluada(s), ${contrastadas} contrastada(s) contra su commit declarado.`);
+console.log(`check-patches verde: ${files.length} parche(s) en ${DIR}/, ${pendientes.length} pendiente(s) de aplicación humana, ${aplicados.length} ya aplicado(s), 0 derivado(s), ${vigentes} ancla(s) vigente(s) de ${anclas.length} evaluada(s), ${contrastadas} contrastada(s) contra su commit declarado, ${espejos.length} espejo(s) del ancla fiel(es) en ${CORPUS}.`);

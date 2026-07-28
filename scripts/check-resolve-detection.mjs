@@ -135,38 +135,65 @@ for (const [nombre, comentarios, decl, avisos] of CASOS) {
   lineas.push(`  ${okDecl && okAviso ? '·' : '✗'} ${nombre.padEnd(46)} decl=${JSON.stringify(gotDecl)} avisos=${JSON.stringify(gotClases)}`);
 }
 
-// ── Contrato de ENTRADA del belt: la costura módulo↔stub (AP-068, ronda 1 🟡 3)
-// El banco de arriba juzga la DERIVACIÓN; esto juzga la COSTURA, que es el único
-// punto del mecanismo sin gate y con deriva ASIMÉTRICA: el stub que invoca el
-// módulo vive en `watchdog.yml` (parche pendiente, no pusheable por un agente,
-// no parseado mientras lo esté) y el módulo sí es pusheable. Un rename de
-// `skipLabels` pasaba el banco y el CI en verde y apagaba el kill-switch por
-// label de exclusión EN RUNTIME, en silencio. Se ejecuta `run` de verdad contra
-// un doble mínimo de la API de GitHub y se asiertan las escrituras.
+// ── Contrato de RUNTIME del belt: la costura módulo↔stub y los GUARDS ────────
+// El banco de arriba juzga la DERIVACIÓN; esto juzga lo que decide si el belt
+// ESCRIBE, que es la otra mitad del comportamiento.
 //
-// El caso de CONTROL no es decorativo: sin él los dos casos negativos serían
-// vacuos (pasarían también si el doble no llegara nunca al punto de escritura).
+// Nació (AP-068, ronda 1 🟡 3) cubriendo solo la COSTURA, el único punto del
+// mecanismo sin gate y con deriva ASIMÉTRICA: el stub que invoca el módulo vive
+// en `watchdog.yml` (parche pendiente, no pusheable por un agente, no parseado
+// mientras lo esté) y el módulo sí es pusheable. Un rename de `skipLabels`
+// pasaba el banco y el CI en verde y apagaba el kill-switch por label de
+// exclusión EN RUNTIME, en silencio.
+//
+// AP-069 lo AMPLÍA al resto de guards, que era el residual (d) declarado de
+// AP-068 —«el dedupe por ventana, la clasificación de issue virgen, el 404
+// benigno de `removeLabel` y el tope `MAX` siguen sin caso»—. La razón para
+// cerrarlo ahora y no «cuando el belt se despliegue» es que la asimetría es la
+// MISMA que motivó la costura: estos guards viven en el módulo pusheable, su
+// única prueba en producción llega el día que el humano aplique el parche, y
+// para entonces cualquier deriva introducida entre medias se estrena en
+// runtime. Cada guard falla además hacia el lado CARO —materializar donde no
+// debía, o afirmar en prosa un estado que no se alcanzó, que es literalmente la
+// clase que AP-064 existe para cerrar—, así que la ausencia de caso no era
+// coste cero mientras tanto: era la ventana abierta.
+//
+// El caso de CONTROL no es decorativo: sin él los casos negativos serían vacuos
+// (pasarían también si el doble no llegara nunca al punto de escritura).
 const DECL = `\`stalled\` retirada de #1694 y re-arm del eslabón 1/3 allí.\n${CAPA}\n${ROL_MARK}`;
+const { MARK } = belt;
 
-async function correrBelt({ skipLabels, envSkip, labels }) {
+// Las escrituras se registran CON el issue destino (`removeLabel#1694`): sin el
+// número, el caso del tope `MAX` —tres materializaciones de cuatro declaradas—
+// no se puede asertar, solo contar.
+async function correrBelt({
+  skipLabels, envSkip, labels,
+  declaracion = DECL,          // prosa del resolver que entra por el barrido fresco
+  destino = {},                // override del estado del issue DESTINO (`issues.get`)
+  comentariosDestino = [],     // lo que `listComments` devuelve para el destino
+  removeLabelErr,              // error que `removeLabel` lanza, si se quiere probar esa rama
+} = {}) {
   const escrituras = [];
+  const cuerpos = [];
   const ahora = new Date().toISOString();
   const comentario = {
     issue_url: 'https://api.github.com/repos/o/r/issues/1696',
-    body: DECL, html_url: 'https://example/1', created_at: ahora, updated_at: ahora,
+    body: declaracion, html_url: 'https://example/1', created_at: ahora, updated_at: ahora,
   };
-  const paginate = async () => [];                       // comentarios del DESTINO: ninguno
+  const paginate = async () => comentariosDestino;       // comentarios del DESTINO
   paginate.iterator = async function* () { yield { data: [comentario] }; };
   const github = {
     paginate,
     rest: {
       actions: { getWorkflowRun: async () => ({ data: { run_started_at: new Date(Date.now() - 60_000).toISOString() } }) },
       issues: {
-        get: async () => ({ data: { number: 1694, state: 'open', body: '@claude arranca', labels: labels.map((name) => ({ name })) } }),
+        get: async ({ issue_number }) => ({ data: { number: issue_number, state: 'open', body: '@claude arranca', labels: labels.map((name) => ({ name })), ...destino } }),
         listComments: 'listComments',
         listCommentsForRepo: 'listCommentsForRepo',
-        removeLabel: async () => { escrituras.push('removeLabel'); },
-        createComment: async () => { escrituras.push('createComment'); },
+        // Se registra la LLAMADA, no el éxito: la rama que importa en el caso
+        // del fallo no-404 es «se intentó retirar y NO se publicó comentario».
+        removeLabel: async ({ issue_number }) => { escrituras.push(`removeLabel#${issue_number}`); if (removeLabelErr) throw removeLabelErr; },
+        createComment: async ({ issue_number, body }) => { escrituras.push(`createComment#${issue_number}`); cuerpos.push(body); },
       },
     },
   };
@@ -179,7 +206,7 @@ async function correrBelt({ skipLabels, envSkip, labels }) {
   } finally {
     if (previo === undefined) delete process.env.IN_SKIP_LABELS; else process.env.IN_SKIP_LABELS = previo;
   }
-  return escrituras;
+  return { escrituras, cuerpos };
 }
 
 if (typeof belt !== 'function') {
@@ -187,25 +214,99 @@ if (typeof belt !== 'function') {
   process.exit(1);
 }
 
+const SKIP = 'pause-agents,human-needed';
+const AHORA = new Date().toISOString();
+const enVentana = (body) => ({ body, created_at: AHORA });
+// Cuatro destinos declarados en cuatro segmentos: uno por segmento, porque más
+// de un `#N` en el MISMO segmento es fail-open por multi-referencia. Sirve para
+// asertar el tope `MAX` del módulo, que hoy es 3.
+const DECL_4 = `\`stalled\` retirada de #1001.\n\`stalled\` retirada de #1002.\n\`stalled\` retirada de #1003.\n\`stalled\` retirada de #1004.\n${CAPA}\n${ROL_MARK}`;
+// Declaración de des-stall Y NADA MÁS. Necesaria para aislar la rama «no queda
+// nada materializado»: con la declaración completa (`DECL`) el arm sigue
+// pendiente aunque `removeLabel` falle, luego el belt publica —correctamente—
+// por el arm. El banco cazó esta confusión al escribirlo, que es para lo que
+// está: la expectativa inicial de este caso era la equivocada, no el módulo.
+const DECL_DS = `\`stalled\` retirada de #1694.\n${CAPA}\n${ROL_MARK}`;
+const err = (status) => Object.assign(new Error(`API ${status}`), { status });
+
+// [nombre, opts, escrituras esperadas, aserción opcional sobre el CUERPO publicado]
 const CONTRATO = [
   ['control: sin label de exclusión, el belt SÍ materializa',
-    { skipLabels: 'pause-agents,human-needed', envSkip: undefined, labels: ['stalled'] },
-    ['removeLabel', 'createComment']],
+    { skipLabels: SKIP, labels: ['stalled'] },
+    ['removeLabel#1694', 'createComment#1694'],
+    { contiene: ['@claude', '<!-- watchdog-rearm -->', MARK] }],
   ['kill-switch por el parámetro que pasa el stub',
-    { skipLabels: 'pause-agents,human-needed', envSkip: undefined, labels: ['stalled', 'pause-agents'] },
+    { skipLabels: SKIP, labels: ['stalled', 'pause-agents'] },
     []],
   ['kill-switch por el env del stub (rename del parámetro inocuo)',
-    { skipLabels: undefined, envSkip: 'pause-agents,human-needed', labels: ['stalled', 'pause-agents'] },
+    { envSkip: SKIP, labels: ['stalled', 'pause-agents'] },
     []],
+  // ── AP-069: los guards que el residual (d) de AP-068 dejó sin caso ──
+  // Dedupe por VENTANA. Sin él, cada tick del watchdog re-materializaría la
+  // misma declaración mientras siga en la ventana: comentario duplicado en el
+  // destino y, si llevaba arm, una sesión de Creator por tick.
+  ['dedupe: ya materializado en esta ventana ⇒ no-op',
+    { skipLabels: SKIP, labels: ['stalled'], comentariosDestino: [enVentana(`ya materializado\n${MARK}`)] },
+    []],
+  // Destino fuera de alcance. Un PR no se arma por esta vía (su equivalente es
+  // `ping-creator`) y un issue cerrado no tiene nada que reanudar.
+  ['destino que es un PR ⇒ fuera de alcance',
+    { skipLabels: SKIP, labels: ['stalled'], destino: { pull_request: { url: 'x' } } },
+    []],
+  ['destino cerrado ⇒ nada que reanudar',
+    { skipLabels: SKIP, labels: ['stalled'], destino: { state: 'closed' } },
+    []],
+  // Issue VIRGEN (ningún `@claude` en body ni en comentarios): prohibición
+  // absoluta del rol (`watchdog.md` § Prohibiciones). El des-stall SÍ procede
+  // —no es un arm—, pero el comentario NO puede salir con cabecera de arm: si
+  // saliera, el filtro de `claude-code.yml` despertaría a un Creator sobre un
+  // issue que nadie armó nunca. Por eso el caso asierta el CUERPO y no solo la
+  // lista de llamadas.
+  ['issue VIRGEN: des-stall sí, arm JAMÁS (y el cuerpo no puede pedirlo)',
+    { skipLabels: SKIP, labels: ['stalled'], destino: { body: 'Issue sin armar todavía.' } },
+    ['removeLabel#1694', 'createComment#1694'],
+    { noContiene: ['@claude', '<!-- watchdog-rearm -->'] }],
+  // Nada que materializar: `stalled` ausente y arm ya posteado en la ventana.
+  // Es el caso NORMAL cuando el resolver sí ejecutó lo que declaró.
+  ['lo declarado ya está materializado ⇒ no-op',
+    { skipLabels: SKIP, labels: [], comentariosDestino: [enVentana('@claude arranca')] },
+    []],
+  // `removeLabel` 404 = la label ya no estaba (carrera con el resolver vivo):
+  // el estado deseado SÍ se alcanzó, luego se publica.
+  // Con `DECL_DS` (des-stall y nada más) el 404 es la ÚNICA razón por la que el
+  // belt puede publicar aquí: con la declaración completa el arm pendiente lo
+  // publicaría igual y el caso sería vacuo respecto de esta rama — verificado
+  // por mutación (apagar la rama del 404 con `DECL` deja el banco en verde).
+  ['removeLabel 404 (carrera benigna) ⇒ estado alcanzado, se publica',
+    { skipLabels: SKIP, labels: ['stalled'], declaracion: DECL_DS, removeLabelErr: err(404) },
+    ['removeLabel#1694', 'createComment#1694'],
+    { contiene: ['`stalled` retirada por estado'] }],
+  // `removeLabel` fallo REAL y nada más que materializar: NO se publica. Un
+  // comentario que afirmara la retirada sin haberla hecho reproduciría DENTRO
+  // del belt la clase exacta que AP-064 cierra, y el marcador dedupearía
+  // además su propio reintento del tick siguiente.
+  ['removeLabel 500 sin arm pendiente ⇒ ni comentario ni marcador',
+    { skipLabels: SKIP, labels: ['stalled'], declaracion: DECL_DS, removeLabelErr: err(500) },
+    ['removeLabel#1694']],
+  // Tope duro por corrida: 4 destinos declarados, 3 materializados.
+  ['tope MAX por corrida: 4 declarados ⇒ 3 materializados',
+    { skipLabels: SKIP, labels: ['stalled'], declaracion: DECL_4 },
+    ['removeLabel#1001', 'createComment#1001', 'removeLabel#1002', 'createComment#1002', 'removeLabel#1003', 'createComment#1003']],
 ];
 
-for (const [nombre, opts, esperado] of CONTRATO) {
+for (const [nombre, opts, esperado, cuerpo] of CONTRATO) {
   let got;
   try { got = await correrBelt(opts); }
   catch (e) { fallos.push(`contrato — ${nombre}: \`run\` lanzó (${e.message})`); continue; }
-  const ok = JSON.stringify(got) === JSON.stringify(esperado);
-  if (!ok) fallos.push(`contrato — ${nombre}: esperado escrituras=${JSON.stringify(esperado)} — obtenido ${JSON.stringify(got)}`);
-  lineas.push(`  ${ok ? '·' : '✗'} contrato: ${nombre.padEnd(46)} escrituras=${JSON.stringify(got)}`);
+  let ok = JSON.stringify(got.escrituras) === JSON.stringify(esperado);
+  if (!ok) fallos.push(`contrato — ${nombre}: esperado escrituras=${JSON.stringify(esperado)} — obtenido ${JSON.stringify(got.escrituras)}`);
+  for (const s of cuerpo?.contiene || []) {
+    if (!got.cuerpos.some((c) => c.includes(s))) { ok = false; fallos.push(`contrato — ${nombre}: ningún cuerpo publicado contiene ${JSON.stringify(s)}`); }
+  }
+  for (const s of cuerpo?.noContiene || []) {
+    if (got.cuerpos.some((c) => c.includes(s))) { ok = false; fallos.push(`contrato — ${nombre}: un cuerpo publicado contiene ${JSON.stringify(s)} y NO debía`); }
+  }
+  lineas.push(`  ${ok ? '·' : '✗'} contrato: ${nombre.padEnd(56)} escrituras=${JSON.stringify(got.escrituras)}`);
 }
 
 if (process.env.RESOLVE_DETECTION_VERBOSE) lineas.forEach((l) => console.log(l));
@@ -214,4 +315,4 @@ if (fallos.length) {
   fallos.forEach((f) => console.error('  - ' + f));
   process.exit(1);
 }
-console.log(`check-resolve-detection verde: ${CASOS.length} casos del banco de AP-064 sobre la derivación REAL de ${fuente} (no una copia) + ${CONTRATO.length} aserciones de la costura módulo↔stub (kill-switch por parámetro y por env).`);
+console.log(`check-resolve-detection verde: ${CASOS.length} casos del banco de AP-064 sobre la derivación REAL de ${fuente} (no una copia) + ${CONTRATO.length} aserciones de runtime ejecutando \`run\` contra un doble de la API (costura módulo↔stub, dedupe por ventana, destino fuera de alcance, issue virgen, 404 benigno de removeLabel y tope MAX — AP-069 cierra el residual (d) de AP-068).`);
