@@ -257,11 +257,21 @@ que DECLARASTE contra el estado real del issue citado y materializa la
 diferencia (marcador `<!-- resolve-cross-issue-materializado -->`; el arm
 entra por el guard serial como cualquier otro). Pero **puede no estar
 desplegado**: la GitHub App no puede pushear workflows (ADR-020), así que
-nació como parche pendiente de aplicación humana, y tú no puedes
-comprobarlo desde tu checkout (tu `watchdog.yml` es un stub que llama al
-reusable del central). No hay nada que consultar y nada que asumir: la
-regla operativa es una sola, **ejecuta la transición cross-issue tú
-mismo, primero**.
+su invocación nació como parche pendiente de aplicación humana, y tú no
+puedes comprobarlo desde tu checkout (tu `watchdog.yml` es un stub que
+llama al reusable del central). No hay nada que consultar y nada que
+asumir: la regla operativa es una sola, **ejecuta la transición
+cross-issue tú mismo, primero**.
+
+**Enmienda (2026-07-28, AP-068).** Lo que sigue pendiente de un humano es
+solo la INVOCACIÓN (31 líneas de `watchdog.yml`), no el belt: su cuerpo
+vive desde AP-068 en `vendored/scripts/resolve-cross-issue-failsafe.cjs`,
+que el graft sirve a tu workspace en cada run. Eso NO cambia la regla
+operativa de arriba —hasta que la invocación se aplique, el belt no corre
+y sigues sin red—, pero sí cambia quién puede arreglarlo: un agente. Si
+detectas que el belt dejó pasar una declaración tuya bien formada, el
+arreglo es un PR normal sobre ese módulo y su banco de casos
+(`scripts/check-resolve-detection.mjs`), no un parche pendiente.
 
 Y si el belt está vivo, tampoco te exime: solo materializa lo que tu
 prosa deja derivar con confianza. Es fail-open DELIBERADO —warning
