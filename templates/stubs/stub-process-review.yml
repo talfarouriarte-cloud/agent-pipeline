@@ -22,8 +22,16 @@ jobs:
       # la máquina que produjo el pin 50 de finplan, y otra vez el pin 20 de su
       # stub de process-review (AP-060: 2 ciclos con anuncios `autonomous-
       # decision` muertos entre el anuncio y el commit). Píneálos solo eligiendo
-      # otro valor a propósito, con anotación (motivo + AP); por debajo del
-      # default el reusable emite `::notice` + tabla en el job summary.
+      # otro valor a propósito, con anotación (motivo + AP y fecha). Y ojo desde
+      # AP-061: un pin POR DEBAJO del default **no rige** — el reusable toma
+      # `max(pin, default)`, anota el desenlace `[clamp→N]` y saca la tabla al
+      # job summary. El canal del aviso sigue al desenlace: un clamp es
+      # operativa normal y sale por `::info` (el log del step, no el resumen
+      # del run); no busques ahí un `::notice`. Para que un presupuesto MENOR
+      # rija de verdad (control de coste deliberado) hace falta
+      # `budget_pin_forzado: true`, y entonces la anotación dice `[pin forzado]`
+      # y SÍ sube a `::notice` — un presupuesto pre-lección corriendo de verdad
+      # se ve desde fuera. Sigue siendo legible quién decidió qué.
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       REVIEWER_GITHUB_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}

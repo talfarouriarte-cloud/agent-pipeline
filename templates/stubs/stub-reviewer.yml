@@ -24,13 +24,23 @@ jobs:
       # Reviewer sin veredicto + 2 intervenciones humanas. Sin línea = rige el
       # default del central, y las lecciones futuras llegan solas.
       #
-      # Si tu repo NECESITA pinearlos, la regla es: pin CON anotación que diga
-      # por qué ESTE repo pisa un input lesson-bearing (no solo por qué el valor
-      # es el que es) + referencia AP. Un pin sin anotación es un defecto POR
-      # DOCTRINA: nada lo verifica — el reusable recibe valores, nunca estos
-      # comentarios. Lo único que sí emite (`::notice` + job summary) es el aviso
-      # cuando recibe un lesson-bearing POR DEBAJO del default; igual o por
-      # encima le es invisible. Ver `MIGRATION.md` §4 para los límites exactos.
+      # Desde AP-061 (repesca finplan#1704) el aviso ya no es lo único que pasa:
+      # un pin POR DEBAJO del default **no rige** — el reusable toma
+      # `max(pin, default)` y anota el desenlace (`[clamp→N]`). Motivo: con solo
+      # el aviso de AP-052 la clase recurrió con otro parámetro y una línea más
+      # abajo (`timeout_minutes: 15` vs 22), y la sesión murió a los 12m45s
+      # emitiendo su propio `pin-divergente`. Un fix que hace VISIBLE la omisión
+      # sin PREVENIRLA es parcial.
+      #
+      # Si tu repo NECESITA de verdad MENOS presupuesto (control de coste
+      # deliberado), la palanca es `budget_pin_forzado: true` + el pin: honra el
+      # valor bajo tu responsabilidad y la anotación pasa a `[pin forzado]`. La
+      # regla de alta no cambia: pin CON anotación que diga por qué ESTE repo
+      # pisa un input lesson-bearing (no solo por qué el valor es el que es) +
+      # referencia AP y fecha. La anotación en sí nada la verifica — el reusable
+      # recibe valores, nunca estos comentarios; lo que sí es mecánico es el
+      # clamp. Un pin igual o por encima del default sigue siendo invisible.
+      # Ver `MIGRATION.md` §4 para los límites exactos.
       agent_branch_prefix: claude/
       review_context: ""
     secrets:

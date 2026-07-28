@@ -222,8 +222,43 @@ for (const f of Object.keys(onDisk)) {
 // actualizar las otras dos es ROJO, no un aviso que nadie lee.
 const LB_STEP_ENV = 'LESSON_BEARING';
 const LB_PINS_ENV = 'PINS_RECIBIDOS';
+// ── CLAMP de presupuesto (AP-061, repesca finplan#1704) ────────────────────
+// AP-052 hizo la divergencia pin↔default VISIBLE y la clase recurrió igual: el
+// Reviewer murió a los 12m45s sobre finplan#1704 emitiendo LITERAL su propio
+// aviso `pin-divergente: timeout_minutes=15 (default central: 22, AP-025)`. La
+// prevención es tomar `max(pin, default)` — y NO puede vivir en un step, porque
+// `timeout-minutes` es de nivel JOB y se resuelve antes de que corra ninguno.
+// Vive por tanto en la expresión de cada punto de uso, lo que convierte el
+// default en una CUARTA declaración. Misma doctrina que AP-052: cuatro copias
+// sin gate = deriva garantizada.
+//
+// Forma CANÓNICA exacta (una sola, para que el gate sea legible y no un
+// dialecto por fichero):
+//   (inputs.budget_pin_forzado && inputs.X) || (inputs.X >= D && inputs.X) || D
+// Semántica: forzado ⇒ pin · si no, pin ≥ default ⇒ pin · si no ⇒ default.
+const CLAMP_VALVULA = 'budget_pin_forzado';
+const clampCanonico = (name, def) => new RegExp(
+  `^\\(\\s*inputs\\.${CLAMP_VALVULA}\\s*&&\\s*inputs\\.${name}\\s*\\)` +
+  `\\s*\\|\\|\\s*\\(\\s*inputs\\.${name}\\s*>=\\s*${def}\\s*&&\\s*inputs\\.${name}\\s*\\)` +
+  `\\s*\\|\\|\\s*${def}$`
+);
 for (const f of Object.keys(onDisk)) {
   const doc = docs[f];
+  const rawWf = readFileSync(`${WFDIR}/${f}`, 'utf8');
+  // Cuerpo de cada `${{ … }}` del fichero. Las expresiones de Actions no pueden
+  // contener `}}`, así que el no-greedy es exacto.
+  //
+  // Las LÍNEAS DE COMENTARIO se retiran ANTES de matchear, y no «quedan fuera
+  // por construcción»: esto corre sobre el texto crudo, no sobre el AST, así
+  // que un `${{ … }}` escrito dentro de un `#` entraría en `exprs` igual. Sin
+  // el filtro, documentar la forma canónica en un comentario —justo lo que
+  // invita a hacer el mensaje de error del guard (a)+(b)— satisfaría al guard
+  // (e) con CERO puntos de uso clampados: el detector anti-inerte se quedaría
+  // inerte él mismo (clase wmcb#20). El criterio es «primer
+  // carácter no blanco es `#`»: un `#` a media línea puede ser contenido (una
+  // ancla `#L10`, un `Bash(gh api:*)`…), no un comentario.
+  const wfSinComentarios = rawWf.replace(/^[ \t]*#.*$/gm, '');
+  const exprs = [...wfSinComentarios.matchAll(/\$\{\{([\s\S]*?)\}\}/g)].map(m => m[1].trim());
   const wc = ((doc && doc.on) ?? (doc && doc[true])).workflow_call;
   const realDefaults = Object.fromEntries(Object.entries(wc.inputs || {})
     .map(([k, v]) => [k, v && Object.prototype.hasOwnProperty.call(v, 'default') ? v.default : undefined]));
@@ -298,6 +333,61 @@ for (const f of Object.keys(onDisk)) {
       errors.push(`${f}: \`${name}\` está en la tabla \`${LB_STEP_ENV}\` pero el mapa \`${LB_PINS_ENV}\` del step no le pasa \`inputs.${name}\` — el aviso nace inerte para ese input (clase wmcb#20)`);
     } else if (!envuelto) {
       errors.push(`${f}: \`${name}\` viaja al mapa \`${LB_PINS_ENV}\` con interpolación desnuda — usa \`\${{ toJSON(inputs.${name}) }}\`, o un input no numérico produce JSON inválido y el fail-open del step mata el aviso de TODOS los inputs (AP-052)`);
+    }
+
+    // ── Clamp de presupuesto (AP-061) ────────────────────────────────────
+    // Las letras son las de AP-061 §«El gate anti-deriva» y NO el orden de
+    // ejecución: (d) lleva `continue` y tiene que ir primero, porque los demás
+    // guards no tienen sentido sobre un default sin orden. Quien cite un guard
+    // desde el ADR (§Falsable, §Riesgos) tiene que aterrizar en el mismo sitio
+    // que nombra; una permutación entre las dos casas manda al lector al guard
+    // equivocado. Por la misma razón, los ORDINALES del linaje de la clase
+    // wmcb#20 («N-ésima aplicación») se llevan SOLO en el ADR, que
+    // es donde el 5-whys del Auditor los recorre: un contador replicado en dos
+    // casas deriva en cuanto se renombra un guard, y ya lo hizo una vez (dos
+    // guards reclamando ser la tercera, review de PR #164).
+    //
+    // (d) `max(pin, default)` solo está definido sobre un tipo ORDENADO. Un
+    //     lesson-bearing no numérico dejaría el clamp prometiendo una
+    //     prevención que no ejecuta — mecanismo inerte EN VERDE, que es la
+    //     clase que AP-052 vino a impedir un piso más arriba. ROJO, para que
+    //     quien declare el primero decida explícitamente su semántica.
+    if (!Number.isFinite(Number(realDefaults[name]))) {
+      errors.push(`${f}: \`${name}\` es lesson-bearing con default NO numérico (${JSON.stringify(realDefaults[name])}) — el clamp \`max(pin, default)\` no está definido sobre un tipo sin orden (AP-061); o el input deja de ser lesson-bearing, o se decide y gatea su semántica de clamp`);
+      continue;
+    }
+    // (c) La válvula tiene que existir: sin ella, el consumidor que quiere
+    //     legítimamente MENOS presupuesto pierde la palanca sin recambio. Es
+    //     el riesgo declarado de AP-061 y este input es su mitigación.
+    if (!(CLAMP_VALVULA in realDefaults) || realDefaults[CLAMP_VALVULA] === undefined) {
+      errors.push(`${f}: publica \`lesson_bearing\` pero no declara el input \`${CLAMP_VALVULA}\` con default — el clamp de AP-061 dejaría al consumidor sin válvula para un presupuesto menor deliberado`);
+    }
+    // (a)+(b) Fidelidad de la CUARTA declaración —forma canónica exacta con el
+    //     literal del default REAL, (a)— y prohibición de uso desnudo —(b)—.
+    //     Un solo recorrido las cubre porque son la misma disyunción:
+    //     Todo `${{ … }}` que toque el input o es el clamp canónico con el
+    //     literal del default REAL, o es la forma de diagnóstico
+    //     `toJSON(inputs.X)` — que debe llevar el pin CRUDO, porque es lo que
+    //     el aviso compara. Cualquier otra cosa es un punto de uso que se come
+    //     el pin sin clampear: exactamente cómo `timeout_minutes: 15` mató la
+    //     sesión de finplan#1704 con el aviso de AP-052 ya emitido.
+    const canon = clampCanonico(esc, String(realDefaults[name]));
+    const diag = new RegExp(`^toJSON\\(\\s*inputs\\.${esc}\\s*\\)$`);
+    const tocan = exprs.filter(x => new RegExp(`inputs\\.${esc}\\b`).test(x));
+    for (const x of tocan) {
+      if (canon.test(x) || diag.test(x)) continue;
+      // Elipsis explícita: un clamp con el literal rancio se corta justo por
+      // donde está el fallo, y sin marca el mensaje se lee como si la expresión
+      // terminara ahí (visto en el dry-run de la mutación 22→20).
+      const plano = x.replace(/\s+/g, ' ');
+      const corto = plano.length > 80 ? plano.slice(0, 80) + ' …' : plano;
+      errors.push(`${f}: punto de uso de \`${name}\` SIN clamp — \`\${{ ${corto} }}\`. Un input lesson-bearing se consume clampado: \`\${{ (inputs.${CLAMP_VALVULA} && inputs.${name}) || (inputs.${name} >= ${realDefaults[name]} && inputs.${name}) || ${realDefaults[name]} }}\` (AP-061; el pin crudo solo viaja al mapa \`${LB_PINS_ENV}\` como \`toJSON(inputs.${name})\`)`);
+    }
+    // (e) Anti-inerte (clase wmcb#20):
+    //     una tabla lesson-bearing cuyo input no se consume clampado en NINGÚN
+    //     sitio es un default que se declara pero no se impone.
+    if (!tocan.some(x => canon.test(x))) {
+      errors.push(`${f}: \`${name}\` es lesson-bearing pero NINGÚN punto de uso lleva el clamp canónico de AP-061 — el default se declara y no se impone; revisa que el literal del clamp sea \`${realDefaults[name]}\``);
     }
   }
 }
