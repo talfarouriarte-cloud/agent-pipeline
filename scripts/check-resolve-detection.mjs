@@ -20,9 +20,17 @@
 // Verde: exit 0. Rojo: una regex cambió y el banco lo nota.
 import { existsSync, readFileSync } from 'fs';
 
+// Orden deliberado: el WORKFLOW primero, el parche como respaldo (ronda 3,
+// pregunta abierta 1). El estado APLICADO es el que manda: si el `.patch` se
+// conserva como artefacto de provenance después de aplicarlo, con el orden
+// inverso el banco seguiría juzgando el parche —el fichero que ya NO es el
+// código vivo— y saldría verde mientras `watchdog.yml` derivaba; el rojo
+// aparecería en `check-patches` y aquí no, que es el peor sitio para no verlo.
+// Mientras el step siga pendiente, `watchdog.yml` no contiene las regexes, la
+// extracción queda incompleta y cae al parche sola.
 const FUENTES = [
-  'docs/patches/AP-064-watchdog-resolve-cross-issue.patch',
   '.github/workflows/watchdog.yml',
+  'docs/patches/AP-064-watchdog-resolve-cross-issue.patch',
 ];
 const NOMBRES = ['DES_STALL', 'ARM', 'AMBIGUO', 'FUTURO', 'ROL'];
 
@@ -120,6 +128,18 @@ const CASOS = [
   // marcador entre backticks y habla de re-armar #1694, NO es del resolver.
   ['(h) review que CITA el marcador de rol', [{ host: 1696, body: 'El belt exige `<!-- watchdog-rol: architect-resolve -->`; sin él no materializa el re-arm de #1694.' }], {}, []],
   ['(i) marcador de rol dentro de un bloque cercado', [{ host: 1696, body: 'Así se emite:\n```\n<!-- watchdog-rol: architect-resolve -->\n```\nY re-armé #1694.' }], {}, []],
+  // Ronda 3, 🟡 3 — CASO DE CONGELACIÓN, no de corrección. El guard de
+  // identidad resuelve QUIÉN habla, no DE QUIÉN es la acción: el resolver
+  // NARRANDO en pasado un arm ajeno se deriva como declaración propia
+  // (`ARM` casa «re-armado»; `AMBIGUO` no casa —«quedó» no es «queda»—; y
+  // `FUTURO` tampoco, porque es pretérito, que es la forma que el mandato
+  // PIDE). Si ese arm ajeno cae fuera de la ventana del job, el belt re-arma:
+  // es el ÚNICO frente donde no cae del lado seguro (fail-activo), acotado por
+  // el guard serial y por MAX=3. Se acepta declarado —residual (f) de AP-064—
+  // a cambio de no meter heurística de atribución en prosa libre. El esperado
+  // de abajo es el comportamiento ACTUAL: si alguien lo cambia, que sea
+  // mirando este caso y no descubriéndolo en producción.
+  ['(j) NARRACIÓN de un arm ajeno (fail-activo declarado)', [cmt('El eslabón 2/3 (#1695) ya quedó re-armado por epic-merge al mergear.')], { 1695: { desStall: false, arm: true } }, []],
 ];
 
 const fallos = [];

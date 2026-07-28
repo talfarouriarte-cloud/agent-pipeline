@@ -13,7 +13,7 @@
 # en `ci.yml`— y está VIVO hoy, sin humano. Al aplicar este parche no hay nada
 # que desdoblar: el gate sigue siendo uno solo.
 #
-# verificado-contra: a27743e5fd4877c1627dba9467751f6cc735e890
+# verificado-contra: cc3c4403d0a24f83862323fd3f9354b77b6bc3f1
 # (`git apply --check` limpio contra ese árbol; `scripts/check-patches.mjs` lo
 #  revalida en cada corrida de CI y se pone ROJO si el parche DERIVA.)
 diff --git a/.github/workflows/watchdog.yml b/.github/workflows/watchdog.yml

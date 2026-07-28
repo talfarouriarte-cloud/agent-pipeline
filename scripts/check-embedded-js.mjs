@@ -65,7 +65,10 @@ if (errors.length) {
   errors.forEach(e => console.error('  - ' + e));
   process.exit(1);
 }
-console.log(`check-embedded-js verde: ${checked} scripts embebidos parsean.`);
+// El «verde» de este paso NO se imprime aquí: el paso incluye los dos checks
+// colgados abajo, y anunciarlo antes de correrlos deja el primer renglón de un
+// run ROJO afirmando verde (🔵 5 de la ronda 3 de la review de AP-064). Se
+// imprime al final, cuando ya es cierto.
 
 // ── Piggyback deliberado (2026-07-28, 🔵 6 de la ronda 2 de la review de
 // AP-064) ────────────────────────────────────────────────────────────────────
@@ -87,3 +90,5 @@ for (const s of ['check-patches.mjs', 'check-resolve-detection.mjs']) {
   try { execFileSync('node', [`scripts/${s}`], { stdio: 'inherit' }); }
   catch { process.exit(1); }   // el exit code se propaga: el rojo de esos checks es el rojo de este paso
 }
+
+console.log(`check-embedded-js verde: ${checked} scripts embebidos parsean.`);
