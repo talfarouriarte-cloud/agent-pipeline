@@ -85,6 +85,16 @@ on:
       lookback_min:
         type: number
         default: 45
+      automerge:
+        description: >-
+          Régimen de merge del repo (espejo del input homónimo de epic-merge).
+          Con `false` (central, AP-012: merge humano), `LGTM`+gates verdes+PR
+          abierto es el estado TERMINAL POR DISEÑO — el detector de turno NO
+          lo declara `turno-epic-merge-zombie` (AP-058: 5 sesiones de resolve
+          en #157 re-concluyendo «SIN ACCIÓN», oscilador autoalimentado
+          comentario→issue_comment→workflow_run→tick).
+        type: boolean
+        default: true
       skip_labels:
         description: >-
           Labels (CSV) que el detector EXCLUYE de la vigilancia. El default es
@@ -175,6 +185,7 @@ jobs:
           IN_EXTRA_WFS: ${{ inputs.extra_pipeline_workflows }}
           IN_LOOKBACK_MIN: ${{ inputs.lookback_min }}
           IN_SKIP_LABELS: ${{ inputs.skip_labels }}
+          IN_AUTOMERGE: ${{ inputs.automerge }}
           IN_DEFAULT_BRANCH: ${{ inputs.default_branch }}
         with:
           script: |
@@ -795,6 +806,13 @@ jobs:
                     await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['needs-review'] });
                     return false;
                   };
+                } else if (process.env.IN_AUTOMERGE === 'false') {
+                  // AP-058: con merge humano (automerge=false), este estado es
+                  // la sala de espera del propietario, no un zombi — declarar
+                  // anomalía aquí convoca un resolve para re-concluir «SIN
+                  // ACCIÓN» y su comentario fabrica el siguiente tick.
+                  core.notice(`PR #${pr.number}: LGTM+gates verdes con automerge=false — terminal por diseño (gate humano); sin anomalía.`);
+                  continue;
                 } else {
                   why = 'LGTM emitido y sin merge (epic-merge es workflow_run: sin relanzamiento mecánico)';
                 }
@@ -855,7 +873,21 @@ jobs:
                 continue;
               }
 
-              if (!fix) { anomalies.push({ type: `turno-${turno}-zombie`, number: pr.number, why }); continue; }
+              if (!fix) {
+                // Dedupe por EPISODIO (AP-058): si ya hay una declaración de
+                // esta clase posterior al último veredicto, el estado no ha
+                // cambiado — re-emitirla reconvoca al resolve sobre cero delta
+                // y su comentario dispara el siguiente tick (autoalimentación
+                // medida en central#157, 4 de 4). Un head nuevo trae veredicto
+                // nuevo ⇒ el ancla se renueva sola. Página 1 de comentarios
+                // (límite de casa, AP-054 §Paginación).
+                if (turno === 'epic-merge' && lastVerdict
+                    && hcs.some(c => (c.body || '').includes(`turno-${turno}-zombie`)
+                      && new Date(c.created_at) > new Date(lastVerdict.created_at))) {
+                  core.notice(`PR #${pr.number}: turno-${turno}-zombie ya declarado para este episodio de veredicto; sin re-emisión.`);
+                  continue;
+                }
+                anomalies.push({ type: `turno-${turno}-zombie`, number: pr.number, why }); continue; }
               if (relaunches >= 2) {
                 anomalies.push({ type: `turno-${turno}-zombie-persistent`, number: pr.number, why,
                   note: 'relanzamiento mecánico agotado (cap 2)' });
