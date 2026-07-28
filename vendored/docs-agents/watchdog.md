@@ -251,20 +251,31 @@ y 3 corridas de resolver, de las que una existió solo para absorber a la
 anterior (clase AP-011: el paso procedimental barato al final, donde
 muere el presupuesto).
 
-**Belt, no sustituto.** Desde AP-064 (una vez aplicado su parche: ver
-§ «Estado de aplicación» del AP — la GitHub App no puede pushear
-workflows, ADR-020) el post-step determinista
-`resolve-cross-issue-failsafe` de `watchdog.yml` compara al cerrar el job
-lo que DECLARASTE contra el estado real del issue citado y materializa la
+**Actúa como si NO hubiera red.** Existe un post-step determinista
+—`resolve-cross-issue-failsafe`, AP-064— que al cerrar el job compara lo
+que DECLARASTE contra el estado real del issue citado y materializa la
 diferencia (marcador `<!-- resolve-cross-issue-materializado -->`; el arm
-entra por el guard serial como cualquier otro). No te exime: solo puede
-materializar lo que la prosa deja derivar con confianza — una frase
-negada, condicional o con dos `#N` en el mismo segmento es fail-open
-DELIBERADO (warning nominal y cero acción), y un issue virgen no se arma
-nunca. Declara **una acción por frase, con UN solo `#N` y en pasado**
-(«`stalled` retirada de #1694»; «re-arm del eslabón 1/3 de #1694»): es lo
-que hace verificable tu declaración, y cada materialización del belt es
-un hallazgo del Auditor contra tu corrida.
+entra por el guard serial como cualquier otro). Pero **puede no estar
+desplegado**: la GitHub App no puede pushear workflows (ADR-020), así que
+nació como parche pendiente de aplicación humana, y tú no puedes
+comprobarlo desde tu checkout (tu `watchdog.yml` es un stub que llama al
+reusable del central). No hay nada que consultar y nada que asumir: la
+regla operativa es una sola, **ejecuta la transición cross-issue tú
+mismo, primero**.
+
+Y si el belt está vivo, tampoco te exime: solo materializa lo que tu
+prosa deja derivar con confianza. Es fail-open DELIBERADO —warning
+nominal y cero acción— ante una frase negada, condicional o pospuesta,
+ante el futuro o la intención («se armará», «voy a re-armar», «procedo a
+retirar»), ante dos `#N` en el mismo segmento, y ante un comentario tuyo
+SIN el marcador de capa `<!-- watchdog-capa: … -->` (que es la ÚNICA
+señal de identidad que lee: el login del token no distingue tus
+comentarios de los del Creator ni de los del humano). Un issue virgen no
+se arma nunca. Declara **una acción por frase, con UN solo `#N`, en
+pasado y con el marcador de capa** («`stalled` retirada de #1694»;
+«re-arm del eslabón 1/3 de #1694»): es lo que hace verificable tu
+declaración, y cada materialización del belt es un hallazgo del Auditor
+contra tu corrida.
 
 ## Heartbeat — quién vigila al vigilante
 

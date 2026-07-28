@@ -1,8 +1,39 @@
+# AP-064 — post-step `resolve-cross-issue-failsafe` de la etapa `architect` de
+# `watchdog.yml` + su consumidor de CI (`check-patches`, hallazgo 🟡 6 de la review).
+#
+# PENDIENTE DE APLICACIÓN HUMANA: la GitHub App de claude-code-action no tiene
+# permiso `workflows` (ADR-020), luego este cambio no se puede pushear desde una
+# sesión de agente. Lo aplica un humano con:
+#     git apply docs/patches/AP-064-watchdog-resolve-cross-issue.patch
+#
+# verificado-contra: ca904fcf7ee17aa12ed74d410a72834cefc32b74
+# (`git apply --check` limpio contra ese commit; `scripts/check-patches.mjs` lo
+#  revalida en cada corrida de CI y se pone ROJO si el parche DERIVA.)
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 6ed24ac..0c4b134 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -68,6 +68,15 @@ jobs:
+       # y efecto en runtime = silencio.
+       - name: check-hooks
+         run: node scripts/check-hooks.mjs
++      # Consumidor del pendiente humano (2026-07-28, 🟡 6 de la review de
++      # AP-064): un cambio en `.github/workflows/**` producido por un agente no
++      # se puede pushear (la App no tiene `workflows`, ADR-020) y viaja como
++      # `docs/patches/*.patch`. Sin este check, ese pendiente vivía en la memoria
++      # de un humano Y se rompía en SILENCIO en cuanto el fichero anclado se
++      # tocaba cerca. Rojo solo si un parche DERIVÓ (ni aplica ni reverse-aplica);
++      # un parche pendiente es un `::warning` nominal, no un gate.
++      - name: check-patches
++        run: node scripts/check-patches.mjs
+ 
+       - name: Marcar ci-verde
+         if: github.event_name == 'pull_request'
 diff --git a/.github/workflows/watchdog.yml b/.github/workflows/watchdog.yml
-index 369b9f3..b3f00a5 100644
+index 369b9f3..999a983 100644
 --- a/.github/workflows/watchdog.yml
 +++ b/.github/workflows/watchdog.yml
-@@ -1447,6 +1447,161 @@ jobs:
+@@ -1447,6 +1447,221 @@ jobs:
                core.warning(`#${n}: ping-creator sin mención de arm — arm materializado.`);
              }
  
@@ -47,6 +78,9 @@ index 369b9f3..b3f00a5 100644
 +            const CAPA = `<!-- watchdog-capa: ${context.eventName} -->`;
 +            const SKIP_LABELS = (process.env.IN_SKIP_LABELS || '').split(',').map(x => x.trim()).filter(Boolean);
 +            const ARM_MARKERS = ['arm-de-cola', 'epic-auto-launch', 'epic-partial-relaunch', 'watchdog-rearm'];
++            // Los post-steps DETERMINISTAS de esta misma capa también llevan el
++            // marcador `watchdog-capa:`; su prosa no es una declaración del rol.
++            const OTROS_BELTS = ['ping-creator-materializado', 'cierre-materializado-por-estado', 'creator-escalated-materializado', 'creator-muerto-draft-materializado-ready'];
 +            const MAX = 3;   // tope duro de materializaciones por corrida
 +
 +            // ── Frescura (lección #180): la ventana es la VIDA DE ESTE JOB, no
@@ -63,40 +97,82 @@ index 369b9f3..b3f00a5 100644
 +            }
 +            if (!since) since = new Date(Date.now() - 40 * 60 * 1000).toISOString();
 +
-+            // Identidad del PAT: los comentarios de la sesión del resolver
-+            // salen con ESTA autoría (el stage corre con REVIEWER_GITHUB_TOKEN).
-+            let patLogin = null;
-+            try { patLogin = (await github.rest.users.getAuthenticated()).data.login; }
-+            catch (e) { core.warning(`resolve-cross-issue: identidad del PAT ilegible (${e.message}) — solo se leerán comentarios con marcador de capa.`); }
-+
++            // Barrido PAGINADO: `since` acota por tiempo, no por volumen. Una
++            // sola página devolvería los 100 comentarios MÁS ANTIGUOS de la
++            // ventana (direction: 'asc') y la declaración del resolver —la más
++            // reciente por construcción— se caería en silencio. El tope de
++            // páginas existe para no barrer sin límite un repo ruidoso, y al
++            // alcanzarlo el fail-open es ANUNCIADO, jamás mudo (§5 del AP: en
++            // los tres frentes hay `::warning` nominal y cero acción).
++            const MAX_PAGS = 10;
 +            let frescos = [];
 +            try {
-+              const { data } = await github.rest.issues.listCommentsForRepo({
++              const it = github.paginate.iterator(github.rest.issues.listCommentsForRepo, {
 +                owner, repo, since, per_page: 100, sort: 'created', direction: 'asc' });
-+              frescos = data;
++              let pags = 0;
++              for await (const { data } of it) {
++                frescos.push(...data);
++                if (++pags >= MAX_PAGS) {
++                  core.warning(`resolve-cross-issue: la ventana trae más de ${MAX_PAGS * 100} comentarios — barrido TRUNCADO; una declaración posterior a ese corte no se verá en esta corrida (la recoge el tick siguiente por \`stalled\` residual, AP-038).`);
++                  break;
++                }
++              }
 +            } catch (e) {
 +              core.warning(`resolve-cross-issue: barrido de comentarios frescos falló (${e.message}) — sin actuar.`);
 +              return;
 +            }
++            // `since` de listCommentsForRepo filtra por `updated_at`, no por
++            // `created_at`: una EDICIÓN posterior (un typo corregido horas más
++            // tarde) reinyectaría la declaración en la ventana de otro tick, con
++            // el arm de la primera vez ya fuera de ventana ⇒ doble arm. El
++            // dedupe del destino se hace por `created_at`; el origen se filtra
++            // igual para que las dos puntas midan lo mismo — «declaración de
++            // ESTA sesión» es cuándo se ESCRIBIÓ, no cuándo se retocó.
++            frescos = frescos.filter(c => (c.created_at || '') >= since);
 +
 +            // ── Vocabulario ANCLADO de declaración (jamás substring suelto) ──
 +            // Solo dos acciones, las únicas que el rol declara cross-issue:
 +            // retirada de `stalled` y re-arm. Cualquier otra prosa se ignora.
-+            const DES_STALL = /(?:retir|quit|elimin|sac)\w*\s+(?:la\s+|el\s+)?(?:label\s+|etiqueta\s+)?[`'"]?stalled[`'"]?|[`'"]?stalled[`'"]?\s+(?:ya\s+)?(?:retirad|quitad|eliminad)[oa]s?|\bdes-?stall\w*/i;
++            // Ojo con `\w` en español: `á` NO es `\w` en JS, luego `retir\w*` se
++            // corta ANTES de la tilde y «Retiré la label `stalled`» —pretérito, la
++            // forma que el mandato PIDE— no casaba. La clase de caracteres incluye
++            // las vocales acentuadas y la ñ a propósito.
++            const DES_STALL = /(?:retir|quit|elimin|sac)[\wáéíóúüñ]*\s+(?:la\s+|el\s+)?(?:label\s+|etiqueta\s+)?[`'"]?stalled[`'"]?|[`'"]?stalled[`'"]?\s+(?:ya\s+)?(?:retirad|quitad|eliminad)[oa]s?|\bdes-?stall\w*/i;
 +            const ARM = /\bre-?arm\w*|\barmad[oa]s?\b|\barm(?:o|é|a|ar|ado)\b|\brelanzamiento\b|\brelanz(?:o|é|ar|ado)\b/i;
 +            // Polaridad y modo: la clase «regex polarity blindness» (central#119)
 +            // ya mordió al INSTRUMENTO DE MEDIDA de la casa. Una frase que niega,
 +            // condiciona o pospone la acción NO es una declaración de ejecución:
 +            // fail-open (no actuar + warning nominal), nunca materializar.
 +            const AMBIGUO = /\b(?:no|ni|sin|nunca|jam[áa]s|tampoco|pendiente|falta|faltan|queda|quedan|habr[íi]a|deber[íi]a|deber[áa]|hay que|convendr[íi]a|proceder[íi]a|tocar[íi]a|si|cuando|antes de|toca)\b/i;
++            // Cuarta cara de la misma clase: el FUTURO y la INTENCIÓN anuncian
++            // la acción, no la declaran ejecutada («se armará al mergear»,
++            // «voy a re-armar #N», «procedo a retirar `stalled`»). Se ancla a
++            // los MISMOS verbos de acción en vez de a un futuro genérico
++            // (`\w+ar[áé]`), que confundiría el pretérito «retiré» —una
++            // declaración de ejecución legítima— con un anuncio.
++            // El cierre es un lookahead, NO `\b`: tras `á` no hay `\b` posible (ni
++            // `á` ni el espacio siguiente son `\w`), así que un `\b` final haría la
++            // rama del futuro sintético inerte — la misma trampa que arriba.
++            const FUTURO = /\b(?:voy|vas|va|vamos|van|paso|pasamos|procedo|procedemos)\s+a\s+(?:\w+\s+){0,2}(?:re-?)?(?:arm|retir|quit|elimin|sac|relanz)ar\b|\b(?:re-?)?(?:arm|retir|quit|elimin|sac|relanz)ar(?:[áé](?:[ns]|is)?|emos)(?![a-záéíóúüñ])/i;
 +
 +            // issue destino → acciones declaradas (unión de todos los segmentos)
 +            const decl = {};
 +            for (const c of frescos) {
 +              const raw = c.body || '';
 +              if (raw.includes(MARK)) continue;                      // nuestro propio rastro
-+              const esResolver = /<!--\s*watchdog-capa:/.test(raw) || (!!patLogin && c.user && c.user.login === patLogin);
-+              if (!esResolver) continue;
++              // Identidad: EXCLUSIVAMENTE el marcador de capa. El login del PAT
++              // NO identifica al resolver — `REVIEWER_GITHUB_TOKEN` es el mismo
++              // secreto en los cinco reusables (el Creator comenta con él) y es
++              // además la cuenta del propietario, luego una unión por login leería
++              // como «declaración del resolver» cualquier prosa PAT-autorada del
++              // repo en la ventana, incluida la humana: el belt podría materializar
++              // un arm que el resolver nunca escribió (crear alcance — justo lo que
++              // AP-064 declara imposible). El marcador es obligatorio en CADA
++              // comentario del rol por su propio prompt, así que el camino primario
++              // no pierde nada; si el resolver lo omite, el belt queda MUDO, que es
++              // la doctrina fail-open de la casa y el residual (c) del AP.
++              if (!/<!--\s*watchdog-capa:/.test(raw)) continue;
++              if (OTROS_BELTS.some(m => raw.includes(m))) continue;   // rastro de post-steps hermanos de la misma capa, no prosa del resolver
 +              const host = Number((c.issue_url || '').split('/').pop());
 +              if (!host) continue;
 +              const prosa = raw.replace(/```[\s\S]*?```/g, ' ').replace(/<!--[\s\S]*?-->/g, ' ');
@@ -106,7 +182,8 @@ index 369b9f3..b3f00a5 100644
 +                if (!desStall && !arm) continue;
 +                const refs = [...new Set([...seg.matchAll(/(?:^|[\s(\[,;:«"'])#(\d+)\b/g)].map(m => Number(m[1])))].filter(n => n !== host);
 +                if (!refs.length) continue;                          // declaración in-thread: no es esta clase
-+                if (AMBIGUO.test(seg)) { core.warning(`resolve-cross-issue: #${host} declara una acción sobre #${refs.join(', #')} en una frase negada/condicional — no se deriva el par issue→acción; fail-open, sin actuar.`); continue; }
++                const modo = AMBIGUO.test(seg) ? 'negada/condicional/pospuesta' : (FUTURO.test(seg) ? 'en futuro o de intención (anuncia la acción, no la declara ejecutada)' : null);
++                if (modo) { core.warning(`resolve-cross-issue: #${host} declara una acción sobre #${refs.join(', #')} en una frase ${modo} — no se deriva el par issue→acción; fail-open, sin actuar.`); continue; }
 +                if (refs.length > 1) { core.warning(`resolve-cross-issue: #${host} cita ${refs.length} issues (#${refs.join(', #')}) en el mismo segmento — no se puede atribuir la acción; fail-open, sin actuar.`); continue; }
 +                const n = refs[0];
 +                const d = decl[n] || (decl[n] = { desStall: false, arm: false, host, url: c.html_url });
@@ -146,9 +223,23 @@ index 369b9f3..b3f00a5 100644
 +              if (d.arm && virgen) core.warning(`resolve-cross-issue: #${n} no tiene ningún @claude previo (issue virgen) — prohibición absoluta del rol (watchdog.md § Prohibiciones); no se arma.`);
 +              if (!faltaDesStall && !faltaArm) { core.info(`resolve-cross-issue: #${n} — lo declarado en #${d.host} ya está materializado (stalled: ${labels.includes('stalled') ? 'presente' : 'ausente'}; arm: ${armado ? 'posteado' : 'no requerido'}).`); continue; }
 +
-+              if (faltaDesStall) await github.rest.issues.removeLabel({ owner, repo, issue_number: n, name: 'stalled' }).catch(() => {});
++              // El comentario que sigue afirma un ESTADO: solo puede componerse
++              // con lo que de verdad se materializó. Tragar el fallo de
++              // removeLabel y afirmar la retirada igualmente reproduciría DENTRO
++              // del belt la clase exacta que AP-064 existe para cerrar (prosa que
++              // afirma un estado no verificado) y le dejaría al Auditor un rastro
++              // falso. Un 404 sí es benigno: la label ya no está ⇒ estado deseado.
++              let desStallOk = false;
++              if (faltaDesStall) {
++                try { await github.rest.issues.removeLabel({ owner, repo, issue_number: n, name: 'stalled' }); desStallOk = true; }
++                catch (e) {
++                  if (e.status === 404) { desStallOk = true; core.info(`resolve-cross-issue: #${n} — \`stalled\` ya no estaba al retirarla (carrera con el resolver vivo); estado deseado alcanzado.`); }
++                  else { core.warning(`resolve-cross-issue: #${n} — removeLabel('stalled') falló (${e.message}); NO se afirma la retirada. Lo recoge el tick siguiente por \`stalled\` residual (AP-038).`); }
++                }
++              }
++              if (!desStallOk && !faltaArm) { continue; }   // nada materializado: ni comentario ni marcador (que dedupearía el reintento)
 +              const detalle = [
-+                faltaDesStall ? '`stalled` retirada por estado' : null,
++                desStallOk ? '`stalled` retirada por estado' : null,
 +                faltaArm ? 'arm materializado (entra por el guard serial como cualquier otro: si la serie está ocupada, se encola)' : null,
 +              ].filter(Boolean).join(' · ');
 +              const cita = `el resolver del watchdog DECLARÓ en #${d.host} (${d.url}) una transición sobre ESTE issue y su sesión terminó sin ejecutarla`;
