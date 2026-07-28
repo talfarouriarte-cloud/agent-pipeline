@@ -121,6 +121,18 @@
     "permissions_required": {
       "contents": "read",
       "issues": "write"
+    },
+    "lesson_bearing": {
+      "process_max_turns": {
+        "default": 80,
+        "ap": "AP-060",
+        "leccion": "linaje 30 → 60 (2026-07-09, ADR-212) → 80 (AP-060): el sweep de anuncios pendientes amplía el mandato del paso 6 con lecturas de auditorías previas, verificación de árbol y hasta 2 retomadas con integridad post-commit; mandato y presupuesto se mueven en el mismo cambio"
+      },
+      "timeout_minutes": {
+        "default": 35,
+        "ap": "AP-060",
+        "leccion": "finplan#1700 — los pasos 1-5 consumían los 20 min ENTEROS (anuncio a 19.8 min del arranque) y el commit del paso 6 corría con cero headroom: 2 ciclos con anuncios `autonomous-decision` jamás commiteados (repesca finplan#1703)"
+      }
     }
   },
   "reviewer.yml": {

@@ -33,11 +33,36 @@ on:
         type: string
         default: claude-opus-5
       process_max_turns:
+        # LESSON-BEARING (AP-052): este default NO es una preferencia de
+        # instancia — es una lección aprendida. Si lo cambias, actualiza la tabla
+        # del step «Divergencia pin↔default» (abajo) y el bloque `lesson_bearing`
+        # de templates/workflow-contracts.json EN EL MISMO PR: check-contracts
+        # exige fidelidad de las tres declaraciones.
+        #
+        # 80 y no 60 (AP-060). Linaje: 30 → 60 el 2026-07-09 al entrar el loop
+        # de skills (ADR-212), tras morir en `error_max_turns` el run inaugural.
+        # 60 → 80 al entrar el SWEEP de anuncios pendientes al paso 6 (AP-060),
+        # que añade lecturas de las auditorías previas, verificación de árbol y
+        # hasta 2 retomadas con su integridad post-commit. Regla del pipeline-map
+        # (failure class mandate/budget drift): al ampliar un mandato, ampliar
+        # herramientas Y presupuestos en el mismo cambio. Sólo se paga si se usa.
         type: number
-        default: 60
+        default: 80
       timeout_minutes:
+        # LESSON-BEARING (AP-052) — ver nota de `process_max_turns`.
+        #
+        # 35 y no 20 (AP-060, repesca finplan#1703): 20 era el ÚNICO presupuesto
+        # que NUNCA se auditó mientras el paso 6 crecía (publicar-antes-de-
+        # commitear #1258 + integridad post-commit + evaluación de reverts).
+        # Medido en el ciclo aud. finplan#1700: el run arrancó ~01:17Z y publicó
+        # el anuncio `autonomous-decision` a las 01:36:50Z — 19.8 min de un
+        # presupuesto de 20, o sea que los pasos 1-5 lo consumían ENTERO y el
+        # trabajo de commit del paso 6 corría con cero headroom. Los dos replaces
+        # anunciados jamás se commitearon. 35 = ~20 (medido, pasos 1-5) + ~8
+        # (commits Git Data + integridad + edición de comentario) + ~7 (sweep).
+        # A diferencia del bump de turns, éste ataca la causa MEDIDA.
         type: number
-        default: 20
+        default: 35
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
@@ -87,6 +112,85 @@ jobs:
             echo "done=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # ── Divergencia pin↔default (AP-052; primer sujeto fuera de reviewer.yml) ─
+      # AP-052 dejó este step declarado como extensión MECÁNICA a los demás
+      # reusables, pero sin sujeto: «hoy ningún input de esos reusables tiene
+      # lección declarada, así que sería un mecanismo sin sujeto». AP-060 crea el
+      # sujeto — y con él la trampa que AP-052 modela: el stub de finplan pinea
+      # `timeout_minutes: 20` (fichero congelado, territorio HUMANO por ADR-020),
+      # que es EXACTAMENTE el valor pre-lección que este AP abandona. Sin este
+      # step, subir el default a 35 en el central es un fix desplegado que no rige
+      # en el consumidor donde se midió el fallo, y sin dejar rastro legible: la
+      # máquina finplan#1674, reproducida.
+      #
+      # Determinista, cero LLM, cero coste marginal, cero labels. `continue-on-
+      # error` + try/catch ⇒ fail-open total: el aviso jamás puede impedir una
+      # revisión de proceso (un `if:` sin función de estado implica `success()`,
+      # así que un throw aquí saltaría la sesión y los post-steps).
+      - name: Divergencia pin↔default (inputs con lección AP — AP-052)
+        id: pindiv
+        if: steps.idem.outputs.done != 'true'
+        continue-on-error: true
+        uses: actions/github-script@v7
+        env:
+          LESSON_BEARING: |
+            [
+              {"input": "process_max_turns", "default": 80, "ap": "AP-060", "leccion": "finplan#1700 — el sweep de anuncios pendientes amplía el mandato del paso 6; presupuesto y mandato se mueven juntos"},
+              {"input": "timeout_minutes",   "default": 35, "ap": "AP-060", "leccion": "finplan#1700 — los pasos 1-5 consumían los 20 min ENTEROS (anuncio a 19.8 min) y el commit del paso 6 corría con cero headroom"}
+            ]
+          # `toJSON()` y no interpolación desnuda: emite `35` para un number y
+          # `"claude-fable-5"` para un string. Con la interpolación a pelo, el
+          # primer input lesson-bearing NO numérico produciría JSON inválido, el
+          # `JSON.parse` de abajo lanzaría y el catch dejaría el aviso inerte para
+          # TODOS los inputs del reusable. `check-contracts` exige esta forma.
+          PINS_RECIBIDOS: |
+            {
+              "process_max_turns": ${{ toJSON(inputs.process_max_turns) }},
+              "timeout_minutes": ${{ toJSON(inputs.timeout_minutes) }}
+            }
+        with:
+          script: |
+            try {
+              const tabla = JSON.parse(process.env.LESSON_BEARING || '[]');
+              const pins = JSON.parse(process.env.PINS_RECIBIDOS || '{}');
+              const div = [];
+              for (const e of tabla) {
+                const got = pins[e.input];
+                if (got === undefined || got === null || got === '') continue;
+                const nGot = Number(got), nDef = Number(e.default);
+                // Numérico ⇒ solo POR DEBAJO diverge: un pin por encima del
+                // default es sobre-aprovisionamiento deliberado, no pérdida de
+                // la lección (acota falsos positivos). No numérico ⇒ distinto.
+                const esNum = Number.isFinite(nGot) && Number.isFinite(nDef);
+                const diverge = esNum ? nGot < nDef : String(got) !== String(e.default);
+                if (diverge) div.push({ ...e, recibido: got });
+              }
+              if (!div.length) {
+                core.info('AP-052: sin divergencia pin↔default en los inputs lesson-bearing.');
+                core.setOutput('linea', '');
+                return;
+              }
+              // Formato fijo (lo cita el 5-whys del Auditor y lo reusa el
+              // post-step): `input=<recibido> (default central: <def>, <AP>)`.
+              const linea = 'pin-divergente: ' + div
+                .map(d => `${d.input}=${d.recibido} (default central: ${d.default}, ${d.ap})`)
+                .join('; ');
+              core.notice(`AP-052 · ${linea} — el stub de este repo pisa un default que el central corrigió por lección aprendida; el fix del central NO rige aquí. Revisa el \`with:\` del stub (territorio HUMANO, ADR-020).`);
+              await core.summary
+                .addHeading('Divergencia pin↔default (AP-052)', 3)
+                .addRaw(`El stub de este repo pinea ${div.length} input(s) *lesson-bearing* por debajo del default del central. El fix desplegado en el central **no rige** en este consumidor:`)
+                .addTable([
+                  [{ data: 'Input', header: true }, { data: 'Pin del stub', header: true }, { data: 'Default central', header: true }, { data: 'AP', header: true }, { data: 'Lección', header: true }],
+                  ...div.map(d => [d.input, String(d.recibido), String(d.default), d.ap, d.leccion || '']),
+                ])
+                .addRaw('Los stubs son territorio humano (ADR-020): ningún agente los edita. Pinear un input con default central exige anotación (motivo + referencia AP) — ver `MIGRATION.md` §A5.')
+                .write();
+              core.setOutput('linea', linea);
+            } catch (e) {
+              // Fail-open: sin aviso, pero la revisión sigue. Nunca al revés.
+              core.warning(`AP-052: comparación pin↔default no evaluable (${e.message}) — se continúa sin aviso.`);
+            }
+
       - name: Run process review
         if: steps.idem.outputs.done != 'true'
         uses: anthropics/claude-code-action@v1
@@ -104,12 +208,10 @@ jobs:
           claude_args: |
             --model ${{ inputs.process_model }}
             --fallback-model ${{ inputs.process_fallback_model }}
-            # 60 desde 2026-07-09 (era 30): el mandato del loop de skills
-            # (ADR-212) añadió lecturas + commits Git Data; el run inaugural
-            # murió en error_max_turns tras completar lo esencial. Regla
-            # (pipeline-map, failure class mandate/toolbox-budget drift):
-            # al ampliar un mandato, ampliar herramientas Y presupuestos
-            # en el mismo cambio.
+            # LESSON-BEARING: el linaje del valor (30 → 60 → 80) y la regla que
+            # lo gobierna viven JUNTO al default, en el bloque `workflow_call`
+            # de arriba — una segunda copia de la justificación aquí es la
+            # deriva que AP-052 gatea. No la dupliques.
             --max-turns ${{ inputs.process_max_turns }}
             --allowedTools "Read,Glob,Grep,Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh issue create:*),Bash(gh issue comment:*),Bash(gh api:*)"
           prompt: |
@@ -194,8 +296,73 @@ jobs:
                ENTRAS a este paso SOLO con los comentarios de (4-5) YA
                publicados (propuesta #1258: publicar antes de commitear —
                una muerte de sesión aquí no puede dejar la auditoría sin
-               revisión de proceso visible). Además de (4-5), evalúa el bloque «## Patrones de fallo del Creator»
-               de las auditorías:
+               revisión de proceso visible).
+
+            6a. SWEEP DE ANUNCIOS PENDIENTES — **PRIMERA operación al entrar
+               al paso 6, ANTES de evaluar ninguna edición nueva** (AP-060,
+               repesca finplan#1703). El orden publicar-antes-de-commitear
+               hace el estado INOCUO (un anuncio sin ejecutar es visible), pero
+               NO auto-sanante: si la sesión emisora muere entre el anuncio y
+               el commit, el anuncio queda SIN DUEÑO y decae en silencio.
+               Ocurrió en 2 ciclos consecutivos (skill-edit
+               `fixture-separa-perimetros` anunciada en aud. finplan#1681 y
+               jamás commiteada; DOS replaces anunciados con diff completo en
+               aud. finplan#1700 —comentario 2026-07-28T01:36:50Z— y jamás
+               commiteados). Misma doctrina que AP-036/AP-046: **materializar
+               en el ciclo siguiente, con dueño, la transición que faltó** — el
+               anuncio deja de depender de la vida de su sesión emisora.
+
+               - **Localiza.** `gh issue list --label auditoria --state all
+                 --limit 4` (`--state all`, no `closed`: una auditoría cuyo
+                 ciclo murió puede seguir ABIERTA) y, con
+                 `gh issue view <n> --comments`, busca en los 2-3 ciclos
+                 previos —NO en el panel que revisas ahora— los comentarios
+                 terminados en `<!-- autonomous-decision -->` que anuncien una
+                 skill-edit. **PENDIENTE := ni SHA de commit ni
+                 `<!-- skill-edit-caducado -->` en el cuerpo del comentario.**
+                 Ésa es la única clave de estado; no hay marcador nuevo que
+                 mantener, y es la que ya define la via negativa de #1258
+                 («un anuncio sin SHA final = edición no ejecutada»).
+               - **Verifica el ÁRBOL antes de nada** (mitigación de la
+                 doble-ejecución si dos ciclos retoman el mismo anuncio): lee
+                 con `gh api` el fichero de la skill en la rama por defecto y
+                 comprueba si el marcador `<!-- skill-edit: <tipo> <fecha> -->`
+                 del anuncio YA está presente.
+                 - **Presente ⇒ ya ejecutado, NO commitees.** Localiza el
+                   commit (`gh api "repos/<repo>/commits?path=<fichero>"`,
+                   mensaje `skill(loop):`) y edita el comentario ORIGINAL
+                   añadiendo su SHA. El anuncio deja de estar pendiente sin
+                   consumir cap.
+                 - **Ausente ⇒ decide y materializa** (dos salidas, ninguna es
+                   «dejarlo estar»):
+                   (a) **Evidencia vigente ⇒ ejecútalo VERBATIM.** El diff
+                   intendido ya pasó su ventana de veto asíncrono al ser
+                   publicado; **cero diseño nuevo** — no lo reformules, no lo
+                   «mejores», no lo re-anuncies como propio. Commit vía Git
+                   Data con el mensaje y el marcador del anuncio original, la
+                   MISMA verificación de integridad post-commit que exige 6b, y
+                   después edita el comentario ORIGINAL con el SHA.
+                   (b) **Evidencia caducada ⇒ decláralo caducado con
+                   racional.** Caducidad = el tipo que atacaba ya no recurre
+                   según el bloque del Auditor, o la sección destino cambió y
+                   el diff verbatim ya no aplica. Edita el comentario ORIGINAL
+                   añadiendo el racional y la línea
+                   `<!-- skill-edit-caducado -->`.
+               - **Reporta en el panel que revisas AHORA** un comentario con
+                 el enlace a cada anuncio retomado, su desenlace (SHA ejecutado
+                 / caducado + racional) y la evidencia, terminado en
+                 `<!-- autonomous-decision -->`. Sin este reporte la repesca es
+                 invisible para el 5-whys del Auditor.
+               - **Cap COMPARTIDO y con prioridad.** Las retomadas consumen del
+                 mismo cap de 2 ediciones/época que las nuevas, y van PRIMERO:
+                 una retomada es una decisión ya tomada y ya vetable, una
+                 edición nueva es diseño sin rodar. Si las retomadas agotan el
+                 cap, no hay ediciones nuevas este ciclo — dilo en el reporte.
+                 Anotar un SHA (caso «ya ejecutado») y declarar una caducidad
+                 NO consumen cap: no tocan el árbol.
+
+            6b. EDICIONES NUEVAS. Con el sweep cerrado, evalúa el bloque
+               «## Patrones de fallo del Creator» de las auditorías:
                - Si un TIPO de hallazgo recurre (≥3 en la épica o ≥2 épicas),
                  puedes ejecutar hasta 2 EDICIONES DE SKILL por épica,
                  EXCLUSIVAMENTE dentro de la sección
@@ -216,7 +383,12 @@ jobs:
                  comentario y commit queda un anuncio sin ejecutar (visible,
                  inocuo — un anuncio sin SHA final = edición no ejecutada);
                  el orden inverso deja un commit sin anuncio (invisible,
-                 sin veto posible).
+                 sin veto posible). Ese anuncio huérfano YA NO decae en
+                 silencio: tiene dueño nombrado — el sweep 6a del ciclo
+                 siguiente lo retoma o lo declara caducado (AP-060). Escribe
+                 el anuncio pensando en ESE lector: diff completo, fichero
+                 destino y marcador explícitos, ejecutables verbatim sin tu
+                 contexto de sesión.
                - INTEGRIDAD POST-COMMIT (misma propuesta — el commit
                  de3ada2f corrompió un carácter FUERA de la sección loop,
                  mojibake UTF-8): tras commitear, baja el diff del commit
@@ -241,7 +413,10 @@ jobs:
               de ADR-212 (jamás docs, workflows, pipeline-map, protocol.md,
               ni el resto de una skill): fuera de ese perímetro propones, el
               humano decide, otros aplican.
-            - Máximo 2 propuestas y 2 skill-edits. Sin evidencia ⇒ nada.
+            - Máximo 2 propuestas y 2 skill-edits. El cap de skill-edits es
+              TOTAL y COMPARTIDO entre retomadas del sweep (6a) y ediciones
+              nuevas (6b), con prioridad para las retomadas. Sin evidencia ⇒
+              nada.
 
       # finplan#1326 (2026-07-13, sustituye al `if: failure()` de #1258):
       # el exit code del step de sesión MIENTE. Verificado en 4 paneles de
@@ -260,6 +435,14 @@ jobs:
           REPO: ${{ github.repository }}
           ISSUE: ${{ github.event.issue.number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TIMEOUT_MIN: ${{ inputs.timeout_minutes }}
+          # Divergencia pin↔default ya calculada por el step determinista de
+          # arriba (AP-052/AP-060). Cadena vacía si no hay divergencia o si el
+          # step falló (continue-on-error). Se cita SOLO aquí — el momento
+          # exacto en que el humano o el 5-whys del Auditor tienen que decidir
+          # algo — para que el pin culpable viaje en el MISMO comentario que
+          # pide actuar, en vez de exigir arqueología entre repos.
+          PIN_DIVERGENTE: ${{ steps.pindiv.outputs.linea }}
         run: |
           CUERPOS=$(gh api "repos/${REPO}/issues/${ISSUE}/comments" \
                --paginate --jq '.[].body')
@@ -275,8 +458,16 @@ jobs:
           if [ -f "$EXEC" ]; then
             DIAG=$(python3 -c "import json; d=json.load(open('${EXEC}')); d=d[-1] if isinstance(d,list) else d; print('is_error=%s num_turns=%s duration_ms=%s cost=%s' % (d.get('is_error'), d.get('num_turns'), d.get('duration_ms'), d.get('total_cost_usd')))" 2>/dev/null || echo "JSON de ejecución ilegible")
           fi
-          BODY=$(printf '%s\n\n%s\n\n%s' \
+          # El pin culpable, si lo hay, como línea propia (formato fijo AP-052:
+          # `pin-divergente: <input>=<recibido> (default central: <def>, <AP>)`).
+          # Vacío ⇒ no se imprime nada: sin párrafo huérfano.
+          PIN_LINEA=""
+          if [ -n "${PIN_DIVERGENTE}" ]; then
+            PIN_LINEA=$(printf '%s\n\n' "\`${PIN_DIVERGENTE}\` — el stub de este repo pisa por debajo un default *lesson-bearing* del central, así que esta sesión corrió con el presupuesto PRE-lección. Si el diagnóstico de arriba es muerte por presupuesto (timeout del job a ${TIMEOUT_MIN} min, o \`error_max_turns\`), ése es el primer sospechoso. Los stubs son territorio HUMANO (ADR-020): ningún agente los edita.")
+          fi
+          BODY=$(printf '%s\n\n%s%s\n\n%s' \
             "**process-review · resultado AUSENTE** — el run terminó sin materializar la revisión de proceso en este panel (ningún comentario con el marcador de resultado). Diagnóstico: ${DIAG}. Run: ${RUN_URL}." \
+            "${PIN_LINEA}" \
             "Re-arme: retirar y re-aplicar \`auditoria-completa\` (con PAT — los eventos del token default no disparan workflows). Precaución antes del siguiente ciclo: puede haber efectos parciales sin publicar (commits \`skill(loop):\` en la rama por defecto posteriores a la última auditoría)." \
             "<!-- process-review-pendiente -->")
           gh issue comment "${ISSUE}" --repo "${REPO}" --body "$BODY"
