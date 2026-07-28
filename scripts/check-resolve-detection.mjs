@@ -12,91 +12,59 @@
 // alguien toca una regex, la evidencia ya no está y el cambio se juzga
 // leyendo, que es exactamente lo que falló.
 //
-// Las regexes NO se re-teclean aquí: se extraen LITERALMENTE del fichero que
-// las contiene —`docs/patches/*.patch` mientras el step siga pendiente de
-// aplicación humana (ADR-020), `.github/workflows/watchdog.yml` una vez
-// aplicado—, de modo que el banco no puede divergir del código que juzga.
+// AP-068 — QUÉ CAMBIÓ Y POR QUÉ IMPORTA. Hasta aquí este banco (a) extraía las
+// regexes con un regex-sobre-texto del `.patch` o del `.yml`, porque el código
+// estaba secuestrado dentro de `.github/workflows/**` y no había módulo que
+// importar, y (b) REIMPLANTABA el pipeline de derivación (identidad →
+// segmentación → acción → refs → polaridad), con un residual declarado en su
+// propio comentario: «si el step cambia de FORMA, esta función tiene que
+// cambiar con él». Eran dos formas que alguien tenía que mantener sincronizadas
+// a mano — un mandato de memoria (clase AP-008) dentro del gate que existe para
+// no tenerlos. Con el belt extraído a `vendored/scripts/…cjs` el banco
+// EJECUTA la función real: no hay copia que pueda derivar, y un cambio de forma
+// —no solo de regex— se juzga aquí.
 //
-// Verde: exit 0. Rojo: una regex cambió y el banco lo nota.
-import { existsSync, readFileSync } from 'fs';
+// Verde: exit 0. Rojo: la derivación real cambió y el banco lo nota.
+import { existsSync } from 'fs';
+import { createRequire } from 'module';
+import { resolve } from 'path';
 
-// Orden deliberado: el WORKFLOW primero, el parche como respaldo (ronda 3,
-// pregunta abierta 1). El estado APLICADO es el que manda: si el `.patch` se
-// conserva como artefacto de provenance después de aplicarlo, con el orden
-// inverso el banco seguiría juzgando el parche —el fichero que ya NO es el
-// código vivo— y saldría verde mientras `watchdog.yml` derivaba; el rojo
-// aparecería en `check-patches` y aquí no, que es el peor sitio para no verlo.
-// Mientras el step siga pendiente, `watchdog.yml` no contiene las regexes, la
-// extracción queda incompleta y cae al parche sola.
+const require = createRequire(import.meta.url);
+
+// El central lo tiene en `vendored/`; el workspace del consumidor lo recibe en
+// `scripts/` por el graft (AP-009). Se prueba el del central primero: es el
+// fichero FUENTE, y es el que un PR modifica.
 const FUENTES = [
-  '.github/workflows/watchdog.yml',
-  'docs/patches/AP-064-watchdog-resolve-cross-issue.patch',
+  'vendored/scripts/resolve-cross-issue-failsafe.cjs',
+  'scripts/resolve-cross-issue-failsafe.cjs',
 ];
-const NOMBRES = ['DES_STALL', 'ARM', 'AMBIGUO', 'FUTURO', 'ROL'];
-
-// Extracción literal: `const <NOMBRE> = /…/flags;` en una sola línea, tal y
-// como el step las declara. `new RegExp(src, flags)` sobre el texto capturado
-// — nunca una copia tecleada.
-const extraer = (txt) => {
-  const out = {};
-  for (const n of NOMBRES) {
-    const m = new RegExp(`^\\s*(?:\\+\\s*)?const ${n} = /(.*)/([a-z]*);\\s*$`, 'm').exec(txt);
-    if (m) out[n] = new RegExp(m[1], m[2]);
-  }
-  return out;
-};
 
 let fuente = null;
-let R = {};
+let belt = null;
 for (const f of FUENTES) {
   if (!existsSync(f)) continue;
-  const cand = extraer(readFileSync(f, 'utf8'));
-  if (NOMBRES.every((n) => cand[n])) { fuente = f; R = cand; break; }
+  belt = require(resolve(f));   // un SyntaxError aquí es ROJO, y debe serlo
+  fuente = f;
+  break;
 }
-if (!fuente) {
-  // Fail-open ANUNCIADO, nunca mudo: si el step no existe en ninguna de las dos
-  // formas (parche pendiente o workflow aplicado), no hay nada que juzgar —
-  // pero que no lo haya tiene que verse.
-  console.log('::warning::check-resolve-detection — no encuentro las regexes de resolve-cross-issue-failsafe ni en el parche ni en `.github/workflows/watchdog.yml`: el banco NO se ha ejecutado.');
+if (!belt) {
+  // Fail-open ANUNCIADO, nunca mudo: si el módulo no está, no hay nada que
+  // juzgar — pero que no lo haya tiene que verse.
+  console.log('::warning::check-resolve-detection — no encuentro `resolve-cross-issue-failsafe.cjs` en ninguna de sus dos ubicaciones: el banco NO se ha ejecutado.');
   process.exit(0);
 }
 
-// ── El pipeline de derivación, calcado del step (identidad → segmentación →
-// acción → refs → polaridad/modo). Si el step cambia de FORMA (no de regex),
-// esta función tiene que cambiar con él: es el residual consciente de este
-// banco, y por eso la parte volátil —las regexes— se extrae y no se copia.
-const derivar = (comentarios) => {
-  const decl = {};
-  const warns = [];
-  for (const c of comentarios) {
-    const raw = c.body || '';
-    if (raw.includes('<!-- resolve-cross-issue-materializado -->')) continue;
-    if (!R.ROL.test(raw.replace(/```[\s\S]*?```/g, ' ').replace(/`[^`\n]*`/g, ' '))) continue;
-    const host = c.host;
-    const prosa = raw.replace(/```[\s\S]*?```/g, ' ').replace(/<!--[\s\S]*?-->/g, ' ');
-    for (const seg of prosa.split(/\r?\n|(?<=[.;!?])\s+/)) {
-      const desStall = R.DES_STALL.test(seg);
-      const arm = R.ARM.test(seg);
-      if (!desStall && !arm) continue;
-      const refs = [...new Set([...seg.matchAll(/(?:^|[\s(\[,;:«"'])#(\d+)\b/g)].map((m) => Number(m[1])))].filter((n) => n !== host);
-      if (!refs.length) continue;
-      const modo = R.AMBIGUO.test(seg) ? 'negada/condicional/pospuesta' : (R.FUTURO.test(seg) ? 'futuro/intención' : null);
-      if (modo) { warns.push(`${modo}: "${seg.trim()}"`); continue; }
-      if (refs.length > 1) { warns.push(`multi-ref: ${refs.join(',')}`); continue; }
-      const n = refs[0];
-      const d = decl[n] || (decl[n] = { desStall: false, arm: false });
-      if (desStall) d.desStall = true;
-      if (arm) d.arm = true;
-    }
-  }
-  return { decl, warns };
-};
+const { derivar } = belt;
+if (typeof derivar !== 'function') {
+  console.error('CHECK-RESOLVE-DETECTION ROJO: `resolve-cross-issue-failsafe.cjs` ya no exporta `derivar` — el banco quedaría mudo sin decirlo.');
+  process.exit(1);
+}
 
 const ROL_MARK = '<!-- watchdog-rol: architect-resolve -->';
 const CAPA = '<!-- watchdog-capa: schedule -->';
 const cmt = (body, { host = 1696, rol = true } = {}) => ({ host, body: `${body}\n\n${CAPA}${rol ? `\n${ROL_MARK}` : ''}` });
 
-// esperado: { decl, warns } — `warns` se compara por PREFIJO de clase.
+// esperado: { decl, avisos } — `avisos` se compara por CLASE.
 const CASOS = [
   ['INSTANCIA fp#1711', [cmt('`stalled` retirada de #1694 y re-arm del eslabón 1/3 allí (detalle en su hilo).')],
     { 1694: { desStall: true, arm: true } }, []],
@@ -140,24 +108,37 @@ const CASOS = [
   // de abajo es el comportamiento ACTUAL: si alguien lo cambia, que sea
   // mirando este caso y no descubriéndolo en producción.
   ['(j) NARRACIÓN de un arm ajeno (fail-activo declarado)', [cmt('El eslabón 2/3 (#1695) ya quedó re-armado por epic-merge al mergear.')], { 1695: { desStall: false, arm: true } }, []],
+  // AP-068 — el belt ya no lee el `host` de un campo que el banco inventaba:
+  // `derivar` lo recibe calculado, y un comentario sin host no puede
+  // atribuirse a nadie. Caso nuevo, cubre la rama `if (!host) continue`.
+  ['(k) comentario sin host derivable', [{ host: NaN, body: `Re-arm del eslabón 1/3 en #1694.\n${ROL_MARK}` }], {}, []],
 ];
+
+// `derivar` devuelve además `host`/`url` por declaración (los necesita el
+// runtime para componer la cita). El banco juzga SOLO el par acción→issue:
+// comparar el objeto entero ataría el test a datos de presentación.
+const soloAcciones = (decl) => Object.fromEntries(
+  Object.entries(decl).map(([n, d]) => [n, { desStall: d.desStall, arm: d.arm }]),
+);
 
 const fallos = [];
 const lineas = [];
-for (const [nombre, comentarios, decl, warns] of CASOS) {
+for (const [nombre, comentarios, decl, avisos] of CASOS) {
   const got = derivar(comentarios);
-  const okDecl = JSON.stringify(got.decl) === JSON.stringify(decl);
-  const okWarn = got.warns.length === warns.length && warns.every((w, i) => (got.warns[i] || '').startsWith(w));
-  if (!okDecl || !okWarn) {
-    fallos.push(`${nombre}: esperado decl=${JSON.stringify(decl)} warns=${JSON.stringify(warns)} — obtenido decl=${JSON.stringify(got.decl)} warns=${JSON.stringify(got.warns)}`);
+  const gotDecl = soloAcciones(got.decl);
+  const gotClases = got.avisos.map((a) => a.clase);
+  const okDecl = JSON.stringify(gotDecl) === JSON.stringify(decl);
+  const okAviso = gotClases.length === avisos.length && avisos.every((w, i) => gotClases[i] === w);
+  if (!okDecl || !okAviso) {
+    fallos.push(`${nombre}: esperado decl=${JSON.stringify(decl)} avisos=${JSON.stringify(avisos)} — obtenido decl=${JSON.stringify(gotDecl)} avisos=${JSON.stringify(gotClases)}`);
   }
-  lineas.push(`  ${okDecl && okWarn ? '·' : '✗'} ${nombre.padEnd(46)} decl=${JSON.stringify(got.decl)} warns=${JSON.stringify(got.warns)}`);
+  lineas.push(`  ${okDecl && okAviso ? '·' : '✗'} ${nombre.padEnd(46)} decl=${JSON.stringify(gotDecl)} avisos=${JSON.stringify(gotClases)}`);
 }
 
 if (process.env.RESOLVE_DETECTION_VERBOSE) lineas.forEach((l) => console.log(l));
 if (fallos.length) {
-  console.error(`CHECK-RESOLVE-DETECTION ROJO (regexes extraídas de ${fuente}):`);
+  console.error(`CHECK-RESOLVE-DETECTION ROJO (derivación real de ${fuente}):`);
   fallos.forEach((f) => console.error('  - ' + f));
   process.exit(1);
 }
-console.log(`check-resolve-detection verde: ${CASOS.length} casos del banco de AP-064 sobre las 5 regexes extraídas literalmente de ${fuente}.`);
+console.log(`check-resolve-detection verde: ${CASOS.length} casos del banco de AP-064 sobre la derivación REAL de ${fuente} (no una copia).`);
