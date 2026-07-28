@@ -254,7 +254,7 @@ for (const f of Object.keys(onDisk)) {
   // el filtro, documentar la forma canónica en un comentario —justo lo que
   // invita a hacer el mensaje de error del guard (a)+(b)— satisfaría al guard
   // (e) con CERO puntos de uso clampados: el detector anti-inerte se quedaría
-  // inerte él mismo (clase wmcb#20, cuarta aplicación). El criterio es «primer
+  // inerte él mismo (clase wmcb#20). El criterio es «primer
   // carácter no blanco es `#`»: un `#` a media línea puede ser contenido (una
   // ancla `#L10`, un `Bash(gh api:*)`…), no un comentario.
   const wfSinComentarios = rawWf.replace(/^[ \t]*#.*$/gm, '');
@@ -341,7 +341,11 @@ for (const f of Object.keys(onDisk)) {
     // guards no tienen sentido sobre un default sin orden. Quien cite un guard
     // desde el ADR (§Falsable, §Riesgos) tiene que aterrizar en el mismo sitio
     // que nombra; una permutación entre las dos casas manda al lector al guard
-    // equivocado.
+    // equivocado. Por la misma razón, los ORDINALES del linaje de la clase
+    // wmcb#20 («N-ésima aplicación») se llevan SOLO en el ADR, que
+    // es donde el 5-whys del Auditor los recorre: un contador replicado en dos
+    // casas deriva en cuanto se renombra un guard, y ya lo hizo una vez (dos
+    // guards reclamando ser la tercera, review de PR #164).
     //
     // (d) `max(pin, default)` solo está definido sobre un tipo ORDENADO. Un
     //     lesson-bearing no numérico dejaría el clamp prometiendo una
@@ -379,7 +383,7 @@ for (const f of Object.keys(onDisk)) {
       const corto = plano.length > 80 ? plano.slice(0, 80) + ' …' : plano;
       errors.push(`${f}: punto de uso de \`${name}\` SIN clamp — \`\${{ ${corto} }}\`. Un input lesson-bearing se consume clampado: \`\${{ (inputs.${CLAMP_VALVULA} && inputs.${name}) || (inputs.${name} >= ${realDefaults[name]} && inputs.${name}) || ${realDefaults[name]} }}\` (AP-061; el pin crudo solo viaja al mapa \`${LB_PINS_ENV}\` como \`toJSON(inputs.${name})\`)`);
     }
-    // (e) Anti-inerte (clase wmcb#20, tercera aplicación al propio detector):
+    // (e) Anti-inerte (clase wmcb#20):
     //     una tabla lesson-bearing cuyo input no se consume clampado en NINGÚN
     //     sitio es un default que se declara pero no se impone.
     if (!tocan.some(x => canon.test(x))) {

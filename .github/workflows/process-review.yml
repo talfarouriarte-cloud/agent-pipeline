@@ -193,10 +193,17 @@ jobs:
                 const esNum = Number.isFinite(nGot) && Number.isFinite(nDef);
                 const diverge = esNum ? nGot < nDef : String(got) !== String(e.default);
                 if (!diverge) continue;
-                // `max(pin, default)` solo está definido sobre un tipo ORDENADO.
-                // check-contracts exige que todo lesson-bearing sea numérico,
-                // justo para que el clamp no prometa lo que no hace.
-                const clampado = !forzado && esNum;
+                // El desenlace anotado es el que la EXPRESIÓN de clamp ejecuta,
+                // no una re-derivación aparte: `(forzado && pin) || (pin >= def
+                // && pin) || def` solo devuelve el pin cuando la válvula está
+                // puesta Y el pin es TRUTHY en Actions. Todo lo demás cae al
+                // default, es decir CLAMPA — incluido un valor NO numérico
+                // (`pin >= def` tampoco es verdadera con él; hoy inalcanzable
+                // porque el guard (d) de check-contracts pone rojo el primer
+                // lesson-bearing no numérico) y el degenerado `0`/`false` con
+                // válvula que AP-061 declara. `esNum` gobierna la comparación
+                // de divergencia de arriba, NO el desenlace.
+                const clampado = !(forzado && Number(got) !== 0);
                 div.push({ ...e, recibido: got, efectivo: clampado ? e.default : got, clampado });
               }
               if (!div.length) {
