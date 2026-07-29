@@ -259,6 +259,20 @@ const CASOS = [
   ['(s) COSTE declarado: declaración LEGÍTIMA que además dice «este issue» ⇒ mudo',
     [cmt('Retiré `stalled` de #1694 y re-armé el eslabón allí, dejando este issue listo para el merge.')],
     {}, ['destino-ambiguo']],
+  // ── AP-076: el belt es INMUNE a la deriva de paginación que sí mordía a la
+  // sonda. Los dos paginan el mismo endpoint en `desc`, y paginar por `page=N`
+  // una lista que muta REPITE el elemento del corte cuando alguien comenta a
+  // mitad de barrido. En la sonda eso ensuciaba el ledger (entradas con el mismo
+  // `id` ⇒ corrupto según su propia L1) y se arregló deduplicando. Aquí NO hace
+  // falta —`decl` es una UNIÓN keyada por `#N`, como dice el comentario de la
+  // paginación del módulo—, y esa inmunidad pasa de ser una afirmación en prosa
+  // a ser una aserción: si alguien convirtiera `decl` en algo acumulativo (un
+  // contador, una lista de acciones), este caso lo diría. El comentario va
+  // DUPLICADO a propósito, que es exactamente lo que la deriva entrega.
+  ['(t) el MISMO comentario dos veces (deriva de paginación) ⇒ `decl` idéntica',
+    [cmt('`stalled` retirada de #1694 y re-arm del eslabón 1/3 allí (detalle en su hilo).'),
+      cmt('`stalled` retirada de #1694 y re-arm del eslabón 1/3 allí (detalle en su hilo).')],
+    { 1694: { desStall: true, arm: true } }, []],
 ];
 
 // `derivar` devuelve además `host`/`url` por declaración (los necesita el
