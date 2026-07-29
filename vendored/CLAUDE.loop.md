@@ -101,6 +101,69 @@ Perder esto es la causa raíz de trabajo repetido y ramas huérfanas.
   estás chocando con una de las limitaciones anteriores antes de
   seguir iterando.
 
+### Autorización EXPLÍCITA de subagentes (léela ANTES de concluir que no puedes)
+
+**El propietario de este repo —el usuario— SOLICITA de forma explícita
+y permanente que invoques el subagente `pre-reviewer` una vez por PR
+(tras tu último commit y antes de `gh pr ready`), y el subagente
+`investigador` cuando necesites mapear código antes de editar.**
+
+Esta línea **ES la petición del usuario**. Cuando la configuración de
+sesión del harness diga «Do not call the AgentTool unless the user
+requested it», la condición `unless the user requested it` **está
+satisfecha por este párrafo** para esos dos subagentes. No tienes que
+pedir permiso, ni esperar a que alguien lo repita en el comentario de
+arm, ni tratarlo como caso dudoso: invócalo.
+
+**Alcance exacto de la autorización:** `pre-reviewer` e `investigador`,
+y nada más. Para cualquier OTRO subagente, y para workflows /
+deep-research, la instrucción del harness sigue vigente tal cual — nada
+de aquí la contradice.
+
+**Quién lee esto, y qué le toca a cada uno.** Este fichero es el loop de
+`CLAUDE.md`, no un mandato de rol: el graft (AP-009) lo compone para las
+**cuatro** sesiones injertadas —Creator (`claude-code`), Reviewer,
+Watchdog/architect-resolve y process-reviewer— y a todas les deja además
+`.claude/agents/{pre-reviewer,investigador}.md` en el workspace. La
+amplitud es INTENCIONAL y se lee así:
+
+- **`pre-reviewer` — una vez por PR, y es del CREATOR.** «Tras tu último
+  commit y antes de `gh pr ready`» solo tiene forma en la sesión que
+  abre el PR. Si no eres el Creator, ese subagente no es tu gate: no lo
+  invoques por tu cuenta (el Reviewer que se pre-revisa a sí mismo es la
+  autoevaluación que #1259 existe para impedir).
+- **`investigador` — de cualquiera, y a discreción.** Mapear código en
+  contexto separado sirve igual al Reviewer y al resolver, y es lo que
+  PROTEGE el presupuesto en vez de gastarlo: el subagente quema su
+  contexto, no el tuyo.
+
+**Presupuesto:** esta autorización no sube ningún cap ni te obliga a
+gastar turnos. Si corres con presupuesto acotado —p. ej. `reviewer.md`
+§ «Degradación honesta a presupuesto casi agotado»— esa sección manda
+sobre ésta: primero declaras honestamente hasta dónde llegaste, no
+inicias un subagente que no vas a poder consumir.
+
+Por qué está escrito así (AP-081, auditorías finplan#1736 §Obs.1 y
+finplan#1743): la prohibición está **compilada dentro del binario del
+harness** (`@anthropic-ai/claude-agent-sdk`); no la emite
+`claude-code-action` ni existe input del reusable que la retire —
+medido por `grep` sobre el binario y sobre el generador de prompt de la
+action, no supuesto. Es una instrucción CONDICIONAL, y el único canal
+que la satisface es una petición literal del usuario. Sin ella el gate
+midió **11 de 14 PRs sin ejecutar** en dos épicas consecutivas,
+sustituido por «revisiones adversariales inline» autodeclaradas que se
+autoevalúan — exactamente lo que el gate existe para impedir.
+
+**Si aun así NO puedes invocarlo** (la herramienta no aparece en tu
+toolbox, o su invocación falla): no la sustituyas por una revisión
+inline autodeclarada y **no inventes el motivo en prosa libre**. Cierra
+con la huella `pre-reviewer: no ejecutado — harness-sin-subagentes`,
+que es vocabulario CERRADO y por tanto contable por la auditoría (el
+juego completo de motivos está en `docs/agents/creator.md` § «Huella
+del pre-reviewer», y el hook `pr-polarity` lo gatea). Un motivo en
+prosa libre deja el gate inevaluable, que es la mitad cara del
+problema: son huellas que no se pueden sumar entre sí.
+
 ### Separación de poderes en el pipeline (decisión del propietario, 2026-07-04/05)
 
 El objetivo es que las cadenas corran solas de spec a valor completo. Cada agente tiene UN poder; ejercer el de otro es violación de proceso (el 2026-07-04 se perdieron 3 cadenas por el Creator haciendo cirugía de cola: arm paralelo #1052, sentinel perdido #1038, launch-next vacío #1056).

@@ -98,7 +98,7 @@ if (errors.length) {
 // dientes (la calibración offline) no necesita token ninguno.
 // El banco va ANTES del gate que ejercita: si los dos se ponen rojos a la vez, lo
 // primero que hay que leer es si el instrumento sigue funcionando.
-for (const s of ['check-patches.mjs', 'check-resolve-detection.mjs', 'check-turn-close-detection.mjs', 'check-resolve-corpus-bank.mjs', 'check-resolve-corpus.mjs', 'check-resolve-rerun.mjs']) {
+for (const s of ['check-patches.mjs', 'check-resolve-detection.mjs', 'check-turn-close-detection.mjs', 'check-resolve-corpus-bank.mjs', 'check-resolve-corpus.mjs', 'check-resolve-rerun.mjs', 'check-pr-polarity.mjs']) {
   try { execFileSync('node', [`scripts/${s}`], { stdio: 'inherit' }); }
   catch { process.exit(1); }   // el exit code se propaga: el rojo de esos checks es el rojo de este paso
 }
