@@ -310,17 +310,22 @@ jobs:
                alza, stalls, intervenciones humanas que el sistema debería
                absorber, intervenciones repetidas del Watchdog por la misma
                causa.
-            3b. REPESCAS = FIX OBLIGATORIO (2026-07-13, decisión del
-               propietario). Lee el bloque «## Análisis de repescas (5 whys)»
-               de las auditorías. Cada causa raíz de repesca (Watchdog,
-               creator-muerto-sin-pr, re-arm humano) exige una propuesta de
-               fix AUNQUE sea instancia única — el umbral de ≥2 épicas del
-               paso 3 NO aplica aquí: una repesca es el fallback trabajando,
-               y el fallback trabajando ES el failure del camino primario.
-               El fix ataca la causa raíz del 5-whys (materializar la
-               transición que faltó), no el síntoma. Si hay más causas raíz
-               que el cap de issues del paso 5, prioriza repescas y lista
-               las restantes en el comentario del issue de auditoría.
+            3b. MORATORIA DE MECÁNICA (AP-078, 2026-07-30, decisión del
+               propietario — vigente hasta 2026-08-12 o hasta nueva edición
+               de este bloque). SUSPENDE el criterio «REPESCAS = FIX
+               OBLIGATORIO» (2026-07-13) y ELEVA el umbral de propuesta:
+               solo es proponible un incidente P0 — pipeline parado, trabajo
+               perdido, o intervención humana necesaria para restaurar el
+               flujo. Una repesca absorbida por un failsafe SIN intervención
+               humana y SIN pérdida de trabajo NO genera propuesta: se
+               registra en la línea de métricas y nada más (durante la
+               moratoria, el fallback trabajando es el sistema funcionando).
+               El patrón ≥2 épicas del paso 3 solo es proponible si cumple
+               también el criterio P0. Racional: 53 APs en 13 días y la
+               metástasis de central#166 (AP-064..AP-076) muestran que el
+               volumen de mecanismo es hoy el primer riesgo del sistema;
+               reducir superficie precede a mejorarla. La medición de
+               2026-08-12 (criterios AP-078) decide si se levanta.
             4. Si NO hay regresión, ni patrón ≥2 épicas, NI repescas sin fix
                propuesto: comenta en el issue de auditoría exactamente
                `Sin propuestas.` con una línea de métricas comparadas, y
@@ -502,7 +507,9 @@ jobs:
             - Máximo 2 propuestas y 2 skill-edits. El cap de skill-edits es
               TOTAL y COMPARTIDO entre retomadas del sweep (6a) y ediciones
               nuevas (6b), con prioridad para las retomadas. Sin evidencia ⇒
-              nada.
+              nada. MORATORIA AP-078 (hasta 2026-08-12): las ediciones
+              NUEVAS (6b) quedan suspendidas — solo retomadas del sweep,
+              anotaciones de SHA, caducidades y REVERTS.
 
       # finplan#1326 (2026-07-13, sustituye al `if: failure()` de #1258):
       # el exit code del step de sesión MIENTE. Verificado en 4 paneles de
