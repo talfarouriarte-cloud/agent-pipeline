@@ -2258,3 +2258,19 @@ El allowlist casa por PREFIJO: `gh api -X POST repos/…` no empieza por `gh api
 **Reversibilidad.** Total y por piezas: borrar el parche deja el prompt como estaba (la orden imposible vuelve, y con ella el episodio); borrar el módulo y su banco deja el ruling como un marcador sin consumidor (inerte, no dañino); revertir las filas de `protocol.md` viola el append-only y no se hace — se marcan superadas, como `sin-invariantes`. Cero estado que migrar, cero superficie `workflow_call`, cero labels.
 
 **Fecha.** 2026-07-29.
+
+## AP-078 — Moratoria de mecánica: el volumen de mecanismo pasa a ser el primer riesgo gestionado del sistema
+
+**Fecha**: 2026-07-30 · **Decisión del propietario** (sesión Architect de mejora continua)
+
+**Contexto.** Medición del 29-07 contra los criterios falsables fijados el 16-07: merges del central 61→50→33/semana (umbral <20 incumplido); sesiones de Architect ~3,5/semana (umbral 1-2 incumplido); recurrencia de clases cerradas confirmada (escalada-sin-declarar necesitó cuarto intento AP-013→AP-028→AP-035→AP-036; cola bloqueada recurrió tras AP-014 y AP-038; rotura fleet-wide por `@main` tras el aviso de #61). 53 APs en 13 días (AP-023→AP-076). central#166 consumió 12 APs en nueve rondas y se cerró por decisión humana con el diagnóstico de que cada ronda de «alcance restante» generaba alcance nuevo. Censo de marcadores 15..29-07: 85 tipos distintos activos (protocol.md documentaba ~30 el día 16); `turn-close-failsafe` 141 activaciones y `open-review-failsafe` 41 — los failsafes son el camino ordinario, y el criterio «repesca ⇒ fix obligatorio» convertía cada activación en trabajo nuevo.
+
+**Decisión.**
+1. **Umbral P0 para propuestas de proceso** (edición del paso 3b de `process-review.yml`): solo es proponible un incidente que paró el pipeline, perdió trabajo o exigió intervención humana para restaurar el flujo. Repescas absorbidas sin intervención humana: línea de métricas, sin propuesta. El criterio «REPESCAS = FIX OBLIGATORIO» (2026-07-13) queda SUSPENDIDO.
+2. **Skill-edits nuevos (6b) suspendidos**: solo retomadas del sweep, anotaciones, caducidades y reverts.
+3. **Vigencia**: hasta 2026-08-12, cuando se re-mide con los mismos criterios más el ratio producto/mecánica (PRs de consumidores por PR del central). La medición decide si la moratoria se levanta, se prorroga o se convierte en régimen.
+4. En paralelo corre la **auditoría de amputación**: censo de activaciones por marcador/guard para retirar mecanismo cuya clase de fallo desapareció o nunca se materializó. La dirección del sistema pasa de añadir belts a reducir superficie.
+
+**Racional.** Cada guard y failsafe es también superficie que falla (AP-050 fue un stub ausente del propio régimen de vigilancia; AP-058, un loop entre dos mecanismos correctos). Un sistema con dos consumidores y un operador no amortiza 85 tipos de marcador. La mejora continua sin freno demostró generar su propio trabajo más rápido de lo que lo cierra; el freno es, en sí mismo, la mejora de proceso de mayor impacto disponible.
+
+**Reversión.** Restaurar el texto de 3b/6b anterior a este PR y registrar la enmienda aquí.
