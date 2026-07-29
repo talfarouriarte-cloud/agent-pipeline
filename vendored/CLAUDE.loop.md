@@ -112,17 +112,29 @@ El objetivo es que las cadenas corran solas de spec a valor completo. Cada agent
 
 ## Loop protocol with Reviewer
 
-When working on a PR (you, as the Creator agent), end every turn
-with **exactly one** of these closing markers:
+**A turn that pushed commits has ALREADY transitioned** (doctrina
+push-primario 2026-07-14 wmcb#38, elevada a camino ÚNICO por AP-079:
+medidos 15..29-07, 141 turnos absorbidos por `turn-close-failsafe` —
+el «failsafe» era el camino ordinario, y la regla del tag solo
+producía métrica de incumplimiento). If your turn committed and
+pushed to the PR HEAD, do NOT emit `@reviewer`: the workflow
+re-labels `needs-review` from state in the same job, zero latency.
+An `@reviewer` on a push-turn is tolerated but redundant.
 
-- `@reviewer` — you addressed Reviewer comments and committed the
-  changes. Workflow auto-labels `needs-review` (forcing remove+add)
-  to re-trigger the Reviewer. Do NOT add the `needs-review` label
-  yourself: the Reviewer's guard ignores `labeled` events from
+Closing tags are REQUIRED only when they carry state the push
+cannot:
+
+- `@reviewer` — MANDATORY only when you close a turn WITHOUT new
+  commits (you answered the Reviewer in prose, disputed a NIT with
+  evidence, or the item needed no change). With no push there is no
+  state to transition from: the workflow auto-labels `needs-review`
+  (forcing remove+add) from this tag. Do NOT add the `needs-review`
+  label yourself: the Reviewer's guard ignores `labeled` events from
   `claude[bot]` (anti-recursion); only the workflow's Auto-label
   step (PAT) can re-trigger it. A push alone does NOT re-trigger
   the Reviewer either (its trigger is `[opened, labeled]`, no
-  `synchronize`). Without the closing `@reviewer` the chain hangs
+  `synchronize`) — the state relabel is done BY the workflow, not by
+  the event. Without `@reviewer`, a no-commit turn hangs the chain
   waiting for an LGTM that never comes (seen in PR #948).
 - `[READY-TO-MERGE]` — the PR is complete, no outstanding Reviewer
   comments, all checks passing. Brief one-line justification.
@@ -138,15 +150,12 @@ with **exactly one** of these closing markers:
   (see criteria below). The workflow adds label `human-needed` and
   stops the loop.
 
-**The closing tag is the HEADER, not a footnote** (2026-07-16, measured:
-11/36 recent agent PRs across the fleet closed WITHOUT the tag despite
-this section — the `turn-close-failsafe` absorbed every one). In your
-FINAL comment update, the tag opens the comment — first line, before the
-summary and the branch footer. Do not leave it as a last step of your
-flow: sessions that summarize first and tag last omit it at ~31%; the
-same sessions never omit their branch footer, so positional/template
-rules are the compliance channel that works. The post-session scan reads
-the final comment once, so an early header never re-triggers anything
+**When you DO emit a closing tag, it is the HEADER, not a footnote**
+(2026-07-16, measured: 11/36 agent PRs closed without the tag; the
+positional/template channel is the one that works). In your FINAL
+comment update, the tag opens the comment — first line, before the
+summary and the branch footer. The post-session scan reads the final
+comment once, so an early header never re-triggers anything
 prematurely. One tag only, per the priority above.
 
 **Closing tags must OPEN their own line.** The Auto-label step anchors
@@ -190,7 +199,7 @@ overflows token budget.
   reasonable interpretation).
 
 If none apply, treat the Reviewer’s comment as clear: apply, commit,
-end with `@reviewer`.
+push — the push closes the turn (AP-079). No tag needed.
 
 **Hard caps enforced by the workflow:**
 
