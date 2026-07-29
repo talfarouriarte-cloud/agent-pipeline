@@ -86,7 +86,7 @@ if (errors.length) {
 // parche), esto se sustituye por dos pasos propios en `ci.yml` y se borran
 // estas líneas — no antes, o el gate vuelve a apagarse. Cuidado con el doble
 // conteo: si se añaden los pasos, hay que quitar esto en el mismo cambio.
-for (const s of ['check-patches.mjs', 'check-resolve-detection.mjs']) {
+for (const s of ['check-patches.mjs', 'check-resolve-detection.mjs', 'check-turn-close-detection.mjs']) {
   try { execFileSync('node', [`scripts/${s}`], { stdio: 'inherit' }); }
   catch { process.exit(1); }   // el exit code se propaga: el rojo de esos checks es el rojo de este paso
 }
