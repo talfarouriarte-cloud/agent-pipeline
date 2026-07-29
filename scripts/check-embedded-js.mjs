@@ -96,7 +96,9 @@ if (errors.length) {
 // más: su capa viva necesita `GH_TOKEN`, y añadirle un `env:` al paso propio
 // exigiría editar `ci.yml` — pendiente. Colgado aquí corre igual, y su capa de
 // dientes (la calibración offline) no necesita token ninguno.
-for (const s of ['check-patches.mjs', 'check-resolve-detection.mjs', 'check-turn-close-detection.mjs', 'check-resolve-corpus.mjs']) {
+// El banco va ANTES del gate que ejercita: si los dos se ponen rojos a la vez, lo
+// primero que hay que leer es si el instrumento sigue funcionando.
+for (const s of ['check-patches.mjs', 'check-resolve-detection.mjs', 'check-turn-close-detection.mjs', 'check-resolve-corpus-bank.mjs', 'check-resolve-corpus.mjs']) {
   try { execFileSync('node', [`scripts/${s}`], { stdio: 'inherit' }); }
   catch { process.exit(1); }   // el exit code se propaga: el rojo de esos checks es el rojo de este paso
 }

@@ -59,13 +59,43 @@
 // dice. Sellar el hash nuevo sin volver a barrer es exactamente el atajo que
 // convertiría esto en el dato-sin-consumidor que AP-065 tuvo que rescatar.
 //
-// EL MARCADOR DE ROL SE INYECTA, y hay que decirlo. Ningún comentario histórico
-// puede llevarlo: lo obliga el prompt del parche PENDIENTE de `.github/workflows/**`
-// (ADR-020). Sin inyección la sonda mediría la rama «sin marcador» —muda por
-// diseño— y no la decisión que el belt tomará el día que corra. Con inyección mide
-// lo que el belt HARÁ. La injerencia está acotada a eso: el marcador va en línea
-// propia al final del cuerpo y `escanear` despoja los comentarios HTML antes de
-// segmentar, luego no puede alterar ningún segmento.
+// EL MARCADOR DE ROL SE INYECTA **SOLO DONDE FALTA**, y el matiz es una medida,
+// no un refinamiento. AP-074 escribió aquí que «ningún comentario histórico puede
+// llevarlo: lo obliga el prompt del parche PENDIENTE de `.github/workflows/**`».
+// Es FALSO y se midió en AP-075: **2 de los 13** comentarios del corpus lo llevan
+// NATIVO (los dos rulings de architect-resolve sobre el central#166). La premisa
+// confundía dos mandatos distintos: el marcador de CAPA lo pide el prompt de
+// `watchdog.yml` (pendiente en su parte de belt, pero VIVO en su parte de prompt)
+// y el de ROL lo pide `vendored/docs-agents/watchdog.md`, mergeado desde #170 y
+// vivo desde entonces. Los emite la MISMA sesión LLM por DOS mandatos
+// independientes, luego cumplir uno no implica cumplir el otro.
+//
+// De ahí las dos consecuencias que este script implementa:
+//
+//   1. El corpus se selecciona por CAPA **∪ ROL**, no por CAPA a secas. El belt
+//      keya por ROL; seleccionar por CAPA dejaba fuera, por construcción, un
+//      comentario del resolver que cumpliera su mandato de ROL y olvidara el de
+//      CAPA — es decir, prosa sobre la que el belt SÍ ESCRIBE y la sonda NO MIRA.
+//      Hoy la intersección lo tapa (los 2 nativos llevan también CAPA), pero eso
+//      es una coincidencia del corpus de hoy, no una propiedad. La unión es
+//      estrictamente más ancha: nunca puede ver menos.
+//   2. La inyección es CONDICIONAL y queda registrada por entrada (`rol`:
+//      `nativo` | `inyectado`). Sin inyección la sonda mediría la rama «sin
+//      marcador» —muda por diseño— y no la decisión que el belt tomará el día que
+//      corra; con inyección indiscriminada perdía la distinción entre «el belt
+//      escribiría aquí SI el emisor cumpliera» y «el belt escribirá aquí». La
+//      injerencia sigue acotada: el marcador va en línea propia al final del
+//      cuerpo y `escanear` despoja los comentarios HTML antes de segmentar, luego
+//      no puede alterar ningún segmento.
+//
+// EL FIXTURE (`CHECK_RESOLVE_CORPUS_FIXTURE`) es la costura de BANCO, y su
+// existencia es el cierre de la clase de #166 un piso por debajo de esta sonda:
+// AP-074 verificó estas ramas con **6 mutaciones ejecutadas a mano en una sesión**,
+// y nada las vuelve a correr. Con el fixture, `scripts/check-resolve-corpus-bank.mjs`
+// las ejecuta en cada CI, sin red y sin flakear. Dos guards impiden que la costura
+// se convierta en el atajo que falsifica el gate: en modo fixture el barrido se
+// ANUNCIA como no-productivo, y el sello que produzca queda marcado
+// (`barrido.fixture: true`) — un ledger así leído en modo producción es ROJO.
 //
 // Verde: exit 0.
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
@@ -76,7 +106,14 @@ import { resolve, dirname } from 'path';
 
 const require = createRequire(import.meta.url);
 const SELLAR = process.argv.includes('--sellar');
+// Costura de banco. Ver la cabecera: solo la usa `check-resolve-corpus-bank.mjs`,
+// se anuncia siempre y lo que sella queda marcado como no-productivo.
+const FIXTURE = process.env.CHECK_RESOLVE_CORPUS_FIXTURE || null;
 const LEDGER = 'docs/corpus/resolve-cross-issue-corpus.json';
+// La marca que conserva una `nota` cuya adjudicación es de un cuerpo ANTERIOR
+// (residual (f) de AP-074): descartarla en silencio borraba el único texto libre
+// del ledger justo cuando deja de ser fiable, que es cuando hace falta leerlo.
+const NOTA_EDITADA = '[cuerpo editado desde la adjudicación] ';
 const MAX_PAGINAS = 20;          // 2000 comentarios; el truncado es ANUNCIADO
 // Por página, no agregado. El peor caso teórico (20 páginas lentas-pero-vivas) son
 // 5 min; el MEDIDO en el runner es 601 comentarios en 7 páginas y **2,4 s de reloj
@@ -113,27 +150,60 @@ if (!belt) {
   process.exit(0);
 }
 const { derivar, PATRONES } = belt;
-if (typeof derivar !== 'function' || !PATRONES || !PATRONES.CAPA_MARK) {
-  rojo('el módulo ya no exporta `derivar` y `PATRONES.CAPA_MARK` — la sonda quedaría muda sin decirlo.');
+// `ROL` entra en el contrato exigido junto a `CAPA_MARK` (AP-075): desde que el
+// corpus se selecciona por la UNIÓN, perderlo no dejaría a la sonda muda del todo
+// —seguiría viendo la rama CAPA— sino muda EXACTAMENTE en la mitad que el belt
+// keya, que es el fallo caro y el silencioso.
+if (typeof derivar !== 'function' || !PATRONES || !PATRONES.CAPA_MARK || !PATRONES.ROL) {
+  rojo('el módulo ya no exporta `derivar` y `PATRONES.{CAPA_MARK,ROL}` — la sonda quedaría muda sin decirlo.');
 }
 const fuenteSha = sha256(readFileSync(fuente, 'utf8'));
+const despoja = (s) => String(s || '').replace(/```[\s\S]*?```/g, ' ').replace(/`[^`\n]*`/g, ' ');
 
 // ── L1 · calibración vigente (offline, con dientes) ──────────────────────────
+// Un ledger CORRUPTO no mata la corrida ANTES de llegar al sello (residual (f) de
+// AP-074, y era un defecto de utilidad, no de rigor): el script anuncia `--sellar`
+// como su comando de reparación, y `--sellar` moría por la misma corrupción que
+// venía a reparar. El caso más plausible de corrupción —un ledger editado a mano y
+// mal cerrado— no tenía más salida que borrar el fichero, y nada lo decía. Ahora
+// la corrupción se DIFIERE bajo `--sellar` (que lo reconstruye desde el corpus
+// real) y sigue siendo ROJO fuera de él. Lo que se pierde al reconstruir —las
+// `nota` de las entradas anteriores— se dice en voz alta, porque perderlas en
+// silencio sería la clase que este gate existe para cerrar.
 let ledger = null;
+let corrupto = null;
 if (existsSync(LEDGER)) {
   try { ledger = JSON.parse(readFileSync(LEDGER, 'utf8')); }
-  catch (e) { rojo(`\`${LEDGER}\` no parsea como JSON (${e.message}).`); }
+  catch (e) { corrupto = `no parsea como JSON (${e.message})`; }
 }
-if (!ledger && !SELLAR) {
-  rojo(`falta \`${LEDGER}\` — la calibración del belt contra prosa real no existe. Créala con \`node scripts/check-resolve-corpus.mjs --sellar\` (exige red).`);
-}
-if (ledger) {
+if (!corrupto && ledger) {
   const mal = [];
   if (!ledger.modulo || typeof ledger.modulo.sha256 !== 'string') mal.push('falta `modulo.sha256`');
   if (!Array.isArray(ledger.entradas)) mal.push('`entradas` no es un array');
-  if (mal.length) rojo(`\`${LEDGER}\` mal formado — ${mal.join('; ')}.`);
-  const ids = ledger.entradas.map((e) => e.id);
-  if (new Set(ids).size !== ids.length) rojo(`\`${LEDGER}\` tiene entradas duplicadas por \`id\`.`);
+  if (mal.length) corrupto = `está mal formado — ${mal.join('; ')}`;
+  else {
+    const ids = ledger.entradas.map((e) => e.id);
+    if (new Set(ids).size !== ids.length) corrupto = 'tiene entradas duplicadas por `id`';
+    // Un sello de BANCO no puede pasar por sello de producción: la costura de
+    // fixture se autodenuncia en cuanto se lee fuera de su modo. Sin esto, la
+    // costura sería exactamente el atajo que `--sellar` sin barrido ya impide.
+    else if (ledger.barrido && ledger.barrido.fixture && !FIXTURE) corrupto = 'se selló desde un FIXTURE de banco (`barrido.fixture: true`), no desde el corpus real — no adjudica nada';
+  }
+}
+if (corrupto) {
+  if (SELLAR) {
+    ledger = null;
+    aviso(`\`${LEDGER}\` ${corrupto}: \`--sellar\` lo RECONSTRUYE desde el corpus real. Las \`nota\` de adjudicación de las entradas anteriores se PIERDEN — no son recuperables desde aquí.`);
+  } else {
+    rojo(
+      `\`${LEDGER}\` ${corrupto}.\n` +
+      '  Repáralo re-sellando (NO lo edites a mano):  node scripts/check-resolve-corpus.mjs --sellar\n' +
+      '  Exige red, reconstruye el ledger desde el corpus real y PIERDE las `nota` de adjudicación de las entradas anteriores.'
+    );
+  }
+}
+if (!ledger && !SELLAR) {
+  rojo(`falta \`${LEDGER}\` — la calibración del belt contra prosa real no existe. Créala con \`node scripts/check-resolve-corpus.mjs --sellar\` (exige red).`);
 }
 
 // El rojo de L1 se DIFIERE hasta después de L2 cuando se está sellando: sellar es
@@ -192,22 +262,45 @@ async function barrer(repoSlug, token) {
 // El veredicto de UN comentario, normalizado a algo comparable y estable: el orden
 // de `avisos` lo fija `escanear` (segmento a segmento) y no se reordena aquí — la
 // CLASE y su multiplicidad son el dato que el epic-auditor cosecha (🔵 5 de AP-073).
+// La inyección es CONDICIONAL (AP-075) y `rol` viaja FUERA del veredicto a
+// propósito: el veredicto es lo que se contrasta contra el sello, y meterle un
+// campo nuevo pondría ROJO las 13 entradas selladas por un cambio de esquema —un
+// rojo que no es un hallazgo—. `rol` es un dato de la ENTRADA, y su consumidor es
+// la lectura del rojo (ii): «nativo + materializa» es prosa sobre la que el belt
+// ESCRIBIRÁ el día que se aplique el parche; «inyectado + materializa» es prosa
+// sobre la que escribiría SI su emisor cumpliera el mandato del marcador.
 function veredicto(c) {
-  const cuerpo = `${c.body || ''}\n<!-- watchdog-rol: architect-resolve -->\n`;
+  const raw = c.body || '';
+  const nativo = PATRONES.ROL.test(despoja(raw));
+  const cuerpo = nativo ? raw : `${raw}\n<!-- watchdog-rol: architect-resolve -->\n`;
   const { decl, avisos } = derivar([{ host: Number(String(c.issue_url || '').split('/').pop()), body: cuerpo, url: c.html_url }]);
   return {
-    materializa: Object.entries(decl)
-      .map(([n, d]) => ({ n: Number(n), desStall: !!d.desStall, arm: !!d.arm }))
-      .sort((a, b) => a.n - b.n),
-    avisos: avisos.map((a) => a.clase),
+    rol: nativo ? 'nativo' : 'inyectado',
+    v: {
+      materializa: Object.entries(decl)
+        .map(([n, d]) => ({ n: Number(n), desStall: !!d.desStall, arm: !!d.arm }))
+        .sort((a, b) => a.n - b.n),
+      avisos: avisos.map((a) => a.clase),
+    },
   };
 }
 
 const igual = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
-const repoSlug = repoDelRun();
+const repoSlug = FIXTURE ? null : repoDelRun();
 let vivo = null;
-if (!repoSlug) {
+if (FIXTURE) {
+  // Modo banco: el corpus sale de un fichero, no de la API. Se anuncia SIEMPRE —
+  // un barrido que no es de producción no puede pasar por uno que lo sea— y lo
+  // que selle queda marcado (`barrido.fixture`), lo que lo hace ROJO en cuanto
+  // alguien lo lea en modo producción.
+  aviso(`corpus de FIXTURE (\`${FIXTURE}\`), NO de producción: esta corrida no dice NADA del corpus real. Solo lo usa \`scripts/check-resolve-corpus-bank.mjs\`.`);
+  let comentarios;
+  try { comentarios = JSON.parse(readFileSync(FIXTURE, 'utf8')); }
+  catch (e) { rojo(`el fixture \`${FIXTURE}\` no se puede leer (${e.message}).`); }
+  if (!Array.isArray(comentarios)) rojo(`el fixture \`${FIXTURE}\` no es un array de comentarios.`);
+  vivo = { comentarios, truncado: false, autenticado: false };
+} else if (!repoSlug) {
   aviso('no puedo derivar el repo del run (`GITHUB_REPOSITORY` ausente y sin remoto `origin` de GitHub) — barrido vivo OMITIDO.');
 } else {
   const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN || null;
@@ -224,15 +317,24 @@ if (!repoSlug) {
 }
 
 let entradasNuevas = null;
+let nativos = 0;
 if (vivo) {
-  const despoja = (s) => String(s || '').replace(/```[\s\S]*?```/g, ' ').replace(/`[^`\n]*`/g, ' ');
-  // El corpus es el de la CAPA, no el del ROL, y la diferencia importa: ningún
-  // comentario histórico lleva el marcador de rol (lo obliga el parche pendiente),
-  // así que filtrar por rol daría corpus vacío. El de capa es el superconjunto
-  // más estrecho disponible — incluye los post-steps deterministas hermanos, y
-  // eso es una PROPIEDAD, no ruido: si uno de ellos derivara una materialización,
-  // el belt tendría un vecino capaz de disparar su aviso.
-  const capa = vivo.comentarios.filter((c) => PATRONES.CAPA_MARK.test(despoja(c.body)));
+  // El corpus es la UNIÓN de CAPA y ROL (AP-075), y la unión no es celo: es el
+  // único conjunto que contiene lo que el belt lee. El belt keya por ROL; la
+  // selección era por CAPA sobre la premisa —medida FALSA en AP-075— de que
+  // ningún comentario podía llevar el de ROL. Los dos marcadores los emite la
+  // misma sesión LLM por DOS mandatos independientes (`watchdog.yml` pide el de
+  // capa, `watchdog.md` el de rol), luego un comentario del resolver con ROL y
+  // sin CAPA es construible hoy — y era, exactamente, prosa que el belt
+  // materializa y la sonda no miraba: un rojo de MENOS, el lado que este diseño
+  // declara caro. La rama CAPA se conserva entera: incluye los post-steps
+  // deterministas hermanos, y eso es una PROPIEDAD, no ruido — si uno de ellos
+  // derivara una materialización, el belt tendría un vecino capaz de disparar su
+  // aviso `sin-marcador-de-rol`.
+  const capa = vivo.comentarios.filter((c) => {
+    const d = despoja(c.body);
+    return PATRONES.CAPA_MARK.test(d) || PATRONES.ROL.test(d);
+  });
 
   const porId = new Map((ledger?.entradas || []).map((e) => [e.id, e]));
   const vistos = new Set();
@@ -241,24 +343,37 @@ if (vivo) {
   entradasNuevas = [];
 
   for (const c of capa) {
-    const v = veredicto(c);
+    const { rol, v } = veredicto(c);
+    if (rol === 'nativo') nativos++;
     const cuerpoSha = sha256(c.body || '');
     const prev = porId.get(c.id);
     vistos.add(c.id);
+    // La `nota` SOBREVIVE a la edición del cuerpo, marcada (residual (f) de
+    // AP-074). Descartarla era una pérdida silenciosa del único texto libre del
+    // ledger, justo en el momento en que deja de ser fiable — que es cuando hace
+    // falta leerla, no cuando sobra. La marca es idempotente: re-sellar sobre una
+    // nota ya marcada no la vuelve a prefijar.
+    const notaPrev = (prev && prev.nota) || '';
+    const nota = !notaPrev ? ''
+      : prev.cuerpo_sha256 === cuerpoSha ? notaPrev
+      : notaPrev.startsWith(NOTA_EDITADA) ? notaPrev
+      : NOTA_EDITADA + notaPrev;
     entradasNuevas.push({
       id: c.id,
       url: c.html_url,
       host: Number(String(c.issue_url || '').split('/').pop()),
       cuerpo_sha256: cuerpoSha,
+      rol,
       veredicto: v,
-      nota: prev && prev.cuerpo_sha256 === cuerpoSha ? (prev.nota || '') : '',
+      nota,
     });
 
     if (!prev) {
       if (v.materializa.length) {
         rojos.push(
           `prosa real SIN ADJUDICAR que haría ESCRIBIR al belt: ${c.html_url} (#${c.id}) deriva ` +
-          `${JSON.stringify(v.materializa)}. Léela: si la declaración es legítima, séllala ` +
+          `${JSON.stringify(v.materializa)} (marcador de ROL ${rol === 'nativo' ? 'NATIVO — el belt escribirá ahí en cuanto se aplique el parche' : 'inyectado por la sonda — el belt escribiría ahí si su emisor cumpliera el mandato del marcador'}). ` +
+          `Léela: si la declaración es legítima, séllala ` +
           `(\`--sellar\`) y queda registrada; si no lo es, es un falso positivo de la misma clase que AP-073 y el arreglo va en el módulo.`
         );
       } else {
@@ -297,9 +412,14 @@ if (vivo) {
     rojos.forEach((r) => console.log(`::warning::  - ${r}`));
   }
 
+  // `nativos` entra en la línea de resumen porque es el número que refuta la
+  // premisa con la que nació este gate («ningún comentario histórico puede llevar
+  // el marcador de ROL»): un dato en prosa se pudre, uno impreso en cada corrida
+  // no. Y es el que dice cuánta de la prosa medida es la que el belt leerá de
+  // verdad frente a la que solo lee la sonda gracias a su inyección.
   console.log(
-    `check-resolve-corpus · barrido vivo: ${vivo.comentarios.length} comentarios de ${repoSlug}, ` +
-    `${capa.length} con marcador de capa en línea propia${vivo.autenticado ? '' : ' (sin token)'}` +
+    `check-resolve-corpus · barrido vivo: ${vivo.comentarios.length} comentarios de ${FIXTURE ? `FIXTURE ${FIXTURE}` : repoSlug}, ` +
+    `${capa.length} con marcador de capa o de ROL en línea propia (${nativos} con el de ROL NATIVO)${vivo.autenticado ? '' : ' (sin token)'}` +
     `${vivo.truncado ? ' · TRUNCADO por el tope de páginas: la cola antigua quedó fuera' : ''}.`
   );
 }
@@ -314,9 +434,13 @@ if (SELLAR) {
     modulo: { ruta: fuente, sha256: fuenteSha },
     barrido: {
       fecha: new Date().toISOString(),
-      repo: repoSlug,
+      repo: FIXTURE ? `fixture:${FIXTURE}` : repoSlug,
+      // `fixture: true` es lo que hace que la costura de banco no pueda pasar por
+      // un sello de producción: leído sin `CHECK_RESOLVE_CORPUS_FIXTURE`, es ROJO.
+      fixture: !!FIXTURE,
       comentarios: vivo.comentarios.length,
-      con_marcador_de_capa: entradasNuevas.length,
+      con_marcador_de_capa_o_rol: entradasNuevas.length,
+      con_marcador_de_rol_nativo: nativos,
       autenticado: vivo.autenticado,
       truncado: vivo.truncado,
     },
@@ -332,13 +456,14 @@ if (SELLAR) {
 }
 
 const materializan = (ledger?.entradas || []).filter((e) => e.veredicto && e.veredicto.materializa.length).length;
+const rolNativo = (ledger?.entradas || []).filter((e) => e.rol === 'nativo').length;
 // `truncado` ENTRA en la línea de resumen y no solo en el `::warning`: un «verde»
 // que no distingue barrido completo de barrido truncado se lee como cobertura
 // total, que es la lectura falsa de #166 servida por el propio gate que la cierra.
 const truncado = (vivo && vivo.truncado) || !!(ledger && ledger.barrido && ledger.barrido.truncado);
 console.log(
   `check-resolve-corpus verde: calibración VIGENTE contra ${fuente} (${fuenteSha.slice(0, 12)}), ` +
-  `${(ledger?.entradas || []).length} comentario(s) real(es) adjudicado(s), ${materializan} materializaría(n)` +
+  `${(ledger?.entradas || []).length} comentario(s) real(es) adjudicado(s) (${rolNativo} con marcador de ROL NATIVO), ${materializan} materializaría(n)` +
   `${vivo ? '' : ' · barrido vivo OMITIDO (ver aviso)'}` +
   `${truncado ? ' · barrido TRUNCADO (no es el corpus entero; ver aviso)' : ''}.`
 );
