@@ -325,17 +325,31 @@ calibró por primera vez contra prosa REAL en AP-073 — con el resultado
 de encontrar un falso positivo que 28 casos sintéticos no vieron: un
 ruling tuyo que REPORTABA un arm perdido se leía como su declaración, y
 el belt habría armado un issue que nadie pidió. Desde AP-074 esa sonda
-no es un gesto de una sesión: `scripts/check-resolve-corpus.mjs` (en el
-central) re-deriva sobre los comentarios reales del repo en cada
-corrida del CI y contrasta el resultado con un ledger de adjudicación
-sellado. Dos consecuencias para ti, las dos operativas:
+no es un gesto de una sesión: `scripts/check-resolve-corpus.mjs` re-deriva
+sobre los comentarios reales y contrasta el resultado con un ledger de
+adjudicación sellado.
 
-1. **Un comentario tuyo que haría materializar al belt sobre un `#N`
-   que no era su destino pone ROJO el CI del central.** No es una
-   sanción a tu prosa: es que la lectura del belt sobre prosa real
-   nueva se adjudica antes de que el belt actúe sobre ella. Si tu
-   declaración era legítima, se sella y queda registrada; si no lo era,
-   el arreglo va en el módulo, no en ti.
+**DÓNDE, y esto te toca antes que nada.** Ese script vive SOLO en el repo
+central (`agent-pipeline`) y barre SOLO los comentarios de ese repo: no se
+injerta, y barrer finplan o wmcb exigiría un token cross-repo que no
+existe (AP-066, medido; residual (a) de AP-074). El belt, en cambio, SÍ se
+injerta y actuará en el repo donde corras. Léelo en la dirección
+incómoda: **si estás corriendo en finplan o en wmcb, tu prosa NO está
+calibrada por nada** — el belt la leerá con un vocabulario que se midió
+contra la prosa de otro repo. Que el CI del central esté verde no dice
+nada sobre tu comentario de hoy. No hay red debajo; la regla operativa de
+abajo es toda la que hay. Dos consecuencias, según dónde estés:
+
+1. **En el repo central: una materialización que el belt derive de tu
+   prosa y que nadie haya adjudicado pone ROJO el CI.** El rojo no juzga
+   si el destino era el correcto —no puede—: muerde sobre TODA
+   materialización nueva sin adjudicar, incluida una declaración
+   cross-issue perfectamente legítima. No es una sanción a tu prosa: es
+   que la lectura del belt sobre prosa real nueva se adjudica antes de que
+   el belt actúe sobre ella. Si tu declaración era legítima, se sella y
+   queda registrada; si no lo era, el arreglo va en el módulo, no en ti.
+   **En finplan y en wmcb este punto no aplica: ahí no hay ledger, ni
+   barrido, ni rojo — solo el belt.**
 2. **Tocar el vocabulario del belt sin volver a medirlo contra prosa
    real también pone rojo el CI.** La calibración está anclada al hash
    del módulo: cambiar una regex CADUCA la adjudicación y el gate exige

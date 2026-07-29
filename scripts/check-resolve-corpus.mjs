@@ -42,6 +42,17 @@
 //        deliberada — el coste de un rojo de más es un renglón de ledger; el de un
 //        rojo de menos es que el belt escriba donde no debía, que el módulo califica
 //        como el peor fallo de su clase.
+//        L2 NO TIENE LA ASIMETRÍA DE L1, y hay que decirlo donde se lee: el rojo
+//        (ii) es GLOBAL AL REPO, no al PR. Lo dispara prosa nueva de CUALQUIERA,
+//        luego pone rojo el check de cualquier PR abierto —incluido uno que no
+//        toca nada de esto— hasta que alguien selle y pushee el ledger. Y el
+//        emisor más probable no es el resolver: el corpus se filtra por marcador
+//        de CAPA, que llevan también los ~14 post-steps deterministas hermanos
+//        (entre ellos el diag de rectificación en vuelo de AP-055, que interpola
+//        encabezados ARBITRARIOS de `decisions.md`, con `#N` dentro). Desbloqueo:
+//        `--sellar` + commit del ledger. Es fricción ACEPTADA, no un descuido —
+//        acotarlo (p. ej. a comentarios posteriores a la fecha del sello)
+//        reintroduciría la ventana ciega que la sonda existe para cerrar.
 //
 // EL SELLO NO SE PUEDE FALSIFICAR DESDE UN TECLADO. `--sellar` reescribe el ledger
 // SOLO si L2 ha corrido de verdad en esa misma invocación; sin red se niega y lo
@@ -67,6 +78,11 @@ const require = createRequire(import.meta.url);
 const SELLAR = process.argv.includes('--sellar');
 const LEDGER = 'docs/corpus/resolve-cross-issue-corpus.json';
 const MAX_PAGINAS = 20;          // 2000 comentarios; el truncado es ANUNCIADO
+// Por página, no agregado. El peor caso teórico (20 páginas lentas-pero-vivas) son
+// 5 min; el MEDIDO en el runner es 601 comentarios en 7 páginas y **2,4 s de reloj
+// para el proceso entero** (2026-07-29), dos órdenes de magnitud por debajo. No se
+// añade presupuesto global mientras la medida siga ahí: el fail-open que lo
+// absorbería ya existe, y un timeout de más es un parámetro que nadie recalibra.
 const TIMEOUT_MS = 15000;
 const TOPE_AVISOS = 12;          // los avisos nominales también se truncan diciéndolo
 
@@ -143,11 +159,24 @@ function repoDelRun() {
   return null;
 }
 
+// `direction=desc` NO es cosmético y no se toca sin leer esto (🟡 4 de la review
+// de AP-074). El barrido tiene tope, luego algún día TRUNCA; lo que se decide con
+// el orden es QUÉ mitad se pierde al truncar. En `asc` se pierden los comentarios
+// MÁS NUEVOS — que son exactamente los que esta sonda existe para ver: «el banco
+// fija lo ya adjudicado; la sonda encuentra lo que aún no lo está». Sería un rojo
+// de MENOS —el lado que este diseño declara caro— y además silencioso, porque el
+// truncado no puede poner rojo. En `desc` lo que cae fuera son entradas antiguas
+// YA selladas, y su caída degrada al aviso nominal que ya existe («entrada sellada
+// que ya no aparece en el corpus»). El fail-open se mueve al lado barato.
+// Y no es una opinión nueva: el MÓDULO que esta sonda calibra ya pagina así, con
+// ese porqué escrito (`resolve-cross-issue-failsafe.cjs:261-266`, «el truncado
+// tiene que morder por el extremo que NO importa»). La sonda nació contradiciendo
+// en su paginación al belt cuya paginación mide; ahora coinciden.
 async function barrer(repoSlug, token) {
   const comentarios = [];
   let truncado = false;
   for (let page = 1; page <= MAX_PAGINAS; page++) {
-    const url = `https://api.github.com/repos/${repoSlug}/issues/comments?per_page=100&page=${page}&sort=created&direction=asc`;
+    const url = `https://api.github.com/repos/${repoSlug}/issues/comments?per_page=100&page=${page}&sort=created&direction=desc`;
     const cab = { Accept: 'application/vnd.github+json', 'User-Agent': 'check-resolve-corpus' };
     if (token) cab.Authorization = `Bearer ${token}`;
     const r = await fetch(url, { headers: cab, signal: AbortSignal.timeout(TIMEOUT_MS) });
@@ -184,7 +213,7 @@ if (!repoSlug) {
   const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN || null;
   try {
     const { comentarios, truncado } = await barrer(repoSlug, token);
-    if (truncado) aviso(`el barrido tocó el tope de ${MAX_PAGINAS} páginas en ${repoSlug}: hay comentarios SIN mirar. Sube \`MAX_PAGINAS\`.`);
+    if (truncado) aviso(`el barrido tocó el tope de ${MAX_PAGINAS} páginas en ${repoSlug}: hay comentarios ANTIGUOS sin mirar (el orden es \`desc\`, luego la prosa NUEVA sí entró entera). Sube \`MAX_PAGINAS\`.`);
     vivo = { comentarios, truncado, autenticado: !!token };
   } catch (e) {
     // Fail-open ANUNCIADO: sin red, sin token en un repo privado o con el rate
@@ -270,7 +299,8 @@ if (vivo) {
 
   console.log(
     `check-resolve-corpus · barrido vivo: ${vivo.comentarios.length} comentarios de ${repoSlug}, ` +
-    `${capa.length} con marcador de capa en línea propia${vivo.autenticado ? '' : ' (sin token)'}.`
+    `${capa.length} con marcador de capa en línea propia${vivo.autenticado ? '' : ' (sin token)'}` +
+    `${vivo.truncado ? ' · TRUNCADO por el tope de páginas: la cola antigua quedó fuera' : ''}.`
   );
 }
 
@@ -294,13 +324,21 @@ if (SELLAR) {
   };
   mkdirSync(dirname(LEDGER), { recursive: true });
   writeFileSync(LEDGER, JSON.stringify(salida, null, 2) + '\n');
-  console.log(`check-resolve-corpus: sellado ${LEDGER} — módulo ${fuenteSha.slice(0, 12)}, ${salida.entradas.length} entrada(s) adjudicada(s).`);
+  console.log(
+    `check-resolve-corpus: sellado ${LEDGER} — módulo ${fuenteSha.slice(0, 12)}, ${salida.entradas.length} entrada(s) adjudicada(s)` +
+    `${vivo.truncado ? ' · sobre un barrido TRUNCADO: lo sellado NO es el corpus entero (falta la cola antigua)' : ''}.`
+  );
   process.exit(0);
 }
 
 const materializan = (ledger?.entradas || []).filter((e) => e.veredicto && e.veredicto.materializa.length).length;
+// `truncado` ENTRA en la línea de resumen y no solo en el `::warning`: un «verde»
+// que no distingue barrido completo de barrido truncado se lee como cobertura
+// total, que es la lectura falsa de #166 servida por el propio gate que la cierra.
+const truncado = (vivo && vivo.truncado) || !!(ledger && ledger.barrido && ledger.barrido.truncado);
 console.log(
   `check-resolve-corpus verde: calibración VIGENTE contra ${fuente} (${fuenteSha.slice(0, 12)}), ` +
   `${(ledger?.entradas || []).length} comentario(s) real(es) adjudicado(s), ${materializan} materializaría(n)` +
-  `${vivo ? '' : ' · barrido vivo OMITIDO (ver aviso)'}.`
+  `${vivo ? '' : ' · barrido vivo OMITIDO (ver aviso)'}` +
+  `${truncado ? ' · barrido TRUNCADO (no es el corpus entero; ver aviso)' : ''}.`
 );
