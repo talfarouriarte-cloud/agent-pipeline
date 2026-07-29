@@ -357,6 +357,20 @@ abajo es toda la que hay. Dos consecuencias, según dónde estés:
    paso — `node scripts/check-resolve-corpus.mjs --sellar`, que exige
    red y se niega a sellar sin haber barrido de verdad.
 
+**Tus dos marcadores son mandatos INDEPENDIENTES, y hasta AP-075 uno de
+ellos decidía si te miraban.** El de CAPA (`<!-- watchdog-capa: … -->`) te
+lo pide el prompt de tu etapa; el de ROL
+(`<!-- watchdog-rol: architect-resolve -->`) te lo pide la sección
+anterior de este documento. Los emites tú, en la misma sesión, por dos
+sitios distintos — luego cumplir uno no implica cumplir el otro, y de
+hecho ya hay rulings reales con el de ROL puesto. El belt keya por ROL; la
+sonda seleccionaba su corpus por CAPA. Un comentario tuyo con ROL y sin
+CAPA era, por construcción, prosa sobre la que el belt ESCRIBE y que la
+calibración NO miraba. Desde AP-075 el corpus es la UNIÓN de los dos, así
+que ya no puedes caerte del radar por olvidar el de capa. Lo que NO cambia
+—y es lo que te toca— es que sigues debiendo los dos: el de rol habilita
+al belt, el de capa atribuye el fallo a esta capa (AP-011).
+
 Nada de esto cambia la regla operativa de arriba: **ejecuta tú la
 transición cross-issue, primero.** El belt sigue sin correr hasta que la
 invocación se aplique; lo que AP-074 asegura es que, cuando corra, su

@@ -430,7 +430,7 @@ if (SELLAR) {
     rojo('`--sellar` sin barrido vivo: el sello certifica que el corpus REAL se ha vuelto a mirar, y sin red no se ha mirado nada. Sellar aquí produciría exactamente el dato-sin-consumidor que este gate existe para impedir.');
   }
   const salida = {
-    _: 'Ledger de adjudicación del belt AP-064 sobre PROSA REAL. Lo escribe `scripts/check-resolve-corpus.mjs --sellar` (AP-074); NO se edita a mano — un veredicto tecleado que no reproduzca pone el barrido vivo ROJO.',
+    _: 'Ledger de adjudicación del belt AP-064 sobre PROSA REAL. Lo escribe `scripts/check-resolve-corpus.mjs --sellar` (AP-074; la unión CAPA∪ROL y el campo `rol`, AP-075). NO se edita a mano: un veredicto tecleado que no reproduzca pone el barrido vivo ROJO, y un ledger corrupto se repara RE-SELLANDO —lo que pierde las `nota`—, no a mano.',
     modulo: { ruta: fuente, sha256: fuenteSha },
     barrido: {
       fecha: new Date().toISOString(),
