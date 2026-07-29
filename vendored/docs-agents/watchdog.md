@@ -319,6 +319,49 @@ solo un lector humano). El aviso mide la CAPA, no el rol: si lo dispara un
 post-step determinista hermano, es ruido esperado y la atribución se
 resuelve abriendo el comentario citado.
 
+**Tu prosa ES el corpus de calibración (2026-07-29, AP-074).** El belt
+decide leyendo español con un vocabulario anclado, y ese vocabulario se
+calibró por primera vez contra prosa REAL en AP-073 — con el resultado
+de encontrar un falso positivo que 28 casos sintéticos no vieron: un
+ruling tuyo que REPORTABA un arm perdido se leía como su declaración, y
+el belt habría armado un issue que nadie pidió. Desde AP-074 esa sonda
+no es un gesto de una sesión: `scripts/check-resolve-corpus.mjs` re-deriva
+sobre los comentarios reales y contrasta el resultado con un ledger de
+adjudicación sellado.
+
+**DÓNDE, y esto te toca antes que nada.** Ese script vive SOLO en el repo
+central (`agent-pipeline`) y barre SOLO los comentarios de ese repo: no se
+injerta, y barrer finplan o wmcb exigiría un token cross-repo que no
+existe (AP-066, medido; residual (a) de AP-074). El belt, en cambio, SÍ se
+injerta y actuará en el repo donde corras. Léelo en la dirección
+incómoda: **si estás corriendo en finplan o en wmcb, tu prosa NO está
+calibrada por nada** — el belt la leerá con un vocabulario que se midió
+contra la prosa de otro repo. Que el CI del central esté verde no dice
+nada sobre tu comentario de hoy. No hay red debajo; la regla operativa de
+abajo es toda la que hay. Dos consecuencias, según dónde estés:
+
+1. **En el repo central: una materialización que el belt derive de tu
+   prosa y que nadie haya adjudicado pone ROJO el CI.** El rojo no juzga
+   si el destino era el correcto —no puede—: muerde sobre TODA
+   materialización nueva sin adjudicar, incluida una declaración
+   cross-issue perfectamente legítima. No es una sanción a tu prosa: es
+   que la lectura del belt sobre prosa real nueva se adjudica antes de que
+   el belt actúe sobre ella. Si tu declaración era legítima, se sella y
+   queda registrada; si no lo era, el arreglo va en el módulo, no en ti.
+   **En finplan y en wmcb este punto no aplica: ahí no hay ledger, ni
+   barrido, ni rojo — solo el belt.**
+2. **Tocar el vocabulario del belt sin volver a medirlo contra prosa
+   real también pone rojo el CI.** La calibración está anclada al hash
+   del módulo: cambiar una regex CADUCA la adjudicación y el gate exige
+   re-correr la sonda. Si abres ese PR (§ anterior), cuenta con ese
+   paso — `node scripts/check-resolve-corpus.mjs --sellar`, que exige
+   red y se niega a sellar sin haber barrido de verdad.
+
+Nada de esto cambia la regla operativa de arriba: **ejecuta tú la
+transición cross-issue, primero.** El belt sigue sin correr hasta que la
+invocación se aplique; lo que AP-074 asegura es que, cuando corra, su
+lectura del español haya sido medida y no supuesta.
+
 ## Heartbeat — quién vigila al vigilante
 
 `watchdog-heartbeat.yml` (cron propio desplazado, cero LLM) revive este

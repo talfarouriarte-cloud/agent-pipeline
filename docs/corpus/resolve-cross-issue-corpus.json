@@ -1,0 +1,165 @@
+{
+  "_": "Ledger de adjudicación del belt AP-064 sobre PROSA REAL. Lo escribe `scripts/check-resolve-corpus.mjs --sellar` (AP-074); NO se edita a mano — un veredicto tecleado que no reproduzca pone el barrido vivo ROJO.",
+  "modulo": {
+    "ruta": "vendored/scripts/resolve-cross-issue-failsafe.cjs",
+    "sha256": "523e36f2c7c4c2ea046bda44d8d404d7a93f79b8f30a0caeb22c0f115aefa4db"
+  },
+  "barrido": {
+    "fecha": "2026-07-29T09:28:31.294Z",
+    "repo": "talfarouriarte-cloud/agent-pipeline",
+    "comentarios": 597,
+    "con_marcador_de_capa": 13,
+    "autenticado": true,
+    "truncado": false
+  },
+  "entradas": [
+    {
+      "id": 5090560240,
+      "url": "https://github.com/talfarouriarte-cloud/agent-pipeline/issues/125#issuecomment-5090560240",
+      "host": 125,
+      "cuerpo_sha256": "4c2dc267d369ecf6e38d2b338d7965b6e02129183533a6183381deb26802e8cc",
+      "veredicto": {
+        "materializa": [],
+        "avisos": []
+      },
+      "nota": ""
+    },
+    {
+      "id": 5090563396,
+      "url": "https://github.com/talfarouriarte-cloud/agent-pipeline/issues/131#issuecomment-5090563396",
+      "host": 131,
+      "cuerpo_sha256": "710c4840bcf764f2bcf1a740470ab3ea53abf2dda5e1649d5232f8954cd9adbe",
+      "veredicto": {
+        "materializa": [],
+        "avisos": []
+      },
+      "nota": ""
+    },
+    {
+      "id": 5090571874,
+      "url": "https://github.com/talfarouriarte-cloud/agent-pipeline/issues/129#issuecomment-5090571874",
+      "host": 129,
+      "cuerpo_sha256": "d7557880b8b374d04141ca0142affdc0bb4aad0110e943fecc6b1a1b714b4554",
+      "veredicto": {
+        "materializa": [],
+        "avisos": []
+      },
+      "nota": ""
+    },
+    {
+      "id": 5090588098,
+      "url": "https://github.com/talfarouriarte-cloud/agent-pipeline/issues/128#issuecomment-5090588098",
+      "host": 128,
+      "cuerpo_sha256": "d309206aa2a06f7f00b22713bff29897b58adc029cc574d73b050ab05c7e3c16",
+      "veredicto": {
+        "materializa": [],
+        "avisos": []
+      },
+      "nota": ""
+    },
+    {
+      "id": 5090592300,
+      "url": "https://github.com/talfarouriarte-cloud/agent-pipeline/issues/142#issuecomment-5090592300",
+      "host": 142,
+      "cuerpo_sha256": "755213c4e85c4d2010ef3c630341e8b62258d1c0c8b4b21b7fd4087bdfcc7efd",
+      "veredicto": {
+        "materializa": [],
+        "avisos": [
+          "negada/condicional/pospuesta"
+        ]
+      },
+      "nota": ""
+    },
+    {
+      "id": 5095152901,
+      "url": "https://github.com/talfarouriarte-cloud/agent-pipeline/pull/153#issuecomment-5095152901",
+      "host": 153,
+      "cuerpo_sha256": "725cc775400afeda1dba6e74c9030b5f5657b24b8f02e036451f7b37df245860",
+      "veredicto": {
+        "materializa": [],
+        "avisos": []
+      },
+      "nota": ""
+    },
+    {
+      "id": 5099239219,
+      "url": "https://github.com/talfarouriarte-cloud/agent-pipeline/pull/157#issuecomment-5099239219",
+      "host": 157,
+      "cuerpo_sha256": "d56d4b82cb0ff4a24a92bd27941890800437423f84463970fc0100e913c06941",
+      "veredicto": {
+        "materializa": [],
+        "avisos": []
+      },
+      "nota": ""
+    },
+    {
+      "id": 5100097867,
+      "url": "https://github.com/talfarouriarte-cloud/agent-pipeline/pull/157#issuecomment-5100097867",
+      "host": 157,
+      "cuerpo_sha256": "be19522ee3e4b25ca763fbf45214424bfaf8f267e87966109936b8ecdb94b2f2",
+      "veredicto": {
+        "materializa": [],
+        "avisos": []
+      },
+      "nota": ""
+    },
+    {
+      "id": 5100152629,
+      "url": "https://github.com/talfarouriarte-cloud/agent-pipeline/pull/157#issuecomment-5100152629",
+      "host": 157,
+      "cuerpo_sha256": "e858576cf107ef51514560a6571c2a9c1f191bc3b94f5c3cf8756cf8f46087b3",
+      "veredicto": {
+        "materializa": [],
+        "avisos": []
+      },
+      "nota": ""
+    },
+    {
+      "id": 5101196578,
+      "url": "https://github.com/talfarouriarte-cloud/agent-pipeline/pull/157#issuecomment-5101196578",
+      "host": 157,
+      "cuerpo_sha256": "d7d7c3895a999a1db8b7f88619954db25a30daccdc81906bc5455b97706b756a",
+      "veredicto": {
+        "materializa": [],
+        "avisos": []
+      },
+      "nota": ""
+    },
+    {
+      "id": 5101287228,
+      "url": "https://github.com/talfarouriarte-cloud/agent-pipeline/pull/157#issuecomment-5101287228",
+      "host": 157,
+      "cuerpo_sha256": "69c554520bcda29efcc5e4eb09a36c713ac7c2b30fe0037736195526d0d33677",
+      "veredicto": {
+        "materializa": [],
+        "avisos": []
+      },
+      "nota": ""
+    },
+    {
+      "id": 5107010600,
+      "url": "https://github.com/talfarouriarte-cloud/agent-pipeline/issues/166#issuecomment-5107010600",
+      "host": 166,
+      "cuerpo_sha256": "86adb4f86f0276e12b73df5f74a3fd7f01529f28e2866a89d6d0061295b5a604",
+      "veredicto": {
+        "materializa": [],
+        "avisos": [
+          "reporte-de-fallo",
+          "reporte-de-fallo"
+        ]
+      },
+      "nota": ""
+    },
+    {
+      "id": 5110747160,
+      "url": "https://github.com/talfarouriarte-cloud/agent-pipeline/issues/166#issuecomment-5110747160",
+      "host": 166,
+      "cuerpo_sha256": "644ea6e176d2362a2cd1d047605b0b49d59b59b2f2dc21d997583e2ed5559038",
+      "veredicto": {
+        "materializa": [],
+        "avisos": []
+      },
+      "nota": ""
+    }
+  ]
+}
