@@ -266,8 +266,20 @@ a `rerun-failed-jobs`. Si algo de eso ya no se cumple, no actúa y lo dice.
 **Cap 1 por PR y head SHA, y la escalada es INCONDICIONAL.** Declara el
 ruling **una sola vez por head**: si ya lo declaraste sobre este mismo head
 —lleve el PR el marcador `watchdog-resolve-rerun-materializado: <headSha>` o
-no— **no lo re-declares**. La condición es «ya declaré», no «veo el
-marcador», y la diferencia importa: el post-step tiene frentes que fallan en
+no— **no lo re-declares**.
+
+*Cómo lo compruebas*, porque cada tick tuyo es una sesión nueva y **no
+recuerdas nada**: «ya declaré» no es un hecho que tengas, es un hecho que
+DERIVAS del hilo. Busca en los comentarios del PR uno **tuyo anterior** que
+lleve `<!-- watchdog-resolve-rerun -->` **en línea propia** —citado entre
+backticks o dentro de un bloque cercado NO cuenta, que es el mismo criterio
+con el que el belt lo lee (clase AP-063: EFECTUAR ≠ CITAR)— y que sea
+**posterior al último push** del head vigente (un push nuevo es un rojo
+nuevo y merece su propio intento). Si lo encuentras, ya declaraste sobre
+este head: no re-declares. Si no, declara.
+
+La condición es «ya declaré», no «veo el marcador
+`-materializado`», y la diferencia importa: el post-step tiene frentes que fallan en
 silencio (barrido caído, `IN_CI_WF` vacío, comentarios ilegibles, el propio
 `rerun-failed-jobs` denegado, el módulo no injertado), y en todos ellos el
 rojo sigue ahí sin marcador ninguno. Condicionar la escalada a ver el

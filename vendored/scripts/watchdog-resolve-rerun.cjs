@@ -24,9 +24,10 @@
 // procedimental barato al final). El patrón de la casa es «materializar lo
 // DECLARADO» (AP-064): el resolver declara el ruling con un marcador anclado y
 // un paso determinista lo ejecuta al cerrar el job. Cero ampliación del
-// allowlist, cero permiso nuevo (la escritura sale por el MISMO PAT que ya usa
-// el post-step hermano de esta etapa) y el remedio deja de depender de que la
-// sesión llegue viva al final.
+// allowlist, cero permiso nuevo (la escritura sale por el `GITHUB_TOKEN` del
+// job, cuyo `actions: write` ya existía y es el MISMO camino por el que el
+// detector re-lanza jobs fallidos en su retry 1/1) y el remedio deja de
+// depender de que la sesión llegue viva al final.
 //
 // LO QUE ESTE BELT NO HACE. No decide nada: no clasifica el rojo, no juzga si
 // el flaky es de contención. Eso lo rula el resolver leyendo el log. Aquí solo
@@ -76,7 +77,7 @@ const CERCA = /^[ \t]*(?:`{3,}|~{3,})[^\n]*\n[\s\S]*?^[ \t]*(?:`{3,}|~{3,})[^\n]
 const INLINE = /`+[^`\n]*`+/g;
 
 const MARK = (sha) => `<!-- watchdog-resolve-rerun-materializado: ${sha} -->`;
-const MAX = 3;            // tope duro de re-runs materializados por corrida
+const MAX = 3;            // tope duro de re-runs EJECUTADOS por corrida (se cuenta donde ocurre la llamada, no donde cuaja el marcador)
 const MAX_PAGS = 10;      // tope de páginas del barrido fresco
 const RESPALDO_MIN = 40;  // ventana de respaldo si `run_started_at` es ilegible
 
@@ -164,7 +165,7 @@ async function run({ github, context, core, skipLabels }) {
 
   let hechos = 0;
   for (const [n, decl] of candidatos) {
-    if (hechos >= MAX) { core.warning(`resolve-rerun: tope MAX=${MAX} alcanzado en esta corrida — el resto de rulings se recogen en el tick siguiente.`); break; }
+    if (hechos >= MAX) { core.warning(`resolve-rerun: tope MAX=${MAX} re-runs EJECUTADOS en esta corrida — el resto de rulings se recogen en el tick siguiente.`); break; }
 
     let pr;
     try { pr = (await github.rest.pulls.get({ owner, repo, pull_number: n })).data; }
@@ -181,7 +182,18 @@ async function run({ github, context, core, skipLabels }) {
     catch (e) { core.warning(`resolve-rerun: comentarios de #${n} ilegibles (${e.message}) — fail-closed: sin poder leer el cap, no se re-lanza.`); continue; }
     // Cap 1 por PR y head SHA. Se cuenta sobre TODO el historial (no sobre la
     // ventana): el cap es por head, y un head vive más que un job.
-    if (cs.some((c) => String(c.body || '').includes(MARK(head)))) {
+    //
+    // Se lee sobre el texto DESPOJADO, igual que el ruling y por la misma razón
+    // (clase AP-063: EFECTUAR ≠ CITAR). La dirección del fallo aquí es la
+    // segura —una cita quemaría el cap y el belt NO re-lanzaría—, pero el
+    // escenario no es exótico: una review o un informe de Auditor que cite
+    // `watchdog-resolve-rerun-materializado: <sha>` en prosa inhibiría el belt
+    // sobre ese head, y este fichero argumenta la regla contraria doce líneas
+    // más arriba (🔵 4 de la review). Lo que NO se exige aquí es el ancla a
+    // inicio de línea: es deliberado y el fail sigue siendo cerrado — el
+    // marcador lleva el head SHA completo, luego una coincidencia accidental
+    // fuera de una cita literal no existe.
+    if (cs.some((c) => despojar(c.body).includes(MARK(head)))) {
       core.notice(`resolve-rerun: #${n} — cap 1 agotado para el head ${head.slice(0, 7)}; el cortacircuito (stalled ⇒ human-needed) queda intacto.`);
       continue;
     }
@@ -215,6 +227,12 @@ async function run({ github, context, core, skipLabels }) {
       core.warning(`resolve-rerun: #${n} — \`rerun-failed-jobs\` sobre el run ${ci.id} falló (${e.message}); NO se afirma el re-run y NO se deja marcador: el cap sigue libre para el tick siguiente.`);
       continue;
     }
+    // El contador se incrementa DONDE OCURRE la llamada, no donde cuaja el
+    // marcador (🔵 5 de la review): `MAX` es un tope de re-runs EJECUTADOS, y
+    // contarlo tras el `createComment` lo desacoplaba de lo que realmente se
+    // había lanzado — con los dos intentos de comentario caídos sobre dos PRs
+    // distintos, una corrida podía llegar a 4 re-runs reales con `MAX = 3`.
+    hechos++;
 
     // A partir de aquí el re-run YA ocurrió, y el comentario es el ÚNICO
     // soporte del cap: si se pierde, un run concurrente del watchdog (la
@@ -241,8 +259,10 @@ async function run({ github, context, core, skipLabels }) {
         core.warning(`resolve-rerun: #${n} — el marcador del cap NO se pudo publicar (${e2.message}) con el re-run YA ejecutado sobre ${head.slice(0, 7)}: el cap 1 queda SIN soporte y un run concurrente podría re-lanzar una segunda vez sobre ese mismo head. Es el único frente en que este belt puede pasarse de la raya; queda dicho, nunca en silencio.`);
       }
     }
+    // `marcado` gobierna SOLO este aviso: sin marcador publicado no se declara
+    // «ruling materializado» (sería un rastro falso al Auditor sobre un cap sin
+    // soporte), pero el re-run ya está contado arriba porque ya ocurrió.
     if (!marcado) continue;
-    hechos++;
     core.warning(`resolve-rerun: #${n} — ruling materializado (run ${ci.id} re-lanzado sobre ${head.slice(0, 7)}).`);
   }
 }

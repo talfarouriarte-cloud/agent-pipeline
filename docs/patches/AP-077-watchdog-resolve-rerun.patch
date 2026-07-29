@@ -27,10 +27,19 @@
 # Aplicar este parche es, por tanto, un acto ÚNICO: los arreglos posteriores del
 # belt no vuelven a pasar por aquí.
 #
-# CERO permiso nuevo y CERO entrada de allowlist. El paso escribe con el mismo
-# PAT (`REVIEWER_GITHUB_TOKEN`) que el post-step hermano de la etapa, así que el
-# re-run sale con autoría del humano — exactamente el rescate manual que
-# automatiza. El `actions: write` del job ya existía (ADR-217 §7).
+# CERO permiso nuevo y CERO entrada de allowlist. El paso escribe con el
+# `GITHUB_TOKEN` del job, cuyo `actions: write` ya existía (ADR-217 §7,
+# `watchdog.yml:1320`) y que es el MISMO camino por el que el detector re-lanza
+# jobs fallidos en su retry 1/1 (`watchdog.yml:231` y `:999`, las dos llamadas
+# PROBADAS a `reRunWorkflowFailedJobs` del fichero, ambas sin `github-token:`).
+# NO el PAT (🟡 1 de la review): el bloque `permissions:` gobierna el
+# `GITHUB_TOKEN`, no un secreto de usuario, y la capacidad Actions-write del PAT
+# no consta medida en ninguna parte — el corpus dice lo contrario (AP-066,
+# `docs/decisions.md:1787`: «en cualquier consumidor cuyo PAT no lea Actions,
+# ese belt está inerte»). Con el PAT, un 403 habría convertido la denegación de
+# hoy en un `::warning`: el mismo episodio con otro nombre. La autoría humana es
+# cosmética para un RE-RUN —no nace evento que el anti-loop tenga que dejar
+# pasar— y el comentario del belt no despierta a nadie (sin `@claude`).
 #
 # CONVIVENCIA CON EL PARCHE DE AP-064. Los dos tocan este fichero y NINGUNO de
 # sus hunks se solapa, a propósito: el hunk de prompt de AP-077 está en el
@@ -54,7 +63,7 @@ diff --git a/.github/workflows/watchdog.yml b/.github/workflows/watchdog.yml
 index 369b9f3..540f691 100644
 --- a/.github/workflows/watchdog.yml
 +++ b/.github/workflows/watchdog.yml
-@@ -1372,9 +1372,22 @@ jobs:
+@@ -1372,9 +1372,26 @@ jobs:
              el test y decide: si el fallo es atribuible al PR, ping-creator en
              el PR con el log relevante citado y la instrucción de corregir;
              si es un flaky ajeno al PR (pasa en local / falla intermitente en
@@ -74,13 +83,17 @@ index 369b9f3..540f691 100644
 +            El ruling se declara UNA sola vez por head: si ya lo declaraste
 +            sobre este mismo head —lo lleve el PR materializado o no, porque
 +            el post-step tiene frentes que fallan en silencio— NO lo
-+            re-declares. Y si reincide aplica label `stalled` + diagnóstico
-+            SIN @claude: esa escalada es INCONDICIONAL y no depende de que el
-+            re-run llegara a ocurrir.
++            re-declares. No tienes memoria entre ticks, así que «ya lo
++            declaraste» no lo recuerdas: lo COMPRUEBAS en el hilo del PR —un
++            comentario tuyo anterior con ese marcador en LÍNEA PROPIA (citado
++            entre backticks o dentro de un bloque NO cuenta, AP-063) y
++            posterior al último push del head vigente—. Y si reincide aplica
++            label `stalled` + diagnóstico SIN @claude: esa escalada es
++            INCONDICIONAL y no depende de que el re-run llegara a ocurrir.
              Cuenta como re-arm a efectos del cap.
  
              Tipo `stalled-autonomous-resolve` (régimen autónomo 2026-07-07,
-@@ -1413,6 +1426,57 @@ jobs:
+@@ -1413,6 +1430,66 @@ jobs:
              cadena, respetando el cap de reintentos y las prohibiciones del
              rol. Si un item no necesita acción, dilo y no toques nada.
  
@@ -110,9 +123,18 @@ index 369b9f3..540f691 100644
 +        # `workflows` (ADR-020), luego el código embebido en este fichero sería
 +        # intocable para un agente. Aquí solo queda la invocación.
 +        #
-+        # CERO permiso nuevo: escribe con el MISMO PAT que el post-step de
-+        # abajo, así que el re-run sale con autoría del humano — exactamente el
-+        # rescate manual que este paso automatiza.
++        # CERO permiso nuevo: escribe con el `GITHUB_TOKEN` del job, cuyo
++        # `actions: write` ya existía (ADR-217 §7) y que es el MISMO camino por
++        # el que el detector re-lanza jobs fallidos en su retry 1/1 (`:231` y
++        # `:999`, las dos llamadas PROBADAS del fichero, ambas sin
++        # `github-token:`). NO el PAT: `permissions:` gobierna el
++        # `GITHUB_TOKEN`, no un secreto de usuario, y la capacidad
++        # Actions-write del PAT no consta medida — AP-066 dice lo contrario
++        # («donde el PAT no lea Actions, ese belt está inerte»). Con el PAT un
++        # 403 dejaría la denegación de hoy convertida en un `::warning`, que es
++        # el mismo episodio con otro nombre. La autoría humana es cosmética
++        # para un RE-RUN (no nace evento que el anti-loop deba dejar pasar) y
++        # el comentario del belt no despierta a nadie: va sin `@claude`.
 +        if: always()
 +        uses: actions/github-script@v7
 +        env:
@@ -124,7 +146,7 @@ index 369b9f3..540f691 100644
 +          # head vigente: el módulo es fail-closed si llega vacío.
 +          IN_CI_WF: ${{ inputs.ci_workflow_name }}
 +        with:
-+          github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
++          github-token: ${{ github.token }}
 +          script: |
 +            const ruta = `${process.env.GITHUB_WORKSPACE}/scripts/watchdog-resolve-rerun.cjs`;
 +            let belt;

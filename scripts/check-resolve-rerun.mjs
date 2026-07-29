@@ -114,6 +114,7 @@ async function correr({
   comentarioErrPrimero,             // error solo de la PRIMERA llamada (⇒ reintento mínimo)
   barridoErr,
   paginasRelleno = 0,               // páginas extra del barrido (para el tope MAX_PAGS)
+  rulingsExtra = 0,                 // rulings adicionales sobre OTROS PRs (para el tope MAX)
   envCiWf = 'CI',
   envSkip,
   skipLabels,
@@ -133,6 +134,11 @@ async function correr({
     created_at: creadoHace == null ? ahora : new Date(Date.now() - creadoHace).toISOString(),
     updated_at: ahora,
   };
+  // Rulings sobre OTROS PRs, en la misma página: es lo único que deja ejercer
+  // el tope `MAX` de re-runs por corrida (el belt itera candidatos, uno por PR).
+  const otros = Array.from({ length: rulingsExtra }, (_, i) => ({
+    ...comentario, id: 50 + i, issue_url: `https://api.github.com/repos/o/r/issues/${1742 + i}`,
+  }));
   const runs = ciRuns === undefined
     ? [{ id: 777, name: 'CI', status: 'completed', conclusion: 'failure', created_at: ahora }]
     : ciRuns;
@@ -142,17 +148,26 @@ async function correr({
     if (fn === 'listFiles') return ficherosPR;
     return [];
   };
-  // El barrido registra lo que se le PIDE (`params`): con `desc` el truncado
-  // por `MAX_PAGS` muerde lo más antiguo, y el ruling —que es lo más reciente—
-  // llega en la primera página. Las páginas de relleno empujan al belt contra
-  // su tope sin cambiar lo que deriva.
+  // El doble HONRA `direction`, no solo lo registra (🟡 2 de la review). El
+  // ruling es, por construcción, el comentario MÁS RECIENTE de la ventana —este
+  // belt corre al cerrar la etapa que lo emite—, así que en `desc` llega en la
+  // PRIMERA página y en `asc` detrás de todo el relleno, donde el truncado por
+  // `MAX_PAGS` se lo come. Sin esto, el caso del truncado pasaba igual con
+  // `asc` y su nombre prometía una demostración que el instrumento no daba: la
+  // mutación `desc → asc` solo mataba la aserción que mira `params.direction`.
+  // (El banco hermano —`check-resolve-detection.mjs`— resolvió la misma
+  // ambigüedad por la otra vía: fundir las dos aserciones y decirlo. Aquí se
+  // hace load-bearing al nombre, que es la versión que además prueba el corte.)
   paginate.iterator = async function* (_fn, p) {
     params = p;
     if (barridoErr) throw barridoErr;
-    yield { data: [comentario] };
-    for (let i = 0; i < paginasRelleno; i++) {
-      yield { data: [{ id: 100 + i, issue_url: 'https://api.github.com/repos/o/r/issues/9', body: 'relleno', html_url: 'https://example/x', created_at: ahora, updated_at: ahora }] };
-    }
+    const relleno = Array.from({ length: paginasRelleno }, (_, i) => ({
+      data: [{ id: 100 + i, issue_url: 'https://api.github.com/repos/o/r/issues/9', body: 'relleno', html_url: 'https://example/x', created_at: ahora, updated_at: ahora }],
+    }));
+    const paginas = p && p.direction === 'asc'
+      ? [...relleno, { data: [comentario, ...otros] }]     // lo más reciente al final: el corte se come el ruling
+      : [{ data: [comentario, ...otros] }, ...relleno];    // `desc`: el ruling en la primera página
+    for (const pag of paginas) yield pag;
   };
 
   const github = {
@@ -216,6 +231,13 @@ const CONTRATO = [
   ['cap de OTRO head no bloquea este (el cap es por head, no por PR)',
     { comentariosPR: [{ body: '<!-- watchdog-resolve-rerun-materializado: 0000000000000000000000000000000000000000 -->' }] },
     (r) => r.escrituras.join(',') === 'rerun#777,createComment#1741'],
+  // El marcador del cap se lee con el MISMO despojo que el ruling (🔵 4 de la
+  // review): una review o un informe de Auditor que lo cite en prosa inhibía el
+  // belt sobre ese head — fallo cerrado, pero contrario a la regla que el
+  // propio módulo argumenta doce líneas más arriba (clase AP-063).
+  ['marcador del cap CITADO entre backticks NO quema el cap',
+    { comentariosPR: [{ body: `El belt deja \`<!-- watchdog-resolve-rerun-materializado: ${HEAD} -->\` al terminar.` }] },
+    (r) => r.escrituras.join(',') === 'rerun#777,createComment#1741'],
   ['rojo ATRIBUIBLE al diff ⇒ no se re-lanza (esa vía es ping-creator)',
     { anotaciones: [{ annotation_level: 'failure', path: 'src/tocado.ts' }] },
     (r) => r.escrituras.length === 0 && r.avisos.some((a) => /ATRIBUIBLE/.test(a))],
@@ -272,6 +294,12 @@ const CONTRATO = [
   // antiguo. En `asc` el corte se comería justo el ruling — el belt quedaría
   // mudo en el único caso en que hace falta (residual que AP-069/AP-070 ya
   // cerraron para el belt hermano).
+  //
+  // Los DOS casos de abajo mueren con la mutación `desc → asc`, y por vías
+  // distintas: el primero porque mira lo que el belt PIDE, el segundo porque
+  // el doble honra ese `direction` y el corte se come el ruling de verdad
+  // (🟡 2 de la review — antes solo moría el primero, y el nombre del segundo
+  // prometía una demostración que el doble no daba).
   ['el barrido pide `desc` (el truncado muerde lo ANTIGUO, no el ruling)',
     {},
     (r) => r.params && r.params.direction === 'desc' && r.params.per_page === 100],
@@ -291,6 +319,15 @@ const CONTRATO = [
   ['los DOS comentarios caídos ⇒ no se lanza, se dice que el cap queda SIN soporte y NO se declara materializado',
     { comentarioErr: new Error('502') },
     (r) => r.avisos.some((a) => /SIN soporte/.test(a)) && !r.avisos.some((a) => /ruling materializado/.test(a))],
+  // `MAX` es un tope de re-runs EJECUTADOS, y el contador tiene que vivir donde
+  // ocurre la llamada (🔵 5 de la review). Contándolo tras el `createComment`,
+  // cuatro PRs cuyos dos intentos de comentario se caen dan CUATRO re-runs
+  // reales con `MAX = 3`: el guard `if (!marcado) continue` —correcto para no
+  // afirmar lo que no cuajó— desacoplaba el tope de lo que se había lanzado.
+  ['el tope MAX cuenta re-runs EJECUTADOS, no marcadores publicados (4 PRs con el comentario caído ⇒ 3 re-runs, no 4)',
+    { rulingsExtra: 3, comentarioErr: new Error('502') },
+    (r) => r.escrituras.filter((e) => e.startsWith('rerun#')).length === 3
+      && r.avisos.some((a) => /tope MAX=3 re-runs EJECUTADOS/.test(a))],
 ];
 
 for (const [nombre, opts, ok] of CONTRATO) {
@@ -307,4 +344,4 @@ if (errores.length) {
   errores.forEach((e) => console.error('  - ' + e));
   process.exit(1);
 }
-console.log(`check-resolve-rerun verde: ${CASOS_DET.length} casos de detección sobre el par REAL \`despojar\`+\`RULING\` de ${fuente} + ${CONTRATO.length} aserciones de runtime ejecutando \`run\` contra un doble de la API (control que escribe, cap 1 por head SHA, filtro no-atribuible, kill-switch por parámetro y por env, frescura del rojo, ejecutar-antes-de-afirmar y los dos fail-open anunciados).`);
+console.log(`check-resolve-rerun verde: ${CASOS_DET.length} casos de detección sobre el par REAL \`despojar\`+\`RULING\` de ${fuente} + ${CONTRATO.length} aserciones de runtime ejecutando \`run\` contra un doble de la API (control que escribe, cap 1 por head SHA leído con despojo, filtro no-atribuible, kill-switch por parámetro y por env, frescura del rojo, barrido \`desc\` con el doble HONRANDO el \`direction\`, ejecutar-antes-de-afirmar, tope MAX sobre re-runs EJECUTADOS y los dos fail-open anunciados).`);
