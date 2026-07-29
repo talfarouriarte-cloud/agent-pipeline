@@ -16,9 +16,16 @@
 # binario del harness que la action ejecuta (`@anthropic-ai/claude-agent-sdk`
 # 0.3.220):
 #
+#     # La ruta es la del CHECKOUT DE LA ACTION en el runner, no la del repo:
+#     # `npm ci` aquí instala argparse y js-yaml y nada más, luego con ruta
+#     # relativa este transcript NO se re-ejecuta desde la raíz del corpus.
+#     $ A=/home/runner/work/_actions/anthropics/claude-code-action/v1
 #     $ grep -a -o "Do not call the AgentTool[^\"]\{0,60\}" \
-#         node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude
+#         "$A/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude"
 #     Do not call the AgentTool unless the user requested it
+#     $ grep -rn "Do not call the AgentTool" \
+#         "$A/src" "$A/base-action" "$A/scripts" "$A/action.yml"; echo "exit=$?"
+#     exit=1        # cero coincidencias en toda la action
 #
 # Corolario: la opción «habilitar los subagentes en la config del reusable» —la
 # preferida en el issue #187— es MATERIALMENTE IMPOSIBLE. No hay superficie de
