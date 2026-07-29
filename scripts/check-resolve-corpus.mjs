@@ -284,10 +284,17 @@ function repoDelRun() {
 // barrido — en un repo donde los bots comentan todo el rato.
 //
 // La deriva se ANUNCIA (aviso nominal): es información sobre el barrido, no un
-// fallo del corpus. Y la mitad simétrica —un comentario BORRADO a mitad de
-// barrido desplaza el corte hacia delante y SALTA un elemento— no la cierra el
-// dedupe y queda declarada como residual: exige paginación por cursor, no cabe
-// aquí, y su frecuencia es la de los borrados, no la de las altas.
+// fallo del corpus. Y se anuncia en los TRES sitios que la sobreviven —el aviso, el
+// campo `barrido.duplicados` del sello y la línea del verde—, igual que `truncado` y
+// que `fixture`: el conteo es la única señal de que el corpus se MOVIÓ mientras se
+// le miraba, y dejarlo morir en un `::warning` lo devuelve a la memoria de quien
+// corrió el barrido, que es justo de donde este gate lo saca.
+//
+// Y la mitad simétrica —un comentario BORRADO a mitad de barrido desplaza el corte
+// hacia delante y SALTA un elemento— no la cierra el dedupe y queda declarada como
+// residual: exige paginación por cursor, no cabe aquí, y su frecuencia es la de los
+// borrados, no la de las altas. `duplicados` es además su único PROXY observable:
+// las dos son la misma deriva y solo una deja huella.
 async function barrer(repoSlug, token) {
   const porId = new Map();
   let truncado = false;
@@ -349,7 +356,7 @@ if (FIXTURE) {
   try { comentarios = JSON.parse(readFileSync(FIXTURE, 'utf8')); }
   catch (e) { rojo(`el fixture \`${FIXTURE}\` no se puede leer (${e.message}).`); }
   if (!Array.isArray(comentarios)) rojo(`el fixture \`${FIXTURE}\` no es un array de comentarios.`);
-  vivo = { comentarios, truncado: false, autenticado: false };
+  vivo = { comentarios, truncado: false, autenticado: false, duplicados: 0 };
 } else if (!repoSlug) {
   aviso('no puedo derivar el repo del run (`GITHUB_REPOSITORY` ausente y sin remoto `origin` de GitHub) — barrido vivo OMITIDO.');
 } else {
@@ -358,7 +365,7 @@ if (FIXTURE) {
     const { comentarios, truncado, duplicados } = await barrer(repoSlug, token);
     if (truncado) aviso(`el barrido tocó el tope de ${MAX_PAGINAS} páginas en ${repoSlug}: hay comentarios ANTIGUOS sin mirar (el orden es \`desc\`, luego la prosa NUEVA sí entró entera). Sube \`MAX_PAGINAS\`.`);
     if (duplicados) aviso(`el corpus se movió DURANTE el barrido: ${duplicados} comentario(s) repetido(s) en el corte de página (alguien comentó mientras paginábamos en \`desc\`), descartado(s) por \`id\`. Sin el dedupe, el sello saldría con entradas duplicadas y su propia L1 lo declararía corrupto (AP-076).`);
-    vivo = { comentarios, truncado, autenticado: !!token };
+    vivo = { comentarios, truncado, autenticado: !!token, duplicados };
   } catch (e) {
     // Fail-open ANUNCIADO: sin red, sin token en un repo privado o con el rate
     // limit agotado, L2 no puede correr. No es rojo — L1 ya mordió lo que se puede
@@ -501,6 +508,15 @@ if (SELLAR) {
       con_marcador_de_rol_nativo: nativos,
       autenticado: vivo.autenticado,
       truncado: vivo.truncado,
+      // `duplicados` es la ÚNICA señal observable de que el corpus SE MOVIÓ durante
+      // el barrido, y por tanto el único proxy que este gate tiene del SALTO por
+      // borrado —la mitad simétrica de la deriva, residual (a) de AP-076, que es un
+      // rojo de MENOS y por construcción invisible—. Un sello nacido sobre un corpus
+      // en movimiento es precisamente aquel cuya completitud está en duda: si vive
+      // solo en el `::warning` de la corrida que lo produjo, dentro de tres meses
+      // nadie puede saber si el ledger vigente se selló sobre un barrido quieto o
+      // sobre uno derivando (🟡 3 de la review de AP-076).
+      duplicados: vivo.duplicados,
     },
     entradas: entradasNuevas.sort((a, b) => a.id - b.id),
   };
@@ -524,11 +540,16 @@ const rolNativo = (ledger?.entradas || []).filter((e) => e.rol === 'nativo').len
 // que se lee, era indistinguible de uno de producción. Un `::warning` arriba no
 // desmiente un verde abajo: la degradación se dice en la línea que se lee.
 const truncado = (vivo && vivo.truncado) || !!(ledger && ledger.barrido && ledger.barrido.truncado);
+// Y el MISMO argumento para `duplicados`, que además es el único dato que dice si el
+// corpus estaba QUIETO mientras se le miraba: se lee del barrido de hoy o, si hoy no
+// hubo barrido, del que produjo el sello vigente — exactamente como `truncado`.
+const derivado = (vivo && vivo.duplicados) || (ledger && ledger.barrido && ledger.barrido.duplicados) || 0;
 console.log(
   `check-resolve-corpus verde: calibración VIGENTE contra ${fuente} (${fuenteSha.slice(0, 12)}), ` +
   `${(ledger?.entradas || []).length} comentario(s) real(es) adjudicado(s) (${rolNativo} con marcador de ROL NATIVO), ${materializan} materializaría(n)` +
   `${FIXTURE ? ` · corrida de FIXTURE (\`${FIXTURE}\`): NO dice NADA del corpus real` : ''}` +
   `${DOBLE ? ' · corrida con la RED DOBLADA (`scripts/lib/fetch-doble.mjs`): NO dice NADA de ningún repo real' : ''}` +
   `${vivo ? '' : ' · barrido vivo OMITIDO (ver aviso)'}` +
-  `${truncado ? ' · barrido TRUNCADO (no es el corpus entero; ver aviso)' : ''}.`
+  `${truncado ? ' · barrido TRUNCADO (no es el corpus entero; ver aviso)' : ''}` +
+  `${derivado ? ` · el corpus DERIVÓ durante el barrido: ${derivado} comentario(s) repetido(s) en el corte de página, descartado(s) por \`id\`` : ''}.`
 );
