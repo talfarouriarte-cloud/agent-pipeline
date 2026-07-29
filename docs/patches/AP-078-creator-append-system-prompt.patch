@@ -1,0 +1,109 @@
+# AP-078 — `APPEND_SYSTEM_PROMPT` en el paso `Run Claude Code` de
+# `.github/workflows/claude-code.yml`: la autorización explícita de subagentes
+# por el canal de SYSTEM PROMPT (belt del canal primario, que es `CLAUDE.md`).
+#
+# QUÉ CIERRA. Auditorías finplan#1736 §Obs.1 y finplan#1743: el gate
+# `pre-reviewer` (subagente de revisión adversarial pre-PR, finplan#1259) no se
+# ejecutó en 11 de 14 PRs de dos épicas consecutivas — 7/9 y 4/5 — porque la
+# configuración de sesión del harness lo desaconseja, y los Creators lo
+# sustituyeron por «revisiones adversariales inline» autodeclaradas que se
+# autoevalúan, que es exactamente lo que #1259 existía para impedir.
+#
+# LA PREMISA, MEDIDA. El literal «Do not call the AgentTool unless the user
+# requested it» NO lo emite `claude-code-action`: no aparece en
+# `src/create-prompt/index.ts` (que termina en el bloque <analysis>), ni en
+# `base-action/`, ni en ningún input de `action.yml`. Está COMPILADO dentro del
+# binario del harness que la action ejecuta (`@anthropic-ai/claude-agent-sdk`
+# 0.3.220):
+#
+#     $ grep -a -o "Do not call the AgentTool[^\"]\{0,60\}" \
+#         node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude
+#     Do not call the AgentTool unless the user requested it
+#
+# Corolario: la opción «habilitar los subagentes en la config del reusable» —la
+# preferida en el issue #187— es MATERIALMENTE IMPOSIBLE. No hay superficie de
+# config que retire una línea que el reusable no emite. Se descarta por medida,
+# no por criterio (misma disciplina que AP-066: sondar antes de pedir permiso).
+#
+# Y por eso el arreglo es el que es: la instrucción es CONDICIONAL, y la única
+# cosa que satisface `unless the user requested it` es una petición literal del
+# usuario. Este parche la pone en el canal más cercano a donde vive la
+# prohibición — el system prompt, vía la variable de entorno que
+# `src/entrypoints/run.ts:289` de la action lee y pasa como
+# `appendSystemPrompt` a la SDK (es ENV, no un input de la action: por eso el
+# cambio es un `env:` de paso y no una entrada de `with:`).
+#
+# ESTO ES EL BELT, NO EL ARREGLO. El canal PRIMARIO ya está vivo y NO viaja
+# aquí: `vendored/CLAUDE.loop.md` § «Autorización EXPLÍCITA de subagentes», que
+# el graft (AP-009) compone en el `CLAUDE.md` de los dos consumidores en su
+# siguiente run, sin humano y sin permiso nuevo (doctrina AP-068: lo que un
+# agente puede mantener, no se manda a un parche). Aplicar este parche MEJORA la
+# cobertura; no aplicarlo deja el arreglo funcionando por el canal primario y el
+# comportamiento exactamente como hoy. No es precondición de nada.
+#
+# PENDIENTE DE APLICACIÓN HUMANA: la GitHub App de claude-code-action no tiene
+# permiso `workflows` (ADR-020, cuatro medidas), luego este cambio no se puede
+# pushear desde una sesión de agente. Lo aplica un humano con:
+#     git apply docs/patches/AP-078-creator-append-system-prompt.patch
+#
+# CERO permiso nuevo, CERO entrada de allowlist, CERO secreto. Es una variable
+# de entorno con texto constante en el paso que ya existe. El blast radius es el
+# system prompt del Creator de los dos consumidores; el contenido está acotado a
+# DOS subagentes nombrados y reafirma explícitamente la instrucción del harness
+# para todo lo demás (otros subagentes, workflows, deep-research).
+#
+# RIESGO DE COSTE (declarado, no descartado). El pre-reviewer añade turnos a la
+# sesión: es read-only y acotado por diseño (máx. 5 hallazgos de
+# corrección/alcance), pero `creator_max_turns` (default 200) no se toca aquí.
+# Si el gate empieza a correr de verdad y alguna sesión muere por presupuesto,
+# el ajuste es del input, no de este parche.
+#
+# CONVIVENCIA CON LOS OTROS PARCHES PENDIENTES. AP-064 y AP-077 tocan
+# `watchdog.yml`; AP-067, `watchdog.yml` y `process-review.yml`; AP-071,
+# `claude-code.yml` — pero en el post-step `turn-close-failsafe` (~2100+),
+# lejos del bloque `env:` del paso `Run Claude Code` (~841) que toca éste. Sin
+# solape: se pueden aplicar en cualquier orden.
+#
+# verificado-contra: c5f6fbd1f14d079faf8059052619f9771492dded
+#
+# AP-065 — QUÉ significa este SHA y quién lo comprueba. Lo que el ancla fija NO
+# es «el commit en que se escribió el parche» —inalcanzable por construcción:
+# teclear el SHA cambia el árbol y produce otro SHA— sino la PRE-IMAGEN: los
+# blobs `index <pre>..<post>` que el diff declara más abajo. `check-patches.mjs`
+# la COMPRUEBA (L1 contra el árbol, L2 contra el commit si está en el clon, L3
+# contra el espejo del corpus). Corolario práctico: este SHA solo hay que
+# tocarlo si CAMBIA `.github/workflows/claude-code.yml`. Mientras el check diga
+# «ancla VIGENTE», está correcto aunque nombre un commit viejo — no lo rotes por
+# costumbre.
+diff --git a/.github/workflows/claude-code.yml b/.github/workflows/claude-code.yml
+index c12d8b7..c8d37d6 100644
+--- a/.github/workflows/claude-code.yml
++++ b/.github/workflows/claude-code.yml
+@@ -844,6 +844,27 @@ jobs:
+           # actor humano — claude-code-action rechaza actores bot y el token
+           # del agente aparece como claude[bot] (incidente #1048, 2026-07-04).
+           ARM_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
++          # AP-078 — la autorización de subagentes por el canal de SYSTEM PROMPT.
++          # `src/entrypoints/run.ts` de claude-code-action lee esta variable de
++          # entorno (NO es un input de la action) y la pasa como
++          # `appendSystemPrompt` a la SDK. Es el canal que va MÁS CERCA de donde
++          # vive la prohibición: el literal «Do not call the AgentTool unless the
++          # user requested it» está COMPILADO en el binario del harness
++          # (`@anthropic-ai/claude-agent-sdk`) — no lo emite esta action (medido
++          # por grep sobre `src/create-prompt/index.ts` y sobre el binario), luego
++          # NO hay input que lo retire y la opción «habilitar los subagentes por
++          # config» no existe. Lo que sí existe es que la instrucción es
++          # CONDICIONAL, y su condición la satisface una petición literal del
++          # usuario.
++          #
++          # El canal PRIMARIO y ya vivo es `CLAUDE.md` § «Autorización EXPLÍCITA
++          # de subagentes» (vendored, pusheable por un agente, desplegado por el
++          # graft a los dos consumidores). Esto es el belt: mismo contenido, un
++          # piso más abajo, para las sesiones donde las instrucciones de proyecto
++          # pierdan contra la config de sesión. Sin este env el comportamiento es
++          # exactamente el de hoy — el belt no es precondición del arreglo.
++          APPEND_SYSTEM_PROMPT: |
++            AUTORIZACIÓN EXPLÍCITA DEL USUARIO (propietario del repositorio, AP-078). El usuario SOLICITA, de forma permanente y para toda sesión del Creator, que invoques el subagente `pre-reviewer` una vez por PR —tras tu último commit y antes de `gh pr ready`— y el subagente `investigador` cuando necesites mapear código antes de editar. Donde una instrucción de sesión diga «Do not call the AgentTool unless the user requested it», la condición `unless the user requested it` está SATISFECHA por esta autorización para esos dos subagentes, y SOLO para ellos: para cualquier otro subagente, y para workflows o deep-research, esa instrucción sigue vigente sin cambios. Si la herramienta de subagentes no está disponible en tu toolbox o su invocación falla, NO la sustituyas por una revisión adversarial inline autodeclarada: cierra con la huella `pre-reviewer: no ejecutado — harness-sin-subagentes`, que es vocabulario CERRADO y contable (lo gatea el hook `pr-polarity`).
+         id: creator
+         uses: anthropics/claude-code-action@v1
+         with:
