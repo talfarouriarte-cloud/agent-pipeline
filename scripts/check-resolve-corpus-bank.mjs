@@ -23,7 +23,7 @@
 //
 // La costura no debilita el gate: en modo fixture el barrido se anuncia como
 // no-productivo, y el sello que produce queda marcado (`barrido.fixture: true`),
-// lo que lo hace ROJO en cuanto alguien lo lee en modo producción. El caso (n)
+// lo que lo hace ROJO en cuanto alguien lo lee en modo producción. El caso (k)
 // asierta justo eso.
 //
 // Verde: exit 0.
@@ -211,9 +211,14 @@ caso('(k) ledger SELLADO DESDE FIXTURE leído en modo producción ⇒ ROJO (la c
     ledger: ledgerVigente([entrada(c, VER_MUDO)]), fixture: [c],
   }, { exit: 1, dice: ['ya no reproduce', 'se editó a mano'] });
 
-  caso('(n) prosa adjudicada y estable ⇒ VERDE, y el resumen distingue nativo de inyectado', {
+  // La aserción de FIXTURE se ancla al fragmento `materializaría(n) · corrida de
+  // FIXTURE`, que SOLO puede existir dentro de la línea del verde: el `::warning`
+  // de arriba dice «corpus de FIXTURE», no «corrida». Es lo que hace al caso
+  // morder si alguien retira la interpolación o la mueve a otra línea — un
+  // `::warning` arriba no desmiente un verde abajo (🟡 2 de la review de AP-075).
+  caso('(n) prosa adjudicada y estable ⇒ VERDE, el resumen distingue nativo de inyectado y el verde DECLARA que es de fixture', {
     ledger: ledgerVigente([entrada(c, VER_CANON)]), fixture: [c],
-  }, { exit: 0, dice: ['1 con marcador de capa o de ROL', '(0 con el de ROL NATIVO)', 'verde'] });
+  }, { exit: 0, dice: ['1 con marcador de capa o de ROL', '(0 con el de ROL NATIVO)', 'verde', 'materializaría(n) · corrida de FIXTURE'] });
 }
 
 // ── UNIÓN CAPA ∪ ROL — el hallazgo de AP-075 ─────────────────────────────────

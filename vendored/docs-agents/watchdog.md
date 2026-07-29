@@ -367,7 +367,11 @@ hecho ya hay rulings reales con el de ROL puesto. El belt keya por ROL; la
 sonda seleccionaba su corpus por CAPA. Un comentario tuyo con ROL y sin
 CAPA era, por construcción, prosa sobre la que el belt ESCRIBE y que la
 calibración NO miraba. Desde AP-075 el corpus es la UNIÓN de los dos, así
-que ya no puedes caerte del radar por olvidar el de capa. Lo que NO cambia
+que ya no puedes caerte del radar **del central** por olvidar el de capa —
+y léelo con el ámbito del punto 1 de arriba: **en finplan y en wmcb sigue
+sin haber radar del que caerse**, porque allí no hay ledger ni barrido ni
+rojo, solo el belt. Esta unión ensancha lo que el central mira; no crea
+cobertura donde no la había. Lo que NO cambia
 —y es lo que te toca— es que sigues debiendo los dos: el de rol habilita
 al belt, el de capa atribuye el fallo a esta capa (AP-011).
 

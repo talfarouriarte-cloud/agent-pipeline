@@ -329,8 +329,12 @@ if (vivo) {
   // materializa y la sonda no miraba: un rojo de MENOS, el lado que este diseño
   // declara caro. La rama CAPA se conserva entera: incluye los post-steps
   // deterministas hermanos, y eso es una PROPIEDAD, no ruido — si uno de ellos
-  // derivara una materialización, el belt tendría un vecino capaz de disparar su
-  // aviso `sin-marcador-de-rol`.
+  // derivara una materialización, la sonda la VE (rojo (ii)) aunque el belt en
+  // runtime la fuera a descartar por no llevar marcador de ROL. Dicho con
+  // precisión (🔵 2 de la review de AP-075): la clase de aviso
+  // `sin-marcador-de-rol` del módulo NO puede aparecer en el ledger, porque la
+  // sonda inyecta el marcador cuando falta; lo que cubre la rama CAPA es la
+  // materialización, que es un rojo MÁS fuerte que ese aviso, no ese aviso.
   const capa = vivo.comentarios.filter((c) => {
     const d = despoja(c.body);
     return PATRONES.CAPA_MARK.test(d) || PATRONES.ROL.test(d);
@@ -460,10 +464,16 @@ const rolNativo = (ledger?.entradas || []).filter((e) => e.rol === 'nativo').len
 // `truncado` ENTRA en la línea de resumen y no solo en el `::warning`: un «verde»
 // que no distingue barrido completo de barrido truncado se lee como cobertura
 // total, que es la lectura falsa de #166 servida por el propio gate que la cierra.
+// El MISMO argumento, y más fuerte, para `fixture` (🟡 2 de la review de AP-075):
+// los dos guards de la costura protegen el SELLO —el barrido se anuncia y el
+// ledger que produce queda marcado—, pero el VERDE, que es la última línea y la
+// que se lee, era indistinguible de uno de producción. Un `::warning` arriba no
+// desmiente un verde abajo: la degradación se dice en la línea que se lee.
 const truncado = (vivo && vivo.truncado) || !!(ledger && ledger.barrido && ledger.barrido.truncado);
 console.log(
   `check-resolve-corpus verde: calibración VIGENTE contra ${fuente} (${fuenteSha.slice(0, 12)}), ` +
   `${(ledger?.entradas || []).length} comentario(s) real(es) adjudicado(s) (${rolNativo} con marcador de ROL NATIVO), ${materializan} materializaría(n)` +
+  `${FIXTURE ? ` · corrida de FIXTURE (\`${FIXTURE}\`): NO dice NADA del corpus real` : ''}` +
   `${vivo ? '' : ' · barrido vivo OMITIDO (ver aviso)'}` +
   `${truncado ? ' · barrido TRUNCADO (no es el corpus entero; ver aviso)' : ''}.`
 );
