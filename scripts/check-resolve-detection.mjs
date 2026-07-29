@@ -193,6 +193,32 @@ const CASOS = [
   // `escanear` con la rama que sí actúa, así que esta equivalencia no puede
   // derivar (por eso el escaneo se factorizó en vez de duplicarse).
   ['(n) sin rol, con capa, pero en FUTURO ⇒ sin aviso (nada que materializar)', [cmt('Voy a re-armar #1694 en cuanto termine aquí.', { rol: false })], {}, []],
+  // ── AP-073: los cuatro casos siguientes son PROSA REAL, no sintética ──────
+  // Los 4 filtros de polaridad anteriores se calibraron contra frases escritas
+  // para el banco. Al correr esta misma `derivar` sobre los comentarios REALES
+  // de architect-resolve del repo, el ruling de #166 (issuecomment-5107010600)
+  // derivaba un arm sobre #171 desde dos segmentos LITERALES suyos, que van
+  // aquí verbatim. Es la única familia de casos del banco cuya fuente es una
+  // corrida de producción y no la imaginación del autor — y es la que encontró
+  // el fallo que 28 casos sintéticos no vieron.
+  ['(o) REAL fp/central #166: «el re-arm … se perdió» ⇒ reporte-de-fallo',
+    [cmt('La anomalía real: el re-arm del parcial #171 se perdió — causa MEDIDA')], {}, ['reporte-de-fallo']],
+  ['(p) REAL #166: «debía subir la ronda y re-armar este issue» ⇒ reporte-de-fallo',
+    [cmt('Tras mergear #171 la rama post-merge de `epic-merge` debía subir la ronda y re-armar este issue.')], {}, ['reporte-de-fallo']],
+  // (q) aísla `AUTO_DEST`: sin vocabulario de fallo, el único motivo para no
+  // materializar es que el DESTINO de la acción es el propio hilo y el `#N`
+  // ajeno es el objeto de otro verbo. Sin este caso, `AUTO_DEST` sería una
+  // rama muerta — `FALLIDO` la tapa en los dos casos reales de arriba.
+  ['(q) destino es el propio hilo, `#N` ajeno es otro objeto ⇒ destino-ambiguo',
+    [cmt('Tras mergear #171, re-armé este issue.')], {}, ['destino-ambiguo']],
+  // (r) La INSTANCIA CANÓNICA no puede caer con los filtros nuevos: lleva «en
+  // su hilo», que es a un carácter de distancia de `AUTO_DEST`. Duplica a
+  // propósito el caso de cabecera del banco — si un día alguien mete `su hilo`
+  // en `AUTO_DEST`, el belt se queda mudo justo en el caso que lo justifica y
+  // este caso es el que lo dice.
+  ['(r) canónica con «en su hilo» SIGUE materializando (anti-regresión AP-073)',
+    [cmt('`stalled` retirada de #1694 y re-arm del eslabón 1/3 allí (detalle en su hilo).')],
+    { 1694: { desStall: true, arm: true } }, []],
 ];
 
 // `derivar` devuelve además `host`/`url` por declaración (los necesita el
