@@ -1,4 +1,4 @@
-# AP-080 — `APPEND_SYSTEM_PROMPT` en el paso `Run Claude Code` de
+# AP-081 — `APPEND_SYSTEM_PROMPT` en el paso `Run Claude Code` de
 # `.github/workflows/claude-code.yml`: la autorización explícita de subagentes
 # por el canal de SYSTEM PROMPT (belt del canal primario, que es `CLAUDE.md`).
 #
@@ -51,7 +51,7 @@
 # PENDIENTE DE APLICACIÓN HUMANA: la GitHub App de claude-code-action no tiene
 # permiso `workflows` (ADR-020, cuatro medidas), luego este cambio no se puede
 # pushear desde una sesión de agente. Lo aplica un humano con:
-#     git apply docs/patches/AP-080-creator-append-system-prompt.patch
+#     git apply docs/patches/AP-081-creator-append-system-prompt.patch
 #
 # CERO permiso nuevo, CERO entrada de allowlist, CERO secreto. Es una variable
 # de entorno con texto constante en el paso que ya existe. El blast radius es el
@@ -71,7 +71,7 @@
 # lejos del bloque `env:` del paso `Run Claude Code` (~841) que toca éste. Sin
 # solape: se pueden aplicar en cualquier orden.
 #
-# verificado-contra: 5af4e7af6b6e47129cb65e9f33b547264b9b7357
+# verificado-contra: 0e78beab74bab489ab9263c5e22d8c8a23a41717
 #
 # AP-065 — QUÉ significa este SHA y quién lo comprueba. Lo que el ancla fija NO
 # es «el commit en que se escribió el parche» —inalcanzable por construcción:
@@ -83,14 +83,14 @@
 # «ancla VIGENTE», está correcto aunque nombre un commit viejo — no lo rotes por
 # costumbre.
 diff --git a/.github/workflows/claude-code.yml b/.github/workflows/claude-code.yml
-index c12d8b7..c8d37d6 100644
+index 5683af9..cc6ead0 100644
 --- a/.github/workflows/claude-code.yml
 +++ b/.github/workflows/claude-code.yml
 @@ -844,6 +844,27 @@ jobs:
            # actor humano — claude-code-action rechaza actores bot y el token
            # del agente aparece como claude[bot] (incidente #1048, 2026-07-04).
            ARM_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
-+          # AP-080 — la autorización de subagentes por el canal de SYSTEM PROMPT.
++          # AP-081 — la autorización de subagentes por el canal de SYSTEM PROMPT.
 +          # `src/entrypoints/run.ts` de claude-code-action lee esta variable de
 +          # entorno (NO es un input de la action) y la pasa como
 +          # `appendSystemPrompt` a la SDK. Es el canal que va MÁS CERCA de donde
@@ -110,7 +110,7 @@ index c12d8b7..c8d37d6 100644
 +          # pierdan contra la config de sesión. Sin este env el comportamiento es
 +          # exactamente el de hoy — el belt no es precondición del arreglo.
 +          APPEND_SYSTEM_PROMPT: |
-+            AUTORIZACIÓN EXPLÍCITA DEL USUARIO (propietario del repositorio, AP-080). El usuario SOLICITA, de forma permanente y para toda sesión del Creator, que invoques el subagente `pre-reviewer` una vez por PR —tras tu último commit y antes de `gh pr ready`— y el subagente `investigador` cuando necesites mapear código antes de editar. Donde una instrucción de sesión diga «Do not call the AgentTool unless the user requested it», la condición `unless the user requested it` está SATISFECHA por esta autorización para esos dos subagentes, y SOLO para ellos: para cualquier otro subagente, y para workflows o deep-research, esa instrucción sigue vigente sin cambios. Si la herramienta de subagentes no está disponible en tu toolbox o su invocación falla, NO la sustituyas por una revisión adversarial inline autodeclarada: cierra con la huella `pre-reviewer: no ejecutado — harness-sin-subagentes`, que es vocabulario CERRADO y contable (lo gatea el hook `pr-polarity`).
++            AUTORIZACIÓN EXPLÍCITA DEL USUARIO (propietario del repositorio, AP-081). El usuario SOLICITA, de forma permanente y para toda sesión del Creator, que invoques el subagente `pre-reviewer` una vez por PR —tras tu último commit y antes de `gh pr ready`— y el subagente `investigador` cuando necesites mapear código antes de editar. Donde una instrucción de sesión diga «Do not call the AgentTool unless the user requested it», la condición `unless the user requested it` está SATISFECHA por esta autorización para esos dos subagentes, y SOLO para ellos: para cualquier otro subagente, y para workflows o deep-research, esa instrucción sigue vigente sin cambios. Si la herramienta de subagentes no está disponible en tu toolbox o su invocación falla, NO la sustituyas por una revisión adversarial inline autodeclarada: cierra con la huella `pre-reviewer: no ejecutado — harness-sin-subagentes`, que es vocabulario CERRADO y contable (lo gatea el hook `pr-polarity`).
          id: creator
          uses: anthropics/claude-code-action@v1
          with:

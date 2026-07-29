@@ -1,20 +1,20 @@
 #!/usr/bin/env node
 // check-pr-polarity — banco EJECUTABLE del hook `vendored/claude/hooks/pr-polarity.sh`
-// (2026-07-29, AP-080).
+// (2026-07-29, AP-081).
 //
 // Por qué existe. `check-hooks.mjs` vigila la capa de hooks en su forma
 // ESTÁTICA —que el `command` de settings.json apunte a un fichero presente, que
 // ningún .sh quede huérfano, que `bash -n` pase— y eso es anti-drift, no
 // comportamiento: un hook sintácticamente válido que bloquea lo que debía dejar
 // pasar (o al revés) sale verde por los tres. Ese hueco no era caro mientras el
-// hook tuvo UNA condición; AP-080 le añade una superficie nueva (`gh pr edit`
+// hook tuvo UNA condición; AP-081 le añade una superficie nueva (`gh pr edit`
 // con body) y un vocabulario cerrado, y las dos formas de fallar son caras en
 // direcciones opuestas:
 //   - bloquear de más ⇒ una sesión de Creator atascada contra un gate que no
 //     debía morder, en `vendored/`, que despliega EN VIVO a los dos consumidores
 //     sin gradualidad;
 //   - bloquear de menos ⇒ el gate vuelve a ser prosa y la huella vuelve a ser
-//     incontable, que es exactamente lo que AP-080 vino a cerrar.
+//     incontable, que es exactamente lo que AP-081 vino a cerrar.
 // Un banco de casos es lo único que distingue las dos.
 //
 // Ejecuta el hook DE VERDAD (mismo contrato que el harness: JSON por stdin con
@@ -45,7 +45,7 @@ const PARCIAL_OK = `<!-- partial-pr -->\nRefs #187\n### Alcance restante\n- nada
 const fFull = bodyFile('full.md', FULL_OK);
 const fParcial = bodyFile('parcial.md', PARCIAL_OK);
 // El body EXACTO que emite el hook hermano `draft-pr-on-push` al abrir el draft
-// de hito: si el vocabulario de AP-080 no lo admitiera, el gate se mordería a sí
+// de hito: si el vocabulario de AP-081 no lo admitiera, el gate se mordería a sí
 // mismo en el primer push de CADA sesión de la flota.
 const fDraftHook = bodyFile(
   'draft-hook.md',
@@ -63,7 +63,7 @@ const CASOS = [
   ['create-ok-parcial', `gh pr create --draft --body-file ${fParcial}`, 0, 'create con partial+Refs+alcance+huella'],
   ['create-sin-polaridad', `gh pr create --body-file ${bodyFile('np.md', `Refs #187\n${HUELLA_OK}\n`)}`, 2, 'create sin marcador de polaridad'],
   ['create-sin-huella', `gh pr create --body-file ${bodyFile('nh.md', '<!-- full-pr -->\nCloses #187\n')}`, 2, 'create sin huella pre-reviewer'],
-  // AP-080: `gh pr edit` entra en la superficie SOLO si fija body.
+  // AP-081: `gh pr edit` entra en la superficie SOLO si fija body.
   ['edit-sin-body', 'gh pr edit --add-label needs-review', 0, 'edit sin body: fuera de la superficie'],
   ['edit-solo-titulo', 'gh pr edit --title "otro titulo"', 0, 'edit solo de titulo: fuera de la superficie'],
   ['edit-body-ok', `gh pr edit --body-file ${fFull}`, 0, 'edit que fija body valido'],
@@ -75,7 +75,7 @@ const CASOS = [
   ['create-body-substitucion', 'gh pr create --body "$(cat body.md)"', 0, 'body por sustitucion en create: fail-open'],
   // Anclaje a inicio de segmento, jamás substring (clase «regex-polarity», PR #1133).
   ['mencion-en-grep', "grep -n 'gh pr edit --body' docs/agents/creator.md", 0, 'mera MENCION del literal: no bloquea'],
-  // Literal CITADO entre backticks (AP-080, medido contra este hook: el
+  // Literal CITADO entre backticks (AP-081, medido contra este hook: el
   // `git commit -m` que describía el propio cambio quedó bloqueado). Los vanos
   // `...` se despojan antes de segmentar; el split por backtick venía de la
   // forma arcaica de sustitución, que ningún agente emite.
@@ -101,7 +101,7 @@ const CASOS = [
   // La rama `ejecutado` NO se acota: su heterogeneidad no era el problema medido.
   ['ejecutado-libre', `gh pr edit --body-file ${bodyFile('ej.md', '<!-- full-pr -->\nCloses #187\npre-reviewer: ejecutado, sin hallazgos\n')}`, 0, 'rama ejecutado sigue libre'],
 
-  // ── formas CORTAS de gh (hallazgo 1 del pre-reviewer de AP-080) ──────────
+  // ── formas CORTAS de gh (hallazgo 1 del pre-reviewer de AP-081) ──────────
   // `gh pr edit` acepta `-b/--body` y `-F/--body-file`, y el allowlist del
   // reusable (`Bash(gh pr edit:*)`) admite las dos. Mirar solo la larga fallaba
   // en los dos sentidos: el body de CIERRE con `-F` esquivaba el gate entero, y
@@ -114,10 +114,10 @@ const CASOS = [
   // …y el precio de reconocer las formas cortas: `-F`/`-b` los emite media
   // flota (`git commit -F`, `grep -F`, `pnpm -F <pkg>`). Mirar `$cmd` entero
   // dejaba que el PRIMER match del compuesto —ajeno a `gh`— se leyera como el
-  // body (🟡 1 de la review de AP-080). Guard y extracción corren ahora sobre
+  // body (🟡 1 de la review de AP-081). Guard y extracción corren ahora sobre
   // el SEGMENTO de `gh`, no sobre el comando.
   ['compuesto-F-ajeno-antes', `git commit -F msg.txt && gh pr create --draft --body-file ${fFull}`, 0, '-F ajeno DELANTE de un create valido: no lo secuestra'],
-  ['compuesto-F-ajeno-existente', `git commit -F ${bodyFile('commitmsg.txt', 'AP-080: toca `gh pr create`\n')} && gh pr create --draft --body-file ${fFull}`, 0, 'el -F ajeno EXISTE en disco y aun asi no se lee como body'],
+  ['compuesto-F-ajeno-existente', `git commit -F ${bodyFile('commitmsg.txt', 'AP-081: toca `gh pr create`\n')} && gh pr create --draft --body-file ${fFull}`, 0, 'el -F ajeno EXISTE en disco y aun asi no se lee como body'],
   ['compuesto-F-ajeno-no-tapa-invalido', `grep -F needle f.txt && gh pr create --body-file ${bodyFile('inv.md', '<!-- full-pr -->\nCloses #187\n')}`, 2, 'el segmento correcto sigue gateandose: body sin huella bloquea igual'],
   ['compuesto-edit-sin-body-mas-F-ajeno', 'gh pr edit --add-label needs-review && pnpm -F @app/web build', 0, 'un -F ajeno NO mete en la superficie a un edit sin body'],
 
@@ -143,7 +143,7 @@ const CASOS = [
   // queda con la mención y el gate se abre en silencio sobre una huella que
   // debía bloquear — que es el modo de fallo caro, no el ruidoso.
   ['mencion-posterior-no-tapa-huella-invalida', `gh pr edit --body-file ${bodyFile('men2.md', '<!-- full-pr -->\nCloses #187\npre-reviewer: no ejecutado — porque la sesión no tenía subagentes\nNota: en finplan#1742 la huella decía pre-reviewer: no ejecutado — otra cosa.\n')}`, 2, 'mencion posterior NO puede tapar una huella emitida invalida'],
-  // La mitad SIMÉTRICA (🟡 2 de la review de AP-080): la precedencia
+  // La mitad SIMÉTRICA (🟡 2 de la review de AP-081): la precedencia
   // incondicional de `ejecutado` dejaba esa rama sin protección posicional, y
   // `creator.md` trae ese literal en columna 0 dentro de un bloque de código —
   // una cita ANTERIOR desactivaba el vocabulario de la huella emitida debajo.

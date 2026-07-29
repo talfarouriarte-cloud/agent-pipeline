@@ -198,7 +198,7 @@ EXPLÍCITAMENTE por el propietario** — `CLAUDE.md` § «Autorización EXPLÍCI
 subagentes» lleva la petición literal del usuario que satisface la condición
 `unless the user requested it` de la instrucción de sesión del harness. No es
 un permiso que tengas que negociar por turno: léelo ahí una vez y actúa
-(AP-080). Cuándo invocarlos:
+(AP-081). Cuándo invocarlos:
 
 - **`investigador`** — al arrancar el issue, si necesitas mapear un área o verificar anclas antes de editar. La exploración NO debe consumir tu contexto de implementación: delega, recibe hallazgos anclados, implementa. Si reporta DISCREPANCIAS con las anclas del issue, corrige el plan antes de tocar código; si reporta DEPENDENCIAS DETECTADAS que bloquean el alcance, aplica el protocolo de PR híbrido en vez de improvisar.
 - **`pre-reviewer`** — UNA sola pasada, tras tu último commit y **antes de `gh pr ready`** (cierre). Con draft-first (AP-047) el `gh pr create --draft` ocurre en el hito 1, ANTES de tu último commit — el pre-reviewer NO se ancla a él, sino al cierre: corre sobre el diff COMPLETO justo antes de marcar el draft `ready` (ver § «Cuándo abrir el PR»). Aplica solo hallazgos de corrección/alcance; su informe no es el Reviewer: no re-invoques tras aplicar (el loop real es con Opus). `SIN HALLAZGOS` ⇒ marca el draft `ready`.
@@ -488,9 +488,9 @@ Cuando el job muere, el "(en curso)" marca exactamente la frontera de recuperaci
 
 **Literales must-copy (2026-07-12, propuesta #1278 del repo de origen — un ciclo correctivo entero por UNA línea perdida en render):** si el issue especifica un literal a copiar (marcador de coordinación, cadena de invariante, mensaje exacto) y NO es legible en el contexto que has recibido, recupéralo del body RAW: `gh issue view <n> --json body` (los comentarios HTML sobreviven SIEMPRE en el raw; tu vista renderizada puede perderlos). Si tampoco aparece en el raw, escala al humano con el cierre correspondiente del loop protocol — JAMÁS improvises el literal de memoria.
 
-**Huella del pre-reviewer (2026-07-12, propuesta #1259 del repo de origen — sin rastro público el mecanismo es inevaluable):** el body de todo PR que abras incluye UNA línea obligatoria: `pre-reviewer: ejecutado · N hallazgos · M aplicados` (o `pre-reviewer: no ejecutado — <motivo>`). Solo la huella, no el informe. **Ningún workflow la parsea, pero desde AP-080 SÍ tiene consumidor mecánico y puede pararte**: el hook `pr-polarity` exige su presencia (wmcb#46) y acota su motivo (abajo). No es texto libre.
+**Huella del pre-reviewer (2026-07-12, propuesta #1259 del repo de origen — sin rastro público el mecanismo es inevaluable):** el body de todo PR que abras incluye UNA línea obligatoria: `pre-reviewer: ejecutado · N hallazgos · M aplicados` (o `pre-reviewer: no ejecutado — <motivo>`). Solo la huella, no el informe. **Ningún workflow la parsea, pero desde AP-081 SÍ tiene consumidor mecánico y puede pararte**: el hook `pr-polarity` exige su presencia (wmcb#46) y acota su motivo (abajo). No es texto libre.
 
-**El motivo del `no ejecutado` es VOCABULARIO CERRADO (AP-080).** Hasta ahora era prosa libre y el resultado, medido, fue una huella por PR redactada distinta —«esta sesión tiene los subagentes deshabilitados por configuración del harness», «la herramienta de subagentes está deshabilitada en esta sesión», la instrucción de sesión citada verbatim, «el subagente de pre-review está deshabilitado»— cuatro maneras de decir lo mismo que la auditoría tuvo que leer y normalizar A MANO para poder contar (aud. finplan#1743). Una huella que no se puede sumar con la de al lado no mide nada. El juego completo es:
+**El motivo del `no ejecutado` es VOCABULARIO CERRADO (AP-081).** Hasta ahora era prosa libre y el resultado, medido, fue una huella por PR redactada distinta —«esta sesión tiene los subagentes deshabilitados por configuración del harness», «la herramienta de subagentes está deshabilitada en esta sesión», la instrucción de sesión citada verbatim, «el subagente de pre-review está deshabilitado»— cuatro maneras de decir lo mismo que la auditoría tuvo que leer y normalizar A MANO para poder contar (aud. finplan#1743). Una huella que no se puede sumar con la de al lado no mide nada. El juego completo es:
 
 | motivo | cuándo |
 |---|---|
@@ -502,7 +502,7 @@ Cuando el job muere, el "(en curso)" marca exactamente la frontera de recuperaci
 
 El hook `pr-polarity` lo gatea en `gh pr create` **y en todo `gh pr edit` que fije body** — es decir, también en el body de CIERRE, que es el que la auditoría lee. Si te bloquea, el mensaje trae el juego entero: es un `Edit` de una línea, no un desvío.
 
-**Antes de escribir `harness-sin-subagentes`, comprueba que es verdad**: desde AP-080 `CLAUDE.md` § «Autorización EXPLÍCITA de subagentes» contiene la petición del usuario que la instrucción del harness condiciona, así que la causa más frecuente de los 11/14 históricos ya no aplica. Declarar `harness-sin-subagentes` sin haberlo intentado es una huella FALSA, y es la única señal por la que la auditoría sabrá si este arreglo funcionó.
+**Antes de escribir `harness-sin-subagentes`, comprueba que es verdad**: desde AP-081 `CLAUDE.md` § «Autorización EXPLÍCITA de subagentes» contiene la petición del usuario que la instrucción del harness condiciona, así que la causa más frecuente de los 11/14 históricos ya no aplica. Declarar `harness-sin-subagentes` sin haberlo intentado es una huella FALSA, y es la única señal por la que la auditoría sabrá si este arreglo funcionó.
 
 **El PR se abre en el PRIMER push de hito, en modo DRAFT (AP-047).** La apertura del PR deja de ser la ÚLTIMA acción discrecional de la sesión —el acto que la clase «Creator termina en `success` sin abrir su PR» pierde una y otra vez cuando el presupuesto se agota tras commitear (finplan#1601, 2ª muerte POST-AP-023)— y pasa a ser una transición **MECÁNICA verificable por estado**: un hito pusheado sin PR es una anomalía detectable, no una omisión de prosa. Flujo:
 

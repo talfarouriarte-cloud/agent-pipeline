@@ -7,7 +7,7 @@
 # issue abierto y re-arma) o `<!-- full-pr -->` (completa el issue).
 #
 # Fail-open salvo en el caso que sabemos detectar: solo bloquea `gh pr create`
-# —y, desde AP-080, `gh pr edit` cuando fija body— cuyo body inline (--body) o
+# —y, desde AP-081, `gh pr edit` cuando fija body— cuyo body inline (--body) o
 # fichero (--body-file) NO contenga un marcador.
 
 set -u
@@ -32,11 +32,11 @@ fi
 # entorno `VAR=x` y rutas absolutas).
 #
 # Los vanos `` `...` `` se DESPOJAN antes de segmentar, no se tratan como
-# apertura de sustitución (2026-07-29, AP-080 — MEDIDO contra este hook en la
+# apertura de sustitución (2026-07-29, AP-081 — MEDIDO contra este hook en la
 # sesión que lo tocaba: el `git commit -m` que describía este mismo cambio
 # quedó BLOQUEADO porque su mensaje citaba `gh pr create` entre backticks). El
 # split por backtick venía de la forma ARCAICA de sustitución de comando, que
-# ningún agente emite; lo que sí abunda —y crece con AP-080, que suma
+# ningún agente emite; lo que sí abunda —y crece con AP-081, que suma
 # `gh pr edit` a la superficie— es el literal citado en prosa: `creator.md`
 # enseña «actualiza el body con `gh pr edit --body-file`», y ese literal viaja
 # a mensajes de commit, bodies de PR y comentarios de auditoría. Coste de la
@@ -45,7 +45,7 @@ fi
 # backticks (una línea que EMPIECE por la invocación dentro de un `<<EOF` es
 # indistinguible de la invocación real), ya declarado arriba.
 #
-# La función DEVUELVE el segmento que casó, no un booleano (2026-07-29, AP-080,
+# La función DEVUELVE el segmento que casó, no un booleano (2026-07-29, AP-081,
 # review del PR): todo lo que se pregunte después —¿fija body?, ¿con qué
 # fichero?— se pregunta sobre ESE segmento, jamás sobre `$cmd` entero. Con
 # `--body-file` como único token reconocido, mirar el comando completo colisionaba
@@ -60,7 +60,7 @@ seg_extract() { # $1 = patrón anclado del ejecutable+subcomando; imprime el PRI
     | grep -E "^[[:space:]]*[({]?[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:]]*/)?$1([[:space:]]|$)" \
     | head -1
 }
-# Superficie gateada (AP-080). `gh pr create` SIEMPRE. `gh pr edit` SOLO cuando
+# Superficie gateada (AP-081). `gh pr create` SIEMPRE. `gh pr edit` SOLO cuando
 # fija body — y ese caso importa más que el otro: con draft-first (AP-047) el
 # body que la auditoría acaba leyendo es el del CIERRE, y ese se escribe con
 # `gh pr edit --body-file`, que hasta ahora no pasaba por ningún gate. Un
@@ -77,7 +77,7 @@ fi
 # Cuerpo efectivo: inline o fichero. `gh` acepta forma LARGA y CORTA para las
 # dos (`--body`/`-b`, `--body-file`/`-F`) y el allowlist del reusable las admite
 # igual (`Bash(gh pr edit:*)`, `Bash(gh pr create:*)`). Mirar solo la larga
-# fallaba en los DOS sentidos (hallazgo 1 del pre-reviewer de AP-080): un body
+# fallaba en los DOS sentidos (hallazgo 1 del pre-reviewer de AP-081): un body
 # de CIERRE escrito con `-F` esquivaba el gate entero —huella, vocabulario y
 # polaridad—, y simétricamente un `gh pr create -F body.md` VÁLIDO quedaba
 # BLOQUEADO, porque el fichero no se leía y `body` seguía siendo el comando.
@@ -96,7 +96,7 @@ elif printf '%s' "$cmd" | grep -Eq -- '(--body(-file)?|-b|-F)[= ]["'"'"']?(\$\(|
   # Cubre las CUATRO formas, inline y de fichero (`--body-file "$(mktemp)"` es
   # tan invisible como `--body "$(cat f)"`; con solo las dos inline, la variante
   # de fichero caía al `body="$cmd"` y bloqueaba por un cuerpo que el hook
-  # tampoco podía leer — 🔵 6 de la review de AP-080).
+  # tampoco podía leer — 🔵 6 de la review de AP-081).
   # Esta condición se evalúa sobre `$cmd` A PROPÓSITO, no sobre `$seg`: `$(` es
   # separador de segmento, luego la apertura de sustitución NO sobrevive a
   # `seg_extract` y en el segmento no queda nada que reconocer.
@@ -107,20 +107,20 @@ fi
 # de los PRs desde su mandato — 3 ciclos; el único mandato de body que se
 # cumple 3/3 es el que tiene gate mecánico. Este es ahora ese gate).
 # La huella EFECTIVA del body, no «alguna línea que hable de huellas». Un body
-# puede CITAR otras huellas —AP-080 dejó las cuatro prosas históricas en
+# puede CITAR otras huellas —AP-081 dejó las cuatro prosas históricas en
 # `docs/decisions.md` y en la tabla de `creator.md`, listas para pegarse en el
 # body de un Auditor o de un correctivo— y la huella CITADA no es la EMITIDA:
 # es la misma clase «regex-polarity» (PR #1133) que este hook persigue en su
 # cabecera, y en `vendored/`, que despliega sin gradualidad a los dos
 # consumidores, un falso positivo atasca sesiones en vivo (hallazgo 2 del
-# pre-reviewer de AP-080). Criterio, UNA sola regla: la ÚLTIMA línea anclada
+# pre-reviewer de AP-081). Criterio, UNA sola regla: la ÚLTIMA línea anclada
 # `^pre-reviewer:` de cualquiera de las dos ramas es la EFECTIVA — es la que el
 # Creator acaba de escribir al cerrar. El anclaje a inicio de línea separa
 # emitir de citar; la posición separa la huella de la cita ANCLADA, que es lo
 # que el vocabulario del corpus produce.
 #
 # La primera redacción daba precedencia INCONDICIONAL a `ejecutado` (🟡 2 de la
-# review de AP-080): protegía la rama `no ejecutado` con `tail -1` y dejaba la
+# review de AP-081): protegía la rama `no ejecutado` con `tail -1` y dejaba la
 # otra sin protección posicional, así que una cita de `pre-reviewer: ejecutado ·
 # …` en columna 0 —literal que `creator.md` trae dentro de un bloque de código,
 # listo para pegarse en un body de ejemplo— DESACTIVABA el vocabulario de la
@@ -133,7 +133,7 @@ if [ -z "$huella" ]; then
   exit 2
 fi
 
-# Vocabulario CERRADO del motivo (AP-080, aud. finplan#1736 §Obs.1 +
+# Vocabulario CERRADO del motivo (AP-081, aud. finplan#1736 §Obs.1 +
 # finplan#1743). La PRESENCIA de la huella ya estaba gateada desde wmcb#46, y
 # se cumple; lo que no se podía sumar era su CONTENIDO: en dos épicas
 # consecutivas, 11 de 14 PRs declararon «no ejecutado» con cuatro redacciones
@@ -151,7 +151,7 @@ fi
 if printf '%s' "$huella" | grep -Eq '^pre-reviewer:[[:space:]]*no[[:space:]]+ejecutado' \
    && ! printf '%s' "$huella" | grep -Eq '^pre-reviewer:[[:space:]]*no[[:space:]]+ejecutado[[:space:]]*(—|-{1,2})[[:space:]]*(pendiente[[:space:]]*\(draft de hito\)|pendiente[[:space:]]*\(hito intermedio\)|harness-sin-subagentes|sustituido-inline|otro:[[:space:]]*[^[:space:]])'; then
   cat >&2 <<'EOF'
-BLOQUEADO: la huella `pre-reviewer: no ejecutado` lleva un motivo fuera del vocabulario CERRADO (AP-080). Usa EXACTAMENTE uno de estos:
+BLOQUEADO: la huella `pre-reviewer: no ejecutado` lleva un motivo fuera del vocabulario CERRADO (AP-081). Usa EXACTAMENTE uno de estos:
 - `pre-reviewer: no ejecutado — pendiente (draft de hito)`      (lo escribe el hook draft-pr-on-push; no lo escribes tú)
 - `pre-reviewer: no ejecutado — pendiente (hito intermedio)`    (body de un hito intermedio)
 - `pre-reviewer: no ejecutado — harness-sin-subagentes`         (la herramienta NO está en tu toolbox o falló al invocarla)
