@@ -293,11 +293,20 @@ que sigue intacto y **no depende de que el re-run llegara a ocurrir**. El
 contador del belt es propio: no consume el retry 1/1 del detector
 (`watchdog-ci-retry`) ni el cap 2 del dispatcher de turno.
 
-**El rojo ATRIBUIBLE no se re-lanza nunca.** Si los tests fallidos viven en
-ficheros que el PR toca, la vía es `ping-creator` con el log citado: ahí no
-hay flaky que absorber, hay una regresión que corregir. El belt recomputa la
-atribuibilidad por su cuenta y se niega a re-lanzar si le sale atribuible,
-pero eso es una red, no tu criterio.
+**El rojo ATRIBUIBLE no se re-lanza nunca, y aquí NO hay red debajo.** Si los
+tests fallidos viven en ficheros que el PR toca, la vía es `ping-creator` con
+el log citado: ahí no hay flaky que absorber, hay una regresión que corregir.
+El belt trae código para recomputar la atribuibilidad por su cuenta, **pero
+ese guard está INERTE**: lee las anotaciones del check-run, que exigen
+`checks: read`, y ninguno de los bloques `permissions:` en juego declara esa
+clave —ni puede declararla, porque una clave nueva revienta de arranque a
+todos los stubs de la flota (AP-022, clase #57)—. El belt lo dice en su log y
+en su comentario, y re-lanza igual (un 403 no puede bloquear el remedio).
+Consecuencia para ti, y es la que importa: **la clasificación atribuible /
+no-atribuible es TUYA y nadie la va a repasar**. Antes de declarar el ruling,
+mira de verdad qué ficheros salen en el log y contrástalos con el diff del
+PR; si dudas, no declares y escala — un re-run sobre una regresión real la
+esconde un ciclo, y ese es el coste que el guard debía cubrir y hoy no cubre.
 
 **Puede no estar desplegado, igual que el belt de AP-064.** La invocación y
 la línea de prompt viven en `.github/workflows/**`, que la GitHub App no

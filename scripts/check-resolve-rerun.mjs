@@ -108,6 +108,7 @@ async function correr({
   comentariosPR = [],               // historial del PR (cap)
   ciRuns,                           // runs de CI del head
   anotaciones = [{ annotation_level: 'failure', path: 'test/ajeno.test.ts' }],
+  anotacionesErr,                   // `checks.listAnnotations` DENEGADO (el 403 de `checks: read` ausente)
   ficherosPR = [{ filename: 'src/tocado.ts' }],
   rerunErr,
   comentarioErr,                    // error de `createComment` (siempre)
@@ -179,7 +180,12 @@ async function correr({
         listJobsForWorkflowRun: async () => ({ data: { jobs: [{ id: 9, conclusion: 'failure' }] } }),
         reRunWorkflowFailedJobs: async ({ run_id }) => { escrituras.push(`rerun#${run_id}`); if (rerunErr) throw rerunErr; },
       },
-      checks: { listAnnotations: async () => ({ data: anotaciones }) },
+      // El 403 de `checks: read` no es un borde hipotético: es el estado
+      // PERMANENTE de la configuración desplegada (ningún bloque `permissions:`
+      // en juego declara la clave, y AP-022 clase #57 la hace no añadible). Por
+      // eso el doble sabe fallar, y no solo devolver vacío: el banco tiene que
+      // poder distinguir «no había anotaciones» de «no pudimos mirarlas».
+      checks: { listAnnotations: async () => { if (anotacionesErr) throw anotacionesErr; return { data: anotaciones }; } },
       issues: {
         listComments: 'listComments',
         listCommentsForRepo: 'listCommentsForRepo',
@@ -255,6 +261,26 @@ const CONTRATO = [
   ['atribuibilidad ILEGIBLE (sin anotaciones) ⇒ se re-lanza igual, y se dice',
     { anotaciones: [] },
     (r) => r.escrituras.includes('rerun#777') && /no recomputable/.test(r.cuerpos[0])],
+  // 🔴 de la ronda 2 de la review: `checks.listAnnotations` exige `checks: read`
+  // y NINGÚN bloque `permissions:` en juego lo declara — la clave no es añadible
+  // (AP-022 clase #57). O sea que el guard de atribuibilidad no está «a veces
+  // ciego»: está inerte SIEMPRE en la configuración desplegada, y con el
+  // `.catch` mudo no dejaba rastro ninguno. El fail-open se conserva (un 403 no
+  // puede bloquear el remedio), pero la inertidad tiene que verse en el log Y en
+  // el comentario, que es la doctrina que el propio módulo aplica al cap sin
+  // soporte. Los DOS casos de abajo se necesitan mutuamente: sin el segundo, un
+  // aviso emitido siempre que `ficheros` esté vacío pasaría verde y el belt
+  // gritaría «INERTE» sobre CIs sin anotaciones, que es un dato, no una ceguera.
+  ['anotaciones DENEGADAS (403 de `checks: read`) ⇒ re-run igual, pero la inertidad se NOMBRA en el log y en el comentario',
+    { anotacionesErr: new Error('Resource not accessible by integration') },
+    (r) => r.escrituras.includes('rerun#777')
+      && r.avisos.some((a) => /INERTE/.test(a) && /checks: read/.test(a))
+      && /INERTE/.test(r.cuerpos[0])],
+  ['cero anotaciones LEGIBLES (la API respondió, no había nada anotado) NO es inertidad: ni aviso de `checks: read` ni «INERTE» en el comentario',
+    { anotaciones: [] },
+    (r) => r.escrituras.includes('rerun#777')
+      && !r.avisos.some((a) => /checks: read/.test(a))
+      && !/INERTE/.test(r.cuerpos[0])],
   ['kill-switch por PARÁMETRO (`skipLabels`)',
     { pr: { labels: [{ name: 'human-needed' }] }, skipLabels: SKIP },
     (r) => r.escrituras.length === 0],
@@ -344,4 +370,4 @@ if (errores.length) {
   errores.forEach((e) => console.error('  - ' + e));
   process.exit(1);
 }
-console.log(`check-resolve-rerun verde: ${CASOS_DET.length} casos de detección sobre el par REAL \`despojar\`+\`RULING\` de ${fuente} + ${CONTRATO.length} aserciones de runtime ejecutando \`run\` contra un doble de la API (control que escribe, cap 1 por head SHA leído con despojo, filtro no-atribuible, kill-switch por parámetro y por env, frescura del rojo, barrido \`desc\` con el doble HONRANDO el \`direction\`, ejecutar-antes-de-afirmar, tope MAX sobre re-runs EJECUTADOS y los dos fail-open anunciados).`);
+console.log(`check-resolve-rerun verde: ${CASOS_DET.length} casos de detección sobre el par REAL \`despojar\`+\`RULING\` de ${fuente} + ${CONTRATO.length} aserciones de runtime ejecutando \`run\` contra un doble de la API (control que escribe, cap 1 por head SHA leído con despojo, filtro no-atribuible y su INERTIDAD por \`checks: read\` anunciada —distinguida del cero-anotaciones legítimo—, kill-switch por parámetro y por env, frescura del rojo, barrido \`desc\` con el doble HONRANDO el \`direction\`, ejecutar-antes-de-afirmar, tope MAX sobre re-runs EJECUTADOS y los tres fail-open anunciados).`);

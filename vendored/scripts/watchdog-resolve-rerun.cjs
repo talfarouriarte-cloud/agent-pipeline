@@ -43,8 +43,16 @@
 // resolver también sale rojo, el tick siguiente vuelve a levantar
 // `pr-ci-red-persistent`, el cap ya está agotado para ese head y el resolver
 // aplica `stalled` + diagnóstico: el cortacircuito a `human-needed` queda
-// INTACTO. El riesgo «enmascarar regresiones a base de re-runs» está acotado
-// por esas tres cosas a la vez (cap 1, filtro no-atribuible, cortacircuito).
+// INTACTO.
+//
+// QUÉ ACOTA DE VERDAD EL RIESGO «enmascarar regresiones a base de re-runs», en
+// la configuración DESPLEGADA: el cap 1 por head SHA y el cortacircuito. DOS, no
+// tres. El tercer guard que este módulo implementa —el filtro no-atribuible—
+// está **INERTE por permiso** mientras el job no pueda leer las anotaciones del
+// check-run (ver el bloque de `atribuible()`), y el primer redactado de este
+// fichero y de AP-077 contaba los tres. Queda dicho aquí, en el módulo, y como
+// residual (f) del AP: un guard que no puede leer su entrada no acota nada, y
+// contarlo es peor que no tenerlo — un humano aplica el parche creyéndolo puesto.
 //
 // POR QUÉ VIVE AQUÍ Y NO EN `watchdog.yml` (doctrina AP-068). La GitHub App de
 // claude-code-action no tiene permiso `workflows` (ADR-020, medido cuatro
@@ -92,22 +100,52 @@ const despojar = (t) => String(t || '').replace(CERCA, '\n').replace(INLINE, ' '
 // `legible: false` (sin anotaciones, o API caída) NO bloquea: el resolver ya
 // bajó el log y ruló sobre él, y el fast-path del detector ya falla-open a
 // retry en ese mismo caso. Lo que se exige es que NO conste lo contrario.
+//
+// LA INERTIDAD POR PERMISO NO PUEDE SER SILENCIOSA (🔴 de la ronda 2). Este
+// endpoint —`checks.listAnnotations`— exige `checks: read`, y NINGUNO de los
+// bloques `permissions:` en juego lo declara (ni el de nivel de workflow, ni el
+// de `detect`, ni el de `architect`, donde vive este belt); un bloque explícito
+// pone a `none` toda clave no enumerada. Y la clave NO es añadible: el corpus ya
+// lo decidió y midió el coste — «las anotaciones del check-run… habrían exigido
+// `checks: read`, una clave NUEVA, es decir `startup_failure` de flota
+// instantáneo en todo stub con bloque `permissions` explícito (AP-022, clase
+// #57)», `docs/decisions.md:1476`. Consecuencia: en la configuración vigente
+// cada lectura sale 403, `ficheros` queda vacío y este guard cae SIEMPRE por el
+// fail-open. Con el `.catch(() => ({ data: [] }))` a secas eso era exactamente
+// lo que este belt existe para cerrar —una capa que no puede ejercer lo que
+// declara, sin rastro—, con el agravante de que un humano aplica el parche
+// creyendo el guard puesto. Así que se distingue el 403 (lecturas DENEGADAS:
+// guard inerte, se nombra la causa probable) del cero-anotaciones legítimo (la
+// API respondió y no había nada anotado), y la inertidad se anuncia: en el log
+// con `core.warning` y en el comentario del belt. Misma doctrina que el cap sin
+// soporte de más abajo: fail-open sí, silencio nunca.
 async function atribuible({ github, core, owner, repo, pull_number, run_id }) {
   try {
     const { data: jobs } = await github.rest.actions.listJobsForWorkflowRun({ owner, repo, run_id, per_page: 50 });
+    const fallidos = (jobs.jobs || []).filter((j) => j.conclusion === 'failure');
     const anns = [];
-    for (const j of (jobs.jobs || []).filter((j) => j.conclusion === 'failure')) {
-      const { data: a } = await github.rest.checks.listAnnotations({ owner, repo, check_run_id: j.id, per_page: 100 }).catch(() => ({ data: [] }));
+    let denegadas = 0;
+    let ultimo = '';
+    for (const j of fallidos) {
+      const { data: a } = await github.rest.checks.listAnnotations({ owner, repo, check_run_id: j.id, per_page: 100 })
+        .catch((e) => { denegadas++; ultimo = (e && e.message) || String(e); return { data: [] }; });
       anns.push(...a.filter((x) => x.annotation_level === 'failure' && x.path && x.path !== '.github'));
     }
+    // Inerte = había jobs fallidos que mirar y NINGUNA de sus anotaciones se
+    // pudo leer. No es lo mismo que «no había anotaciones»: eso es un dato, esto
+    // es la ausencia de instrumento.
+    const inerte = fallidos.length > 0 && denegadas === fallidos.length;
+    if (inerte) {
+      core.warning(`resolve-rerun: #${pull_number} — guard de atribuibilidad INERTE: las ${denegadas}/${fallidos.length} lecturas de anotaciones del check-run salieron denegadas (última: ${ultimo}). Causa probable: el \`GITHUB_TOKEN\` de este job no lleva \`checks: read\`, y esa clave no es añadible sin \`startup_failure\` de flota en todo stub con bloque \`permissions\` explícito (AP-022 clase #57, docs/decisions.md:1476). El re-run se ejecuta igual (fail-open, mismo que el fast-path del detector), pero NADIE ha comprobado que el rojo viva fuera del diff: el riesgo de enmascarar una regresión queda acotado solo por el cap 1 por head y por el cortacircuito. Residual (f) de AP-077.`);
+    }
     const ficheros = [...new Set(anns.map((a) => a.path))];
-    if (!ficheros.length) return { atribuible: false, legible: false, ficheros };
+    if (!ficheros.length) return { atribuible: false, legible: false, inerte, ficheros };
     const prFiles = await github.paginate(github.rest.pulls.listFiles, { owner, repo, pull_number, per_page: 100 });
     const tocados = new Set(prFiles.map((f) => f.filename));
-    return { atribuible: ficheros.every((f) => tocados.has(f)), legible: true, ficheros };
+    return { atribuible: ficheros.every((f) => tocados.has(f)), legible: true, inerte: false, ficheros };
   } catch (e) {
     core.warning(`resolve-rerun: atribuibilidad de #${pull_number} ilegible (${e.message}) — se trata como NO atribuible, igual que el fast-path del detector.`);
-    return { atribuible: false, legible: false, ficheros: [] };
+    return { atribuible: false, legible: false, inerte: false, ficheros: [] };
   }
 }
 
@@ -246,7 +284,16 @@ async function run({ github, context, core, skipLabels }) {
     let marcado = false;
     const cuerpo = `**watchdog · resolve-rerun (AP-077)**: el resolver rulló «rojo NO atribuible al diff — flaky de contención, re-lanzar» (${decl.html_url}) y ese ruling se ha MATERIALIZADO: re-lanzados los jobs fallidos del run ${ci.id} sobre el head \`${head.slice(0, 7)}\`.\n\n`
       + `Cap **1 por PR y head SHA**, con contador propio: no consume el retry 1/1 del detector (\`watchdog-ci-retry\`) ni el cap 2 del dispatcher de turno. Si el CI vuelve a rojo sobre este mismo head, el cap queda agotado y el cortacircuito de siempre (\`stalled\` + diagnóstico ⇒ \`human-needed\`) sigue intacto.\n\n`
-      + `${attr.legible ? `Atribuibilidad recomputada contra el estado: ${attr.ficheros.length} fichero(s) con fallo anotado, no todos tocados por el diff.` : 'Atribuibilidad no recomputable (sin anotaciones legibles): mismo fail-open que el fast-path del detector.'}\n\n`
+      // Tres estados, no dos: recomputada / sin datos / INERTE. El tercero es
+      // hoy el permanente (`checks: read` ausente y no añadible), y decirlo con
+      // la misma frase que un borde incidental sería el silencio que este belt
+      // cierra. Quien audite tiene que poder distinguir «no había nada anotado»
+      // de «no pudimos mirar».
+      + `${attr.legible
+        ? `Atribuibilidad recomputada contra el estado: ${attr.ficheros.length} fichero(s) con fallo anotado, no todos tocados por el diff.`
+        : attr.inerte
+          ? 'Atribuibilidad **NO recomputada**: las anotaciones del check-run no son legibles con el `GITHUB_TOKEN` de este job (`checks: read` ausente y no añadible — AP-022 clase #57), luego ese guard está INERTE y este re-run NO ha comprobado que el rojo viva fuera del diff. Acotado por el cap 1 por head y por el cortacircuito; residual (f) de AP-077.'
+          : 'Atribuibilidad no recomputable (sin anotaciones de fallo legibles): mismo fail-open que el fast-path del detector.'}\n\n`
       + `${MARK(head)}\n${CAPA}`;
     try { await github.rest.issues.createComment({ owner, repo, issue_number: n, body: cuerpo }); marcado = true; }
     catch (e) {

@@ -41,6 +41,19 @@
 # cosmética para un RE-RUN —no nace evento que el anti-loop tenga que dejar
 # pasar— y el comentario del belt no despierta a nadie (sin `@claude`).
 #
+# LO QUE EL `GITHUB_TOKEN` TAMPOCO PUEDE LEER, Y NO SE ARREGLA AQUÍ (🔴 de la
+# ronda 2 de la review). El belt recomputa la atribuibilidad desde
+# `checks.listAnnotations`, que exige `checks: read` — clave que NINGÚN bloque
+# `permissions:` en juego declara y que NO es añadible: `docs/decisions.md:1476`
+# ya midió que una clave nueva es `startup_failure` de flota instantáneo en todo
+# stub con bloque explícito (AP-022, clase #57). O sea que ese guard cae SIEMPRE
+# por su fail-open en la configuración desplegada. Se conserva el fail-open (un
+# 403 no puede bloquear el remedio) y se le quita el silencio: `::warning`
+# nominal que nombra la causa + la inertidad dicha en el comentario del belt.
+# NO cuentes este guard como puesto: el riesgo «enmascarar regresiones a base de
+# re-runs» lo acotan el cap 1 por head SHA y el cortacircuito — DOS cosas, no
+# tres. Queda como residual (f) de AP-077.
+#
 # CONVIVENCIA CON EL PARCHE DE AP-064. Los dos tocan este fichero y NINGUNO de
 # sus hunks se solapa, a propósito: el hunk de prompt de AP-077 está en el
 # párrafo `pr-ci-red-persistent` (~1370) y el paso nuevo se inserta ANTES del
@@ -93,7 +106,7 @@ index 369b9f3..540f691 100644
              Cuenta como re-arm a efectos del cap.
  
              Tipo `stalled-autonomous-resolve` (régimen autónomo 2026-07-07,
-@@ -1413,6 +1430,66 @@ jobs:
+@@ -1413,6 +1430,77 @@ jobs:
              cadena, respetando el cap de reintentos y las prohibiciones del
              rol. Si un item no necesita acción, dilo y no toques nada.
  
@@ -135,6 +148,17 @@ index 369b9f3..540f691 100644
 +        # el mismo episodio con otro nombre. La autoría humana es cosmética
 +        # para un RE-RUN (no nace evento que el anti-loop deba dejar pasar) y
 +        # el comentario del belt no despierta a nadie: va sin `@claude`.
++        #
++        # Y lo que ese token NO puede leer: `checks.listAnnotations` exige
++        # `checks: read`, que este bloque `permissions:` no declara y que no es
++        # añadible (clave nueva ⇒ `startup_failure` de flota en todo stub con
++        # bloque explícito — AP-022 clase #57, `decisions.md:1476`). El guard de
++        # atribuibilidad del belt cae por tanto SIEMPRE por su fail-open: se
++        # conserva (un 403 no puede bloquear el remedio) pero ya no en silencio
++        # —`::warning` nominal + la inertidad dicha en el comentario— y NO
++        # cuenta como guard puesto. El riesgo «enmascarar regresiones a base de
++        # re-runs» lo acotan el cap 1 por head SHA y el cortacircuito a
++        # `human-needed`: DOS cosas, no tres. Residual (f) de AP-077.
 +        if: always()
 +        uses: actions/github-script@v7
 +        env:
