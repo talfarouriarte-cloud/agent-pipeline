@@ -2274,3 +2274,17 @@ El allowlist casa por PREFIJO: `gh api -X POST repos/…` no empieza por `gh api
 **Racional.** Cada guard y failsafe es también superficie que falla (AP-050 fue un stub ausente del propio régimen de vigilancia; AP-058, un loop entre dos mecanismos correctos). Un sistema con dos consumidores y un operador no amortiza 85 tipos de marcador. La mejora continua sin freno demostró generar su propio trabajo más rápido de lo que lo cierra; el freno es, en sí mismo, la mejora de proceso de mayor impacto disponible.
 
 **Reversión.** Restaurar el texto de 3b/6b anterior a este PR y registrar la enmienda aquí.
+
+## AP-079 — El push pasa de camino primario a camino ÚNICO de la transición Creator→Reviewer: `@reviewer` queda solo para turnos sin commits
+
+**Fecha**: 2026-07-30 · **Decisión del propietario** (auditoría de amputación AP-078 §4, primer corte)
+
+**Contexto.** El censo 15..29-07 midió 141 activaciones de `turn-close-failsafe` (90 finplan, 50 central) frente a una tasa de omisión del tag ya conocida (~31-50%). La doctrina push-primario (2026-07-14, wmcb#38) declaró el push la transición primaria pero mantuvo la obligación del tag en el mandato, generando en cada turno con push: una regla que el Creator incumple a tasa estable, un comentario de traza del failsafe, y una métrica de omisión sin consumidor de decisión. El tag era carga sin función en el caso común.
+
+**Decisión.** En `vendored/CLAUDE.loop.md`: (1) un turno con commits pusheados NO emite `@reviewer` — el relabel por estado del workflow es el único camino; (2) `@reviewer` queda OBLIGATORIO exclusivamente en turnos sin commits (respuesta en prosa, NIT disputado), donde no hay estado del que derivar la transición; (3) `[READY-TO-MERGE]` y `[NEEDS-HUMAN]` conservan su semántica intacta (portan estado que el push no puede derivar); (4) la regla posicional (tag como header) se conserva para los tags que quedan.
+
+**Racional.** Primera amputación de la dirección AP-078: retirar una regla de prosa cuyo incumplimiento estaba ya absorbido al 100% por el mecanismo de estado reduce superficie de cumplimiento, ruido de traza y métrica muerta, sin abrir ningún hueco: el caso sin-push conserva su tag y el caso con-push ya transicionaba por estado.
+
+**Residual (a la remedición del 12-08).** El step `turn-close-failsafe` de `claude-code.yml` sigue posteando su comentario de traza en cada absorción; con AP-079 esa traza documenta un no-incumplimiento y pasa a ser ruido puro. Retirar el comentario (no el relabel) exige tocar el reusable — fuera del alcance de este PR y de la moratoria salvo P0.
+
+**Reversión.** Restaurar el bloque anterior del loop protocol y registrar enmienda aquí.
