@@ -65,15 +65,15 @@ if (errors.length) {
   errors.forEach(e => console.error('  - ' + e));
   process.exit(1);
 }
-// El «verde» de este paso NO se imprime aquí: el paso incluye los dos checks
+// El «verde» de este paso NO se imprime aquí: el paso incluye los checks
 // colgados abajo, y anunciarlo antes de correrlos deja el primer renglón de un
 // run ROJO afirmando verde (🔵 5 de la ronda 3 de la review de AP-064). Se
 // imprime al final, cuando ya es cierto.
 
 // ── Piggyback deliberado (2026-07-28, 🔵 6 de la ronda 2 de la review de
 // AP-064) ────────────────────────────────────────────────────────────────────
-// Estos dos checks vigilan el JS embebido de los workflows igual que el de
-// arriba, solo que en su forma PENDIENTE: un cambio de `.github/workflows/**`
+// Los checks de la lista de abajo vigilan el JS embebido de los workflows igual
+// que el de arriba, solo que en su forma PENDIENTE: un cambio de `.github/workflows/**`
 // hecho por un agente no se puede pushear (la App no tiene `workflows`,
 // ADR-020) y viaja como `docs/patches/*.patch`. Su paso propio de `ci.yml`
 // viajaría DENTRO de ese mismo parche — es decir, el consumidor del pendiente
@@ -83,10 +83,15 @@ if (errors.length) {
 //
 // Es feo a propósito y la doctrina de la casa prefiere feo-y-vivo a
 // limpio-y-pendiente. Al conceder `workflows` a la App (o al aplicar el
-// parche), esto se sustituye por dos pasos propios en `ci.yml` y se borran
-// estas líneas — no antes, o el gate vuelve a apagarse. Cuidado con el doble
-// conteo: si se añaden los pasos, hay que quitar esto en el mismo cambio.
-for (const s of ['check-patches.mjs', 'check-resolve-detection.mjs']) {
+// parche), esto se sustituye por **un paso propio de `ci.yml` por cada entrada
+// del array de abajo** —la LISTA es la fuente del cuántos, jamás un cardinal
+// escrito en esta prosa (🟡 1 de la review de AP-071: decía «dos» y ya eran
+// tres; el agente que ejecutara la instrucción al pie de la letra habría dejado
+// el tercer gate huérfano y apagado, que es la clase exacta que este bloque
+// existe para prevenir)— y se borran estas líneas — no antes, o el gate vuelve
+// a apagarse. Cuidado con el doble conteo: si se añaden los pasos, hay que
+// quitar esto en el mismo cambio.
+for (const s of ['check-patches.mjs', 'check-resolve-detection.mjs', 'check-turn-close-detection.mjs']) {
   try { execFileSync('node', [`scripts/${s}`], { stdio: 'inherit' }); }
   catch { process.exit(1); }   // el exit code se propaga: el rojo de esos checks es el rojo de este paso
 }
