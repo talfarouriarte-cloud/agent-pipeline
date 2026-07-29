@@ -234,6 +234,96 @@ Las métricas del Auditor (tasa de `autonomous-decision`, rondas,
 `rounds-cap-reached`) vigilan el agregado; el process-reviewer propone si
 el patrón por-épica degenera.
 
+## El re-run de CI no lo ejecutas tú: lo DECLARAS (AP-077)
+
+Cuando rules un `pr-ci-red-persistent` como **flaky ajeno al diff** (el rojo
+no lo causan ficheros que el PR toca), el remedio es re-lanzar los jobs
+fallidos — y **no puedes ejecutarlo**. Ninguna de las dos formas del comando
+está en tu allowlist: `gh api -X POST
+repos/<r>/actions/runs/<id>/rerun-failed-jobs` no casa con la entrada
+`Bash(gh api repos/*)` (el `-X POST` intercalado rompe el prefijo) y
+`gh run rerun` no está en la lista. No es conjetura: se midió tres veces
+seguidas sobre finplan#1741, con LGTM ya emitido, y costó 3 h 26 min de
+cadena muerta, 3 corridas —dos REDUNDANTES, porque volvieron a diagnosticar
+lo ya diagnosticado y volvieron a chocar contra la misma denegación— y la
+única intervención humana en vuelo en 6 unidades de trabajo consecutivas.
+
+**No lo intentes.** Reintentar el comando denegado es la forma más cara de
+gastar tu presupuesto: el diagnóstico ya estaba bien las tres veces. Lo que
+haces es **declarar el ruling**: en el mismo comentario donde dices que el
+rojo es un flaky de contención, pon **en su propia línea** el marcador
+
+```
+<!-- watchdog-resolve-rerun -->
+```
+
+El post-step determinista `watchdog-resolve-rerun` de tu propia etapa lo
+ejecuta al cerrar el job. No decide nada: re-verifica contra el ESTADO que
+lo que declaraste sigue siendo cierto (PR abierto, sin label de exclusión,
+CI del head VIGENTE en rojo completado, rojo NO atribuible al diff) y llama
+a `rerun-failed-jobs`. Si algo de eso ya no se cumple, no actúa y lo dice.
+
+**Cap 1 por PR y head SHA, y la escalada es INCONDICIONAL.** Declara el
+ruling **una sola vez por head**: si ya lo declaraste sobre este mismo head
+—lleve el PR el marcador `watchdog-resolve-rerun-materializado: <headSha>` o
+no— **no lo re-declares**.
+
+*Cómo lo compruebas*, porque cada tick tuyo es una sesión nueva y **no
+recuerdas nada**: «ya declaré» no es un hecho que tengas, es un hecho que
+DERIVAS del hilo. Busca en los comentarios del PR uno **tuyo anterior** que
+lleve `<!-- watchdog-resolve-rerun -->` **en línea propia** —citado entre
+backticks o dentro de un bloque cercado NO cuenta, que es el mismo criterio
+con el que el belt lo lee (clase AP-063: EFECTUAR ≠ CITAR)— y que sea
+**posterior al último push** del head vigente (un push nuevo es un rojo
+nuevo y merece su propio intento). Si lo encuentras, ya declaraste sobre
+este head: no re-declares. Si no, declara.
+
+La condición es «ya declaré», no «veo el marcador
+`-materializado`», y la diferencia importa: el post-step tiene frentes que fallan en
+silencio (barrido caído, `IN_CI_WF` vacío, comentarios ilegibles, el propio
+`rerun-failed-jobs` denegado, el módulo no injertado), y en todos ellos el
+rojo sigue ahí sin marcador ninguno. Condicionar la escalada a ver el
+marcador te devolvería a re-declarar tick tras tick sobre un remedio que no
+se ejerce — que es *exactamente* la clase que AP-077 mide y cierra, entrando
+por la puerta del mandato.
+
+Un segundo rojo sobre el mismo head es la señal de que no era contención:
+aplica `stalled` + diagnóstico SIN `@claude`, el cortacircuito de siempre,
+que sigue intacto y **no depende de que el re-run llegara a ocurrir**. El
+contador del belt es propio: no consume el retry 1/1 del detector
+(`watchdog-ci-retry`) ni el cap 2 del dispatcher de turno.
+
+**El rojo ATRIBUIBLE no se re-lanza nunca, y aquí NO hay red debajo.** Si los
+tests fallidos viven en ficheros que el PR toca, la vía es `ping-creator` con
+el log citado: ahí no hay flaky que absorber, hay una regresión que corregir.
+El belt trae código para recomputar la atribuibilidad por su cuenta, **pero
+ese guard está INERTE**: lee las anotaciones del check-run, que exigen
+`checks: read`, y ninguno de los bloques `permissions:` en juego declara esa
+clave —ni puede declararla, porque una clave nueva revienta de arranque a
+todos los stubs de la flota (AP-022, clase #57)—. El belt lo dice en su log y
+en su comentario, y re-lanza igual (un 403 no puede bloquear el remedio).
+Consecuencia para ti, y es la que importa: **la clasificación atribuible /
+no-atribuible es TUYA y nadie la va a repasar**. Antes de declarar el ruling,
+mira de verdad qué ficheros salen en el log y contrástalos con el diff del
+PR; si dudas, no declares y escala — un re-run sobre una regresión real la
+esconde un ciclo, y ese es el coste que el guard debía cubrir y hoy no cubre.
+
+**Puede no estar desplegado, igual que el belt de AP-064.** La invocación y
+la línea de prompt viven en `.github/workflows/**`, que la GitHub App no
+puede pushear (ADR-020), así que viajan en
+`docs/patches/AP-077-watchdog-resolve-rerun.patch` hasta que un humano lo
+aplique. Eso NO cambia tu regla operativa —declara el ruling igual: es un
+marcador, cuesta una línea, y sin él no hay nada que materializar el día que
+se aplique—, pero sí cambia qué esperar: mientras el parche esté pendiente,
+el re-run no ocurre y el episodio termina como siempre (`stalled` +
+diagnóstico). El CUERPO del belt sí es pusheable por un agente
+(`vendored/scripts/watchdog-resolve-rerun.cjs` en `agent-pipeline`, servido
+por el graft como `scripts/watchdog-resolve-rerun.cjs`): **no edites esa
+copia de tu workspace** — está en `.git/info/exclude` y tu diff saldría
+vacío; el arreglo es un PR en el central sobre el fichero FUENTE y su banco
+(`scripts/check-resolve-rerun.mjs`), y desde un consumidor lo que abres es
+la escalada.
+
 ## Orden de ejecución: la transición CROSS-ISSUE va PRIMERO (AP-064)
 
 Cuando tu ruling toca un issue DISTINTO del que estás comentando (retirar

@@ -1,0 +1,186 @@
+# AP-077 — post-step `watchdog-resolve-rerun` de la etapa `architect` de
+# `watchdog.yml`, + el cambio del prompt del resolver que sustituye una orden
+# IMPOSIBLE (un `gh api -X POST` que su allowlist no admite) por la DECLARACIÓN
+# del ruling que ese post-step materializa.
+#
+# QUÉ CIERRA. Repesca finplan#1741 / aud. finplan#1743: la capa de vigilancia
+# diagnosticó tres veces «flaky de contención; remedio = re-lanzar los jobs
+# fallidos» y las tres vio DENEGADAS las dos formas del comando. La asimetría es
+# verificable en el propio fichero: el prompt ordena
+# `gh api -X POST repos/<r>/actions/runs/<id>/rerun-failed-jobs` y el
+# `--allowedTools` de la misma etapa trae `Bash(gh api repos/*)` — el prefijo se
+# rompe con el `-X POST` intercalado, y `gh run rerun` no está en la lista.
+# Coste medido: 3 h 26 min de cadena muerta, 3 corridas (2 REDUNDANTES) y 1 gate
+# humano.
+#
+# PENDIENTE DE APLICACIÓN HUMANA: la GitHub App de claude-code-action no tiene
+# permiso `workflows` (ADR-020), luego este cambio no se puede pushear desde una
+# sesión de agente. Lo aplica un humano con:
+#     git apply docs/patches/AP-077-watchdog-resolve-rerun.patch
+#
+# QUÉ NO VIAJA AQUÍ (doctrina AP-068). El CUERPO del belt vive en
+# `vendored/scripts/watchdog-resolve-rerun.cjs` —pusheable por un agente,
+# gateado por el CI del central y ejecutado por el banco de
+# `scripts/check-resolve-rerun.mjs`— y llega al workspace del consumidor por
+# `graft-vendored` (AP-009). Aquí solo queda la invocación (un `require` con
+# fail-open anunciado) y la línea de prompt, que es irreductiblemente prompt.
+# Aplicar este parche es, por tanto, un acto ÚNICO: los arreglos posteriores del
+# belt no vuelven a pasar por aquí.
+#
+# CERO permiso nuevo y CERO entrada de allowlist. El paso escribe con el
+# `GITHUB_TOKEN` del job, cuyo `actions: write` ya existía (ADR-217 §7,
+# `watchdog.yml:1320`) y que es el MISMO camino por el que el detector re-lanza
+# jobs fallidos en su retry 1/1 (`watchdog.yml:231` y `:999`, las dos llamadas
+# PROBADAS a `reRunWorkflowFailedJobs` del fichero, ambas sin `github-token:`).
+# NO el PAT (🟡 1 de la review): el bloque `permissions:` gobierna el
+# `GITHUB_TOKEN`, no un secreto de usuario, y la capacidad Actions-write del PAT
+# no consta medida en ninguna parte — el corpus dice lo contrario (AP-066,
+# `docs/decisions.md:1787`: «en cualquier consumidor cuyo PAT no lea Actions,
+# ese belt está inerte»). Con el PAT, un 403 habría convertido la denegación de
+# hoy en un `::warning`: el mismo episodio con otro nombre. La autoría humana es
+# cosmética para un RE-RUN —no nace evento que el anti-loop tenga que dejar
+# pasar— y el comentario del belt no despierta a nadie (sin `@claude`).
+#
+# LO QUE EL `GITHUB_TOKEN` TAMPOCO PUEDE LEER, Y NO SE ARREGLA AQUÍ (🔴 de la
+# ronda 2 de la review). El belt recomputa la atribuibilidad desde
+# `checks.listAnnotations`, que exige `checks: read` — clave que NINGÚN bloque
+# `permissions:` en juego declara y que NO es añadible: `docs/decisions.md:1476`
+# ya midió que una clave nueva es `startup_failure` de flota instantáneo en todo
+# stub con bloque explícito (AP-022, clase #57). O sea que ese guard cae SIEMPRE
+# por su fail-open en la configuración desplegada. Se conserva el fail-open (un
+# 403 no puede bloquear el remedio) y se le quita el silencio: `::warning`
+# nominal que nombra la causa + la inertidad dicha en el comentario del belt.
+# NO cuentes este guard como puesto: el riesgo «enmascarar regresiones a base de
+# re-runs» lo acotan el cap 1 por head SHA y el cortacircuito — DOS cosas, no
+# tres. Queda como residual (f) de AP-077.
+#
+# CONVIVENCIA CON EL PARCHE DE AP-064. Los dos tocan este fichero y NINGUNO de
+# sus hunks se solapa, a propósito: el hunk de prompt de AP-077 está en el
+# párrafo `pr-ci-red-persistent` (~1370) y el paso nuevo se inserta ANTES del
+# post-step de ping-creator huérfanos (~1416), mientras AP-064 toca la línea del
+# marcador de capa (~1401) y el hueco POSTERIOR a ese mismo post-step (~1447).
+# Se pueden aplicar en cualquier orden; `git apply` ajusta los offsets.
+#
+# verificado-contra: 878bc7f66f4c907774c4d2e34ecaf8218f836d51
+#
+# AP-065 — QUÉ significa este SHA y quién lo comprueba. Lo que el ancla fija NO
+# es «el commit en que se escribió el parche» —inalcanzable por construcción:
+# teclear el SHA cambia el árbol y produce otro SHA— sino la PRE-IMAGEN: los
+# blobs `index <pre>..<post>` que el diff declara más abajo. `check-patches.mjs`
+# la COMPRUEBA (L1 contra el árbol, L2 contra el commit si está en el clon, L3
+# contra el espejo del corpus). Corolario práctico: este SHA solo hay que
+# tocarlo si CAMBIA `.github/workflows/watchdog.yml`. Mientras el check diga
+# «ancla VIGENTE», está correcto aunque nombre un commit viejo — no lo rotes por
+# costumbre.
+diff --git a/.github/workflows/watchdog.yml b/.github/workflows/watchdog.yml
+index 369b9f3..540f691 100644
+--- a/.github/workflows/watchdog.yml
++++ b/.github/workflows/watchdog.yml
+@@ -1372,9 +1372,26 @@ jobs:
+             el test y decide: si el fallo es atribuible al PR, ping-creator en
+             el PR con el log relevante citado y la instrucción de corregir;
+             si es un flaky ajeno al PR (pasa en local / falla intermitente en
+-            runner), dilo en el comentario, re-lanza el CI una última vez con
+-            `gh api -X POST repos/${{ github.repository }}/actions/runs/<ci_run>/rerun-failed-jobs`
+-            y si reincide aplica label `stalled` + diagnóstico SIN @claude.
++            runner), dilo en el comentario y DECLARA ahí mismo el ruling de
++            re-run poniendo, EN SU PROPIA LÍNEA, el marcador
++            `<!-- watchdog-resolve-rerun -->` (AP-077). NO intentes re-lanzar
++            el CI tú: NINGUNA de las dos formas del comando está en tu
++            allowlist y las dos salen DENEGADAS (medido 3 veces sobre
++            finplan#1741 — `Bash(gh api repos/*)` no casa con el `-X POST`
++            intercalado, y `gh run rerun` no está; coste: 3 h 26 min de cadena
++            muerta y un gate humano). Quien ejecuta es el post-step
++            determinista `watchdog-resolve-rerun` de esta misma etapa, al
++            cerrar el job, con cap 1 por PR y head SHA.
++            El ruling se declara UNA sola vez por head: si ya lo declaraste
++            sobre este mismo head —lo lleve el PR materializado o no, porque
++            el post-step tiene frentes que fallan en silencio— NO lo
++            re-declares. No tienes memoria entre ticks, así que «ya lo
++            declaraste» no lo recuerdas: lo COMPRUEBAS en el hilo del PR —un
++            comentario tuyo anterior con ese marcador en LÍNEA PROPIA (citado
++            entre backticks o dentro de un bloque NO cuenta, AP-063) y
++            posterior al último push del head vigente—. Y si reincide aplica
++            label `stalled` + diagnóstico SIN @claude: esa escalada es
++            INCONDICIONAL y no depende de que el re-run llegara a ocurrir.
+             Cuenta como re-arm a efectos del cap.
+ 
+             Tipo `stalled-autonomous-resolve` (régimen autónomo 2026-07-07,
+@@ -1413,6 +1430,77 @@ jobs:
+             cadena, respetando el cap de reintentos y las prohibiciones del
+             rol. Si un item no necesita acción, dilo y no toques nada.
+ 
++      - name: Materializar el ruling de RE-RUN declarado por el resolver (watchdog-resolve-rerun)
++        # AP-077 (repesca finplan#1741, aud. finplan#1743) — la capa de
++        # vigilancia diagnosticaba el CI rojo NO-atribuible y no podía ejecutar
++        # el único remedio que su propio diagnóstico prescribe: las dos formas
++        # del comando (`gh api -X POST .../rerun-failed-jobs` y `gh run rerun
++        # --failed`) salen DENEGADAS por el allowlist de arriba —
++        # `Bash(gh api repos/*)` no casa con el `-X POST` intercalado, y
++        # `gh run rerun` no está en la lista. Asimetría entre autoridad de
++        # DIAGNÓSTICO y autoridad de REMEDIO (clase 5 del pipeline-map,
++        # mandate/toolbox drift): 3 corridas, 2 de ellas REDUNDANTES, 3 h 26
++        # min de cadena muerta y 1 gate humano.
++        #
++        # Se cierra materializando lo DECLARADO (patrón AP-064) en vez de
++        # ampliar el allowlist del LLM: el resolver declara el ruling con un
++        # marcador anclado y este paso lo ejecuta al cerrar el job. Cap 1 por
++        # PR y head SHA con contador propio — no consume el retry 1/1 del
++        # detector ni el cap 2 del dispatcher de turno (misma separación que
++        # `watchdog-lgtm-rematerialize`) — y el cortacircuito a `human-needed`
++        # queda intacto.
++        #
++        # El cuerpo NO vive aquí sino en
++        # `vendored/scripts/watchdog-resolve-rerun.cjs`, servido al workspace
++        # por `graft-vendored` (doctrina AP-068): la App no tiene permiso
++        # `workflows` (ADR-020), luego el código embebido en este fichero sería
++        # intocable para un agente. Aquí solo queda la invocación.
++        #
++        # CERO permiso nuevo: escribe con el `GITHUB_TOKEN` del job, cuyo
++        # `actions: write` ya existía (ADR-217 §7) y que es el MISMO camino por
++        # el que el detector re-lanza jobs fallidos en su retry 1/1 (`:231` y
++        # `:999`, las dos llamadas PROBADAS del fichero, ambas sin
++        # `github-token:`). NO el PAT: `permissions:` gobierna el
++        # `GITHUB_TOKEN`, no un secreto de usuario, y la capacidad
++        # Actions-write del PAT no consta medida — AP-066 dice lo contrario
++        # («donde el PAT no lea Actions, ese belt está inerte»). Con el PAT un
++        # 403 dejaría la denegación de hoy convertida en un `::warning`, que es
++        # el mismo episodio con otro nombre. La autoría humana es cosmética
++        # para un RE-RUN (no nace evento que el anti-loop deba dejar pasar) y
++        # el comentario del belt no despierta a nadie: va sin `@claude`.
++        #
++        # Y lo que ese token NO puede leer: `checks.listAnnotations` exige
++        # `checks: read`, que este bloque `permissions:` no declara y que no es
++        # añadible (clave nueva ⇒ `startup_failure` de flota en todo stub con
++        # bloque explícito — AP-022 clase #57, `decisions.md:1476`). El guard de
++        # atribuibilidad del belt cae por tanto SIEMPRE por su fail-open: se
++        # conserva (un 403 no puede bloquear el remedio) pero ya no en silencio
++        # —`::warning` nominal + la inertidad dicha en el comentario— y NO
++        # cuenta como guard puesto. El riesgo «enmascarar regresiones a base de
++        # re-runs» lo acotan el cap 1 por head SHA y el cortacircuito a
++        # `human-needed`: DOS cosas, no tres. Residual (f) de AP-077.
++        if: always()
++        uses: actions/github-script@v7
++        env:
++          # Kill-switch reutilizado, sin label nueva: el conjunto de exclusión
++          # es el MISMO que el del detector. Un ítem que el watchdog no vigila
++          # tampoco se re-lanza por aquí.
++          IN_SKIP_LABELS: ${{ inputs.skip_labels }}
++          # Sin el nombre del workflow de CI no se puede identificar el run del
++          # head vigente: el módulo es fail-closed si llega vacío.
++          IN_CI_WF: ${{ inputs.ci_workflow_name }}
++        with:
++          github-token: ${{ github.token }}
++          script: |
++            const ruta = `${process.env.GITHUB_WORKSPACE}/scripts/watchdog-resolve-rerun.cjs`;
++            let belt;
++            // Fail-open ANUNCIADO: si el graft no corrió (o sirvió una versión
++            // sin el módulo), el belt queda MUDO — pero que lo esté tiene que
++            // verse, que es la clase entera que AP-077 cierra.
++            try { belt = require(ruta); }
++            catch (e) { core.warning(`resolve-rerun: módulo no injertado en ${ruta} (${e.message}) — belt MUDO en esta corrida.`); return; }
++            await belt({ github, context, core, skipLabels: process.env.IN_SKIP_LABELS });
++
+       - name: Materializar arm en ping-creator huérfanos (post-architect)
+         # fp#1344 (repesca A, auditoría #1343): el architect-etapa escribió
+         # `<!-- ping-creator -->` SIN la mención de arm anclada → Trigger
