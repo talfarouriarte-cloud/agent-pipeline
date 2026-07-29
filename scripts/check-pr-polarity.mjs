@@ -120,6 +120,16 @@ const CASOS = [
   ['compuesto-F-ajeno-existente', `git commit -F ${bodyFile('commitmsg.txt', 'AP-081: toca `gh pr create`\n')} && gh pr create --draft --body-file ${fFull}`, 0, 'el -F ajeno EXISTE en disco y aun asi no se lee como body'],
   ['compuesto-F-ajeno-no-tapa-invalido', `grep -F needle f.txt && gh pr create --body-file ${bodyFile('inv.md', '<!-- full-pr -->\nCloses #187\n')}`, 2, 'el segmento correcto sigue gateandose: body sin huella bloquea igual'],
   ['compuesto-edit-sin-body-mas-F-ajeno', 'gh pr edit --add-label needs-review && pnpm -F @app/web build', 0, 'un -F ajeno NO mete en la superficie a un edit sin body'],
+  // 🔴 2ª ronda de review de AP-081: seg_extract emitía SOLO el primer segmento
+  // que casaba (`head -1` dentro de la función), así que un `gh pr edit` sin body
+  // DELANTE del `gh pr edit` que sí lo fija desactivaba el gate del segundo — el
+  // body de CIERRE, justo el que la pieza 3 existe para cubrir. Ahora la
+  // superficie de `gh pr edit` es el PRIMER segmento que casa Y FIJA BODY, no el
+  // primero que casa. Mutación de dientes: restaurar `head -1` en la rama de
+  // `edit` (quedarse con el primer edit a secas) pone ROJO el primero de estos.
+  ['doble-edit-titulo-antes-de-body-sin-huella', `gh pr edit --title "AP-081 — X" && gh pr edit --body-file ${bodyFile('de1.md', '<!-- full-pr -->\nCloses #187\n')}`, 2, 'un edit de titulo DELANTE no tapa el body de cierre sin huella'],
+  ['doble-edit-label-antes-de-body-valido', `gh pr edit --add-label ci-verde && gh pr edit --body-file ${fFull}`, 0, 'un edit de label DELANTE no muerde de mas: el body de cierre valido pasa'],
+  ['doble-edit-labels-watchdog-antes-de-body-sin-polaridad', `gh pr edit --remove-label needs-review --add-label ci-verde && gh pr edit -F ${bodyFile('de2.md', `Refs #187\n${HUELLA_OK}\n`)}`, 2, 'la forma de watchdog (labels, -F) DELANTE no tapa un cierre sin polaridad'],
 
   // ── fail-open de sustitución en la variante de FICHERO (🔵 6 de la review) ──
   ['edit-body-file-substitucion', 'gh pr edit --body-file "$(mktemp)"', 0, 'body-file por sustitucion: fail-open, no veredicto sobre cuerpo invisible'],

@@ -45,33 +45,43 @@ fi
 # backticks (una línea que EMPIECE por la invocación dentro de un `<<EOF` es
 # indistinguible de la invocación real), ya declarado arriba.
 #
-# La función DEVUELVE el segmento que casó, no un booleano (2026-07-29, AP-081,
-# review del PR): todo lo que se pregunte después —¿fija body?, ¿con qué
-# fichero?— se pregunta sobre ESE segmento, jamás sobre `$cmd` entero. Con
+# La función DEVUELVE los segmentos que casaron, no un booleano (2026-07-29,
+# AP-081, review del PR): todo lo que se pregunte después —¿fija body?, ¿con qué
+# fichero?— se pregunta sobre un segmento concreto, jamás sobre `$cmd` entero. Con
 # `--body-file` como único token reconocido, mirar el comando completo colisionaba
 # con poco; con las formas CORTAS (`-b`, `-F`) colisiona con lo que la flota
 # emite a diario —`git commit -F`, `grep -F`, `pnpm -F <pkg>`—, y en un compuesto
-# `git commit -F msg.txt && gh pr create --body-file body.md` el `head -1` se
-# quedaba con el fichero AJENO: un `gh pr create` válido bloqueado por leer un
-# mensaje de commit como si fuera el body, con un mensaje que además miente
-# sobre la causa. Es la mitad «bloquear de más», la cara en `vendored/`.
-seg_extract() { # $1 = patrón anclado del ejecutable+subcomando; imprime el PRIMER segmento que casa
+# `git commit -F msg.txt && gh pr create --body-file body.md` quedarse con el
+# PRIMER match del comando entero se llevaba el fichero AJENO: un `gh pr create`
+# válido bloqueado por leer un mensaje de commit como si fuera el body, con un
+# mensaje que además miente sobre la causa. Es la mitad «bloquear de más», la
+# cara en `vendored/`.
+#
+# `seg_extract` imprime CADA segmento que casa, uno por línea, y es el PUNTO DE
+# USO quien elige cuál gatea (2026-07-29, AP-081, 🔴 de la 2ª ronda de review).
+# El `head -1` DENTRO de la función —quedarse con el PRIMER `gh pr edit` a secas—
+# abría el hueco SIMÉTRICO al de arriba, «bloquear de MENOS»: un compuesto
+# `gh pr edit --title … && gh pr edit --body-file cierre.md` gateaba el segmento
+# del título (sin body ⇒ fuera de superficie ⇒ exit 0) y NUNCA el del cierre —
+# justo el body que la pieza 3 de la Decisión existe para cubrir, y que con
+# draft-first (AP-047) es el que la auditoría acaba leyendo. La superficie de
+# `gh pr edit` es el PRIMER segmento que casa Y FIJA BODY, no el primero que casa.
+seg_extract() { # $1 = patrón anclado del ejecutable+subcomando; imprime CADA segmento que casa (uno por línea)
   printf '%s\n' "$cmd" | sed 's/`[^`]*`/ /g; s/\$(/\n/g' | tr ';|&\n' '\n\n\n\n' \
-    | grep -E "^[[:space:]]*[({]?[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:]]*/)?$1([[:space:]]|$)" \
-    | head -1
+    | grep -E "^[[:space:]]*[({]?[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:]]*/)?$1([[:space:]]|$)"
 }
-# Superficie gateada (AP-081). `gh pr create` SIEMPRE. `gh pr edit` SOLO cuando
-# fija body — y ese caso importa más que el otro: con draft-first (AP-047) el
-# body que la auditoría acaba leyendo es el del CIERRE, y ese se escribe con
-# `gh pr edit --body-file`, que hasta ahora no pasaba por ningún gate. Un
-# `gh pr edit --add-label` / `--title` sin body no se toca.
-seg=$(seg_extract 'gh[[:space:]]+pr[[:space:]]+create')
-if [ -n "$seg" ]; then
-  :
-else
-  seg=$(seg_extract 'gh[[:space:]]+pr[[:space:]]+edit')
+# Superficie gateada (AP-081). `gh pr create` gatea SIEMPRE, así que basta el
+# primer segmento que casa. `gh pr edit` SOLO cuando fija body — y ese caso
+# importa más que el otro: con draft-first (AP-047) el body que la auditoría
+# acaba leyendo es el del CIERRE, y ese se escribe con `gh pr edit --body-file`,
+# que hasta ahora no pasaba por ningún gate. De TODOS los `gh pr edit` del
+# compuesto, el gateado es el PRIMERO que fija body; si ninguno lo fija, ningún
+# edit entra en la superficie ⇒ fuera. Un `gh pr edit --add-label` / `--title`
+# sin body no se toca (aunque vaya DELANTE de uno que sí lo fija).
+seg=$(seg_extract 'gh[[:space:]]+pr[[:space:]]+create' | head -1)
+if [ -z "$seg" ]; then
+  seg=$(seg_extract 'gh[[:space:]]+pr[[:space:]]+edit' | grep -E -- '(--body(-file)?|-b|-F)[= ]' | head -1)
   [ -n "$seg" ] || exit 0
-  printf '%s' "$seg" | grep -Eq -- '(--body(-file)?|-b|-F)[= ]' || exit 0
 fi
 
 # Cuerpo efectivo: inline o fichero. `gh` acepta forma LARGA y CORTA para las
