@@ -111,6 +111,19 @@ const CASOS = [
   ['create-F-valido', `gh pr create --draft -F ${fFull}`, 0, 'create -F con body valido NO se bloquea (falso positivo simetrico)'],
   ['edit-F-motivo-malo', `gh pr edit -F ${motivo('porque la sesión no tenía subagentes')}`, 2, 'el vocabulario tambien se gatea por la forma corta'],
   ['edit-b-substitucion', 'gh pr edit -b "$(cat body.md)"', 0, 'forma corta con sustitucion: fail-open'],
+  // …y el precio de reconocer las formas cortas: `-F`/`-b` los emite media
+  // flota (`git commit -F`, `grep -F`, `pnpm -F <pkg>`). Mirar `$cmd` entero
+  // dejaba que el PRIMER match del compuesto —ajeno a `gh`— se leyera como el
+  // body (🟡 1 de la review de AP-078). Guard y extracción corren ahora sobre
+  // el SEGMENTO de `gh`, no sobre el comando.
+  ['compuesto-F-ajeno-antes', `git commit -F msg.txt && gh pr create --draft --body-file ${fFull}`, 0, '-F ajeno DELANTE de un create valido: no lo secuestra'],
+  ['compuesto-F-ajeno-existente', `git commit -F ${bodyFile('commitmsg.txt', 'AP-078: toca `gh pr create`\n')} && gh pr create --draft --body-file ${fFull}`, 0, 'el -F ajeno EXISTE en disco y aun asi no se lee como body'],
+  ['compuesto-F-ajeno-no-tapa-invalido', `grep -F needle f.txt && gh pr create --body-file ${bodyFile('inv.md', '<!-- full-pr -->\nCloses #187\n')}`, 2, 'el segmento correcto sigue gateandose: body sin huella bloquea igual'],
+  ['compuesto-edit-sin-body-mas-F-ajeno', 'gh pr edit --add-label needs-review && pnpm -F @app/web build', 0, 'un -F ajeno NO mete en la superficie a un edit sin body'],
+
+  // ── fail-open de sustitución en la variante de FICHERO (🔵 6 de la review) ──
+  ['edit-body-file-substitucion', 'gh pr edit --body-file "$(mktemp)"', 0, 'body-file por sustitucion: fail-open, no veredicto sobre cuerpo invisible'],
+  ['create-F-substitucion', 'gh pr create -F "$(mktemp)"', 0, 'forma corta -F por sustitucion: fail-open'],
 
   // ── huella EMITIDA vs huella CITADA (hallazgo 2 del pre-reviewer) ────────
   // Un body puede CITAR una huella histórica —las cuatro prosas viven hoy en
@@ -130,6 +143,13 @@ const CASOS = [
   // queda con la mención y el gate se abre en silencio sobre una huella que
   // debía bloquear — que es el modo de fallo caro, no el ruidoso.
   ['mencion-posterior-no-tapa-huella-invalida', `gh pr edit --body-file ${bodyFile('men2.md', '<!-- full-pr -->\nCloses #187\npre-reviewer: no ejecutado — porque la sesión no tenía subagentes\nNota: en finplan#1742 la huella decía pre-reviewer: no ejecutado — otra cosa.\n')}`, 2, 'mencion posterior NO puede tapar una huella emitida invalida'],
+  // La mitad SIMÉTRICA (🟡 2 de la review de AP-078): la precedencia
+  // incondicional de `ejecutado` dejaba esa rama sin protección posicional, y
+  // `creator.md` trae ese literal en columna 0 dentro de un bloque de código —
+  // una cita ANTERIOR desactivaba el vocabulario de la huella emitida debajo.
+  // Regla única: gana la ÚLTIMA anclada, sea de la rama que sea.
+  ['cita-anterior-de-ejecutado-no-tapa-motivo-invalido', `gh pr edit --body-file ${bodyFile('cita3.md', '<!-- full-pr -->\nCloses #187\nEl PR anterior cerró así:\npre-reviewer: ejecutado · 4 hallazgos · 4 aplicados\nY este cierra así:\npre-reviewer: no ejecutado — no me dio tiempo\n')}`, 2, 'cita ANTERIOR de ejecutado no desactiva el vocabulario de la huella emitida'],
+  ['cita-anterior-de-ejecutado-con-motivo-valido', `gh pr edit --body-file ${bodyFile('cita4.md', '<!-- full-pr -->\nCloses #187\npre-reviewer: ejecutado · 4 hallazgos · 4 aplicados\npre-reviewer: no ejecutado — harness-sin-subagentes\n')}`, 0, 'la misma forma con motivo del vocabulario sigue pasando'],
 
   // ── laxitud DELIBERADA del separador (hallazgo 3 del pre-reviewer) ───────
   // El guion ASCII se acepta además de la raya, mismo criterio que el token

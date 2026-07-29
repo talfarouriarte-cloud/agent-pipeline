@@ -120,6 +120,29 @@ y nada más. Para cualquier OTRO subagente, y para workflows /
 deep-research, la instrucción del harness sigue vigente tal cual — nada
 de aquí la contradice.
 
+**Quién lee esto, y qué le toca a cada uno.** Este fichero es el loop de
+`CLAUDE.md`, no un mandato de rol: el graft (AP-009) lo compone para las
+**cuatro** sesiones injertadas —Creator (`claude-code`), Reviewer,
+Watchdog/architect-resolve y process-reviewer— y a todas les deja además
+`.claude/agents/{pre-reviewer,investigador}.md` en el workspace. La
+amplitud es INTENCIONAL y se lee así:
+
+- **`pre-reviewer` — una vez por PR, y es del CREATOR.** «Tras tu último
+  commit y antes de `gh pr ready`» solo tiene forma en la sesión que
+  abre el PR. Si no eres el Creator, ese subagente no es tu gate: no lo
+  invoques por tu cuenta (el Reviewer que se pre-revisa a sí mismo es la
+  autoevaluación que #1259 existe para impedir).
+- **`investigador` — de cualquiera, y a discreción.** Mapear código en
+  contexto separado sirve igual al Reviewer y al resolver, y es lo que
+  PROTEGE el presupuesto en vez de gastarlo: el subagente quema su
+  contexto, no el tuyo.
+
+**Presupuesto:** esta autorización no sube ningún cap ni te obliga a
+gastar turnos. Si corres con presupuesto acotado —p. ej. `reviewer.md`
+§ «Degradación honesta a presupuesto casi agotado»— esa sección manda
+sobre ésta: primero declaras honestamente hasta dónde llegaste, no
+inicias un subagente que no vas a poder consumir.
+
 Por qué está escrito así (AP-078, auditorías finplan#1736 §Obs.1 y
 finplan#1743): la prohibición está **compilada dentro del binario del
 harness** (`@anthropic-ai/claude-agent-sdk`); no la emite

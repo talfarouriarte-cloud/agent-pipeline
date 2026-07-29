@@ -44,21 +44,34 @@ fi
 # `$(…)` sigue gateada y tiene banco. Queda el hueco conocido del heredoc SIN
 # backticks (una línea que EMPIECE por la invocación dentro de un `<<EOF` es
 # indistinguible de la invocación real), ya declarado arriba.
-seg_match() { # $1 = patrón anclado del ejecutable+subcomando
+#
+# La función DEVUELVE el segmento que casó, no un booleano (2026-07-29, AP-078,
+# review del PR): todo lo que se pregunte después —¿fija body?, ¿con qué
+# fichero?— se pregunta sobre ESE segmento, jamás sobre `$cmd` entero. Con
+# `--body-file` como único token reconocido, mirar el comando completo colisionaba
+# con poco; con las formas CORTAS (`-b`, `-F`) colisiona con lo que la flota
+# emite a diario —`git commit -F`, `grep -F`, `pnpm -F <pkg>`—, y en un compuesto
+# `git commit -F msg.txt && gh pr create --body-file body.md` el `head -1` se
+# quedaba con el fichero AJENO: un `gh pr create` válido bloqueado por leer un
+# mensaje de commit como si fuera el body, con un mensaje que además miente
+# sobre la causa. Es la mitad «bloquear de más», la cara en `vendored/`.
+seg_extract() { # $1 = patrón anclado del ejecutable+subcomando; imprime el PRIMER segmento que casa
   printf '%s\n' "$cmd" | sed 's/`[^`]*`/ /g; s/\$(/\n/g' | tr ';|&\n' '\n\n\n\n' \
-    | grep -Eq "^[[:space:]]*[({]?[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:]]*/)?$1([[:space:]]|$)"
+    | grep -E "^[[:space:]]*[({]?[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:]]*/)?$1([[:space:]]|$)" \
+    | head -1
 }
 # Superficie gateada (AP-078). `gh pr create` SIEMPRE. `gh pr edit` SOLO cuando
 # fija body — y ese caso importa más que el otro: con draft-first (AP-047) el
 # body que la auditoría acaba leyendo es el del CIERRE, y ese se escribe con
 # `gh pr edit --body-file`, que hasta ahora no pasaba por ningún gate. Un
 # `gh pr edit --add-label` / `--title` sin body no se toca.
-if seg_match 'gh[[:space:]]+pr[[:space:]]+create'; then
+seg=$(seg_extract 'gh[[:space:]]+pr[[:space:]]+create')
+if [ -n "$seg" ]; then
   :
-elif seg_match 'gh[[:space:]]+pr[[:space:]]+edit'; then
-  printf '%s' "$cmd" | grep -Eq -- '(--body(-file)?|-b|-F)[= ]' || exit 0
 else
-  exit 0
+  seg=$(seg_extract 'gh[[:space:]]+pr[[:space:]]+edit')
+  [ -n "$seg" ] || exit 0
+  printf '%s' "$seg" | grep -Eq -- '(--body(-file)?|-b|-F)[= ]' || exit 0
 fi
 
 # Cuerpo efectivo: inline o fichero. `gh` acepta forma LARGA y CORTA para las
@@ -68,15 +81,25 @@ fi
 # de CIERRE escrito con `-F` esquivaba el gate entero —huella, vocabulario y
 # polaridad—, y simétricamente un `gh pr create -F body.md` VÁLIDO quedaba
 # BLOQUEADO, porque el fichero no se leía y `body` seguía siendo el comando.
+#
+# El fichero se busca en `$seg` —el segmento de `gh`— y NO en `$cmd`: ver la
+# cabecera de `seg_extract`.
 body="$cmd"
-bf=$(printf '%s' "$cmd" | grep -oE '(\-\-body-file|-F)[= ][^[:space:]]+' | head -1 | sed -E 's/(--body-file|-F)[= ]//; s/^["'"'"']//; s/["'"'"']$//')
+bf=$(printf '%s' "$seg" | grep -oE '(\-\-body-file|-F)[= ][^[:space:]]+' | head -1 | sed -E 's/(--body-file|-F)[= ]//; s/^["'"'"']//; s/["'"'"']$//')
 if [ -n "${bf:-}" ] && [ -f "$bf" ]; then
   body=$(cat "$bf")
-elif printf '%s' "$cmd" | grep -Eq -- '(--body|-b)[= ]["'"'"']?(\$\(|`)'; then
+elif printf '%s' "$cmd" | grep -Eq -- '(--body(-file)?|-b|-F)[= ]["'"'"']?(\$\(|`)'; then
   # El body llega por SUSTITUCIÓN de comando (`--body "$(cat f)"`): su texto no
   # está en `$cmd` y no lo podemos leer. Fail-open explícito, coherente con la
   # cabecera de este hook («fail-open salvo en el caso que sabemos detectar»):
   # bloquear aquí sería inventar un veredicto sobre un cuerpo invisible.
+  # Cubre las CUATRO formas, inline y de fichero (`--body-file "$(mktemp)"` es
+  # tan invisible como `--body "$(cat f)"`; con solo las dos inline, la variante
+  # de fichero caía al `body="$cmd"` y bloqueaba por un cuerpo que el hook
+  # tampoco podía leer — 🔵 6 de la review de AP-078).
+  # Esta condición se evalúa sobre `$cmd` A PROPÓSITO, no sobre `$seg`: `$(` es
+  # separador de segmento, luego la apertura de sustitución NO sobrevive a
+  # `seg_extract` y en el segmento no queda nada que reconocer.
   exit 0
 fi
 
@@ -90,13 +113,20 @@ fi
 # es la misma clase «regex-polarity» (PR #1133) que este hook persigue en su
 # cabecera, y en `vendored/`, que despliega sin gradualidad a los dos
 # consumidores, un falso positivo atasca sesiones en vivo (hallazgo 2 del
-# pre-reviewer de AP-078). Criterio: si alguna línea declara `ejecutado`, ÉSA es
-# la efectiva —es la afirmación fuerte, y falsearla es una mentira que el
-# Reviewer caza, no un problema de regex—; si no, la ÚLTIMA línea
-# `no ejecutado`, que es la que el Creator acaba de escribir al cerrar. El
-# anclaje a inicio de línea es lo que separa emitir de citar, y tiene banco.
-huella=$(printf '%s\n' "$body" | grep -E '^pre-reviewer:[[:space:]]*ejecutado' | tail -1)
-[ -n "$huella" ] || huella=$(printf '%s\n' "$body" | grep -E '^pre-reviewer:[[:space:]]*no[[:space:]]+ejecutado' | tail -1)
+# pre-reviewer de AP-078). Criterio, UNA sola regla: la ÚLTIMA línea anclada
+# `^pre-reviewer:` de cualquiera de las dos ramas es la EFECTIVA — es la que el
+# Creator acaba de escribir al cerrar. El anclaje a inicio de línea separa
+# emitir de citar; la posición separa la huella de la cita ANCLADA, que es lo
+# que el vocabulario del corpus produce.
+#
+# La primera redacción daba precedencia INCONDICIONAL a `ejecutado` (🟡 2 de la
+# review de AP-078): protegía la rama `no ejecutado` con `tail -1` y dejaba la
+# otra sin protección posicional, así que una cita de `pre-reviewer: ejecutado ·
+# …` en columna 0 —literal que `creator.md` trae dentro de un bloque de código,
+# listo para pegarse en un body de ejemplo— DESACTIVABA el vocabulario de la
+# huella emitida debajo. Asimetría sin razón: la distinción emitir/citar que
+# este hook persigue no depende de cuál de las dos ramas se cite.
+huella=$(printf '%s\n' "$body" | grep -E '^pre-reviewer:[[:space:]]*(no[[:space:]]+ejecutado|ejecutado)' | tail -1)
 
 if [ -z "$huella" ]; then
   echo 'BLOQUEADO: el body del PR no lleva la huella del subagente pre-reviewer. Añade una línea de texto plano: `pre-reviewer: ejecutado · N hallazgos · M aplicados` o `pre-reviewer: no ejecutado — <motivo>`. Sin ella el subagente no es evaluable desde rastros públicos (mandato 2026-07-12).' >&2
