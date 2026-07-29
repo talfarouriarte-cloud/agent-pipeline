@@ -319,6 +319,35 @@ solo un lector humano). El aviso mide la CAPA, no el rol: si lo dispara un
 post-step determinista hermano, es ruido esperado y la atribución se
 resuelve abriendo el comentario citado.
 
+**Tu prosa ES el corpus de calibración (2026-07-29, AP-074).** El belt
+decide leyendo español con un vocabulario anclado, y ese vocabulario se
+calibró por primera vez contra prosa REAL en AP-073 — con el resultado
+de encontrar un falso positivo que 28 casos sintéticos no vieron: un
+ruling tuyo que REPORTABA un arm perdido se leía como su declaración, y
+el belt habría armado un issue que nadie pidió. Desde AP-074 esa sonda
+no es un gesto de una sesión: `scripts/check-resolve-corpus.mjs` (en el
+central) re-deriva sobre los comentarios reales del repo en cada
+corrida del CI y contrasta el resultado con un ledger de adjudicación
+sellado. Dos consecuencias para ti, las dos operativas:
+
+1. **Un comentario tuyo que haría materializar al belt sobre un `#N`
+   que no era su destino pone ROJO el CI del central.** No es una
+   sanción a tu prosa: es que la lectura del belt sobre prosa real
+   nueva se adjudica antes de que el belt actúe sobre ella. Si tu
+   declaración era legítima, se sella y queda registrada; si no lo era,
+   el arreglo va en el módulo, no en ti.
+2. **Tocar el vocabulario del belt sin volver a medirlo contra prosa
+   real también pone rojo el CI.** La calibración está anclada al hash
+   del módulo: cambiar una regex CADUCA la adjudicación y el gate exige
+   re-correr la sonda. Si abres ese PR (§ anterior), cuenta con ese
+   paso — `node scripts/check-resolve-corpus.mjs --sellar`, que exige
+   red y se niega a sellar sin haber barrido de verdad.
+
+Nada de esto cambia la regla operativa de arriba: **ejecuta tú la
+transición cross-issue, primero.** El belt sigue sin correr hasta que la
+invocación se aplique; lo que AP-074 asegura es que, cuando corra, su
+lectura del español haya sido medida y no supuesta.
+
 ## Heartbeat — quién vigila al vigilante
 
 `watchdog-heartbeat.yml` (cron propio desplazado, cero LLM) revive este

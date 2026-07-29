@@ -91,7 +91,12 @@ if (errors.length) {
 // existe para prevenir)— y se borran estas líneas — no antes, o el gate vuelve
 // a apagarse. Cuidado con el doble conteo: si se añaden los pasos, hay que
 // quitar esto en el mismo cambio.
-for (const s of ['check-patches.mjs', 'check-resolve-detection.mjs', 'check-turn-close-detection.mjs']) {
+//
+// `check-resolve-corpus.mjs` (AP-074) cuelga de aquí por la MISMA razón y una
+// más: su capa viva necesita `GH_TOKEN`, y añadirle un `env:` al paso propio
+// exigiría editar `ci.yml` — pendiente. Colgado aquí corre igual, y su capa de
+// dientes (la calibración offline) no necesita token ninguno.
+for (const s of ['check-patches.mjs', 'check-resolve-detection.mjs', 'check-turn-close-detection.mjs', 'check-resolve-corpus.mjs']) {
   try { execFileSync('node', [`scripts/${s}`], { stdio: 'inherit' }); }
   catch { process.exit(1); }   // el exit code se propaga: el rojo de esos checks es el rojo de este paso
 }
