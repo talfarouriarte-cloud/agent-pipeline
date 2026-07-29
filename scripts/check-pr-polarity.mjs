@@ -75,6 +75,14 @@ const CASOS = [
   ['create-body-substitucion', 'gh pr create --body "$(cat body.md)"', 0, 'body por sustitucion en create: fail-open'],
   // Anclaje a inicio de segmento, jamás substring (clase «regex-polarity», PR #1133).
   ['mencion-en-grep', "grep -n 'gh pr edit --body' docs/agents/creator.md", 0, 'mera MENCION del literal: no bloquea'],
+  // Literal CITADO entre backticks (AP-078, medido contra este hook: el
+  // `git commit -m` que describía el propio cambio quedó bloqueado). Los vanos
+  // `...` se despojan antes de segmentar; el split por backtick venía de la
+  // forma arcaica de sustitución, que ningún agente emite.
+  ['cita-backticks-create', 'git commit -m "arreglo: un `gh pr create --body-file f` valido ya no se bloquea"', 0, 'literal citado entre backticks en un commit: no bloquea'],
+  ['cita-backticks-edit', 'git commit -m "creator.md enseña `gh pr edit --body-file <fichero>` en cada hito"', 0, 'el literal que enseña creator.md, citado: no bloquea'],
+  // …y la forma MODERNA de sustitución sigue gateada: el despojo no la afloja.
+  ['substitucion-moderna-sigue-gateada', `X=$(gh pr create --body-file ${bodyFile('sub.md', 'sin nada\n')})`, 2, 'gh pr create dentro de $( ) sigue gateado'],
 
   // ── vocabulario cerrado del motivo ───────────────────────────────────────
   ['motivo-draft-hito', `gh pr create --draft --body-file ${fDraftHook}`, 0, 'body literal del hook draft-pr-on-push'],
@@ -92,6 +100,43 @@ const CASOS = [
   ['prosa-real-1742', `gh pr edit --body-file ${motivo('el subagente de pre-review está deshabilitado en esta sesión')}`, 2, 'prosa libre real (finplan#1742)'],
   // La rama `ejecutado` NO se acota: su heterogeneidad no era el problema medido.
   ['ejecutado-libre', `gh pr edit --body-file ${bodyFile('ej.md', '<!-- full-pr -->\nCloses #187\npre-reviewer: ejecutado, sin hallazgos\n')}`, 0, 'rama ejecutado sigue libre'],
+
+  // ── formas CORTAS de gh (hallazgo 1 del pre-reviewer de AP-078) ──────────
+  // `gh pr edit` acepta `-b/--body` y `-F/--body-file`, y el allowlist del
+  // reusable (`Bash(gh pr edit:*)`) admite las dos. Mirar solo la larga fallaba
+  // en los dos sentidos: el body de CIERRE con `-F` esquivaba el gate entero, y
+  // un `gh pr create -F` VÁLIDO quedaba bloqueado por no leerse el fichero.
+  ['edit-F-sin-huella', `gh pr edit -F ${bodyFile('sF.md', '<!-- full-pr -->\nCloses #187\n')}`, 2, 'forma corta -F NO puede esquivar el gate'],
+  ['edit-b-sin-nada', 'gh pr edit -b "body sin polaridad ni huella"', 2, 'forma corta -b NO puede esquivar el gate'],
+  ['create-F-valido', `gh pr create --draft -F ${fFull}`, 0, 'create -F con body valido NO se bloquea (falso positivo simetrico)'],
+  ['edit-F-motivo-malo', `gh pr edit -F ${motivo('porque la sesión no tenía subagentes')}`, 2, 'el vocabulario tambien se gatea por la forma corta'],
+  ['edit-b-substitucion', 'gh pr edit -b "$(cat body.md)"', 0, 'forma corta con sustitucion: fail-open'],
+
+  // ── huella EMITIDA vs huella CITADA (hallazgo 2 del pre-reviewer) ────────
+  // Un body puede CITAR una huella histórica —las cuatro prosas viven hoy en
+  // `docs/decisions.md` y en la tabla de `creator.md`— y la citada NO es la
+  // emitida. Bloquear ahí es la clase «regex-polarity» (PR #1133) en `vendored/`,
+  // que despliega sin gradualidad: atasca sesiones en vivo.
+  ['cita-con-ejecutado-real', `gh pr edit --body-file ${bodyFile('cita.md', '<!-- full-pr -->\nCloses #187\npre-reviewer: no ejecutado — la sesión no tenía subagentes (ejemplo histórico citado)\npre-reviewer: ejecutado · 2 hallazgos · 2 aplicados\n')}`, 0, 'huella ejecutado real + cita de prosa historica: NO bloquea'],
+  ['cita-sin-huella-real', `gh pr edit --body-file ${bodyFile('cita2.md', '<!-- full-pr -->\nCloses #187\npre-reviewer: no ejecutado — la sesión no tenía subagentes\n')}`, 2, 'la misma prosa SIN huella valida sigue bloqueando'],
+  // Teeth del anclaje `^`: la MENCIÓN a media línea no puede convertirse en la
+  // huella efectiva. Sin el ancla, `tail -1` se quedaría con la mención.
+  ['mencion-media-linea', `gh pr edit --body-file ${bodyFile('men.md', '<!-- full-pr -->\nCloses #187\npre-reviewer: no ejecutado — harness-sin-subagentes\nNota: el PR anterior cerró con pre-reviewer: no ejecutado — vete a saber por qué.\n')}`, 0, 'mencion a media linea NO desplaza a la huella emitida'],
+  // El caso ANTERIOR documenta la intención pero NO tiene dientes: sobrevive a
+  // quitarle el `^` a la extracción (la mención pasa a ser la huella, y como no
+  // EMPIEZA por `pre-reviewer:` el vocabulario ni se dispara ⇒ fail-open, mismo
+  // exit 0). Éste sí los tiene, y en la dirección que duele: la huella emitida
+  // es INVÁLIDA y una mención POSTERIOR la taparía. Sin el ancla, `tail -1` se
+  // queda con la mención y el gate se abre en silencio sobre una huella que
+  // debía bloquear — que es el modo de fallo caro, no el ruidoso.
+  ['mencion-posterior-no-tapa-huella-invalida', `gh pr edit --body-file ${bodyFile('men2.md', '<!-- full-pr -->\nCloses #187\npre-reviewer: no ejecutado — porque la sesión no tenía subagentes\nNota: en finplan#1742 la huella decía pre-reviewer: no ejecutado — otra cosa.\n')}`, 2, 'mencion posterior NO puede tapar una huella emitida invalida'],
+
+  // ── laxitud DELIBERADA del separador (hallazgo 3 del pre-reviewer) ───────
+  // El guion ASCII se acepta además de la raya, mismo criterio que el token
+  // `pre-épica`/`pre-epica` del guard de horneado. Sin este caso la laxitud
+  // sobrevivía a su propia mutación: nadie decidía si era intencional.
+  ['separador-ascii', `gh pr edit --body-file ${bodyFile('sep.md', '<!-- full-pr -->\nCloses #187\npre-reviewer: no ejecutado - harness-sin-subagentes\n')}`, 0, 'separador ASCII aceptado (laxitud deliberada)'],
+  ['separador-ascii-doble', `gh pr edit --body-file ${bodyFile('sep2.md', '<!-- full-pr -->\nCloses #187\npre-reviewer: no ejecutado -- sustituido-inline\n')}`, 0, 'separador ASCII doble aceptado'],
 ];
 
 let fallos = 0;
