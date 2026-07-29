@@ -97,6 +97,18 @@
 // ANUNCIA como no-productivo, y el sello que produzca queda marcado
 // (`barrido.fixture: true`) — un ledger así leído en modo producción es ROJO.
 //
+// EL DOBLE DE RED (`scripts/lib/fetch-doble.mjs`, AP-076) es la SEGUNDA costura, y
+// existe porque la primera no podía cubrir lo que faltaba: el fixture sustituye el
+// corpus entero y por tanto SALTA `barrer()`, que era el residual (c) de AP-075
+// —«paginación, `direction: desc`, timeout y fail-open por HTTP siguen sin banco»—.
+// El doble se instala por `--import` en el subproceso del banco y sustituye el
+// `fetch` GLOBAL: `barrer()` corre ENTERA, con su bucle de páginas, su
+// `AbortSignal` y su `throw` por HTTP. Se autodenuncia igual que el fixture
+// (`barrido.doble: true` ⇒ ROJO leído en producción), y correrla destapó el fallo
+// que arregla este AP: la paginación en `desc` sobre una lista que muta DUPLICA en
+// el corte de página, y el sello salía con entradas repetidas que la propia L1
+// declara corruptas. Ver el porqué entero sobre `barrer()`.
+//
 // Verde: exit 0.
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { createHash } from 'crypto';
@@ -109,6 +121,16 @@ const SELLAR = process.argv.includes('--sellar');
 // Costura de banco. Ver la cabecera: solo la usa `check-resolve-corpus-bank.mjs`,
 // se anuncia siempre y lo que sella queda marcado como no-productivo.
 const FIXTURE = process.env.CHECK_RESOLVE_CORPUS_FIXTURE || null;
+// La OTRA costura de banco (AP-076). El fixture sustituye el corpus ENTERO y por
+// tanto SALTA `barrer()` de principio a fin, que era justo el residual (c) de
+// AP-075: paginación, `desc`, timeout y fail-open por HTTP sin banco. El doble de
+// `scripts/lib/fetch-doble.mjs` se instala por `--import` en el subproceso del
+// banco y sustituye el `fetch` GLOBAL, no una rama de este script — `barrer()`
+// corre entera y de verdad. Este flag no la habilita: solo LEE su huella, para
+// que un sello nacido con la red doblada no pueda pasar por uno de producción
+// (la misma autodenuncia que `barrido.fixture`, AP-075). Sin ella, el doble sería
+// el único camino del repo capaz de producir un sello indistinguible del real.
+const DOBLE = !!globalThis.__CHECK_RESOLVE_CORPUS_FETCH_DOBLE__;
 const LEDGER = 'docs/corpus/resolve-cross-issue-corpus.json';
 // La marca que conserva una `nota` cuya adjudicación es de un cuerpo ANTERIOR
 // (residual (f) de AP-074): descartarla en silencio borraba el único texto libre
@@ -188,6 +210,7 @@ if (!corrupto && ledger) {
     // fixture se autodenuncia en cuanto se lee fuera de su modo. Sin esto, la
     // costura sería exactamente el atajo que `--sellar` sin barrido ya impide.
     else if (ledger.barrido && ledger.barrido.fixture && !FIXTURE) corrupto = 'se selló desde un FIXTURE de banco (`barrido.fixture: true`), no desde el corpus real — no adjudica nada';
+    else if (ledger.barrido && ledger.barrido.doble && !DOBLE) corrupto = 'se selló con la red SUSTITUIDA por el doble de banco (`barrido.doble: true`), no contra la API real — no adjudica nada';
   }
 }
 if (corrupto) {
@@ -242,9 +265,33 @@ function repoDelRun() {
 // ese porqué escrito (`resolve-cross-issue-failsafe.cjs:261-266`, «el truncado
 // tiene que morder por el extremo que NO importa»). La sonda nació contradiciendo
 // en su paginación al belt cuya paginación mide; ahora coinciden.
+// EL DEDUPE POR `id` NO ES DEFENSA GENÉRICA: paga el precio que `desc` tiene y
+// que nadie había puesto en la cuenta (AP-076, MEDIDO). Paginar por `page=N` una
+// lista que MUTA durante el barrido deriva, y el sentido de la deriva lo fija el
+// orden: en `desc` los comentarios nuevos entran por la CABEZA, luego cada
+// comentario creado mientras barremos desplaza el corte de página hacia atrás y
+// el último elemento de la página N REAPARECE al principio de la N+1. En `asc`
+// no pasa (los nuevos entran por la cola). Es decir: `desc` sigue siendo la
+// elección correcta —lo que se pierde al TRUNCAR es lo antiguo, ver arriba— pero
+// tiene este precio, y sin pagarlo la elección es un fallo silencioso.
+//
+// Lo que costaba, medido de punta a punta: el duplicado entra dos veces en
+// `entradasNuevas`, `--sellar` escribe un ledger con dos entradas del mismo `id`,
+// y ese ledger es CORRUPTO según la propia L1 de este script («tiene entradas
+// duplicadas por `id`») ⇒ ROJO en el CI de CUALQUIER PR abierto, cuya reparación
+// anunciada es re-sellar, que PIERDE todas las `nota`. Un sello que se envenena
+// a sí mismo, disparado por que alguien comente en el repo durante los 2,4 s del
+// barrido — en un repo donde los bots comentan todo el rato.
+//
+// La deriva se ANUNCIA (aviso nominal): es información sobre el barrido, no un
+// fallo del corpus. Y la mitad simétrica —un comentario BORRADO a mitad de
+// barrido desplaza el corte hacia delante y SALTA un elemento— no la cierra el
+// dedupe y queda declarada como residual: exige paginación por cursor, no cabe
+// aquí, y su frecuencia es la de los borrados, no la de las altas.
 async function barrer(repoSlug, token) {
-  const comentarios = [];
+  const porId = new Map();
   let truncado = false;
+  let duplicados = 0;
   for (let page = 1; page <= MAX_PAGINAS; page++) {
     const url = `https://api.github.com/repos/${repoSlug}/issues/comments?per_page=100&page=${page}&sort=created&direction=desc`;
     const cab = { Accept: 'application/vnd.github+json', 'User-Agent': 'check-resolve-corpus' };
@@ -252,11 +299,14 @@ async function barrer(repoSlug, token) {
     const r = await fetch(url, { headers: cab, signal: AbortSignal.timeout(TIMEOUT_MS) });
     if (!r.ok) throw new Error(`HTTP ${r.status} en la página ${page}`);
     const lote = await r.json();
-    comentarios.push(...lote);
-    if (lote.length < 100) return { comentarios, truncado };
+    for (const c of lote) {
+      if (porId.has(c.id)) duplicados++;
+      else porId.set(c.id, c);
+    }
+    if (lote.length < 100) break;
     if (page === MAX_PAGINAS) truncado = true;
   }
-  return { comentarios, truncado };
+  return { comentarios: [...porId.values()], truncado, duplicados };
 }
 
 // El veredicto de UN comentario, normalizado a algo comparable y estable: el orden
@@ -305,8 +355,9 @@ if (FIXTURE) {
 } else {
   const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN || null;
   try {
-    const { comentarios, truncado } = await barrer(repoSlug, token);
+    const { comentarios, truncado, duplicados } = await barrer(repoSlug, token);
     if (truncado) aviso(`el barrido tocó el tope de ${MAX_PAGINAS} páginas en ${repoSlug}: hay comentarios ANTIGUOS sin mirar (el orden es \`desc\`, luego la prosa NUEVA sí entró entera). Sube \`MAX_PAGINAS\`.`);
+    if (duplicados) aviso(`el corpus se movió DURANTE el barrido: ${duplicados} comentario(s) repetido(s) en el corte de página (alguien comentó mientras paginábamos en \`desc\`), descartado(s) por \`id\`. Sin el dedupe, el sello saldría con entradas duplicadas y su propia L1 lo declararía corrupto (AP-076).`);
     vivo = { comentarios, truncado, autenticado: !!token };
   } catch (e) {
     // Fail-open ANUNCIADO: sin red, sin token en un repo privado o con el rate
@@ -442,6 +493,9 @@ if (SELLAR) {
       // `fixture: true` es lo que hace que la costura de banco no pueda pasar por
       // un sello de producción: leído sin `CHECK_RESOLVE_CORPUS_FIXTURE`, es ROJO.
       fixture: !!FIXTURE,
+      // Lo mismo para el doble de red (AP-076): la costura se autodenuncia en el
+      // artefacto que produce, no en la memoria de quien la usó.
+      doble: DOBLE,
       comentarios: vivo.comentarios.length,
       con_marcador_de_capa_o_rol: entradasNuevas.length,
       con_marcador_de_rol_nativo: nativos,
@@ -474,6 +528,7 @@ console.log(
   `check-resolve-corpus verde: calibración VIGENTE contra ${fuente} (${fuenteSha.slice(0, 12)}), ` +
   `${(ledger?.entradas || []).length} comentario(s) real(es) adjudicado(s) (${rolNativo} con marcador de ROL NATIVO), ${materializan} materializaría(n)` +
   `${FIXTURE ? ` · corrida de FIXTURE (\`${FIXTURE}\`): NO dice NADA del corpus real` : ''}` +
+  `${DOBLE ? ' · corrida con la RED DOBLADA (`scripts/lib/fetch-doble.mjs`): NO dice NADA de ningún repo real' : ''}` +
   `${vivo ? '' : ' · barrido vivo OMITIDO (ver aviso)'}` +
   `${truncado ? ' · barrido TRUNCADO (no es el corpus entero; ver aviso)' : ''}.`
 );

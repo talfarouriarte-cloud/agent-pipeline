@@ -286,6 +286,176 @@ caso('(q) entrada sellada que ya no aparece en el corpus ⇒ aviso nominal, VERD
   });
 }
 
+// ── L2b · `barrer()` — la CAPA DE RED, residual (c) de AP-075 ────────────────
+// Los casos de arriba corren sobre la costura de FIXTURE, que sustituye el corpus
+// ENTERO: `barrer()` no se ejecuta ni una vez en ninguno de ellos. Eso es
+// exactamente lo que AP-075 dejó declarado —«paginación, `direction: desc`,
+// timeout, fail-open por HTTP siguen sin banco; la mutación M7 de AP-074, hecha a
+// mano bajando `MAX_PAGINAS`, es su única verificación»—. Aquí `barrer()` corre
+// ENTERA: lo que se sustituye es el `fetch` GLOBAL del subproceso
+// (`scripts/lib/fetch-doble.mjs`, cargado por `--import`), no una rama del script.
+//
+// El doble se autodenuncia por los tres sitios (no-op sin plan, anuncio por
+// stderr, `barrido.doble` en lo que selle) y el caso (bb) asierta el tercero.
+const DOBLE = resolve(REPO, 'scripts/lib/fetch-doble.mjs');
+const CORPUS_MARCADO = com(9601, 1696, `${CANON}\n${CAPA}`);
+
+function casoRed(nombre, { ledger, plan, sellar = false, token = false }, esperado) {
+  corridos++;
+  const dir = mkdtempSync(join(tmpdir(), 'corpus-bank-red-'));
+  try {
+    mkdirSync(join(dir, 'vendored/scripts'), { recursive: true });
+    copyFileSync(resolve(REPO, MODULO), join(dir, MODULO));
+    if (ledger !== undefined) {
+      mkdirSync(join(dir, 'docs/corpus'), { recursive: true });
+      writeFileSync(join(dir, LEDGER_REL), typeof ledger === 'string' ? ledger : JSON.stringify(ledger, null, 2) + '\n');
+    }
+    const planPath = join(dir, 'plan.json');
+    const logPath = join(dir, 'log.json');
+    writeFileSync(planPath, JSON.stringify({ paginas: plan }, null, 2));
+    const env = { ...process.env };
+    delete env.CHECK_RESOLVE_CORPUS_FIXTURE;
+    delete env.GH_TOKEN;
+    delete env.GITHUB_TOKEN;
+    // El repo del run tiene que existir para que el script LLEGUE a `barrer()`;
+    // que no toque la red lo garantiza el doble, no la ausencia de la variable.
+    env.GITHUB_REPOSITORY = 'x/y';
+    env.CHECK_RESOLVE_CORPUS_FETCH_PLAN = planPath;
+    env.CHECK_RESOLVE_CORPUS_FETCH_LOG = logPath;
+    if (token) env.GH_TOKEN = 'token-de-banco';
+    const r = spawnSync('node', ['--import', DOBLE, SCRIPT, ...(sellar ? ['--sellar'] : [])], { cwd: dir, env, encoding: 'utf8' });
+    const salida = `${r.stdout || ''}${r.stderr || ''}`;
+    const err = [];
+    if (r.status !== esperado.exit) err.push(`exit ${r.status} (esperaba ${esperado.exit})`);
+    for (const s of esperado.dice || []) if (!salida.includes(s)) err.push(`no dice ${JSON.stringify(s)}`);
+    for (const s of esperado.calla || []) if (salida.includes(s)) err.push(`dice ${JSON.stringify(s)} y no debería`);
+    for (const asercion of ['log', 'ledger']) {
+      if (!esperado[asercion]) continue;
+      const p = asercion === 'log' ? logPath : join(dir, LEDGER_REL);
+      const txt = existsSync(p) ? readFileSync(p, 'utf8') : null;
+      try {
+        const e = esperado[asercion](asercion === 'log' ? (txt ? JSON.parse(txt) : []) : txt);
+        if (e) err.push(e);
+      } catch (ex) { err.push(`la aserción sobre \`${asercion}\` lanzó (${ex.message})`); }
+    }
+    if (err.length) fallos.push(`${nombre}: ${err.join(' · ')}\n      salida: ${salida.trim().split('\n').slice(0, 6).join(' ⏎ ')}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+if (!existsSync(DOBLE)) {
+  console.log('::warning::check-resolve-corpus-bank — falta `scripts/lib/fetch-doble.mjs`: los casos de la capa de RED (residual (c) de AP-075) NO se han ejecutado.');
+} else {
+  // (u) La paginación de verdad: tres páginas, la última corta, y el barrido PARA
+  // ahí. Si siguiera pidiendo, el doble lanza «fuera del plan» y el fail-open lo
+  // absorbería en verde — por eso el conteo de llamadas es una aserción y no un
+  // detalle: es lo único que distingue «paró porque el lote era corto» de «paró
+  // porque se rompió».
+  casoRed('(u) paginación de 3 páginas (100+100+3) ⇒ 203 comentarios y EXACTAMENTE 3 llamadas', {
+    ledger: ledgerVigente([]),
+    plan: [{ relleno: 100, desde: 5000 }, { relleno: 100, desde: 4900 }, { relleno: 3, desde: 4800 }],
+  }, {
+    exit: 0, dice: ['203 comentarios de x/y', '(sin token)'],
+    log: (l) => (l.length === 3 ? null : `el script hizo ${l.length} llamadas, esperaba 3`),
+  });
+
+  // (v) `direction=desc` y el `signal` del timeout, asertados sobre la URL REAL
+  // que sale del proceso. `desc` tiene un porqué escrito sobre `barrer()` (qué
+  // mitad se pierde al truncar) y ahora además tiene consumidor; el `signal` es
+  // lo único que hace de `TIMEOUT_MS` un timeout y no una constante decorativa.
+  casoRed('(v) toda petición lleva `direction=desc`, `per_page=100`, su `page=N` y el `signal` del timeout', {
+    ledger: ledgerVigente([]),
+    plan: [{ relleno: 100, desde: 5000 }, { relleno: 2, desde: 4900 }],
+  }, {
+    exit: 0,
+    log: (l) => {
+      for (const [k, e] of l.entries()) {
+        if (!e.url.includes('direction=desc')) return `la llamada ${k + 1} no pide \`direction=desc\`: ${e.url}`;
+        if (!e.url.includes('per_page=100')) return `la llamada ${k + 1} no pide \`per_page=100\`: ${e.url}`;
+        if (!e.url.includes(`page=${k + 1}&`)) return `la llamada ${k + 1} no pide \`page=${k + 1}\`: ${e.url}`;
+        if (!e.conSignal) return `la llamada ${k + 1} va SIN \`signal\`: el timeout no está cableado`;
+      }
+      return null;
+    },
+  });
+
+  casoRed('(w) con `GH_TOKEN` ⇒ la petición va AUTENTICADA y el resumen deja de decir «sin token»', {
+    ledger: ledgerVigente([]), token: true, plan: [{ relleno: 2, desde: 5000 }],
+  }, {
+    exit: 0, calla: ['(sin token)'],
+    log: (l) => (l[0] && l[0].autorizada ? null : 'la petición fue anónima pese a haber `GH_TOKEN`'),
+  });
+
+  // (x) El fallo llega en la página 2, con la 1 ya en la mano: el barrido entero
+  // se descarta y se ANUNCIA. Adjudicar sobre medio corpus sería peor que no
+  // adjudicar — las entradas selladas que no aparecieran pasarían por «borradas».
+  casoRed('(x) HTTP no-ok en una página POSTERIOR ⇒ fail-open ANUNCIADO, VERDE, y NADA se adjudica a medias', {
+    ledger: ledgerVigente([]),
+    plan: [{ relleno: 100, desde: 5000 }, { status: 502 }],
+  }, {
+    exit: 0,
+    dice: ['barrido vivo IMPOSIBLE sobre x/y', 'HTTP 502 en la página 2', 'sin token', 'barrido vivo OMITIDO'],
+    calla: ['comentarios de x/y'],
+  });
+
+  casoRed('(y) TIMEOUT de la petición ⇒ fail-open ANUNCIADO, VERDE', {
+    ledger: ledgerVigente([]), plan: [{ timeout: true }],
+  }, { exit: 0, dice: ['barrido vivo IMPOSIBLE', 'aborted due to timeout', 'barrido vivo OMITIDO'] });
+
+  // (z) El tope de páginas: 20 llenas ⇒ TRUNCADO. La mutación M7 de AP-074 medía
+  // esto a mano bajando `MAX_PAGINAS`; aquí se ejecuta en cada CI. Se asierta que
+  // el truncado aparece en el `::warning` Y en la línea del VERDE (AP-074: un
+  // verde que no distingue barrido completo de truncado se lee como cobertura).
+  casoRed('(z) 20 páginas llenas ⇒ TRUNCADO anunciado, en el verde, y ni una llamada de más', {
+    ledger: ledgerVigente([]),
+    plan: Array.from({ length: 20 }, (_, k) => ({ relleno: 100, desde: 9000 - k * 100 })),
+  }, {
+    exit: 0, dice: ['tope de 20 páginas', 'barrido TRUNCADO'],
+    log: (l) => (l.length === 20 ? null : `el script hizo ${l.length} llamadas, esperaba el tope de 20`),
+  });
+
+  // (aa) EL HALLAZGO DE AP-076, congelado. Un comentario creado mientras
+  // paginamos desplaza el corte y el último elemento de la página 1 REAPARECE al
+  // principio de la 2. Sin dedupe: dos entradas con el mismo `id` en el sello, y
+  // ese ledger es CORRUPTO según la propia L1 ⇒ ROJO en el CI de cualquier PR,
+  // reparable solo re-sellando, lo que PIERDE todas las `nota`. El caso muere si
+  // alguien quita el dedupe: la aserción sobre el ledger es la que muerde.
+  casoRed('(aa) deriva de paginación: el mismo comentario en el corte de página ⇒ descartado por `id`, ANUNCIADO, y el sello sale SIN duplicados', {
+    ledger: ledgerVigente([]), sellar: true,
+    plan: [
+      { relleno: 99, desde: 5000, items: [CORPUS_MARCADO] },
+      { relleno: 99, desde: 4900, items: [CORPUS_MARCADO] },
+      { relleno: 2, desde: 4800 },
+    ],
+  }, {
+    exit: 0, dice: ['el corpus se movió DURANTE el barrido', '1 comentario(s) repetido(s)', 'sellado'],
+    ledger: (t) => {
+      if (!t) return 'no se escribió el ledger';
+      const l = JSON.parse(t);
+      const ids = l.entradas.map((e) => e.id);
+      if (ids.length !== new Set(ids).size) return `el sello salió con ids DUPLICADOS (${JSON.stringify(ids)}) — su propia L1 lo declara corrupto`;
+      if (ids.length !== 1) return `el sello tiene ${ids.length} entradas, esperaba 1`;
+      // La otra mitad de la autodenuncia: (bb) fija la LECTURA de `barrido.doble`;
+      // esto fija su ESCRITURA. Sin las dos, quitar una de ellas deja el camino
+      // abierto y ningún caso muere.
+      return l.barrido.doble === true ? null : 'el sello nacido con la red doblada NO quedó marcado con `barrido.doble: true`';
+    },
+  });
+
+  // (bb) La autodenuncia del doble, simétrica a la del fixture (caso (k)): un
+  // sello nacido con la red doblada, leído en modo producción, es ROJO. Sin esto
+  // el doble sería el único camino del repo capaz de fabricar un ledger que
+  // PARECE de producción.
+  caso('(bb) ledger SELLADO con la RED DOBLADA leído en modo producción ⇒ ROJO', {
+    ledger: ledgerVigente([], { doble: true }),
+  }, { exit: 1, dice: ['doble de banco', 'no adjudica nada'] });
+
+  casoRed('(cc) el VERDE de una corrida con la red doblada DECLARA que no dice nada de ningún repo real', {
+    ledger: ledgerVigente([]), plan: [{ relleno: 2, desde: 5000 }],
+  }, { exit: 0, dice: ['verde', 'RED DOBLADA', 'la red de este proceso está SUSTITUIDA'] });
+}
+
 // ── Veredicto ────────────────────────────────────────────────────────────────
 if (fallos.length) {
   console.error('CHECK-RESOLVE-CORPUS-BANK ROJO:');
@@ -295,5 +465,6 @@ if (fallos.length) {
 console.log(
   `check-resolve-corpus-bank verde: ${corridos} casos ejecutando \`scripts/check-resolve-corpus.mjs\` de verdad ` +
   '(subproceso, cwd temporal, sin red) — L1 con dientes, ledger corrupto bajo `--sellar` (residual (f) de AP-074), ' +
-  'los dos rojos de L2, la unión CAPA∪ROL (AP-075) y la supervivencia marcada de la `nota`.'
+  'los dos rojos de L2, la unión CAPA∪ROL (AP-075), la supervivencia marcada de la `nota` y la capa de RED sobre el ' +
+  'doble de `fetch` —paginación, `desc`, timeout, fail-open por HTTP y la deriva de paginación (residual (c) de AP-075, AP-076)—.'
 );
