@@ -29,7 +29,7 @@ on:
       creator_model:
         description: Modelo del Creator
         type: string
-        default: claude-opus-5
+        default: claude-opus-4-8  # AP-080: revert medido del Creator (Reviewer sigue en Opus 5)
       creator_max_turns:
         description: max-turns del Creator
         type: number
