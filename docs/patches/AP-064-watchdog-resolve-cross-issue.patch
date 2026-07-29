@@ -8,7 +8,7 @@
 #     git apply docs/patches/AP-064-watchdog-resolve-cross-issue.patch
 #
 # AP-068 — POR QUÉ ESTE PARCHE MIDE AHORA 31 LÍNEAS Y NO 239. Hasta AP-068 el
-# CUERPO del belt (~200 líneas de JS embebido: las cuatro regexes de detección,
+# CUERPO del belt (~200 líneas de JS embebido: las regexes de detección,
 # la derivación, los guards y las escrituras) viajaba aquí dentro, es decir
 # secuestrado en un fichero que ningún agente puede pushear: cada arreglo de una
 # regex —y ya hubo DOS, por la misma causa (`á` no es `\w` en JS)— exigía que
@@ -71,7 +71,7 @@ index 369b9f3..0b091de 100644
 +        # servido al workspace por `graft-vendored` (AP-068): la App no tiene
 +        # permiso `workflows` (ADR-020, tres medidas), luego el código embebido
 +        # en este fichero era intocable para un agente. El porqué completo, los
-+        # guards y los cinco frentes de fail-open están documentados en el
++        # guards y los frentes de fail-open están documentados en el
 +        # módulo; aquí solo queda la invocación.
 +        if: always()
 +        uses: actions/github-script@v7

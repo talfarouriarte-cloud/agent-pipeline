@@ -94,7 +94,13 @@ const FALLIDO = /\b(?:se\s+)?perdi[óo](?![a-záéíóúüñ])|\bperdid[oa]s?\b|
 // Deliberadamente NO incluye `su hilo`: la INSTANCIA CANÓNICA que este belt
 // existe para cubrir es «…re-arm del eslabón 1/3 allí (detalle en su hilo)», y
 // meterla aquí dejaría al belt mudo justo en el caso que lo justifica.
-const AUTO_DEST = /(?:^|[^a-záéíóúüñ])(?:este|éste)\s+(?:issue|hilo)\b/i;
+// El `mismo` intercalado es OBLIGATORIO, no adorno (🟡 1 de la review de
+// AP-073): «este MISMO issue» es la forma que usan la fila de `protocol.md`, el
+// mensaje del aviso de aquí abajo y —medido sobre el corpus del repo— 7
+// comentarios reales. Sin él, la regex quedaba a una palabra de la variante que
+// su propia prosa promete cubrir, y el fallo cae del lado malo: el belt NO
+// calla, deriva y materializa sobre el `#N` ajeno.
+const AUTO_DEST = /(?:^|[^a-záéíóúüñ])(?:este|éste)\s+(?:mismo\s+)?(?:issue|hilo)\b/i;
 // Identidad POSITIVA del emisor. Ver el bloque del filtro en `derivar` para el
 // porqué de las dos cosas (que sea del ROL y que esté en LÍNEA PROPIA).
 const ROL = /^[ \t]*<!--\s*watchdog-rol:\s*architect-resolve\s*-->[ \t]*$/m;
@@ -133,6 +139,14 @@ function escanear(raw, host) {
     if (!desStall && !arm) continue;
     const refs = [...new Set([...seg.matchAll(/(?:^|[\s(\[,;:«"'])#(\d+)\b/g)].map((m) => Number(m[1])))].filter((n) => n !== host);
     if (!refs.length) continue;                            // declaración in-thread: no es esta clase
+    // ORDEN = PRIORIDAD DE CLASE, y es observable aguas abajo (🔵 5 de la review
+    // de AP-073). Los cinco filtros son fail-open, luego el orden no cambia
+    // NUNCA la acción (cero, en todos); sí cambia la CLASE del aviso que se
+    // emite, y el epic-auditor los cosecha POR CLASE. La regla es «gana la causa
+    // más específica»: un segmento con dos `#N` y vocabulario de fallo se
+    // reporta como `reporte-de-fallo` —que es POR QUÉ el belt calla— y no como
+    // `multi-ref`, que solo dice que no supo a quién atribuirlo. Mover una línea
+    // de este bloque reetiqueta una serie que alguien ya está midiendo.
     if (AMBIGUO.test(seg)) { fallos.push({ clase: 'negada/condicional/pospuesta', refs }); continue; }
     if (FUTURO.test(seg)) { fallos.push({ clase: 'futuro/intención', refs }); continue; }
     if (FALLIDO.test(seg)) { fallos.push({ clase: 'reporte-de-fallo', refs }); continue; }

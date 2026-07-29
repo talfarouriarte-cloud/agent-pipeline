@@ -4,13 +4,22 @@
 // (AP-064). Nacido del hallazgo 🟡 4 de la ronda 2 de la review.
 //
 // Por qué existe: el belt decide si materializa una transición leyendo PROSA
-// ESPAÑOLA con cuatro regexes (`DES_STALL`, `ARM`, `AMBIGUO`, `FUTURO`), y ahí
+// ESPAÑOLA con el vocabulario anclado que `PATRONES` exporta —verbos de acción
+// más filtros de polaridad y de atribución—, y ahí
 // ya han fallado DOS veces por la misma causa —`á` no es `\w` en JS, así que
 // `retir\w*` se corta antes de la tilde y `\b` tras `á` no existe—, las dos
 // veces cazadas EJECUTANDO el banco, no releyendo el diff. Un banco que vive
 // en un comentario de un hilo de PR es disciplina sin consumidor: en cuanto
 // alguien toca una regex, la evidencia ya no está y el cambio se juzga
 // leyendo, que es exactamente lo que falló.
+//
+// Esta cabecera NO enumera las regexes a propósito (🔵 3 de la review de
+// AP-073): decía «cuatro (`DES_STALL`, `ARM`, `AMBIGUO`, `FUTURO`)» y ya eran
+// seis. Es la clase que AP-070 cerró un piso más abajo con el gate
+// `PATRONES`↔fuente —una enumeración que promete «todas» y se queda corta sin
+// que nada se ponga rojo—, y aquí no hay gate barato posible. Una cabecera que
+// no cuenta no se puede desactualizar: la lista viva es `PATRONES`, y su
+// completitud SÍ está gateada más abajo.
 //
 // AP-068 — QUÉ CAMBIÓ Y POR QUÉ IMPORTA. Hasta aquí este banco (a) extraía las
 // regexes con un regex-sobre-texto del `.patch` o del `.yml`, porque el código
@@ -219,6 +228,37 @@ const CASOS = [
   ['(r) canónica con «en su hilo» SIGUE materializando (anti-regresión AP-073)',
     [cmt('`stalled` retirada de #1694 y re-arm del eslabón 1/3 allí (detalle en su hilo).')],
     { 1694: { desStall: true, arm: true } }, []],
+  // ── 🟡 1 de la review de AP-073: «este MISMO issue» ───────────────────────
+  // `AUTO_DEST` nació exigiendo que `issue`/`hilo` fuera INMEDIATAMENTE detrás
+  // de `este`, y dejaba fuera la variante con `mismo` — que es justo la forma
+  // que la fila de `protocol.md` y el mensaje del propio aviso usan para
+  // describir el filtro, y que aparece en 7 comentarios REALES de este repo
+  // (medido con la misma sonda que produjo el AP). La dirección del fallo es la
+  // mala: sin cubrirla el belt no calla, deriva y materializa sobre el `#N`
+  // ajeno. Mutación que lo fija: quitar `(?:mismo\s+)?` de `AUTO_DEST` devuelve
+  // este caso a `decl={"171":{arm:true}}`.
+  ['(q-bis) «este MISMO issue» como destino ⇒ destino-ambiguo',
+    [cmt('Tras mergear #171, re-armé este mismo issue.')], {}, ['destino-ambiguo']],
+  // ── 🟡 2 de la review de AP-073: el COSTE de `AUTO_DEST`, CONGELADO ───────
+  // AQUÍ, y solo aquí, queda fijado el falso NEGATIVO que `AUTO_DEST` compra —
+  // su precio declarado, no un defecto que alguien deba «arreglar». El filtro
+  // mira el SEGMENTO entero, no la cláusula que rige el verbo de acción: una
+  // declaración cross-issue LEGÍTIMA que además mencione «este issue» por otro
+  // motivo deja al belt mudo sobre el `#N` real. La frase de abajo está dentro
+  // del vocabulario que el mandato le PIDE al resolver (pretérito, un solo
+  // segmento: sin `.;!?` intermedio no hay corte) y antes de AP-073
+  // materializaba #1694.
+  // Se acepta porque es fail-open —cero acción, nunca acción de más— y porque
+  // la alternativa (parser de dependencias sobre prosa libre) falla del lado
+  // peligroso; se CONGELA porque el precedente del repo es congelar el coste y
+  // no dejarlo a la lectura del diff (AP-070 hizo lo mismo con `(f)`/`(g-bis)`
+  // para el falso positivo del aviso). Sin este caso, el día que alguien vea al
+  // belt callar sobre una declaración buena no tendrá dónde leer que era el
+  // precio pactado, y lo «arreglará» aflojando `AUTO_DEST` — que es justo lo
+  // que `(r)` impide en la otra dirección.
+  ['(s) COSTE declarado: declaración LEGÍTIMA que además dice «este issue» ⇒ mudo',
+    [cmt('Retiré `stalled` de #1694 y re-armé el eslabón allí, dejando este issue listo para el merge.')],
+    {}, ['destino-ambiguo']],
 ];
 
 // `derivar` devuelve además `host`/`url` por declaración (los necesita el
