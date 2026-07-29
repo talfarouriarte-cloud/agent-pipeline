@@ -66,6 +66,41 @@ const AMBIGUO = /\b(?:no|ni|sin|nunca|jam[áa]s|tampoco|pendiente|falta|faltan|q
 // el espacio siguiente son `\w`), así que un `\b` final haría la rama del
 // futuro sintético inerte — la misma trampa que arriba.
 const FUTURO = /\b(?:voy|vas|va|vamos|van|paso|pasamos|procedo|procedemos)\s+a\s+(?:\w+\s+){0,2}(?:re-?)?(?:arm|retir|quit|elimin|sac|relanz)ar\b|\b(?:re-?)?(?:arm|retir|quit|elimin|sac|relanz)ar(?:[áé](?:[ns]|is)?|emos)(?![a-záéíóúüñ])/i;
+// QUINTA cara de la clase de polaridad, y la primera MEDIDA SOBRE PROSA REAL
+// (AP-073). Las cuatro anteriores se calibraron contra casos sintéticos; al
+// correr esta misma `derivar` sobre los comentarios REALES de architect-resolve
+// del repo, el ruling de #166 (issuecomment-5107010600) derivó un arm sobre
+// #171 desde este segmento literal:
+//     «La anomalía real: el re-arm del parcial #171 se perdió — causa MEDIDA»
+// que dice EXACTAMENTE LO CONTRARIO de una declaración de ejecución: reporta
+// que el arm NO ocurrió. El vocabulario de acción es idéntico al de una
+// declaración legítima, luego `ARM` casa igual; lo que distingue al reporte de
+// pérdida es el verbo de FALLO, no el de acción. Se añade `debía`/`tenía que`/
+// `iba a` (imperfecto de obligación: la acción se DEBÍA, no se hizo) porque el
+// mismo comentario trae «…la rama post-merge de `epic-merge` debía subir la
+// ronda y re-armar…» — y `AMBIGUO` traía `deber[íi]a` («debería») pero NO el
+// imperfecto `debía`, que es una forma distinta y la que la prosa real usa.
+const FALLIDO = /\b(?:se\s+)?perdi[óo](?![a-záéíóúüñ])|\bperdid[oa]s?\b|\bfall[óo](?![a-záéíóúüñ])|\bfallaron\b|\bdeb[íi]an?(?![a-záéíóúüñ])|\bten[íi]an?\s+que\b|\biban?\s+a\b/i;
+// ATRIBUCIÓN: un `#N` en el segmento NO es necesariamente el DESTINO de la
+// acción, y hasta AP-073 el belt lo daba por supuesto. Segundo hallazgo de la
+// misma sonda, del mismo comentario real:
+//     «Tras mergear #171 (parcial, …) la rama post-merge de `epic-merge` debía
+//      subir la ronda y re-armar ESTE ISSUE.»
+// Aquí #171 es el PR MERGEADO y el destino del arm es el HOST, no #171. El
+// belt habría posteado `@claude arranca` sobre #171 — en esa instancia lo
+// habría frenado el guard de `pull_request` en runtime, pero eso es INCIDENTAL:
+// la misma frase con un número de ISSUE arma un issue ajeno, que es «el belt
+// actúa donde no debía», el peor fallo de su clase.
+// Deliberadamente NO incluye `su hilo`: la INSTANCIA CANÓNICA que este belt
+// existe para cubrir es «…re-arm del eslabón 1/3 allí (detalle en su hilo)», y
+// meterla aquí dejaría al belt mudo justo en el caso que lo justifica.
+// El `mismo` intercalado es OBLIGATORIO, no adorno (🟡 1 de la review de
+// AP-073): «este MISMO issue» es la forma que usan la fila de `protocol.md`, el
+// mensaje del aviso de aquí abajo y —medido sobre el corpus del repo— 7
+// comentarios reales. Sin él, la regex quedaba a una palabra de la variante que
+// su propia prosa promete cubrir, y el fallo cae del lado malo: el belt NO
+// calla, deriva y materializa sobre el `#N` ajeno.
+const AUTO_DEST = /(?:^|[^a-záéíóúüñ])(?:este|éste)\s+(?:mismo\s+)?(?:issue|hilo)\b/i;
 // Identidad POSITIVA del emisor. Ver el bloque del filtro en `derivar` para el
 // porqué de las dos cosas (que sea del ROL y que esté en LÍNEA PROPIA).
 const ROL = /^[ \t]*<!--\s*watchdog-rol:\s*architect-resolve\s*-->[ \t]*$/m;
@@ -104,8 +139,18 @@ function escanear(raw, host) {
     if (!desStall && !arm) continue;
     const refs = [...new Set([...seg.matchAll(/(?:^|[\s(\[,;:«"'])#(\d+)\b/g)].map((m) => Number(m[1])))].filter((n) => n !== host);
     if (!refs.length) continue;                            // declaración in-thread: no es esta clase
+    // ORDEN = PRIORIDAD DE CLASE, y es observable aguas abajo (🔵 5 de la review
+    // de AP-073). Los cinco filtros son fail-open, luego el orden no cambia
+    // NUNCA la acción (cero, en todos); sí cambia la CLASE del aviso que se
+    // emite, y el epic-auditor los cosecha POR CLASE. La regla es «gana la causa
+    // más específica»: un segmento con dos `#N` y vocabulario de fallo se
+    // reporta como `reporte-de-fallo` —que es POR QUÉ el belt calla— y no como
+    // `multi-ref`, que solo dice que no supo a quién atribuirlo. Mover una línea
+    // de este bloque reetiqueta una serie que alguien ya está midiendo.
     if (AMBIGUO.test(seg)) { fallos.push({ clase: 'negada/condicional/pospuesta', refs }); continue; }
     if (FUTURO.test(seg)) { fallos.push({ clase: 'futuro/intención', refs }); continue; }
+    if (FALLIDO.test(seg)) { fallos.push({ clase: 'reporte-de-fallo', refs }); continue; }
+    if (AUTO_DEST.test(seg)) { fallos.push({ clase: 'destino-ambiguo', refs }); continue; }
     if (refs.length > 1) { fallos.push({ clase: 'multi-ref', refs }); continue; }
     pares.push({ n: refs[0], desStall, arm });
   }
@@ -163,6 +208,8 @@ function derivar(comentarios) {
     for (const f of fallos) {
       if (f.clase === 'negada/condicional/pospuesta') avisos.push({ clase: f.clase, mensaje: `resolve-cross-issue: #${host} declara una acción sobre #${f.refs.join(', #')} en una frase negada/condicional/pospuesta — no se deriva el par issue→acción; fail-open, sin actuar.` });
       else if (f.clase === 'futuro/intención') avisos.push({ clase: f.clase, mensaje: `resolve-cross-issue: #${host} declara una acción sobre #${f.refs.join(', #')} en futuro o de intención (anuncia la acción, no la declara ejecutada) — no se deriva el par issue→acción; fail-open, sin actuar.` });
+      else if (f.clase === 'reporte-de-fallo') avisos.push({ clase: f.clase, mensaje: `resolve-cross-issue: #${host} menciona una acción sobre #${f.refs.join(', #')} con vocabulario de FALLO o de obligación incumplida (se perdió / falló / debía) — es el reporte de que la acción NO ocurrió, no su declaración; fail-open, sin actuar (AP-073).` });
+      else if (f.clase === 'destino-ambiguo') avisos.push({ clase: f.clase, mensaje: `resolve-cross-issue: #${host} nombra a #${f.refs.join(', #')} en un segmento que señala a ESTE MISMO hilo como destino de la acción — el \`#N\` ajeno no es atribuible como destino; fail-open, sin actuar (AP-073).` });
       else avisos.push({ clase: f.clase, mensaje: `resolve-cross-issue: #${host} cita ${f.refs.length} issues (#${f.refs.join(', #')}) en el mismo segmento — no se puede atribuir la acción; fail-open, sin actuar.` });
     }
     for (const p of pares) {
@@ -324,5 +371,5 @@ module.exports.derivar = derivar;
 // solo añadiéndolo —eso es el mismo mandato de memoria para el siguiente
 // patrón— sino con el gate de `check-resolve-detection.mjs` que contrasta esta
 // lista contra los `const X = /…/` del FUENTE y se pone rojo si divergen.
-module.exports.PATRONES = { DES_STALL, ARM, AMBIGUO, FUTURO, ROL, CAPA_MARK };
+module.exports.PATRONES = { DES_STALL, ARM, AMBIGUO, FUTURO, FALLIDO, AUTO_DEST, ROL, CAPA_MARK };
 module.exports.MARK = MARK;
