@@ -263,13 +263,23 @@ lo que declaraste sigue siendo cierto (PR abierto, sin label de exclusión,
 CI del head VIGENTE en rojo completado, rojo NO atribuible al diff) y llama
 a `rerun-failed-jobs`. Si algo de eso ya no se cumple, no actúa y lo dice.
 
-**Cap 1 por PR y head SHA.** Si el PR ya lleva un comentario con
-`watchdog-resolve-rerun-materializado: <headSha>` para el head vigente, el
-cap está agotado: **no re-declares**. Un segundo rojo sobre el mismo head es
-la señal de que no era contención — aplica `stalled` + diagnóstico SIN
-`@claude`, el cortacircuito de siempre, que sigue intacto. El contador es
-propio: no consume el retry 1/1 del detector (`watchdog-ci-retry`) ni el
-cap 2 del dispatcher de turno.
+**Cap 1 por PR y head SHA, y la escalada es INCONDICIONAL.** Declara el
+ruling **una sola vez por head**: si ya lo declaraste sobre este mismo head
+—lleve el PR el marcador `watchdog-resolve-rerun-materializado: <headSha>` o
+no— **no lo re-declares**. La condición es «ya declaré», no «veo el
+marcador», y la diferencia importa: el post-step tiene frentes que fallan en
+silencio (barrido caído, `IN_CI_WF` vacío, comentarios ilegibles, el propio
+`rerun-failed-jobs` denegado, el módulo no injertado), y en todos ellos el
+rojo sigue ahí sin marcador ninguno. Condicionar la escalada a ver el
+marcador te devolvería a re-declarar tick tras tick sobre un remedio que no
+se ejerce — que es *exactamente* la clase que AP-077 mide y cierra, entrando
+por la puerta del mandato.
+
+Un segundo rojo sobre el mismo head es la señal de que no era contención:
+aplica `stalled` + diagnóstico SIN `@claude`, el cortacircuito de siempre,
+que sigue intacto y **no depende de que el re-run llegara a ocurrir**. El
+contador del belt es propio: no consume el retry 1/1 del detector
+(`watchdog-ci-retry`) ni el cap 2 del dispatcher de turno.
 
 **El rojo ATRIBUIBLE no se re-lanza nunca.** Si los tests fallidos viven en
 ficheros que el PR toca, la vía es `ping-creator` con el log citado: ahí no

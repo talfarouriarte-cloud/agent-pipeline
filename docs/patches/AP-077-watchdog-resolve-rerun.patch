@@ -51,10 +51,10 @@
 # «ancla VIGENTE», está correcto aunque nombre un commit viejo — no lo rotes por
 # costumbre.
 diff --git a/.github/workflows/watchdog.yml b/.github/workflows/watchdog.yml
-index 369b9f3..e50b340 100644
+index 369b9f3..540f691 100644
 --- a/.github/workflows/watchdog.yml
 +++ b/.github/workflows/watchdog.yml
-@@ -1372,9 +1372,19 @@ jobs:
+@@ -1372,9 +1372,22 @@ jobs:
              el test y decide: si el fallo es atribuible al PR, ping-creator en
              el PR con el log relevante citado y la instrucción de corregir;
              si es un flaky ajeno al PR (pasa en local / falla intermitente en
@@ -70,14 +70,17 @@ index 369b9f3..e50b340 100644
 +            intercalado, y `gh run rerun` no está; coste: 3 h 26 min de cadena
 +            muerta y un gate humano). Quien ejecuta es el post-step
 +            determinista `watchdog-resolve-rerun` de esta misma etapa, al
-+            cerrar el job, con cap 1 por PR y head SHA. Si el PR ya lleva
-+            `watchdog-resolve-rerun-materializado: <headSha>` para el head
-+            vigente, el cap está agotado: NO lo re-declares — aplica label
-+            `stalled` + diagnóstico SIN @claude.
++            cerrar el job, con cap 1 por PR y head SHA.
++            El ruling se declara UNA sola vez por head: si ya lo declaraste
++            sobre este mismo head —lo lleve el PR materializado o no, porque
++            el post-step tiene frentes que fallan en silencio— NO lo
++            re-declares. Y si reincide aplica label `stalled` + diagnóstico
++            SIN @claude: esa escalada es INCONDICIONAL y no depende de que el
++            re-run llegara a ocurrir.
              Cuenta como re-arm a efectos del cap.
  
              Tipo `stalled-autonomous-resolve` (régimen autónomo 2026-07-07,
-@@ -1413,6 +1423,57 @@ jobs:
+@@ -1413,6 +1426,57 @@ jobs:
              cadena, respetando el cap de reintentos y las prohibiciones del
              rol. Si un item no necesita acción, dilo y no toques nada.
  
