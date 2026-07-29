@@ -127,12 +127,23 @@ async function run({ github, context, core, skipLabels }) {
 
   // Barrido fresco. El fallo del barrido deja el belt MUDO, y que lo esté tiene
   // que verse: es la clase entera que este belt cierra, un piso más arriba.
+  //
+  // `direction: 'desc'` NO es indiferente, y la razón es la misma que el belt
+  // hermano fijó por diseño (`resolve-cross-issue-failsafe.cjs`): el truncado
+  // por `MAX_PAGS` tiene que morder por el extremo que NO importa. La
+  // declaración del resolver es, por construcción, la MÁS RECIENTE de la
+  // ventana —este belt corre al terminar su propia etapa—, así que en `asc` el
+  // corte se comería justo lo que venimos a leer y el belt quedaría mudo en el
+  // único caso en que hace falta. El precio de `desc` es la deriva de
+  // paginación (un comentario nuevo durante el barrido desplaza el corte y
+  // REPITE el último elemento de la página, AP-076), y lo paga el dedupe por
+  // `id` de abajo.
   const candidatos = new Map();   // nº de PR → comentario de ruling
-  const vistos = new Set();       // dedupe por id (la paginación puede repetir en el corte de página, AP-076)
+  const vistos = new Set();       // dedupe por id (la paginación en `desc` repite en el corte de página, AP-076)
   let pags = 0;
   try {
     for await (const page of github.paginate.iterator(github.rest.issues.listCommentsForRepo, {
-      owner, repo, since, per_page: 100, sort: 'created', direction: 'asc',
+      owner, repo, since, per_page: 100, sort: 'created', direction: 'desc',
     })) {
       for (const c of page.data || []) {
         if (vistos.has(c.id)) continue;
@@ -143,7 +154,7 @@ async function run({ github, context, core, skipLabels }) {
         if (!n || candidatos.has(n)) continue;
         candidatos.set(n, c);
       }
-      if (++pags >= MAX_PAGS) { core.warning(`resolve-rerun: barrido fresco TRUNCADO en ${MAX_PAGS} páginas — un ruling más antiguo de esta ventana puede haberse quedado fuera.`); break; }
+      if (++pags >= MAX_PAGS) { core.warning(`resolve-rerun: barrido fresco TRUNCADO en ${MAX_PAGS} páginas — con \`desc\` lo que queda fuera es lo MÁS ANTIGUO de la ventana, que es el extremo que no importa (el ruling es el comentario más reciente); aun así, un ruling de una etapa anterior de este mismo run puede haberse quedado fuera.`); break; }
     }
   } catch (e) {
     core.warning(`resolve-rerun: barrido fresco ilegible (${e.message}) — belt MUDO en esta corrida; ningún ruling se materializa.`);
@@ -205,13 +216,32 @@ async function run({ github, context, core, skipLabels }) {
       continue;
     }
 
-    await github.rest.issues.createComment({
-      owner, repo, issue_number: n,
-      body: `**watchdog · resolve-rerun (AP-077)**: el resolver rulló «rojo NO atribuible al diff — flaky de contención, re-lanzar» (${decl.html_url}) y ese ruling se ha MATERIALIZADO: re-lanzados los jobs fallidos del run ${ci.id} sobre el head \`${head.slice(0, 7)}\`.\n\n`
-        + `Cap **1 por PR y head SHA**, con contador propio: no consume el retry 1/1 del detector (\`watchdog-ci-retry\`) ni el cap 2 del dispatcher de turno. Si el CI vuelve a rojo sobre este mismo head, el cap queda agotado y el cortacircuito de siempre (\`stalled\` + diagnóstico ⇒ \`human-needed\`) sigue intacto.\n\n`
-        + `${attr.legible ? `Atribuibilidad recomputada contra el estado: ${attr.ficheros.length} fichero(s) con fallo anotado, no todos tocados por el diff.` : 'Atribuibilidad no recomputable (sin anotaciones legibles): mismo fail-open que el fast-path del detector.'}\n\n`
-        + `${MARK(head)}\n${CAPA}`,
-    });
+    // A partir de aquí el re-run YA ocurrió, y el comentario es el ÚNICO
+    // soporte del cap: si se pierde, un run concurrente del watchdog (la
+    // ventana es `run_started_at`, y `concurrency` encola sin cancelar) vuelve
+    // a ver el mismo ruling, no encuentra marcador y re-lanza una SEGUNDA vez
+    // sobre el mismo head — el cap 1 roto por el lado que no se ve. Por eso el
+    // fallo aquí no puede propagarse (abortaría además los candidatos
+    // restantes): se reintenta con un cuerpo mínimo cuyo único contenido
+    // imprescindible es el marcador, y si tampoco cuaja se dice EXACTAMENTE
+    // qué queda sin soporte.
+    let marcado = false;
+    const cuerpo = `**watchdog · resolve-rerun (AP-077)**: el resolver rulló «rojo NO atribuible al diff — flaky de contención, re-lanzar» (${decl.html_url}) y ese ruling se ha MATERIALIZADO: re-lanzados los jobs fallidos del run ${ci.id} sobre el head \`${head.slice(0, 7)}\`.\n\n`
+      + `Cap **1 por PR y head SHA**, con contador propio: no consume el retry 1/1 del detector (\`watchdog-ci-retry\`) ni el cap 2 del dispatcher de turno. Si el CI vuelve a rojo sobre este mismo head, el cap queda agotado y el cortacircuito de siempre (\`stalled\` + diagnóstico ⇒ \`human-needed\`) sigue intacto.\n\n`
+      + `${attr.legible ? `Atribuibilidad recomputada contra el estado: ${attr.ficheros.length} fichero(s) con fallo anotado, no todos tocados por el diff.` : 'Atribuibilidad no recomputable (sin anotaciones legibles): mismo fail-open que el fast-path del detector.'}\n\n`
+      + `${MARK(head)}\n${CAPA}`;
+    try { await github.rest.issues.createComment({ owner, repo, issue_number: n, body: cuerpo }); marcado = true; }
+    catch (e) {
+      core.warning(`resolve-rerun: #${n} — el re-run del run ${ci.id} SÍ se ejecutó, pero su comentario falló (${e.message}); reintento con el cuerpo mínimo, que es el que sostiene el cap.`);
+      try {
+        await github.rest.issues.createComment({ owner, repo, issue_number: n,
+          body: `**watchdog · resolve-rerun (AP-077)**: re-lanzados los jobs fallidos del run ${ci.id} sobre el head \`${head.slice(0, 7)}\` (el diagnóstico largo no pudo publicarse; el ruling está en ${decl.html_url}).\n\n${MARK(head)}\n${CAPA}` });
+        marcado = true;
+      } catch (e2) {
+        core.warning(`resolve-rerun: #${n} — el marcador del cap NO se pudo publicar (${e2.message}) con el re-run YA ejecutado sobre ${head.slice(0, 7)}: el cap 1 queda SIN soporte y un run concurrente podría re-lanzar una segunda vez sobre ese mismo head. Es el único frente en que este belt puede pasarse de la raya; queda dicho, nunca en silencio.`);
+      }
+    }
+    if (!marcado) continue;
     hechos++;
     core.warning(`resolve-rerun: #${n} — ruling materializado (run ${ci.id} re-lanzado sobre ${head.slice(0, 7)}).`);
   }

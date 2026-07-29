@@ -110,7 +110,10 @@ async function correr({
   anotaciones = [{ annotation_level: 'failure', path: 'test/ajeno.test.ts' }],
   ficherosPR = [{ filename: 'src/tocado.ts' }],
   rerunErr,
+  comentarioErr,                    // error de `createComment` (siempre)
+  comentarioErrPrimero,             // error solo de la PRIMERA llamada (⇒ reintento mínimo)
   barridoErr,
+  paginasRelleno = 0,               // páginas extra del barrido (para el tope MAX_PAGS)
   envCiWf = 'CI',
   envSkip,
   skipLabels,
@@ -118,6 +121,8 @@ async function correr({
   const escrituras = [];
   const cuerpos = [];
   const avisos = [];
+  let params = null;              // lo que el belt le pide al barrido fresco
+  let fallóPrimero = false;
   const ahora = new Date().toISOString();
   const runStartedAt = new Date(Date.now() - 60_000).toISOString();
   const comentario = {
@@ -137,9 +142,17 @@ async function correr({
     if (fn === 'listFiles') return ficherosPR;
     return [];
   };
-  paginate.iterator = async function* () {
+  // El barrido registra lo que se le PIDE (`params`): con `desc` el truncado
+  // por `MAX_PAGS` muerde lo más antiguo, y el ruling —que es lo más reciente—
+  // llega en la primera página. Las páginas de relleno empujan al belt contra
+  // su tope sin cambiar lo que deriva.
+  paginate.iterator = async function* (_fn, p) {
+    params = p;
     if (barridoErr) throw barridoErr;
     yield { data: [comentario] };
+    for (let i = 0; i < paginasRelleno; i++) {
+      yield { data: [{ id: 100 + i, issue_url: 'https://api.github.com/repos/o/r/issues/9', body: 'relleno', html_url: 'https://example/x', created_at: ahora, updated_at: ahora }] };
+    }
   };
 
   const github = {
@@ -155,7 +168,12 @@ async function correr({
       issues: {
         listComments: 'listComments',
         listCommentsForRepo: 'listCommentsForRepo',
-        createComment: async ({ issue_number, body }) => { escrituras.push(`createComment#${issue_number}`); cuerpos.push(body); },
+        createComment: async ({ issue_number, body }) => {
+          escrituras.push(`createComment#${issue_number}`);
+          if (comentarioErr) throw comentarioErr;
+          if (comentarioErrPrimero && cuerpos.length === 0 && !fallóPrimero) { fallóPrimero = true; throw comentarioErrPrimero; }
+          cuerpos.push(body);
+        },
       },
       pulls: {
         get: async ({ pull_number }) => ({ data: { number: pull_number, state: 'open', labels: [], head: { sha: HEAD }, ...pr } }),
@@ -176,7 +194,7 @@ async function correr({
     if (previoSkip === undefined) delete process.env.IN_SKIP_LABELS; else process.env.IN_SKIP_LABELS = previoSkip;
     if (previoCi === undefined) delete process.env.IN_CI_WF; else process.env.IN_CI_WF = previoCi;
   }
-  return { escrituras, cuerpos, avisos };
+  return { escrituras, cuerpos, avisos, params };
 }
 
 const SKIP = 'pause-agents,human-needed';
@@ -201,6 +219,17 @@ const CONTRATO = [
   ['rojo ATRIBUIBLE al diff ⇒ no se re-lanza (esa vía es ping-creator)',
     { anotaciones: [{ annotation_level: 'failure', path: 'src/tocado.ts' }] },
     (r) => r.escrituras.length === 0 && r.avisos.some((a) => /ATRIBUIBLE/.test(a))],
+  // El BORDE de la atribuibilidad, que es donde vive la semántica del
+  // guard-rail 3: «atribuible» es TODOS los ficheros fallidos dentro del diff,
+  // no ALGUNO. Sin este caso mixto, `every` → `some` pasa verde y el belt deja
+  // de re-lanzar rojos que sí le tocan (medido: con solo los dos casos
+  // homogéneos, la mutación sobrevive).
+  ['rojo MIXTO (un fichero del diff + otro ajeno) NO es atribuible ⇒ se re-lanza',
+    { anotaciones: [{ annotation_level: 'failure', path: 'src/tocado.ts' }, { annotation_level: 'failure', path: 'test/ajeno.test.ts' }] },
+    (r) => r.escrituras.join(',') === 'rerun#777,createComment#1741'],
+  ['las anotaciones que no son de fallo no cuentan como atribuibles',
+    { anotaciones: [{ annotation_level: 'warning', path: 'src/tocado.ts' }] },
+    (r) => r.escrituras.includes('rerun#777') && /no recomputable/.test(r.cuerpos[0])],
   ['atribuibilidad ILEGIBLE (sin anotaciones) ⇒ se re-lanza igual, y se dice',
     { anotaciones: [] },
     (r) => r.escrituras.includes('rerun#777') && /no recomputable/.test(r.cuerpos[0])],
@@ -237,6 +266,31 @@ const CONTRATO = [
   ['barrido fresco caído ⇒ belt MUDO y anunciado',
     { barridoErr: new Error('502') },
     (r) => r.escrituras.length === 0 && r.avisos.some((a) => /MUDO/.test(a))],
+  // El truncado tiene que morder por el extremo que NO importa: el ruling es
+  // el comentario más reciente de la ventana (este belt corre al cerrar la
+  // etapa que lo emite), luego el barrido va en `desc` y el corte se come lo
+  // antiguo. En `asc` el corte se comería justo el ruling — el belt quedaría
+  // mudo en el único caso en que hace falta (residual que AP-069/AP-070 ya
+  // cerraron para el belt hermano).
+  ['el barrido pide `desc` (el truncado muerde lo ANTIGUO, no el ruling)',
+    {},
+    (r) => r.params && r.params.direction === 'desc' && r.params.per_page === 100],
+  ['barrido TRUNCADO por MAX_PAGS ⇒ el ruling (primera página en `desc`) SIGUE materializándose, y se anuncia',
+    { paginasRelleno: 30 },
+    (r) => r.escrituras.includes('rerun#777') && r.avisos.some((a) => /TRUNCADO/.test(a))],
+  // El re-run YA ocurrió: el comentario es el ÚNICO soporte del cap, y perderlo
+  // deja la puerta abierta a un segundo re-run sobre el mismo head.
+  ['comentario largo caído tras un re-run EJECUTADO ⇒ reintento mínimo que SÍ lleva el marcador',
+    { comentarioErrPrimero: new Error('502') },
+    (r) => r.escrituras.join(',') === 'rerun#777,createComment#1741,createComment#1741'
+      && r.cuerpos.length === 1 && r.cuerpos[0].includes(`<!-- watchdog-resolve-rerun-materializado: ${HEAD} -->`)],
+  // Sin marcador publicado NO se declara «ruling materializado»: ese aviso es
+  // el rastro que el Auditor cuenta, y emitirlo sobre un cap sin soporte es
+  // afirmar un estado que no existe — la clase que este belt cierra, dentro
+  // del belt. (Es lo que hace load-bearing al guard `if (!marcado) continue`.)
+  ['los DOS comentarios caídos ⇒ no se lanza, se dice que el cap queda SIN soporte y NO se declara materializado',
+    { comentarioErr: new Error('502') },
+    (r) => r.avisos.some((a) => /SIN soporte/.test(a)) && !r.avisos.some((a) => /ruling materializado/.test(a))],
 ];
 
 for (const [nombre, opts, ok] of CONTRATO) {
