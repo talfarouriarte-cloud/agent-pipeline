@@ -2288,3 +2288,17 @@ El allowlist casa por PREFIJO: `gh api -X POST repos/…` no empieza por `gh api
 **Residual (a la remedición del 12-08).** El step `turn-close-failsafe` de `claude-code.yml` sigue posteando su comentario de traza en cada absorción; con AP-079 esa traza documenta un no-incumplimiento y pasa a ser ruido puro. Retirar el comentario (no el relabel) exige tocar el reusable — fuera del alcance de este PR y de la moratoria salvo P0.
 
 **Reversión.** Restaurar el bloque anterior del loop protocol y registrar enmienda aquí.
+
+## AP-080 — El Creator revierte a `claude-opus-4-8` tras medición A/B desfavorable de Opus 5; el Reviewer permanece en Opus 5
+
+**Fecha**: 2026-07-30 · **Decisión del propietario**
+
+**Contexto (medición finplan, sesiones reales ≥5m, coste por logs).** Ventana 4.8 (17–23 jul) vs Opus 5 (24–30 jul): coste/sesión mediana $6,26→$7,82 (+25%), media $7,73→$10,57 (+37%); turnos medios 57→100 (+75%) — el driver es el comportamiento (más iteración/auto-verificación por sesión), no el precio ($/MTok idéntico). Sesiones de Creator por PR mergeado 1,49→1,84; **coste por PR mergeado ~$11,5→~$19,4 (+69%)**. Proxy de calidad disponible: reviews/PR SUBIÓ 1,79→2,06 — sin evidencia de mejora que compense; confusores anotados (Reviewer también Opus 5 y más estricto; nitscap trunca rondas; stall del 22–28 contamina parcialmente la ventana).
+
+**Decisión.** El default `creator_model` del reusable `claude-code.yml` vuelve a `claude-opus-4-8`. El Reviewer permanece en `claude-opus-5` (mayor exigencia es deseable en el juez; su coste marginal es menor). Sin pins en stubs (doctrina AP-053/clase #142: el default del central manda). El piloto Sonnet 4.6 para `clase:mecanica` no se toca.
+
+**Criterio falsable.** Ventana 30-07..06-08: si el $/PR vuelve a ~$11–13 con reviews/PR ≤ nivel Opus 5, el revert se consolida. Si el $/PR no baja (⇒ el driver era otro: mix de trabajo, stall, ritmo del propietario), se registra enmienda y se re-evalúa Opus 5.
+
+**Nota de régimen.** Fuera de la moratoria AP-078: es configuración de coste decidida por el propietario, no mecanismo nuevo del loop de mejora.
+
+**Reversión.** `default: claude-opus-5` y enmienda aquí.
