@@ -143,7 +143,7 @@ gastar turnos. Si corres con presupuesto acotado —p. ej. `reviewer.md`
 sobre ésta: primero declaras honestamente hasta dónde llegaste, no
 inicias un subagente que no vas a poder consumir.
 
-Por qué está escrito así (AP-078, auditorías finplan#1736 §Obs.1 y
+Por qué está escrito así (AP-080, auditorías finplan#1736 §Obs.1 y
 finplan#1743): la prohibición está **compilada dentro del binario del
 harness** (`@anthropic-ai/claude-agent-sdk`); no la emite
 `claude-code-action` ni existe input del reusable que la retire —
