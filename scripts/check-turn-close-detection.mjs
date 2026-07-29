@@ -203,10 +203,37 @@ const NEEDS = ['removeLabel:needs-review', 'addLabels:needs-review', 'createComm
 const ARCH = ['addLabels:estado:esperando-architect', 'addLabels:stalled', 'createComment'];
 
 const CONTRATO = [
+  // La línea `Δestado:` apunta FUERA del módulo y es justo la que un humano usa
+  // para auditar QUÉ fue el Δestado (🔵 6 de la review): `extras.map(c =>
+  // c.html_url).filter(Boolean)` degrada a cadena vacía EN SILENCIO si el shape
+  // del comentario cambia, y sin aserción esa pérdida pasaría en verde.
   ['comment-only ⇒ re-convocatoria del Reviewer',
     { comments: [TRACKING, c(1, '<!-- adr-divergence -->')].map((x) => conAutor(x)) },
     NEEDS,
-    { contiene: ['<!-- turn-close-failsafe: comment-only -->', 'deadbee'], noContiene: ['<!-- escalada-materializada-con-pr -->'] }],
+    { contiene: [
+      '<!-- turn-close-failsafe: comment-only -->', 'deadbee',
+      'Δestado: https://github.com/o/r/pull/1724#issuecomment-1',
+      '1 comentario propio',
+    ],
+      noContiene: ['<!-- escalada-materializada-con-pr -->', 'comentarios propios'] }],
+  // Plural + separador ` · `: el recuento y el enlazado son texto generado, y su
+  // forma en singular ya está gateada arriba. Con DOS extras cambian los dos.
+  ['comment-only con DOS extras ⇒ plural y separador ` · ` en Δestado',
+    { comments: [TRACKING, c(1, 'Informe pedido por el veredicto.'), c(2, '<!-- adr-divergence -->')]
+      .map((x) => conAutor(x)) },
+    NEEDS,
+    { contiene: [
+      '2 comentarios propios',
+      'Δestado: https://github.com/o/r/pull/1724#issuecomment-1 · https://github.com/o/r/pull/1724#issuecomment-2',
+    ] }],
+  // El único fail-OPEN que quedaba (🔵 5 de la review), ahora cerrado y
+  // ANUNCIADO: sin `trigTs` no hay ventana fresca que clasificar. Sin este
+  // guard, todo el historial del PR contaría como fresco y el filtro de
+  // frescura de abajo quedaría neutralizado por la puerta de al lado.
+  ['sin trigTs ⇒ cede sin escribir nada (fail-closed anunciado)',
+    { comments: [TRACKING, c(1, '<!-- adr-divergence -->')].map((x) => conAutor(x)), trigTs: '' },
+    [],
+    {}],
   ['solo tracking ⇒ AP-046 intacta',
     { comments: [conAutor(TRACKING)] },
     ARCH,

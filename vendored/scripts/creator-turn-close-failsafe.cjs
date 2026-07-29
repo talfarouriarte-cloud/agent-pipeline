@@ -31,8 +31,20 @@
 //   3. commits en el HEAD posteriores al veredicto            → `turn-close-failsafe`
 //   4. ← AQUÍ: ¿el Δestado de la sesión fue un COMENTARIO?    → `comment-only` (AP-071)
 //   5. si no                                                  → `escalada-materializada-con-pr` (AP-046)
-// Fail-closed por construcción: sin comentario fresco EXTRA, el comportamiento
-// AP-046 vigente queda intacto byte a byte.
+// Fail-closed por construcción: sin comentario fresco EXTRA, el COMPORTAMIENTO
+// de AP-046 queda intacto — mismas labels (`estado:esperando-architect` +
+// `stalled`), mismo marcador, mismo dueño aguas abajo (architect-resolve).
+//
+// «Comportamiento», no «byte a byte» (🟡 2 de la review): al extraer el inline
+// a este módulo hay CUATRO divergencias de texto, todas deliberadas y ninguna
+// de enrutado — (1) el dedupe pasa de regex con `\s*` a `String.includes` de la
+// forma exacta (el único emisor la escribe así); (2) el dedupe cubre ADEMÁS
+// `MARK_COMMENT_ONLY`, para que las dos vías no se pisen en la misma ventana;
+// (3) el cuerpo publicado gana la frase que dice POR QUÉ `comment-only` no
+// aplicó; (4) el `core.warning` gana ese mismo motivo. Se enumeran aquí para
+// que un Auditor que diffee inline-vs-módulo no tenga que re-litigar si alguna
+// era intencionada: un enunciado literalmente comprobable y falso en el corpus
+// es la clase que AP-065 cerró para el ancla.
 //
 // POR QUÉ VIVE AQUÍ Y NO EN `claude-code.yml` (AP-068). La GitHub App de
 // claude-code-action no tiene permiso `workflows` (ADR-020, medido tres veces;
@@ -105,8 +117,19 @@ const TERMINALES = [
 // (`gh api --method PATCH`) no mueve `created_at` y no se ve desde aquí. Cae
 // al comportamiento AP-046 vigente, que es la dirección segura.
 function clasificar(frescosBot) {
-  const frescos = [...(frescosBot || [])].sort(
-    (a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
+  // Orden ORDINAL, no `localeCompare` (🔵 4 de la review): las cadenas ISO-8601
+  // de la API son lexicográficamente ordenables tal cual, y `localeCompare` es
+  // colación ICU —donde `-` y `:` son puntuación VARIABLE y la semántica
+  // depende de locale e implementación— en la línea de la que cuelga el
+  // discriminador POSICIONAL entero de AP-071. Si el orden se rompiera, `[0]`
+  // dejaría de ser el tracking comment y `extras` dejaría de significar lo que
+  // este módulo cree, con el banco en verde (sus fixtures son todos del mismo
+  // formato). Dependencia gratuita retirada.
+  const frescos = [...(frescosBot || [])].sort((a, b) => {
+    const x = String(a.created_at || '');
+    const y = String(b.created_at || '');
+    return x < y ? -1 : x > y ? 1 : 0;
+  });
   if (!frescos.length) return { via: 'no-declarado', motivo: 'sin-comentario-fresco', extras: [] };
 
   // Fail-closed ante terminal declarado: se mira TODA la ventana fresca, no
@@ -132,9 +155,29 @@ function clasificar(frescosBot) {
 async function run({ github, context, core, prNumber, comments, trigTs, headSha }) {
   const { owner, repo } = context.repo;
   const todos = comments || [];
-  const frescos = trigTs
-    ? todos.filter((c) => new Date(c.created_at) > new Date(trigTs))
-    : todos;
+
+  // Sin ventana fresca declarada NO se clasifica nada (🔵 5 de la review). El
+  // stub garantiza hoy que `trigTs` es truthy —el guard de la cabecera del step
+  // exige `triggerBody.includes('ping-creator') && triggerCreatedAtRaw` para
+  // llegar hasta aquí—, luego esto es inalcanzable; pero la alternativa que
+  // vivía en su sitio (`trigTs ? filtrar : todos`) era el ÚNICO fail-OPEN de un
+  // módulo cuyo argumento entero es «esta cola es fail-closed por
+  // construcción»: con `trigTs` vacío, TODO el historial del PR pasaba a ser
+  // «ventana fresca» y cualquier PR con ≥2 comentarios de `claude[bot]`
+  // clasificaba `comment-only` para siempre — el filtro de frescura (lección
+  // #180, una de las mutaciones que el banco caza) neutralizado por la puerta
+  // de al lado. La costura módulo↔stub es asimétrica por construcción (AP-068):
+  // el día que el stub cambie, éste es de los parámetros que pueden llegar
+  // `undefined` sin que nada más lo cace. Cede, y lo ANUNCIA.
+  if (!trigTs) {
+    core.warning(
+      `PR #${prNumber}: turn-close-failsafe (cola) sin ventana fresca declarada `
+      + `(\`trigTs\` ausente) — cedo sin escribir nada; el estado lo resuelven las `
+      + `capas de cron, que es la dirección segura (AP-071).`);
+    return { via: 'sin-trigts' };
+  }
+
+  const frescos = todos.filter((c) => new Date(c.created_at) > new Date(trigTs));
 
   // Idempotencia: dedupe por marcador sobre TODOS los comentarios frescos (los
   // publica el PAT ⇒ NO los firma `claude[bot]`, así que no entran en la
@@ -189,7 +232,10 @@ async function run({ github, context, core, prNumber, comments, trigTs, headSha 
     return { via, motivo };
   }
 
-  // ── Rama ELSE de AP-046, INTACTA (repesca finplan#1598) ──────────────────
+  // ── Rama ELSE de AP-046, COMPORTAMIENTO INTACTO (repesca finplan#1598) ───
+  // Las cuatro divergencias de TEXTO respecto del inline que sustituye están
+  // enumeradas en la cabecera de este fichero (🟡 2 de la review); ninguna
+  // cambia labels, marcador ni dueño aguas abajo.
   // Gemelo con-PR de `escalada-materializada` (AP-036). Llegamos aquí con el
   // terminal NO-declarado del loop de PR completamente acotado por ESTADO:
   // sesión convocada por `ping-creator` (veredicto vigente), `success`, HEAD
