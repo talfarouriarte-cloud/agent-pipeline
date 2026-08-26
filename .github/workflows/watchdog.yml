@@ -244,16 +244,35 @@ jobs:
             // bloqueado para siempre.
             const PIPELINE = [process.env.IN_CREATOR_WF, process.env.IN_REVIEWER_WF, process.env.IN_CI_WF, process.env.IN_EPIC_MERGE_WF, ...((process.env.IN_EXTRA_WFS || '').split(',').map(s => s.trim()).filter(Boolean))];
             const MAX_RUN_AGE_H = 6;
+            // Cascarones (incidente GH 2026-08-26): runs `queued` sin grafo de
+            // jobs que jamas se materializan; no cancelables (409), solo
+            // ignorables. La firma es el grafo AUSENTE, no la edad: un queued
+            // legitimo tiene jobs (en `queued`) desde el arranque incluso con
+            // backlog de runners, y un cascaron sigue a 0 jobs horas despues
+            // (verificado 2026-08-26: run 32985132985 a 0 jobs tras 2h23m;
+            // runs 32996107223/32996107159 con job a los 2 min). Gracia de
+            // QUEUED_GRACE_MIN para el lag de creacion del grafo.
+            const QUEUED_GRACE_MIN = 2;
             let inFlight = false;
             for (const status of ['in_progress', 'queued']) {
               const { data } = await github.rest.actions.listWorkflowRunsForRepo({
                 ...O, status, per_page: 50,
               });
-              if (data.workflow_runs.some(r =>
+              const candidates = data.workflow_runs.filter(r =>
                     PIPELINE.includes(r.name)
-                    && ageMin(r.created_at) < MAX_RUN_AGE_H * 60)) {
-                inFlight = true; break;
+                    && ageMin(r.created_at) < MAX_RUN_AGE_H * 60);
+              if (status === 'in_progress') {
+                if (candidates.length) { inFlight = true; break; }
+                continue;
               }
+              for (const r of candidates) {
+                if (ageMin(r.created_at) < QUEUED_GRACE_MIN) { inFlight = true; break; }
+                const { data: jd } = await github.rest.actions.listJobsForWorkflowRun({
+                  ...O, run_id: r.id, per_page: 1,
+                });
+                if (jd.total_count > 0) { inFlight = true; break; }
+              }
+              if (inFlight) break;
             }
             if (inFlight) {
               core.notice('Runs del pipeline activos; nada que vigilar.');
