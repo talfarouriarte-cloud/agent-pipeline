@@ -2302,3 +2302,18 @@ El allowlist casa por PREFIJO: `gh api -X POST repos/…` no empieza por `gh api
 **Nota de régimen.** Fuera de la moratoria AP-078: es configuración de coste decidida por el propietario, no mecanismo nuevo del loop de mejora.
 
 **Reversión.** `default: claude-opus-5` y enmienda aquí.
+
+## AP-081 — Gate 0 del Watchdog: discriminador de cascarones por grafo de jobs, no por edad (2026-08-26)
+
+**Contexto.** Incidente GitHub 2026-08-26 (finplan): racimo de runs-cascarón (`queued`, 0 jobs, el grafo jamás se materializa; `cancel` y `force-cancel` → 409). El Gate 0 los contaba como «pipeline activo» y salía sin vigilar: la review fallida de PR #1839 (15:26Z) quedó sin re-derivar 2h (ticks de 15:47/16:26/16:55) hasta desbloqueo manual (17:28Z). El filtro de 6h solo inmuniza contra fantasmas viejos; el hueco eran los frescos.
+
+**Alternativa descartada.** Umbral de edad para `queued` (15 min): un queued legítimo retrasado por backlog de runners —condición que coexiste con el mismo incidente que genera cascarones— sería clasificado como fantasma. Y el falso negativo NO es gratis: los gates profundos despachan (re-`needs-review` por PAT, rearms `@claude`, pings al Creator) y cada rearm espurio consume el cap de 3 que escala a `stalled`, además de sesiones de agente duplicadas sobre la cola serial.
+
+**Decisión.** La firma del cascarón es el grafo de jobs AUSENTE, no la edad. Gate 0 para `queued` < 6h: gracia de 2 min (lag de creación del grafo) y después `listJobsForWorkflowRun` → `total_count === 0` ⇒ cascarón, se ignora; `> 0` ⇒ pipeline vivo. `in_progress` conserva las 6h sin cambio. Evidencia empírica del mismo incidente: run 32985132985 a 0 jobs tras 2h23m (cascarón); runs 32996107223/32996107159 con job en `queued` a los 2 min (legítimos). Coste: 1 llamada API por run `queued` del pipeline < 6h por tick (típicamente 0; en incidente, unidades).
+
+**Criterio falsable.**
+1. Con los cascarones de hoy presentes, el siguiente tick del Watchdog pasa el Gate 0 (no imprime «Runs del pipeline activos; nada que vigilar» si lo único vivo son cascarones) y llega a los gates de re-derivación.
+2. Con un run del pipeline genuinamente `in_progress` o `queued` con jobs, el Gate 0 sigue saliendo temprano.
+3. Ventana de 2 semanas: cero rearms espurios atribuibles a queued legítimos ignorados (el modo de fallo de la alternativa por edad).
+
+**Ejecución.** Human-execute (drag-and-drop de `watchdog.yml` completo; `Credencial_Workflows` caducada 12/08 — rotación pendiente). Blast radius compartido (finplan + wmcb) sin canary, riesgo estructural conocido.
