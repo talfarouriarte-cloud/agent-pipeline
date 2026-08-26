@@ -1,0 +1,1648 @@
+name: Watchdog
+
+# Watchdog de colas de agentes (autorizado por el humano 2026-07-02: el
+# Architect gestiona colas y relanza salvo problema irresoluble).
+#
+# Arquitectura en dos etapas (via negativa en coste):
+#   1. `detect` — script barato cada 20 min. Consulta la API y decide si hay
+#      trabajo en vuelo aparentemente parado. Cero LLM.
+#   2. `architect` — Claude, SOLO si detect encuentra anomalías. Diagnostica
+#      con fineza (checklist del Creator, estado de la rama, labels) y actúa:
+#      re-arm "completa el trabajo", re-trigger del Reviewer, relanzar
+#      sentinel de épica. Rol vinculante en docs/agents/watchdog.md.
+#
+# Firma universal que dispara la etapa 2: hay trabajo armado (issue con
+# @claude reciente u open PR de rama claude/*) Y ningún run de Actions en
+# queued/in_progress Y silencio > STALL_MIN. Cubre los tres modos de fallo
+# observados:
+#   a) Creator termina con conclusion:success pero trabajo a medias, sin PR
+#      (caso A5 #949, run 28556901580: 10m29s, checklist sin marcar).
+#   b) Cadena del Reviewer rota antes del LGTM (CI verde, PR envejeciendo).
+#   c) Sentinel launch-next mergeado sin que el siguiente issue arranque.
+#   d) PR de rama claude/* con CI en rojo (2026-07-03, #997): retry mecánico
+#      del CI UNA vez desde detect (sin LLM — el retry es el detector
+#      empírico de flakiness); si reincide, el Architect hace ping-creator.
+#   e) Handoff Creator→Reviewer roto (2026-07-08, #1133): cierre `@reviewer`
+#      del Creator SIN label needs-review ni veredicto posterior. Firma
+#      DETERMINISTA sin envejecimiento (la label la pone un step mecánico
+#      en segundos; si a los 2 min no está, no aparecerá a los 30):
+#      re-aplicar needs-review desde detect CON EL PAT (el `labeled` del
+#      GITHUB_TOKEN no dispara reviewer.yml por el anti-loop). Cap 2 vía
+#      <!-- watchdog-handoff-fix -->; después, anomalía para el Architect.
+#
+# Kill-switches:
+#   - Items con label `pause-agents` se excluyen de la detección (ADR-063).
+#   - `stalled` YA NO excluye (régimen autónomo 2026-07-07): es la señal
+#     que dispara architect-resolve. El cortacircuito humano es `human-needed`
+#     (doble rebote), que SÍ excluye.
+#   - Desactivación global: Actions → Watchdog → Disable workflow.
+#
+# Cap de reintentos: 2 re-arms autónomos por item, contados por el marcador
+# `<!-- watchdog-rearm -->` en comentarios. Al tercero: label `stalled` +
+# comentario de diagnóstico SIN @claude. Lo aplica el Architect (etapa 2);
+# detect solo filtra los ya escalados.
+
+# CALLABLE (agent-pipeline): triggers (labeled, cron, workflow_run de los
+# workflows del pipeline del consumidor, workflow_dispatch) y concurrency
+# (group: watchdog, cancel-in-progress: false) viven en el stub. Los NOMBRES
+# de los workflows del pipeline se pasan como inputs: el detector compara
+# run.name contra ellos.
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        default: ubuntu-latest
+      default_branch:
+        type: string
+        default: main
+      ci_workflow_name:
+        type: string
+        default: CI
+      creator_workflow_name:
+        description: Valor de name del stub del Creator en el consumidor
+        type: string
+        default: Claude Code
+      reviewer_workflow_name:
+        type: string
+        default: Opus Reviewer
+      epic_merge_workflow_name:
+        type: string
+        default: Epic Merge
+      extra_pipeline_workflows:
+        description: Nombres extra separados por coma (ej. Visual)
+        type: string
+        default: ""
+      epic_label:
+        type: string
+        default: epica
+      resolve_model:
+        type: string
+        default: claude-opus-5
+      resolve_max_turns:
+        type: number
+        default: 40
+      lookback_min:
+        type: number
+        default: 45
+      automerge:
+        description: >-
+          Régimen de merge del repo (espejo del input homónimo de epic-merge).
+          Con `false` (central, AP-012: merge humano), `LGTM`+gates verdes+PR
+          abierto es el estado TERMINAL POR DISEÑO — el detector de turno NO
+          lo declara `turno-epic-merge-zombie` (AP-058: 5 sesiones de resolve
+          en #157 re-concluyendo «SIN ACCIÓN», oscilador autoalimentado
+          comentario→issue_comment→workflow_run→tick).
+        type: boolean
+        default: true
+      skip_labels:
+        description: >-
+          Labels (CSV) que el detector EXCLUYE de la vigilancia. El default es
+          la lista histórica de consumidor (paneles abiertos por diseño). El
+          CENTRAL la pasa SIN `process-proposal`: aquí esa label es la COLA de
+          trabajo, no un panel (AP-051 — el barrido AP-038 salía con «Sin
+          anomalías» sobre 5 stalled reales).
+        type: string
+        default: "pause-agents,human-needed,auditoria,process-proposal,registro-decisiones"
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+      REVIEWER_GITHUB_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+  actions: read
+
+jobs:
+  detect:
+    runs-on: ${{ inputs.runner }}
+    # 12 y no 5 (2026-07-14, incidente fp#1350 — 31 min de re-arm humano):
+    # el settle de capa 2 (AP-011) dura 330s; con timeout 5 el job moría por
+    # timeout DENTRO del settle en todo tick event-driven, reportado como
+    # `cancelled` — la capa 2 nunca llegó a evaluar. Presupuesto: settle 5.5
+    # + scan/architect-dispatch ~3 + margen.
+    timeout-minutes: 12
+    permissions:
+      contents: read
+      # write y no read (AP-056, 2026-07-27, watchdog caído en finplan): el
+      # cap del job se diseñó cuando detect era solo-lectura sobre issues;
+      # AP-038 (cortacircuito: human-needed + comentario) y AP-039/AP-048
+      # (sospecha de asentamiento de cola-huerfana) añadieron escrituras
+      # sobre ISSUES con el GITHUB_TOKEN. Permisos efectivos = intersección
+      # stub∩job: los stubs ya conceden issues:write, pero este cap lo
+      # recortaba a read ⇒ `Resource not accessible by integration`, throw
+      # sin capturar, scan entero muerto en cada tick mientras persistiera
+      # el estado en-cola+serie-libre. (Las escrituras sobre PRs pasaban:
+      # las cubre pull-requests:write.)
+      issues: write
+      statuses: write   # espejo watchdog/turno en checks (2026-07-10)
+      # Modo d): re-run de jobs fallidos del CI + comentario-marcador en el
+      # PR. El GITHUB_TOKEN basta (no necesita disparar otros workflows: la
+      # RE-EJECUCIÓN del CI emite su propio workflow_run al concluir, y
+      # epic-merge escucha ese evento — la cadena se reanuda sola si el
+      # retry sale verde). Watchdog NO escucha a CI ⇒ sin bucle.
+      actions: write
+      pull-requests: write
+    outputs:
+      found: ${{ steps.scan.outputs.found }}
+      anomalies: ${{ steps.scan.outputs.anomalies }}
+    steps:
+      - name: Settle (event-driven only) — capa 2 de vigilancia (AP-011)
+        # Era sleep 90 (que los runs encadenados lleguen a queued antes del
+        # gate 0). 2026-07-13, AP-011: sube al bound de liveness COMPLETO
+        # (330s > STALL_MIN=5min). Motivo (incidente finplan#1319): el tick
+        # event-driven llegaba DENTRO de la ventana de liveness, el scan
+        # saltaba los ítems por frescos y el tick moría en silencio — la
+        # evaluación quedaba en manos del cron (best-effort; observado 79
+        # min de hueco con cron */20). Con el settle al bound completo, cada
+        # fin de workflow de agente garantiza UNA evaluación EFECTIVA a los
+        # ~5.5 min del evento. El gate 0 sigue cazando lo que arrancó
+        # mientras dormía (sano). El cron queda como capa 3: red final para
+        # silencio total, no capa de latencia.
+        if: github.event_name == 'workflow_run'
+        run: sleep 330
+
+      - name: Scan for stalled work
+        id: scan
+        uses: actions/github-script@v7
+        env:
+          STATUS_TOKEN: ${{ github.token }}
+          # Modo e): la label needs-review debe salir con el PAT — un
+          # `labeled` emitido por el GITHUB_TOKEN no dispara reviewer.yml
+          # (anti-loop de GitHub). Solo se usa para esa llamada puntual;
+          # el resto del scan sigue con el GITHUB_TOKEN.
+          ARM_PAT: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          # Inputs al script vía env (2026-07-11, Fase C): el script rozaba el
+          # límite de 21000 chars por expresión (21.896) — misma clase que el
+          # fallo de arranque de epic-merge en el primer consumidor.
+          IN_CREATOR_WF: ${{ inputs.creator_workflow_name }}
+          IN_REVIEWER_WF: ${{ inputs.reviewer_workflow_name }}
+          IN_CI_WF: ${{ inputs.ci_workflow_name }}
+          IN_EPIC_MERGE_WF: ${{ inputs.epic_merge_workflow_name }}
+          IN_EXTRA_WFS: ${{ inputs.extra_pipeline_workflows }}
+          IN_LOOKBACK_MIN: ${{ inputs.lookback_min }}
+          IN_SKIP_LABELS: ${{ inputs.skip_labels }}
+          IN_AUTOMERGE: ${{ inputs.automerge }}
+          IN_DEFAULT_BRANCH: ${{ inputs.default_branch }}
+        with:
+          script: |
+            // Umbral de silencio por tipo de disparo: en workflow_run el
+            // evento ES la señal (un run acaba de concluir) — no hay que
+            // esperar envejecimiento. En cron, 30 min para no cazar
+            // trabajo simplemente lento.
+            // AP-011: cada tick declara la CAPA que lo despertó, para que el
+            // 5-whys del Auditor atribuya el fallo a la capa correcta
+            // (workflow_run=capa 2; schedule=capa 3; workflow_dispatch=heartbeat/humano).
+            const CAPA = `<!-- watchdog-capa: ${context.eventName} -->`;
+            const STALL_MIN = 5;  // ADR-217 §3: bound de liveness (física de materialización de runs), no envejecimiento heurístico — la detección es de estado, el tiempo solo evita carreras
+            const ARM_WINDOW_H = 72;       // ventana de arms relevantes
+            const now = Date.now();
+            const ageMin = iso => (now - new Date(iso).getTime()) / 60000;
+            const O = { owner: context.repo.owner, repo: context.repo.repo };
+
+            // ── Modo e) (2026-07-05, incidente PR #1091): fallo de ARRANQUE
+            // del agente. Un run de Claude Code / Opus Reviewer con
+            // conclusion=failure y duración <90s murió instalando infra
+            // (npm/tarball/red), sin llegar a trabajar. Señal determinista:
+            // re-run inmediato UNA vez (run_attempt dedupea), cero LLM.
+            // Va ANTES del gate 0: el run fallido ya concluyó, y otros runs
+            // activos no deben ocultarlo. Si falla también el 2º intento
+            // (run_attempt>=2), anomalía para la etapa architect.
+            try {
+              const AGENT_WFS = [process.env.IN_CREATOR_WF, process.env.IN_REVIEWER_WF];
+              const STARTUP_MAX_S = 90;
+              const LOOKBACK_MIN = Number(process.env.IN_LOOKBACK_MIN); // ~2 ticks de cron
+              const { data: recent } = await github.rest.actions.listWorkflowRunsForRepo({
+                ...O, status: 'failure', per_page: 30 });
+              for (const r of recent.workflow_runs) {
+                if (!AGENT_WFS.includes(r.name)) continue;
+                if (ageMin(r.created_at) > LOOKBACK_MIN) continue;
+                const durS = (new Date(r.updated_at) - new Date(r.run_started_at || r.created_at)) / 1000;
+                if (durS >= STARTUP_MAX_S) continue; // fallo tardío: no es arranque
+                if ((r.run_attempt || 1) >= 2) {
+                  anomalies.push({ type: 'agent-startup-failure-persistent',
+                    run_id: r.id, workflow: r.name, attempts: r.run_attempt });
+                  continue;
+                }
+                try {
+                  await github.rest.actions.reRunWorkflowFailedJobs({ ...O, run_id: r.id });
+                  core.notice(`Modo e: re-run del arranque fallido ${r.name} #${r.id} (${Math.round(durS)}s).`);
+                } catch (e) { core.warning(`Modo e re-run ${r.id}: ` + e.message); }
+              }
+            } catch (e) { core.warning('Modo e falló (no bloquea): ' + e.message); }
+
+            // ── Gate 0: ¿hay algo moviéndose? Si hay CUALQUIER run activo
+            // de los workflows del pipeline, no hay cuelgue: salir.
+            //
+            // Filtro de edad: la API retiene runs fantasma en `queued`
+            // indefinidamente (observado: run 26447434898, encolado 37 días).
+            // Un run del pipeline no vive >6h de verdad (timeouts de job
+            // ≤ ~1h); todo lo más viejo se ignora o el gate quedaría
+            // bloqueado para siempre.
+            const PIPELINE = [process.env.IN_CREATOR_WF, process.env.IN_REVIEWER_WF, process.env.IN_CI_WF, process.env.IN_EPIC_MERGE_WF, ...((process.env.IN_EXTRA_WFS || '').split(',').map(s => s.trim()).filter(Boolean))];
+            const MAX_RUN_AGE_H = 6;
+            // Cascarones frescos (queued sin grafo de jobs, incidente GH 2026-08-26):
+            // un queued legitimo arranca en minutos; mas de QUEUED_FRESH_MIN sin
+            // arrancar no acredita pipeline vivo. No son cancelables (409), solo
+            // ignorables.
+            const QUEUED_FRESH_MIN = 15;
+            let inFlight = false;
+            for (const status of ['in_progress', 'queued']) {
+              const { data } = await github.rest.actions.listWorkflowRunsForRepo({
+                ...O, status, per_page: 50,
+              });
+              const maxMin = status === 'queued' ? QUEUED_FRESH_MIN : MAX_RUN_AGE_H * 60;
+              if (data.workflow_runs.some(r =>
+                    PIPELINE.includes(r.name)
+                    && ageMin(r.created_at) < maxMin)) {
+                inFlight = true; break;
+              }
+            }
+            if (inFlight) {
+              core.notice('Runs del pipeline activos; nada que vigilar.');
+              core.setOutput('found', 'false');
+              core.setOutput('anomalies', '[]');
+              return;
+            }
+
+            const anomalies = [];
+
+            // ── Régimen autónomo: evento labeled=stalled ⇒ anomalía directa
+            // para architect-resolve (diagnostica, decide, des-stallea, re-arma).
+            // Doble rebote: si el ítem ya tiene 2+ <!-- autonomous-decision -->,
+            // label human-needed y NO anomalía (cortacircuito).
+            if ((context.eventName === 'issues' || context.eventName === 'pull_request')
+                && context.payload.action === 'labeled'
+                && context.payload.label?.name === 'stalled') {
+              const num = context.payload.issue?.number || context.payload.pull_request?.number;
+              try {
+                const { data: cs } = await github.rest.issues.listComments({ ...O, issue_number: num, per_page: 100 });
+                const autos = cs.filter(c => (c.body || '').includes('<!-- autonomous-decision -->')).length;
+                if (autos >= 2) {
+                  await github.rest.issues.addLabels({ ...O, issue_number: num, labels: ['human-needed'] });
+                  await github.rest.issues.createComment({ ...O, issue_number: num,
+                    body: `Doble rebote tras recuperación autónoma: cortacircuito. Requiere decisión humana.\n\n<!-- watchdog-circuit-breaker -->\n${CAPA}` });
+                  core.notice(`#${num}: doble rebote ⇒ human-needed.`);
+                } else {
+                  anomalies.push({ type: 'stalled-autonomous-resolve', number: num });
+                }
+              } catch (e) { core.warning('stalled-resolve: ' + e.message); }
+            }
+            // Régimen autónomo: `stalled` ya no excluye (es la señal de
+            // architect-resolve); `human-needed` es el cortacircuito que sí.
+            // Lista de exclusión por INPUT (AP-051). Default = la lista
+            // histórica de consumidor (paneles de época, fix 2026-07-12,
+            // propuesta #1287 finplan: abiertos por diseño con su arm en el
+            // body — para el detector issue-armed-no-pr eran stall eterno).
+            // El central la pasa SIN `process-proposal` (allí es la cola).
+            const SKIP_LABELS = (process.env.IN_SKIP_LABELS || '').split(',').map(x => x.trim()).filter(Boolean);
+            const skip = labels => labels.some(l => SKIP_LABELS.includes(l.name));
+
+
+            // ── Dispatcher de TURNO (ADR-217, 2026-07-10, state-driven).
+            // Sustituye a pr-stalled (envejecimiento de 30 min) y absorbe el
+            // modo e. Invariante: todo ítem abierto tiene turno asignado.
+            // El gate 0 garantiza que al llegar aquí NADIE está activo ⇒
+            // turno-de-agente == zombi confirmado: relanzar la transición
+            // rota (mecánico, cap 2 vía TURN_MARK); turno de NADIE ⇒
+            // anomalía inmediata; gate humano declarado ⇒ sano (skip).
+            // El único tiempo es LIVENESS_MIN, anti-carrera. Regla de
+            // mantenimiento (ADR-217 §5): todo marcador/label nuevo en
+            // protocol.md actualiza esta función en el mismo cambio.
+            // Espejo en checks (2026-07-10): cada intervención del
+            // dispatcher deja un commit status `watchdog / turno` en el
+            // head SHA — visible junto a CI/Reviewer en la caja del PR.
+            const turnStatus = async (pr, state, desc) => {
+              try {
+                const res = await fetch(`https://api.github.com/repos/${O.owner}/${O.repo}/statuses/${pr.head.sha}`, {
+                  method: 'POST',
+                  headers: { Authorization: `Bearer ${process.env.STATUS_TOKEN}`, Accept: 'application/vnd.github+json' },
+                  body: JSON.stringify({ state, description: desc.slice(0, 140), context: 'watchdog / turno' }) });
+                if (!res.ok) core.info(`turnStatus HTTP ${res.status}`);
+              } catch (e) { core.info('turnStatus: ' + e.message); }
+            };
+            const TURN_MARK = '<!-- watchdog-turn-relaunch -->';
+            const HANDOFF_MARK = '<!-- watchdog-handoff-fix -->';   // histórico: cuenta para el cap
+            const LGTM_REMAT_MARK = '<!-- watchdog-lgtm-rematerialize -->';  // AP-024: cap 1 propio, no cuenta para el cap 2 de relanzamiento
+            const LIVENESS_MIN = 5;
+            const patCall = async (method, path, body) => {
+              const res = await fetch(`https://api.github.com/repos/${O.owner}/${O.repo}${path}`,
+                { method, headers: { Authorization: `Bearer ${process.env.ARM_PAT}`,
+                                     Accept: 'application/vnd.github+json' },
+                  body: body ? JSON.stringify(body) : undefined });
+              if (!res.ok && res.status !== 404) throw new Error(`HTTP ${res.status} ${path}`);
+              return res;
+            };
+            const { data: prs } = await github.rest.pulls.list({ ...O, state: 'open', per_page: 50 });
+            // ── Re-derivación por ESTADO de la señal `stalled` (AP-038).
+            // El camino por evento (labeled=stalled ⇒ anomalía directa, arriba)
+            // solo existe en el PAYLOAD de su run — y la concurrency global del
+            // stub (`group: watchdog`) cancela el pending más antiguo en cada
+            // racha de workflow_run: el run capa-1 muere y la señal con él
+            // (medido: finplan#1544, 2026-07-20 16:31:37Z, run `issues`
+            // cancelled; ningún tick posterior la recogía porque el scan no
+            // derivaba `stalled`). Doctrina ADR-217/AP-036: la señal debe ser
+            // re-derivable del ESTADO por CUALQUIER run superviviente — el
+            // evento es la vía rápida, jamás la única. Mismo cortacircuito de
+            // doble rebote que el camino por evento; dedupe contra anomalías ya
+            // encoladas en este run. Carreras: la concurrency global serializa
+            // runs completos (detect+resolve), así que cuando este scan ve
+            // `stalled`, ningún resolve está en vuelo — o lo quitó, o murió.
+            try {
+              const { data: stIss } = await github.rest.issues.listForRepo({ ...O,
+                state: 'open', labels: 'stalled', per_page: 30 });
+              for (const it of stIss) {
+                if (it.pull_request) continue;             // PRs: los cubre el bloque de PRs abajo
+                if (skip(it.labels)) continue;
+                if (anomalies.some(a => a.number === it.number)) continue;
+                const { data: cs } = await github.rest.issues.listComments({ ...O, issue_number: it.number, per_page: 100 });
+                const autos = cs.filter(c => (c.body || '').includes('<!-- autonomous-decision -->')).length;
+                if (autos >= 2) {
+                  if (!cs.some(c => (c.body || '').includes('<!-- watchdog-circuit-breaker -->'))) {
+                    await github.rest.issues.addLabels({ ...O, issue_number: it.number, labels: ['human-needed'] });
+                    await github.rest.issues.createComment({ ...O, issue_number: it.number,
+                      body: `Doble rebote tras recuperación autónoma: cortacircuito. Requiere decisión humana.\n\n<!-- watchdog-circuit-breaker -->\n${CAPA}` });
+                    core.notice(`#${it.number}: doble rebote (scan) ⇒ human-needed.`);
+                  }
+                } else {
+                  anomalies.push({ type: 'stalled-autonomous-resolve', number: it.number });
+                  core.notice(`#${it.number}: stalled re-derivado del estado (AP-038).`);
+                }
+              }
+              for (const pr of prs.filter(p => p.labels?.some(l => l.name === 'stalled'))) {
+                if (skip(pr.labels)) continue;
+                if (anomalies.some(a => a.number === pr.number)) continue;
+                anomalies.push({ type: 'stalled-autonomous-resolve', number: pr.number });
+                core.notice(`PR #${pr.number}: stalled re-derivado del estado (AP-038).`);
+              }
+            } catch (e) { core.warning('re-derivación stalled: ' + e.message); }
+            // ── Belt de CIERRE por estado (AP-037): si el resolver publicó la
+            // verificación materializada (`<!-- cierre-verificado -->`, actor de
+            // confianza) sobre un issue `estado:cierre-pendiente-humano` pero el
+            // `gh issue close` no llegó a ejecutarse (ventana de muerte de la
+            // sesión), el detect cierra por FIRMA en el siguiente tick — no
+            // reconstruimos la dependencia de formato-de-acción que AP-036 mató:
+            // la verificación ES el estado; el cierre se deriva de él. Rastro
+            // `<!-- cierre-materializado-por-estado -->` bloquea re-emisiones.
+            // Residual honesto: sin verificación publicada no hay cierre — el
+            // issue queda como en el régimen previo (cierre humano).
+            try {
+              const { data: pendClose } = await github.rest.issues.listForRepo({ ...O,
+                state: 'open', labels: 'estado:cierre-pendiente-humano', per_page: 30 });
+              for (const it of pendClose) {
+                if (it.pull_request) continue;
+                if (it.labels.some(l => (l.name || l) === 'pause-agents' || (l.name || l) === 'human-needed')) continue;
+                const { data: ccs } = await github.rest.issues.listComments({ ...O, issue_number: it.number, per_page: 100 });
+                const trusted = c => ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(c.author_association) || c.user?.login === 'claude[bot]';
+                if (ccs.some(c => trusted(c) && /<!--\s*cierre-materializado-por-estado\s*-->/.test(c.body || ''))) continue;
+                if (!ccs.some(c => trusted(c) && /<!--\s*cierre-verificado\s*-->/.test(c.body || ''))) continue;
+                await patCall('POST', `/issues/${it.number}/comments`, {
+                  body: `**watchdog · belt de cierre por estado (AP-037)**: la verificación materializada del resolver está publicada (\`<!-- cierre-verificado -->\`) pero el issue seguía abierto — ventana de muerte del \`gh issue close\`. Cierre \`completed\` materializado por firma; el handler de cierre-por-estado (AP-031) consume los sentinels.\n\n<!-- cierre-materializado-por-estado -->\n${CAPA}` });
+                try { await patCall('DELETE', `/issues/${it.number}/labels/stalled`); } catch (e) { /* label ausente: ok */ }
+                await patCall('PATCH', `/issues/${it.number}`, { state: 'closed', state_reason: 'completed' });
+                core.notice(`#${it.number}: cierre por estado materializado (belt AP-037).`);
+              }
+            } catch (e) { core.warning('belt cierre-por-estado: ' + e.message); }
+            const openAgentPRs = prs.filter(p => p.head.ref.startsWith('claude/'));
+            const verdictRe = /^\s*(LGTM|REVIEW|NITS)\b/;
+            // ── Rectificación de ADR aterrizada EN VUELO (AP-055, repesca
+            // finplan#1688). Una rectificación —`### Revisión R·1 (…)` dentro
+            // del bloque, `> **Enmienda (…)`: las formas que el corpus SÍ
+            // exhibe, §FIRMA abajo— que aterriza en la rama BASE mientras un
+            // PR está en loop no invalidaba NADA ni
+            // reconvocaba a nadie: la puerta de fidelidad universal-strict del
+            // Reviewer contrasta contra el snapshot del ADR de su ARRANQUE, y
+            // `lgtm` + el gate de epic-merge quedan intactos. Doble fuga
+            // CORRELACIONADA medida: las dos puertas del Reviewer sobre
+            // finplan#1687 (NITS 15:47Z, LGTM 15:57Z) anclaron su verificación a
+            // §Decisión 3 y NINGUNA a R·1, que llevaba en el árbol desde las
+            // 15:37Z — falso-LGTM de fidelidad; y el merge humano (16:02Z) no
+            // tuvo señal mecánica que lo frenara. Clase «la puerta valida contra
+            // un árbol desfasado», misma familia en polaridad INVERSA que el
+            // falso-🔴 por checkout stale de finplan#1673 (aud. #1681, dejado
+            // «bajo vigilancia: si recurre, sube a propuesta» — recurrió).
+            //
+            // Firma DETERMINISTA por ESTADO, cero LLM: compare
+            // `pr.base.sha`...`pr.base.ref` —lo que aterrizó en la BASE desde el
+            // punto de partida del PR; `base.sha` no avanza con la rama— ∩ IDs
+            // de ADR citados en título/body del PR. Solo cuentan las LÍNEAS
+            // AÑADIDAS del patch que son rectificación según la §FIRMA de
+            // abajo —la del CORPUS, nunca un header de bloque propio—, no
+            // cualquier edición del volumen: eso acota el falso positivo a lo
+            // que la propuesta acepta (una re-review Opus), en vez de
+            // re-convocar por cada commit de docs. Cap 1 por (PR,
+            // rectificación) vía marcador con clave (§CLAVE abajo: DOS formas,
+            // con ordinal y sin él, ambas declaradas en `protocol.md`).
+            // Por qué el watchdog y no «el camino docs-only del
+            // reusable de CI» que proponía el issue: el central NO sirve ningún
+            // reusable de CI —el CI docs-only con `adr-lint` es LOCAL de cada
+            // consumidor (AP-009 §deuda anotada)—, luego ahí el edge habría que
+            // escribirlo dos veces y fuera de la casa única. Y la señal se
+            // re-deriva del ESTADO en cualquier tick superviviente (doctrina
+            // AP-038), lo que además cubre las rectificaciones que aterrizan por
+            // push directo o merge humano, no solo por merge de epic-merge.
+            //
+            // FIRMA — re-anclada en la review de este PR. La primera versión
+            // perseguía un encabezado H2 propio (`## ADR-N · Rectificación`) que
+            // NO PUEDE existir en el volumen vivo: `adr-lint` regla 1
+            // (`vendored/scripts/adr-lint.mjs:36-38`) cuenta `^## ADR-(\d+)` y
+            // marca ROJO todo duplicado, luego una rectificación con header de
+            // bloque propio pondría el CI del consumidor en rojo. El corpus la
+            // escribe DENTRO del bloque del ADR, en dos formas MEDIDAS (leídas,
+            // no conjeturadas):
+            //   · wmcb `decisions.md:158`, verbatim: `### Revisión R·1
+            //     (2026-07-15, issue #69) — el campo `rank` en pre-season` ⇒
+            //     sub-encabezado H3 dentro de `## ADR-005`, y el vocablo es
+            //     «Revisión», ni siquiera «Rectificación».
+            //   · central `docs/decisions.md:172`/`:451`: `> **Enmienda
+            //     (2026-07-13).**` / `**Enmienda v5.2 (…)**` ⇒ párrafo en
+            //     NEGRITA dentro del bloque.
+            //   · `adr-lint` regla 3 (`:62-68`) ya consume `**Rectifica`/
+            //     `**Deroga` DENTRO del bloque: ese es el vocabulario que el
+            //     corpus mecaniza hoy, y de ahí se deriva éste.
+            // De ahí la firma: línea AÑADIDA que sea (a) sub-encabezado H2..H6
+            // con vocablo de rectificación u ordinal `R·N` —si es a la vez
+            // header de BLOQUE (`## ADR-N`), se exige vocablo Y ordinal, para
+            // no confundir un ADR NUEVO con una rectificación—, o (b) token en
+            // negrita `**Rectifica|**Deroga|**Enmienda` (tolerando sangría de
+            // cita `> `). El prefijo de ID es `ADR|AP`: el central es
+            // consumidor de sí mismo (AP-012) y su corpus normativo es `AP-N`.
+            // ATRIBUCIÓN: el header del bloque vive cientos de líneas por
+            // encima del hunk, luego NO está en el patch — se resuelve leyendo
+            // el fichero entero en `pr.base.ref` y caminándolo con el último
+            // `^## (ADR|AP)-N` visto. Fallback si el GET falla: el propio
+            // patch; y si tampoco, `::warning` nominal — nunca silencio.
+            const RECT_MARK = '<!-- rectificacion-en-vuelo';   // prefijo; el marcador emitido lleva la clave en cualquiera de sus DOS formas (§CLAVE abajo): `<!-- rectificacion-en-vuelo: ADR-231·R·1 -->` o `<!-- rectificacion-en-vuelo: AP-006·enmienda-2026-07-13 -->`
+            const RECT_MARK_RE = /<!--\s*rectificacion-en-vuelo:\s*[^>]*-->/;   // cadena COMPLETA con clave (clase 6: jamás substring de prosa; una cita transportada por AP-054 llega con `<!--` escapado a `&lt;!--` y no casa)
+            const ADR_HEAD = /^##\s*(ADR|AP)-(\d+)\b/;   // `+n` normaliza los ceros a la izquierda (`ADR-005` ≡ `ADR-5`) SOLO para cruzar; la clave del marcador usa la forma LITERAL del header
+            const RECT_ORD = /\bR\s*[·.]\s*(\d+)/;   // `\b`: sin frontera, la `R` puede ser la SEGUNDA letra de otra palabra (`PR.1`, `PR·2`) y el ordinal dispararía la rama (a) sin vocablo. `### Revisión R·1 (…)` y `(R·1)` conservan la frontera
+            const RECT_VOCAB = /Rectificaci[oó]n|Rectifica|Derogaci[oó]n|Deroga|Enmienda|Revisi[oó]n/i;
+            const RECT_DATE = /\b(\d{4}-\d{2}-\d{2})\b/;   // fecha de la rectificación cuando la línea la trae (`**Enmienda (2026-07-13).**`): parte ESTABLE de la clave sin ordinal
+            const rectCand = t => {
+              if (/^#{2,6}\s+/.test(t)) return ADR_HEAD.test(t)
+                ? (RECT_VOCAB.test(t) && RECT_ORD.test(t))   // header de BLOQUE: solo si se declara rectificación CON ordinal
+                : (RECT_VOCAB.test(t) || RECT_ORD.test(t));  // sub-encabezado dentro del bloque
+              return /^>?\s*\*\*(?:Rectifica|Deroga|Enmienda)/i.test(t);
+            };
+            const rectHandled = new Set();
+            for (const pr of openAgentPRs) {
+              if (skip(pr.labels)) continue;
+              try {
+                const cited = new Set([...`${pr.title || ''}\n${pr.body || ''}`.matchAll(/\b(ADR|AP)-(\d+)\b/g)].map(m => `${m[1]}-${+m[2]}`));
+                if (!cited.size) continue;   // PR que no cita ADR/AP: nada que invalidar
+                // `compareCommits` y no `compareCommitsWithBasehead`: es la
+                // superficie ya EJERCIDA por la casa (`claude-code.yml:1594` y el
+                // modo de PR huérfano de este mismo scan). Un método inexistente
+                // caería en el `catch` de abajo y dejaría el detector inerte en
+                // SILENCIO — precisamente la clase de fallo que este AP cierra.
+                const { data: cmp } = await github.rest.repos.compareCommits({
+                  ...O, base: pr.base.sha, head: pr.base.ref });
+                if (!(cmp.commits || []).length) continue;   // la base no avanzó desde el arranque del PR
+                // `compareCommits` trunca `files` a 300 SIN señal en el cuerpo:
+                // con la lista al tope, el volumen de decisiones puede quedar
+                // fuera y el bucle no vería nada que avisar — silencio, no
+                // warning. Se declara al log (AP-052: un límite no escrito se
+                // lee como cobertura).
+                if ((cmp.files || []).length >= 300) core.warning(`rect-en-vuelo #${pr.number}: el compare devuelve ${cmp.files.length} ficheros (tope 300 de la API) — la lista puede estar TRUNCADA y un volumen de decisiones quedar fuera; rectificaciones posiblemente NO evaluadas.`);
+                const rects = new Map();
+                for (const f of cmp.files || []) {
+                  if (!/decisions[^/]*\.md$/i.test(f.filename)) continue;
+                  if (!f.patch) {   // diff demasiado grande: GitHub omite el patch — residual honesto, no silencioso
+                    core.warning(`rect-en-vuelo #${pr.number}: ${f.filename} sin patch en el compare (diff grande) — rectificaciones de ese fichero NO evaluadas.`);
+                    continue;
+                  }
+                  const cand = new Set(f.patch.split('\n')
+                    .filter(l => l.startsWith('+') && !l.startsWith('+++'))
+                    .map(l => l.slice(1).trim())
+                    .filter(t => t && rectCand(t)));
+                  if (!cand.size) continue;
+                  // Lectura del fichero VIGENTE para atribuir cada línea a su
+                  // bloque contenedor (el header no viaja en el patch). `raw`
+                  // en vez de base64 porque estos volúmenes superan holgadamente
+                  // el límite del JSON con `content`.
+                  let lines = null;
+                  try {
+                    const { data: rawFile } = await github.rest.repos.getContent({ ...O, path: f.filename, ref: pr.base.ref, mediaType: { format: 'raw' } });
+                    lines = String(rawFile).split('\n');
+                  } catch (e) { core.info(`rect-en-vuelo/content ${f.filename}: ${e.message}`); }
+                  if (!lines) lines = f.patch.split('\n').filter(l => !l.startsWith('-') && !l.startsWith('@@')).map(l => l.replace(/^[+ ]/, ''));
+                  let cur = null, curDisp = null;
+                  for (const ln of lines) {
+                    const t = ln.trim();
+                    const h = t.match(ADR_HEAD);
+                    if (h) { cur = `${h[1]}-${+h[2]}`; curDisp = `${h[1]}-${h[2]}`; }
+                    if (!cand.has(t)) continue;
+                    cand.delete(t);
+                    if (!cur) continue;                 // rectificación antes de todo header: no atribuible
+                    if (!cited.has(cur)) continue;      // rectificación de un ADR/AP que este PR no cita: no es su base normativa
+                    // CLAVE del marcador — DOS formas, ambas declaradas en
+                    // `protocol.md` y en el §Decisión 2 del AP:
+                    //   · `ADR-N·R·M` cuando la rectificación lleva ordinal
+                    //     (finplan/wmcb: `### Revisión R·1 (…)`);
+                    //   · `ADR-N·<vocablo>[-<fecha>]` cuando NO lo lleva — la
+                    //     forma del central (`AP-006·enmienda-2026-07-13`).
+                    // El sufijo sin ordinal se deriva del VOCABLO (+ fecha si
+                    // la línea la trae), NO del texto completo de la línea: un
+                    // slug del texto cambia con cualquier edición posterior
+                    // (typo, reformulación, fecha corregida), el compare vuelve
+                    // a ver la línea como AÑADIDA, la clave ya no casa y el
+                    // dedupe emite un SEGUNDO comentario —con su segunda
+                    // retirada de `lgtm`— por la MISMA rectificación: el cap
+                    // «1 por rectificación» dejaba de ser duro justo en la rama
+                    // sin ordinal. Desempate por sufijo `-2`, `-3`… si dos
+                    // rectificaciones del MISMO bloque comparten vocablo y
+                    // fecha: colisionarían y la segunda se perdería en
+                    // SILENCIO, que es peor que un comentario de más.
+                    const headTxt = t.replace(/^[#>\s]+/, '');
+                    const ord = t.match(RECT_ORD);
+                    const voc = /Rectifica/i.test(t) ? 'rectificacion' : /Deroga/i.test(t) ? 'derogacion' : /Enmienda/i.test(t) ? 'enmienda' : /Revisi/i.test(t) ? 'revision' : '';   // vocablo CANÓNICO sin diacríticos (conjunto cerrado, explícito: nada de normalize/rangos de combining chars invisibles en el fuente)
+                    const date = (t.match(RECT_DATE) || [])[1];
+                    const suf = ord ? `R·${ord[1]}` : `${voc || 'rect'}${date ? `-${date}` : ''}`;
+                    let key = `${curDisp}·${suf}`;
+                    for (let n = 2; rects.has(key) && rects.get(key).head !== headTxt; n++) key = `${curDisp}·${suf}-${n}`;
+                    if (!rects.has(key)) rects.set(key, { key, head: headTxt });
+                  }
+                  for (const t of cand) core.warning(`rect-en-vuelo #${pr.number}: línea de rectificación añadida en ${f.filename} no localizable en la base para atribuirla a su ADR — «${t.slice(0, 80)}» NO evaluada.`);
+                }
+                if (!rects.size) continue;
+                // `paginate` y no la página 1: el dedupe (cap 1 por clave) vive
+                // de encontrar el marcador, y en un PR de >100 comentarios la
+                // página 1 —la más ANTIGUA— jamás lo contiene ⇒ re-comentaría
+                // en cada tick.
+                const rcs = await github.paginate(github.rest.issues.listComments, { ...O, issue_number: pr.number, per_page: 100 });
+                const nuevos = [...rects.values()].filter(r => !rcs.some(c => (c.body || '').includes(`${RECT_MARK}: ${r.key} -->`)));
+                if (!nuevos.length) continue;   // ya materializado en una ronda anterior (cap 1 por rectificación)
+                const rLabels = pr.labels.map(l => l.name);
+                const hadLgtm = rLabels.includes('lgtm');
+                let rDraft = false;
+                try {
+                  const { data: rpf } = await github.rest.pulls.get({ ...O, pull_number: pr.number });
+                  rDraft = rpf.draft;
+                } catch (e) { core.info(`rect-en-vuelo/draft-check #${pr.number}: ${e.message}`); }
+                // El turno pendiente manda sobre la re-convocatoria: con un
+                // `REVIEW`/`NITS` vigente el turno es del CREATOR, y una
+                // `needs-review` incondicional lo INVERTIRÍA —la rama
+                // `labels.includes('needs-review')` del dispatcher gana siempre
+                // sobre «veredicto sin sesión posterior del Creator»—, con el
+                // Reviewer re-emitiendo REVIEW sobre correcciones aún no
+                // aplicadas. Retirar `lgtm` + comentar basta: la pieza 1 del
+                // mandato ya obliga a que la PRÓXIMA review consuma la
+                // rectificación, venga cuando venga.
+                const rVerd = rcs.filter(c => verdictRe.test((c.body || '').trim()));
+                const rLastV = rVerd.length ? (rVerd[rVerd.length - 1].body || '').trim().split(/\s/)[0].replace(':', '') : null;
+                const turnoCreator = rLastV === 'REVIEW' || rLastV === 'NITS';
+                const reconvoca = !rDraft && !turnoCreator;
+                const lista = nuevos.map(r => `- \`${r.key}\` — ${r.head}`).join('\n');
+                const marcadores = nuevos.map(r => `${RECT_MARK}: ${r.key} -->`).join('\n');
+                await github.rest.issues.createComment({ ...O, issue_number: pr.number,
+                  body: `**watchdog · rectificación de ADR aterrizada EN VUELO (AP-055)**: desde el punto de partida de este PR han aterrizado en \`${pr.base.ref}\` rectificaciones de ADRs que el PR CITA — la base normativa contra la que se juzga la fidelidad universal-strict ya no es la del arranque de la review:\n\n${lista}\n\n${hadLgtm ? 'Retirada la label `lgtm` (el gate de epic-merge se cierra hasta re-veredicto; una `unlabeled` no dispara workflows) y ' : ''}${reconvoca ? 're-aplicada `needs-review` por PAT para re-convocar al Reviewer sobre la base normativa VIGENTE.' : rDraft ? 're-convocatoria del Reviewer OMITIDA: el PR está en draft y su gate salta los drafts — el Reviewer entrará por la transición `ready` normal, ya sobre la base vigente.' : `re-convocatoria del Reviewer OMITIDA: el veredicto vigente es \`${rLastV}\`, luego el turno es del Creator — re-etiquetar aquí lo invertiría. La próxima review consume la rectificación por mandato.`}\n\n@reviewer: abre las rectificaciones listadas y CITA su veredicto contra ellas (\`reviewer.md\` § «El contraste se ancla al HEAD de la rama base» — una rectificación vigente no citada es defecto de review, mismo rango que el veto de LGTM sobre CI rojo). Si no afectan a las cláusulas que este PR implementa, dilo explícitamente en el veredicto: eso también es consumir la rectificación.\n\n${marcadores}\n${CAPA}` });
+                if (hadLgtm) { try { await patCall('DELETE', `/issues/${pr.number}/labels/lgtm`); } catch (e) { core.info(`rect-en-vuelo/lgtm #${pr.number}: ${e.message}`); } }
+                if (reconvoca) {
+                  await patCall('DELETE', `/issues/${pr.number}/labels/needs-review`).catch(() => {});
+                  await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['needs-review'] });
+                }
+                rectHandled.add(pr.number);
+                core.warning(`PR #${pr.number}: rectificación en vuelo (${nuevos.map(r => r.key).join(', ')}) — lgtm ${hadLgtm ? 'retirada' : 'ausente'}, needs-review ${reconvoca ? 're-aplicada' : rDraft ? 'omitida (draft)' : `omitida (turno del Creator: ${rLastV})`}.`);
+              } catch (e) { core.warning(`rect-en-vuelo #${pr.number}: ${e.message}`); }
+            }
+            for (const pr of openAgentPRs) {
+              if (skip(pr.labels)) continue;
+              // El bloque de rectificación en vuelo ya materializó la transición
+              // de este PR en ESTE tick (comentario + labels): el dispatcher no
+              // debe re-etiquetar sobre un estado que acaba de cambiar bajo él.
+              if (rectHandled.has(pr.number)) continue;
+              if (ageMin(pr.updated_at) < LIVENESS_MIN) continue;   // anti-carrera
+              // Cede ante PRs en conflicto (2026-07-12, incidente #1303): un PR
+              // `dirty` es propiedad del modo rebase de más abajo — no tiene
+              // merge-ref, luego no es evaluable por el Reviewer. Sin este
+              // guard, el dispatcher lo clasificaba «sin veredicto ⇒ turno del
+              // Reviewer» y le ponía `needs-review`, label que a su vez impedía
+              // convocar al Creator para el rebase (auto-bloqueo). Solo `dirty`
+              // (conflicto real); un PR `behind` sin conflicto SÍ es mergeable
+              // y no debe saltarse.
+              let isDraft = false;
+              try {
+                const { data: pf } = await github.rest.pulls.get({ ...O, pull_number: pr.number });
+                if (pf.mergeable_state === 'dirty') continue;
+                isDraft = pf.draft;   // AP-047: hito en vuelo vs. transición ready pendiente
+              } catch (e) { core.info(`turno/dirty-check #${pr.number}: ${e.message}`); }
+              const labels = pr.labels.map(l => l.name);
+              // Cede ante PRs escalados a architect-resolve (creator-escalated,
+              // AP-017, repesca finplan#1391): el Creator paró y escaló DESDE
+              // DENTRO del loop de PR una decisión derivable-por-Architect; el
+              // post-step de claude-code materializó `estado:esperando-architect`
+              // (+ `stalled` ⇒ architect-resolve por evento). El turno es del
+              // Architect. Sin este guard el dispatcher cae al `else` final y
+              // declara `turno-de-nadie` — degradando la escalada CORRECTA a
+              // anomalía (el bug exacto de finplan#1391). architect-resolve limpia
+              // el estado al rular/re-armar. Mismo patrón que la cesión `dirty`.
+              if (labels.includes('estado:esperando-architect')) {
+                core.notice(`PR #${pr.number}: escalado a architect-resolve (estado:esperando-architect) — el dispatcher de turno cede.`);
+                continue;
+              }
+              const { data: hcs } = await github.rest.issues.listComments({ ...O, issue_number: pr.number, per_page: 100 });
+              // ── Backstop residual del draft huérfano (AP-047). Un draft que llega
+              // hasta aquí pasó el guard de liveness (updated_at > LIVENESS_MIN): su
+              // sesión del Creator terminó SIN `gh pr ready` Y el post-step de muerte
+              // de claude-code.yml no materializó la transición (job muerto de raíz,
+              // o `markReady` fallido que dejó `needs-review` INERTE sobre un draft —
+              // el gate de reviewer.yml salta todo draft, AP-047). Sin este backstop
+              // el dispatcher caería en la rama `!lastVerdict`, aplicaría needs-review
+              // —inerte sobre un draft— y lo re-churnearía cada ciclo (rama
+              // `needs-review presente`), con la review NUNCA disparada y la cadena
+              // colgada para siempre: una muerte-sin-review NUEVA que el propio
+              // mecanismo draft introduce. El watchdog es la red de 2º orden del
+              // post-step: materializa la transición ready POR ESTADO idéntica —
+              // `markPullRequestReadyForReview` (con el `GITHUB_TOKEN` del job: este
+              // step corre con el token por defecto, NO el PAT —solo `patCall` usa
+              // `ARM_PAT`—; el markReady no dispara ningún trigger, así que el token
+              // por defecto con `pull-requests: write` basta) + `needs-review` POR PAT
+              // (`patCall`: su `labeled` SÍ debe pasar la anti-recursión del gate del
+              // Reviewer, que ya ve el PR ready, sin depender del `opened` que un
+              // draft salta ni de un `ready_for_review` nuevo). Reutiliza el MARCADOR del post-step (misma clase de evento
+              // para el Auditor/5-whys). Cap del comentario por estado: si el marcador
+              // ya está en el hilo (post-step o ciclo previo del watchdog) NO re-comenta,
+              // pero SÍ reintenta `markReady` (idempotente; si prende, el próximo ciclo
+              // ve el PR non-draft y el flujo normal gobierna).
+              if (isDraft) {
+                const priorMat = hcs.some(c => (c.body || '').includes('creator-muerto-draft-materializado-ready'));
+                try {
+                  await github.graphql(
+                    `mutation($id:ID!){ markPullRequestReadyForReview(input:{pullRequestId:$id}){ pullRequest { number isDraft } } }`,
+                    { id: pr.node_id });
+                } catch (e) {
+                  core.warning(`watchdog/draft-markReady #${pr.number}: ${e.message} — sin needs-review (sería inerte sobre un draft); se reintenta el próximo ciclo.`);
+                  continue;   // markReady falló ⇒ sigue draft; NO ensuciar con needs-review inerte, reintentar
+                }
+                // markReady OK ⇒ el PR es non-draft; el `labeled` de needs-review por PAT
+                // dispara al Reviewer con el gate ya satisfecho.
+                await patCall('DELETE', `/issues/${pr.number}/labels/needs-review`).catch(() => {});
+                await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['needs-review'] });
+                if (!priorMat) {
+                  await github.rest.issues.createComment({ ...O, issue_number: pr.number,
+                    body: `**watchdog · draft huérfano materializado a ready (AP-047, backstop residual)**: el PR #${pr.number} quedó en DRAFT pasado el guard de liveness — la sesión del Creator terminó sin \`gh pr ready\` y el post-step de muerte de \`claude-code.yml\` no materializó la transición (job muerto de raíz, o \`markReady\` fallido). Marcado \`ready\` (\`markPullRequestReadyForReview\` con el \`GITHUB_TOKEN\` del job, \`pull-requests: write\` — el markReady no dispara nada, así que no requiere el PAT) + \`needs-review\` **por PAT** ⇒ el Reviewer dispara por \`labeled\` (su gate ya ve el PR ready), sin depender del \`opened\` que un draft salta ni de un \`ready_for_review\` nuevo. Mismo desenlace-por-estado que el post-step; el watchdog es su red de segundo orden.\n\n<!-- creator-muerto-draft-materializado-ready -->\n${CAPA}` });
+                }
+                core.warning(`watchdog: draft #${pr.number} materializado a ready + needs-review (backstop residual AP-047).`);
+                continue;
+              }
+              const verdicts = hcs.filter(c => verdictRe.test((c.body || '').trim()));
+              const lastVerdict = verdicts[verdicts.length - 1] || null;
+              const lastV = lastVerdict ? (lastVerdict.body || '').trim().split(/\s/)[0].replace(':','') : null;
+              const bots = hcs.filter(c => c.user && c.user.type === 'Bot' && c.user.login.startsWith('claude'));
+              const lastBot = bots[bots.length - 1] || null;
+              const botAfterVerdict = !!lastBot && (!lastVerdict || new Date(lastBot.created_at) > new Date(lastVerdict.created_at));
+              const closesReviewer = !!lastBot && /^\s*@reviewer\b/im.test(lastBot.body || '');
+              const closesReady = !!lastBot && /^\s*\[READY-TO-MERGE\]/m.test(lastBot.body || '');
+              const relaunches = hcs.filter(c => { const b = c.body || ''; return b.includes(TURN_MARK) || b.includes(HANDOFF_MARK); }).length;
+              // Cinturón por-estado de escalada (AP-028 capa 3, repesca finplan#1467):
+              // firma DETERMINISTA de rastro-mecánico-ausente. El Creator publica
+              // `creator-escalated`: token de TEXTO anclado a inicio de línea en la
+              // primera línea del cierre (vía primaria, AP-035) O marcador HTML en
+              // comentario SEPARADO vía `gh api` (belt legacy, AP-028) — anclado
+              // (línea o HTML), JAMÁS substring de prosa libre (clase 6 regex
+              // polarity: «declaro el bloqueo» no es firma; el token anclado
+              // + la ausencia del rastro sí). Escalada NO materializada = hay un
+              // marcador SIN un rastro `-materializado` POSTERIOR a él (freshness que
+              // distingue una escalada pendiente de una ya rulada/re-escalada).
+              const escMarks = bots.filter(c => /<!--\s*creator-escalated\s*-->/.test(c.body || '') || /^\[CREATOR-ESCALATED\]/m.test(c.body || ''));
+              const lastEscMark = escMarks[escMarks.length - 1] || null;
+              const matTraces = hcs.filter(c => (c.body || '').includes('creator-escalated-materializado'));
+              const lastMatTrace = matTraces[matTraces.length - 1] || null;
+              const escUnmaterialized = !!lastEscMark
+                && (!lastMatTrace || new Date(lastEscMark.created_at) > new Date(lastMatTrace.created_at))
+                && (!lastVerdict || new Date(lastEscMark.created_at) > new Date(lastVerdict.created_at));
+
+              // turnoDe(pr): derivado de la tabla de protocol.md.
+              let turno = null, why = '', fix = null;   // fix devuelve true si ya publicó su comentario-marcador
+              if (labels.includes('needs-review')) {
+                turno = 'reviewer'; why = 'needs-review presente y ningún run del Reviewer nació';
+                fix = async () => {   // re-labeled FRESCO con PAT (anti-loop del GITHUB_TOKEN)
+                  await patCall('DELETE', `/issues/${pr.number}/labels/needs-review`);
+                  await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['needs-review'] });
+                  return false;
+                };
+              } else if (lastVerdict && !botAfterVerdict && (lastV === 'REVIEW' || lastV === 'NITS')) {
+                turno = 'creator'; why = `veredicto ${lastV} sin sesión posterior del Creator`;
+                fix = async () => {   // el @claude debe salir con PAT o no dispara (anti-loop)
+                  await patCall('POST', `/issues/${pr.number}/comments`,
+                    { body: `@claude\n\nRelanzamiento de turno (ADR-217): el veredicto ${lastV} de arriba quedó sin sesión. Aplica los puntos pendientes y cierra con @reviewer (a inicio de línea).\n\n<!-- watchdog-rearm -->\n${TURN_MARK}\n${CAPA}` });
+                  return true;
+                };
+              } else if (botAfterVerdict && (closesReviewer || (closesReady && lastVerdict && lastV !== 'LGTM'))) {
+                // ex-modo e, incluida la variante READY-TO-MERGE-sin-LGTM (#1201)
+                turno = 'auto-label→reviewer';
+                why = closesReviewer ? 'cierre @reviewer sin needs-review' : 'READY-TO-MERGE tras veredicto no-LGTM';
+                fix = async () => { await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['needs-review'] }); return false; };
+              } else if (lastV === 'LGTM') {
+                turno = 'epic-merge';
+                // ── Re-materialización de `lgtm` por estado (repesca finplan#1438,
+                // AP-024). El post-step determinista del Reviewer (reviewer.yml,
+                // ADR-218) puede morir en la costura prosa→label: el veredicto
+                // LGTM queda PUBLICADO pero su label `lgtm` nunca se materializa;
+                // como el edge de epic-merge es el evento `labeled`, el crash mata
+                // la label Y su evento y el gate de merge se orfana sin que nada
+                // lo re-dispare. Firma DETERMINISTA de rastro-mecánico-ausente
+                // (sin aging, regla del pipeline-map): último veredicto LGTM +
+                // label `lgtm` ausente + head SIN commits posteriores al veredicto
+                // ⇒ re-aplicar `lgtm` con el PAT (su `labeled` re-dispara
+                // epic-merge, mismo edge de ADR-218). Cap 1 vía LGTM_REMAT_MARK.
+                const hasLgtm = labels.includes('lgtm');
+                const remats = hcs.filter(c => (c.body || '').includes(LGTM_REMAT_MARK)).length;
+                // Riesgo 1 (merge de código no revisado): si hay commits DESPUÉS
+                // del veredicto, ci.yml ya retiró `ci-verde`+`lgtm` (attempt 1) y
+                // re-materializar saltaría esa invalidación. Misma comprobación
+                // que el turn-close-failsafe: committer.date del head vs el
+                // created_at del comentario del veredicto. Fail-closed: si la
+                // consulta falla se asume commit posterior y NO se re-materializa.
+                let headAfterVerdict = true;
+                try {
+                  const { data: headCommit } = await github.rest.repos.getCommit({ ...O, ref: pr.head.sha });
+                  headAfterVerdict = new Date(headCommit.commit.committer.date) > new Date(lastVerdict.created_at);
+                } catch (e) { core.info(`lgtm-remat/head-check #${pr.number}: ${e.message}`); }
+
+                // Interacción AP-055 (clase 3, label writers × triggers): si una
+                // rectificación aterrizó en la base DESPUÉS de este veredicto y
+                // el bloque de rectificación-en-vuelo retiró `lgtm`, esa ausencia
+                // es INTENCIONAL — no la ventana de crash que este belt repesca.
+                // Sin este guard, los dos escritores de `lgtm` se pisan (uno la
+                // retira por base desfasada, el otro la re-materializa por
+                // veredicto vigente) y el gate de merge se reabre contra el
+                // árbol viejo, que es exactamente el fallo que AP-055 cierra.
+                // Clase 6: se compara el marcador COMPLETO con clave
+                // (`RECT_MARK_RE`), no el prefijo `RECT_MARK`. Con el prefijo
+                // desnudo, cualquier comentario posterior al veredicto que lo
+                // MENCIONE en prosa o entre backticks —el Creator citando la
+                // convocatoria, o el transporte verbatim de AP-054— pondría
+                // `rectHold` a true sobre un PR sano: belt AP-024 suprimido y
+                // turno reclasificado a Reviewer, quemando una sesión Opus.
+                // Límite heredado y declarado: `hcs` es la página 1 de
+                // `listComments` (limitación de casa, AP-054 §Paginación), luego
+                // en un PR de >100 comentarios este guard puede no ver el
+                // marcador; el detector re-aserta la retirada de `lgtm` en su
+                // propio tick, que es la mitad que importa.
+                const rectHold = hcs.some(c => RECT_MARK_RE.test(c.body || '')
+                  && new Date(c.created_at) > new Date(lastVerdict.created_at));
+                if (!hasLgtm && !headAfterVerdict && remats < 1 && !rectHold) {
+                  why = 'veredicto LGTM en prosa sin label `lgtm` y sin commits posteriores (ventana de crash del post-step del Reviewer)';
+                  fix = async () => {   // la label DEBE salir con PAT o su `labeled` no dispara epic-merge (anti-loop)
+                    await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['lgtm'] });
+                    await github.rest.issues.createComment({ ...O, issue_number: pr.number,
+                      body: `**watchdog · re-materialización de \`lgtm\` por estado (AP-024)**: el último veredicto del Reviewer es LGTM (cabecera ADR-063) y el head no tiene commits posteriores, pero la label \`lgtm\` no se materializó — ventana de crash del post-step del Reviewer (repesca finplan#1438). Label re-aplicada con el PAT: su \`labeled\` re-dispara epic-merge (edge ADR-218). Cap 1 por PR.\n\n${LGTM_REMAT_MARK}\n${CAPA}` });
+                    return true;   // self-comment: marcador propio, no consume el cap 2 de relanzamiento
+                  };
+                } else if (rectHold) {
+                  // El veredicto vigente es un LGTM ANTERIOR a la rectificación:
+                  // el turno NO es de epic-merge (su gate está cerrado a
+                  // propósito) sino del Reviewer, sobre la base vigente. Si la
+                  // `needs-review` que puso AP-055 ya no está y no ha llegado
+                  // veredicto nuevo, la sesión murió sin veredicto: se re-aplica
+                  // (cap 2 del dispatcher). Sin esta rama el `!fix` de abajo
+                  // declararía `turno-epic-merge-zombie` y convocaría a
+                  // architect-resolve para algo que se arregla con una label.
+                  turno = 'reviewer';
+                  why = 'LGTM anterior a una rectificación aterrizada en la base (AP-055): `lgtm` retirada a propósito y sin re-veredicto sobre la base vigente';
+                  fix = async () => {
+                    // Defensivo: si la retirada de `lgtm` de AP-055 no prendió
+                    // (fallo de API en aquel tick), el gate seguiría abierto
+                    // contra la base vieja — se re-asegura aquí, idempotente.
+                    if (hasLgtm) { try { await patCall('DELETE', `/issues/${pr.number}/labels/lgtm`); } catch (e) { core.info(`rect-hold/lgtm #${pr.number}: ${e.message}`); } }
+                    await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['needs-review'] });
+                    return false;
+                  };
+                } else if (process.env.IN_AUTOMERGE === 'false') {
+                  // AP-058: con merge humano (automerge=false), este estado es
+                  // la sala de espera del propietario, no un zombi — declarar
+                  // anomalía aquí convoca un resolve para re-concluir «SIN
+                  // ACCIÓN» y su comentario fabrica el siguiente tick.
+                  core.notice(`PR #${pr.number}: LGTM+gates verdes con automerge=false — terminal por diseño (gate humano); sin anomalía.`);
+                  continue;
+                } else {
+                  why = 'LGTM emitido y sin merge (epic-merge es workflow_run: sin relanzamiento mecánico)';
+                }
+              } else if (!lastVerdict) {
+                turno = 'reviewer';
+                // Rotular el ESTADO observado, NO una causa inferida (AP-025 §4,
+                // repesca finplan#1450). «trigger opened perdido» era una
+                // atribución que sembró un 5-whys erróneo del Auditor
+                // (finplan#1454): la causa real de esa instancia fue una muerte
+                // por presupuesto del Reviewer, no un webhook perdido. Se anota la
+                // conclusión del último run del Reviewer para el head — un
+                // `failure` sin veredicto lo delata. Puramente cosmético: el fix
+                // (re-aplicar needs-review) es idéntico.
+                let lastRvConcl = 'ninguno';
+                try {
+                  const { data: rv } = await github.rest.actions.listWorkflowRunsForRepo({ ...O, head_sha: pr.head.sha, per_page: 20 });
+                  const last = rv.workflow_runs.filter(r => r.name === process.env.IN_REVIEWER_WF)
+                    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+                  if (last) lastRvConcl = last.status === 'completed' ? (last.conclusion || 'completed') : last.status;
+                } catch (e) { core.info(`reviewer-run-lookup #${pr.number}: ${e.message}`); }
+                why = `PR sin veredicto ni needs-review; último run del Reviewer para el head: ${lastRvConcl}`;
+                fix = async () => { await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['needs-review'] }); return false; };
+              } else if (escUnmaterialized) {
+                // ── Cinturón por-estado de escalada (AP-028 capa 3, repesca
+                // finplan#1467). Red para la ventana de muerte RESIDUAL: la sesión
+                // del Creator declaró la escalada al Architect (marcador HTML
+                // `creator-escalated` en comentario separado, AP-028 capa 1) pero el
+                // post-step `creator-escalated` de claude-code.yml NO materializó el
+                // estado — murió entre el `gh api` y el post-step, o el evento del
+                // trigger se perdió: `estado:esperando-architect` ausente (el guard de
+                // más arriba ya habría cedido si estuviera) Y sin rastro
+                // `-materializado`. El dispatcher caería al `else` y declararía
+                // `turno-de-nadie` — degradando la escalada CORRECTA a anomalía (el bug
+                // exacto de finplan#1391/#1467). La belt materializa lo que el post-step
+                // prometía: `estado:esperando-architect` + `stalled` con el PAT (su
+                // `labeled=stalled` convoca a architect-resolve POR EVENTO, edge AP-017)
+                // y CEDE. Idempotente con el post-step: publica el MISMO rastro
+                // `creator-escalated-materializado`, que bloquea re-emisiones (freshness
+                // de `escUnmaterialized`) y activa la cesión de la label en el próximo
+                // tick. Sin aging: es rastro-mecánico-ausente, no am-I-still-working.
+                turno = 'architect-resolve';
+                why = 'escalada declarada (`creator-escalated`) sin `estado:esperando-architect` ni rastro `-materializado` — ventana de muerte del post-step / evento perdido';
+                fix = async () => {
+                  // estado visible PRIMERO, `stalled` DESPUÉS (mismo orden que el
+                  // post-step): el `labeled=stalled` con PAT convoca a architect-resolve
+                  // con `estado:esperando-architect` ya presente. `estado:*` es dinámica.
+                  await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['estado:esperando-architect'] });
+                  await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['stalled'] });
+                  await github.rest.issues.createComment({ ...O, issue_number: pr.number,
+                    body: `**watchdog · cinturón por-estado de escalada (AP-028 capa 3)**: el Creator declaró una escalada al Architect (token \`[CREATOR-ESCALATED]\` de primera línea, AP-035, o marcador HTML \`creator-escalated\` legacy) pero \`estado:esperando-architect\` nunca se materializó y no hay rastro \`-materializado\` — ventana de muerte del post-step \`creator-escalated\` de claude-code.yml (o el evento del trigger se perdió). Firma determinista de rastro-mecánico-ausente (sin aging): token/marcador anclado presente + label + rastro ausentes. Estado materializado con el PAT: \`estado:esperando-architect\` + \`stalled\` ⇒ architect-resolve dispara POR EVENTO (edge AP-017) y el dispatcher de turno cede sobre la label en el próximo tick. architect-resolve limpia el estado al rular. Idempotente: este mismo rastro bloquea re-emisiones.\n\n<!-- creator-escalated-materializado -->\n${CAPA}` });
+                  return true;   // self-comment con rastro propio: no consume el cap 2 de relanzamiento
+                };
+              } else {
+                anomalies.push({ type: 'turno-de-nadie', number: pr.number, branch: pr.head.ref,
+                  labels, last_verdict: lastV,
+                  note: 'ningún estado conocido asigna turno — huérfano (ADR-217 lectura a)' });
+                await turnStatus(pr, 'failure', 'Turno de NADIE: estado huérfano — architect-resolve convocado');
+                continue;
+              }
+
+              if (!fix) {
+                // Dedupe por EPISODIO (AP-058): si ya hay una declaración de
+                // esta clase posterior al último veredicto, el estado no ha
+                // cambiado — re-emitirla reconvoca al resolve sobre cero delta
+                // y su comentario dispara el siguiente tick (autoalimentación
+                // medida en central#157, 4 de 4). Un head nuevo trae veredicto
+                // nuevo ⇒ el ancla se renueva sola. Página 1 de comentarios
+                // (límite de casa, AP-054 §Paginación).
+                if (turno === 'epic-merge' && lastVerdict
+                    && hcs.some(c => (c.body || '').includes(`turno-${turno}-zombie`)
+                      && new Date(c.created_at) > new Date(lastVerdict.created_at))) {
+                  core.notice(`PR #${pr.number}: turno-${turno}-zombie ya declarado para este episodio de veredicto; sin re-emisión.`);
+                  continue;
+                }
+                anomalies.push({ type: `turno-${turno}-zombie`, number: pr.number, why }); continue; }
+              if (relaunches >= 2) {
+                anomalies.push({ type: `turno-${turno}-zombie-persistent`, number: pr.number, why,
+                  note: 'relanzamiento mecánico agotado (cap 2)' });
+                continue;
+              }
+              try {
+                const selfCommented = await fix();
+                if (!selfCommented) {
+                  await github.rest.issues.createComment({ ...O, issue_number: pr.number,
+                    body: `**watchdog · relanzamiento de turno (ADR-217)**: ${why}; transición relanzada mecánicamente (${relaunches + 1}/2). ${TURN_MARK}\n${CAPA}` });
+                }
+                core.notice(`PR #${pr.number}: turno=${turno} zombi ⇒ relanzado (${why}).`);
+                await turnStatus(pr, 'pending', `Turno ${turno} zombi: transición relanzada (${relaunches + 1}/2) — ${why}`);
+              } catch (e) {
+                core.warning(`turn-relaunch #${pr.number}: ` + e.message);
+                anomalies.push({ type: `turno-${turno}-relaunch-failed`, number: pr.number, why, error: e.message });
+              }
+            }
+
+            // ── Modo d): PRs de agente con CI en ROJO. Retry mecánico una
+            // vez (flaky-detector empírico, cero LLM); si ya se reintentó y
+            // sigue rojo, anomalía para el Architect (ping-creator).
+            const CI_RETRY_MARK = '<!-- watchdog-ci-retry -->';
+            for (const pr of openAgentPRs) {
+              if (skip(pr.labels)) continue;
+
+              // Modo PR-dirty (incidente #1054, 2026-07-04): un PR en conflicto no
+              // tiene merge-ref => GitHub NO dispara NINGÚN check de pull_request
+              // (ni CI ni Reviewer). Sin este modo, un PR dirty sin sesión activa
+              // queda invisible para todo el pipeline para siempre.
+              const { data: prFull } = await github.rest.pulls.get({ ...O, pull_number: pr.number });
+              if (prFull.mergeable === false && prFull.mergeable_state === 'dirty') {
+                const { data: prCs } = await github.rest.issues.listComments({
+                  ...O, issue_number: pr.number, per_page: 100,
+                });
+                const REBASE_MARK = '<!-- watchdog-rebase -->';
+                const rebases = prCs.filter(c => (c.body || '').includes(REBASE_MARK)).length;
+                // Nota: el gate 0 (runs activos => no hacer nada) ya cubre la
+                // reparación en curso; aquí solo cap de reintentos via marca.
+                if (rebases < 2) {
+                  await github.rest.issues.createComment({
+                    ...O, issue_number: pr.number,
+                    body: `${REBASE_MARK}\n@claude rebasa esta rama sobre \`origin/${process.env.IN_DEFAULT_BRANCH}\` y resuelve los conflictos (watchdog: PR en conflicto sin checks posibles — sin merge-ref no corren CI ni Reviewer). Alcance intacto: solo rebase + resolución. <!-- ping-creator -->\n${CAPA}`,
+                  });
+                  core.notice(`PR #${pr.number}: dirty sin checks; ping de rebase ${rebases + 1}/2.`);
+                } else if (rebases >= 2) {
+                  anomalies.push({ type: 'pr-dirty-persistent', number: pr.number,
+                    branch: pr.head.ref, rebases, labels: pr.labels.map(l => l.name) });
+                }
+                continue; // dirty: la lógica de CI-rojo no aplica (no hay checks)
+              }
+
+              // Run de CI más reciente sobre el HEAD exacto del PR.
+              const { data: ciRuns } = await github.rest.actions.listWorkflowRunsForRepo({
+                ...O, head_sha: pr.head.sha, per_page: 20,
+              });
+              const ci = ciRuns.workflow_runs
+                .filter(r => r.name === process.env.IN_CI_WF)
+                .sort((x, y) => new Date(y.created_at) - new Date(x.created_at))[0];
+              if (!ci || ci.status !== 'completed' || ci.conclusion !== 'failure') continue;
+
+              const { data: prComments } = await github.rest.issues.listComments({
+                ...O, issue_number: pr.number, per_page: 100,
+              });
+              const retries = prComments.filter(c => (c.body || '').includes(CI_RETRY_MARK)).length;
+
+              if (retries === 0) {
+                // Fast-path de rojo ATRIBUIBLE (2026-07-12, propuesta #1268 del
+                // repo de origen): si TODOS los tests fallidos pertenecen a
+                // ficheros que el propio PR toca, el retry de flaky es coste
+                // puro y retrasa la escalada un ciclo de cron. Fuente: las
+                // anotaciones ::error del check run de CI (path del fichero).
+                // Fail-open: sin anotaciones legibles ⇒ comportamiento actual
+                // íntegro (retry + harvest).
+                const ATTR_MARK = '<!-- watchdog-ci-attributable -->';
+                let attributable = false, failedFiles = [];
+                try {
+                  const { data: jobs } = await github.rest.actions.listJobsForWorkflowRun({ ...O, run_id: ci.id, per_page: 50 });
+                  const anns = [];
+                  for (const j of jobs.jobs.filter(j => j.conclusion === 'failure')) {
+                    const { data: a } = await github.rest.checks.listAnnotations({ ...O, check_run_id: j.id, per_page: 100 }).catch(() => ({ data: [] }));
+                    anns.push(...a.filter(x => x.annotation_level === 'failure' && x.path && x.path !== '.github'));
+                  }
+                  failedFiles = [...new Set(anns.map(a => a.path))];
+                  if (failedFiles.length) {
+                    const prFiles = await github.paginate(github.rest.pulls.listFiles, { ...O, pull_number: pr.number, per_page: 100 });
+                    const touched = new Set(prFiles.map(f => f.filename));
+                    attributable = failedFiles.every(f => touched.has(f));
+                  }
+                } catch (e) { core.warning(`attr-check #${pr.number}: ${e.message} (fail-open a retry)`); }
+
+                if (attributable) {
+                  const attrPings = prComments.filter(c => (c.body || '').includes(ATTR_MARK)).length;
+                  if (attrPings === 0) {
+                    await github.rest.issues.createComment({
+                      ...O, issue_number: pr.number,
+                      body: `${ATTR_MARK}\n@claude CI en rojo (run ${ci.id}) con fallos ATRIBUIBLES a este PR — todos los tests fallidos viven en ficheros que el PR toca:\n\n${failedFiles.map(f => '- \n${CAPA}`' + f + '`').join('\n')}\n\nBaja el detalle con \`gh run view ${ci.id} --log-failed\`, corrige y pushea. (watchdog: fast-path sin retry de flaky — el rojo atribuible no se reintenta.) <!-- ping-creator -->`,
+                    });
+                    core.notice(`PR #${pr.number}: CI rojo ATRIBUIBLE (${failedFiles.length} ficheros del diff); escalado directo sin retry.`);
+                  } else {
+                    anomalies.push({ type: 'pr-ci-red-persistent', number: pr.number,
+                      branch: pr.head.ref, ci_run: ci.id, retries, attributable: true,
+                      labels: pr.labels.map(l => l.name) });
+                  }
+                  continue;
+                }
+
+                try {
+                  await github.rest.actions.reRunWorkflowFailedJobs({ ...O, run_id: ci.id });
+                  await github.rest.issues.createComment({
+                    ...O, issue_number: pr.number,
+                    body: `${CI_RETRY_MARK}\n**watchdog**: CI en rojo (run ${ci.id}); re-lanzados los jobs fallidos (retry 1/1, detector de flakiness). Si vuelve a rojo, se escala al Creator.\n${CAPA}`,
+                  });
+                  core.notice(`PR #${pr.number}: CI rojo, retry lanzado (run ${ci.id}).`);
+                  // Cosecha de flaky-candidatos (2026-07-10): el retry detecta
+                  // el flaky pero hasta hoy no lo REGISTRABA — el mismo test
+                  // puede flakear semanas autoresolviéndose sin que nadie lo
+                  // arregle. El step posterior baja el log del attempt 1 y
+                  // publica los tests fallidos; el Auditor los cuenta por
+                  // épica y el circuito correctivo obliga al fix.
+                  core.setOutput('flaky_run', String(ci.id));
+                  core.setOutput('flaky_pr', String(pr.number));
+                } catch (e) {
+                  core.warning(`PR #${pr.number}: no se pudo re-lanzar CI: ${e.message}`);
+                  anomalies.push({ type: 'pr-ci-red-persistent', number: pr.number,
+                    branch: pr.head.ref, ci_run: ci.id, retries, retry_error: e.message,
+                    labels: pr.labels.map(l => l.name) });
+                }
+                continue; // el retry en vuelo reabre el gate 0 en el próximo pase
+              }
+
+              anomalies.push({
+                type: 'pr-ci-red-persistent',
+                number: pr.number,
+                branch: pr.head.ref,
+                ci_run: ci.id,
+                retries,
+                labels: pr.labels.map(l => l.name),
+              });
+            }
+
+            // ── Issues abiertos armados con @claude sin PR abierta asociada
+            // y en silencio. La asociación PR↔issue usa el patrón de rama
+            // del Creator: claude/issue-<n>-*.
+            const { data: issues } = await github.rest.issues.listForRepo({
+              ...O, state: 'open', sort: 'updated', direction: 'desc', per_page: 50,
+            });
+            // ── Premisa de la cola serial (AP-039, refinada por AP-048): ¿está
+            // la serie OCUPADA por un titular AJENO y vivo? Un ítem `en-cola`
+            // (encolado por el guard serial, AP-014) es una espera LEGÍTIMA
+            // mientras exista un titular AJENO — `serial-activo` en OTRO issue O
+            // un PR `claude/*` de OTRA rama. `serialActiveOpen` se lista UNA vez;
+            // la exclusión del PROPIO titular es por-ítem abajo (complemento
+            // anti-interbloqueo AP-048: el propio PR huérfano NO sostiene la
+            // premisa — ver el chequeo del bloque `en-cola`).
+            let serialActiveOpen = [];
+            try {
+              serialActiveOpen = (await github.rest.issues.listForRepo({
+                ...O, state: 'open', labels: 'serial-activo', per_page: 20 })).data;
+            } catch (e) { core.warning('premisa de serie (serial-activo): ' + e.message); }
+            for (const issue of issues) {
+              if (issue.pull_request) continue;        // solo issues puros
+              if (skip(issue.labels)) continue;
+              if (ageMin(issue.updated_at) < STALL_MIN) continue;
+
+              // ¿Rama de PR abierta para este issue? Entonces el trabajo vive en
+              // la PR (cubierto por la red de PR parada). EXCEPCIÓN (AP-048,
+              // complemento anti-interbloqueo de finplan#1603): si el issue está
+              // `en-cola`, NO lo saltamos aquí — el arm mismo-issue quedó encolado
+              // DETRÁS de su propia rama (`en-cola` sólo se desencola al MERGE o al
+              // terminal del Creator, y un PR huérfano no tiene ni lo uno ni lo
+              // otro ⇒ interbloqueo). Debe caer al chequeo de premisa de abajo,
+              // que trata «serie ocupada sólo por el propio PR huérfano» como
+              // premisa CAÍDA y escala como `cola-huerfana`.
+              const isQueued = issue.labels.some(l => l.name === 'en-cola');
+              if (!isQueued && openAgentPRs.some(p =>
+                    p.head.ref.startsWith(`claude/issue-${issue.number}-`))) continue;
+
+              // Buscar el último arm humano (@claude o ping-creator) en
+              // los comentarios recientes.
+              const { data: comments } = await github.rest.issues.listComments({
+                ...O, issue_number: issue.number, per_page: 100,
+              });
+              // El arm puede vivir en el BODY del issue, no solo en comentarios
+              // (2026-07-15, wmcb#59: issue armado por body, bloqueado por el
+              // guard de cadena, e INVISIBLE para este detector en cada scan —
+              // lastArm=null => continue => 77 min de stall sin rescate). El
+              // body cuenta como arm-base con la fecha de creación del issue.
+              let lastArm = (issue.body || '').includes('@claude')
+                ? { created_at: issue.created_at } : null;
+              let lastBot = null, rearms = 0;
+              for (const c of comments) {
+                const body = c.body || '';
+                const isBot = c.user.login === 'claude[bot]';
+                // Los arms de bot también son arms (incidente #1048): con
+                // `!isBot`, un arm de claude[bot] rechazado por la action
+                // dejaba lastArm=null y el watchdog quedaba ciego.
+                if (body.includes('@claude') || body.includes('<!-- ping-creator -->'))
+                  lastArm = c;
+                if (isBot) lastBot = c;
+                if (body.includes('<!-- watchdog-rearm -->')) rearms++;
+              }
+              if (!lastArm) continue;
+              if (ageMin(lastArm.created_at) > ARM_WINDOW_H * 60) continue;
+
+              // ── Chequeo de premisa de serie para ítems `en-cola` (AP-039,
+              // NO exclusión ciega). Un ítem encolado por el guard serial no es
+              // anomalía mientras la premisa de la cola se sostenga: si la serie
+              // está OCUPADA (hay titular — `serial-activo` o PR `claude/*`), la
+              // espera es legítima ⇒ silencio, sin etapa architect. Si la serie
+              // está LIBRE y el ítem sigue `en-cola` tras una ventana de
+              // asentamiento (>1 tick: marcador de sospecha + el gate STALL_MIN,
+              // pues el comentario refresca `updated_at`), eso SÍ es anomalía
+              // real —pop de cola muerto, clase `cola-huerfana`— ⇒ escala a la
+              // etapa architect. La exención cubre la espera legítima sin cegar
+              // la clase huérfana (Riesgo a); la ventana absorbe la carrera
+              // encolado↔liberación de serie (Riesgo c).
+              if (issue.labels.some(l => l.name === 'en-cola')) {
+                // Premisa POR-ÍTEM (AP-048, complemento anti-interbloqueo): la
+                // serie está ocupada por un titular AJENO y vivo sólo si hay
+                // `serial-activo` en OTRO issue o un PR `claude/*` de OTRA rama.
+                // El PROPIO PR huérfano del issue (misma `claude/issue-N-*`) NO
+                // cuenta como titular: es el interbloqueo (finplan#1603), no una
+                // espera legítima detrás de OTRA unidad — y post gate-0 no hay run
+                // activo ni sesión de Creator viva sobre él (si la hubiera, el gate
+                // 0 habría salido antes). «Serie ocupada SÓLO por el propio PR
+                // huérfano, persistente >1 tick» ⇒ premisa CAÍDA ⇒ escala como
+                // `cola-huerfana` (le da dueño: architect-resolve) aunque nadie
+                // aplique el fast-path del guard (AP-048).
+                const foreignHolder = serialActiveOpen.some(i => i.number !== issue.number)
+                  || openAgentPRs.some(p => !p.head.ref.startsWith(`claude/issue-${issue.number}-`));
+                if (foreignHolder) {
+                  core.notice(`#${issue.number}: en-cola con serie ocupada por titular AJENO (premisa sostenida) — espera legítima, sin anomalía.`);
+                  continue;
+                }
+                const SETTLE_MARK = '<!-- watchdog-cola-huerfana-sospecha -->';
+                // La ventana de asentamiento es POR-EPISODIO de encolado, no
+                // por presencia histórica del marcador: si el mismo issue se
+                // re-encoló (nuevo `serial-guard`) tras un episodio previo, el
+                // marcador viejo NO debe contar — anclarlo así escalaría en el
+                // 1er tick del episodio nuevo (viola «no antes» de AP-039 y
+                // reintroduce el falso positivo en régimen de épicas
+                // concurrentes). Ancla del episodio vigente = último comentario
+                // `serial-guard`; la sospecha solo vale si se levantó DESPUÉS.
+                const lastGuard = comments.filter(c => (c.body || '').includes('<!-- serial-guard -->')).pop();
+                const episodeAt = lastGuard ? new Date(lastGuard.created_at).getTime() : 0;
+                const freshSuspicion = comments.some(c => (c.body || '').includes(SETTLE_MARK)
+                  && new Date(c.created_at).getTime() >= episodeAt);
+                // Titular AJENO ausente: la serie está LIBRE, o ocupada SÓLO por
+                // el propio PR huérfano del issue (interbloqueo AP-048). Ambos son
+                // premisa caída — el ítem debe tener dueño, no esperar para siempre.
+                const ownOrphanPR = openAgentPRs.find(p => p.head.ref.startsWith(`claude/issue-${issue.number}-`));
+                const premiseNote = ownOrphanPR
+                  ? `la serie sólo la ocupa el PROPIO PR huérfano #${ownOrphanPR.number} (\`${ownOrphanPR.head.ref}\`) — sin run activo ni sesión de Creator viva (interbloqueo AP-048: \`en-cola\` sólo se desencola al merge o al terminal del Creator, y no hay ninguno)`
+                  : 'la serie está LIBRE (sin `serial-activo` ni PR `claude/*` abierto)';
+                if (!freshSuspicion) {
+                  // Fail-soft (AP-056): el marcador es diagnóstico — si no se
+                  // puede escribir, se avisa y se sigue; el producto del scan
+                  // son las anomalías del resto de ítems, no este comentario.
+                  // Coste del fallo blando: la ventana de asentamiento no
+                  // arranca y este ítem espera al tick en que el write funcione
+                  // — degradación de latencia, nunca de detección global.
+                  try {
+                    await github.rest.issues.createComment({ ...O, issue_number: issue.number,
+                      body: `**watchdog · cola serial**: \`en-cola\` y ${premiseNote}. Puede ser un pop de cola muerto, un interbloqueo mismo-issue o una liberación de serie aún asentándose. Ventana de asentamiento: si persiste al próximo tick efectivo, se escala a la etapa architect como \`cola-huerfana\`.\n\n${SETTLE_MARK}\n${CAPA}` });
+                    core.notice(`#${issue.number}: en-cola + premisa caída; marcador de asentamiento puesto (1er tick del episodio), sin escalar aún.`);
+                  } catch (e) {
+                    core.warning(`#${issue.number}: no se pudo poner el marcador de asentamiento (${e.message}); reintento en el próximo tick.`);
+                  }
+                  continue;
+                }
+                core.notice(`#${issue.number}: en-cola + premisa caída PERSISTENTE (>1 tick del episodio) ⇒ cola-huerfana, escala a architect.`);
+              }
+
+              // Armado, sin PR abierta, todo en silencio > STALL_MIN, y
+              // ningún run activo (gate 0). Candidato. El diagnóstico fino
+              // (¿terminó de verdad? ¿murió a medias? ¿PR ya mergeada y el
+              // issue quedó abierto?) es del Architect, no de este script.
+              if (issue.labels.some(l => l.name === 'serial-activo')) {
+                await github.rest.issues.removeLabel({
+                  ...O, issue_number: issue.number, name: 'serial-activo' }).catch(() => {});
+                core.notice(`serial-activo huérfano retirado de #${issue.number} (Creator sin PR).`);
+              }
+              anomalies.push({
+                type: 'issue-armed-no-pr',
+                number: issue.number,
+                title: issue.title.slice(0, 80),
+                armed_at: lastArm.created_at,
+                last_bot_comment_at: lastBot ? lastBot.created_at : null,
+                watchdog_rearms_so_far: rearms,
+                labels: issue.labels.map(l => l.name),
+                // AP-039: si llega aquí con `en-cola` es porque la premisa de
+                // serie cayó y la sospecha persistió >1 tick — pop de cola
+                // muerto. El architect-resolve lee esta pista para rular la
+                // clase `cola-huerfana` (re-pop / re-arm), no un arm normal.
+                cola_huerfana: issue.labels.some(l => l.name === 'en-cola'),
+              });
+            }
+
+            const found = anomalies.length > 0;
+            core.setOutput('found', String(found));
+            core.setOutput('anomalies', JSON.stringify(anomalies));
+            if (found) {
+              core.notice(`Anomalías detectadas: ${anomalies.length}`);
+              core.info(JSON.stringify(anomalies, null, 2));
+            } else {
+              core.notice('Sin anomalías.');
+            }
+
+      # RED de PR huérfano (v1.2, incidentes wmcb #7 y #6, 2026-07-11): el
+      # Creator termina success con el trabajo en rama pero SIN abrir el PR,
+      # dejando un enlace «Create PR» (quick-pull /compare/) como artefacto.
+      # Firma determinista ⇒ reparación mecánica: el watchdog crea el PR con
+      # la polaridad declarada en el comentario de cierre (default full-pr).
+      # Sale con el PAT: un PR creado con GITHUB_TOKEN no dispararía reviewer.
+      # Movido del job `architect` (2026-07-15, central#34 — sensor
+      # estructuralmente muerto desde 2026-07-10): `steps.scan` es job-scoped
+      # y en `architect` evaluaba siempre vacío ⇒ skipped en todo run; los
+      # outputs flaky_run/flaky_pr tampoco cruzaban la frontera del job; y el
+      # gating `found==true` impedía cosechar retries de flaky puro. Aquí los
+      # tres defectos desaparecen: mismo job que el scan, corre en todo tick.
+      - name: Harvest flaky candidates (modo d)
+        if: steps.scan.outputs.flaky_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUN="${{ steps.scan.outputs.flaky_run }}"
+          PR="${{ steps.scan.outputs.flaky_pr }}"
+          TMP=$(mktemp -d)
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${RUN}/attempts/1"
+          # Vacío materializado (issue #103): un sensor que no puede leer deja
+          # rastro, no silencio. Cualquier salida vacía —download/unzip fallan,
+          # o ningún formato casa— postea IGUALMENTE el comentario con marcador
+          # flaky-harvest: el Auditor lo cuenta por épica y la señal se agrega.
+          # Viola «no silent caps» y los principios 1/3 de protocol.md que el
+          # exit 0 mudo (nueve retries, cero cosechas) incumplía.
+          post_unparseable() {
+            gh pr comment "$PR" --repo "${{ github.repository }}" --body "$(printf '**watchdog · cosecha de flaky-candidatos** (attempt 1 del run %s): attempt 1 no parseable — sin bloque Failed Tests ni anotaciones ::error legibles en el log. Run: %s\n\n<!-- flaky-harvest -->' "$RUN" "$RUN_URL")" || true
+          }
+          # Log del attempt fallido (el retry ya corre); best-effort: la cosecha
+          # jamás rompe el watchdog. Si download o unzip fallan, el vacío se
+          # materializa (antes: exit 0 silencioso).
+          if ! gh api "repos/${{ github.repository }}/actions/runs/${RUN}/attempts/1/logs" > "$TMP/l.zip" 2>/dev/null; then
+            post_unparseable; exit 0
+          fi
+          if ! unzip -qo "$TMP/l.zip" -d "$TMP" 2>/dev/null; then
+            post_unparseable; exit 0
+          fi
+          # 1) Anotaciones ::error de vitest (reporter github-actions): fichero
+          # + título, dedupe, cap 10.
+          FAILS=$(grep -rhoE '::error file=[^,]*packages/[^,]+,title=[^,]+' "$TMP" \
+            | sed -E 's|::error file=[^,]*(packages/[^,]+),title=|\1 > |' \
+            | sort -u | head -10 || true)
+          # 2) Fallback al reporter default de vitest: bloque «Failed Tests»,
+          # líneas ancladas al prefijo `FAIL ` (lección «regex polarity
+          # blindness»: anclaje estricto al prefijo de línea, jamás substring
+          # suelto). Normaliza antes: strip de códigos ANSI y del timestamp que
+          # GitHub antepone a cada línea del log crudo. Este consumidor no emite
+          # `::error`; su fallo real vive aquí (issue #103).
+          if [ -z "$FAILS" ]; then
+            FAILS=$(find "$TMP" -type f -name '*.txt' -exec cat {} + 2>/dev/null \
+              | sed -E 's/\x1b\[[0-9;]*[a-zA-Z]//g' \
+              | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z +//' \
+              | grep -oE '(^| )FAIL +[^ ]+ > .+' \
+              | sed -E 's/^ *FAIL +//' \
+              | sort -u | head -10 || true)
+          fi
+          # 3) Nada extraíble tras ambos formatos ⇒ vacío materializado.
+          if [ -z "$FAILS" ]; then
+            post_unparseable; exit 0
+          fi
+          gh pr comment "$PR" --repo "${{ github.repository }}" --body "$(printf '**watchdog · cosecha de flaky-candidatos** (attempt 1 del run %s — confirmados como flaky si el re-run sale verde; el Auditor los cuenta por épica):\n\n~~~\n%s\n~~~\n\n<!-- flaky-harvest -->' "$RUN" "$FAILS")" || true
+
+      - name: Orphan PR net
+        id: orphan_net
+        uses: actions/github-script@v7
+        env:
+          IN_EPIC_LABEL: ${{ inputs.epic_label }}
+          IN_DEFAULT_BRANCH: ${{ inputs.default_branch }}
+        with:
+          github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const O = { owner, repo };
+            const MARK = '<!-- orphan-pr-fix -->';
+            const issues = await github.rest.issues.listForRepo({ ...O, state: 'open', labels: process.env.IN_EPIC_LABEL, per_page: 20 });
+            for (const issue of issues.data) {
+              if (issue.pull_request) continue;
+              const comments = await github.rest.issues.listComments({ ...O, issue_number: issue.number, per_page: 100 });
+              const cs = comments.data;
+              if (cs.some(c => (c.body || '').includes(MARK))) continue; // ya reparado una vez: no repetir
+              const last = [...cs].reverse().find(c => c.user && c.user.login === 'claude[bot]');
+              if (!last) continue;
+              // Artefacto del fallo: enlace quick-pull /compare/<branch> en el cierre
+              const m = (last.body || '').match(/\/compare\/([A-Za-z0-9._\/-]+)\?/);
+              if (!m) continue;
+              const branch = decodeURIComponent(m[1]);
+              // Envejecimiento: 10 min desde el cierre del Creator (evita carreras con un gh pr create lento)
+              if (Date.now() - new Date(last.created_at).getTime() < 10 * 60 * 1000) continue;
+              // Rama existe y va por delante de la base
+              let cmp;
+              try { cmp = await github.rest.repos.compareCommits({ ...O, base: process.env.IN_DEFAULT_BRANCH, head: branch }); }
+              catch (e) { continue; }
+              if (cmp.data.ahead_by === 0) continue;
+              // Cero PRs abiertos desde la rama
+              const prs = await github.rest.pulls.list({ ...O, state: 'open', head: `${owner}:${branch}`, per_page: 5 });
+              if (prs.data.length > 0) continue;
+              const polarity = /partial-pr/.test(last.body || '') ? 'partial-pr' : 'full-pr';
+              const pr = await github.rest.pulls.create({ ...O,
+                title: issue.title.replace(/\s*\[épica[^\]]*\]\s*$/, ''),
+                head: branch, base: process.env.IN_DEFAULT_BRANCH,
+                body: `Closes #${issue.number}\n\n<!-- ${polarity} -->\n\n_PR creado mecánicamente por el watchdog (red de PR huérfano v1.2): Creator terminó con el trabajo en \`${branch}\` sin abrir el PR. Cuerpo del trabajo: ver el comentario de cierre del Creator en #${issue.number}._` });
+              await github.rest.issues.addLabels({ ...O, issue_number: pr.data.number, labels: [process.env.IN_EPIC_LABEL] });
+              await github.rest.issues.createComment({ ...O, issue_number: issue.number,
+                body: `**watchdog · red de PR huérfano**: PR #${pr.data.number} creado mecánicamente desde \`${branch}\` (polaridad ${polarity}). ${MARK}` });
+              core.info(`orphan-pr-fix: #${issue.number} → PR #${pr.data.number}`);
+              break; // uno por scan
+            }
+
+  architect:
+    needs: detect
+    if: needs.detect.outputs.found == 'true'
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+      actions: write   # ADR-217 §7: su prompt ordena relanzar CIs; read era un 403 latente
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Graft vendored (capa común servida desde el central — AP-009)
+        uses: talfarouriarte-cloud/agent-pipeline/.github/actions/graft-vendored@main
+
+      - name: Run Architect watchdog
+        uses: anthropics/claude-code-action@v1
+        env:
+          # Blindaje OAuth-only (mismo patrón que Creator y Reviewer): sin
+          # API key en env no hay fallback silencioso facturado.
+          ANTHROPIC_API_KEY: ""
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # allowed_bots (2026-07-11, repo de origen, incidente PR #1266): la
+          # acción rechaza actores bot por defecto (su anti-loop). Los runs del
+          # watchdog por workflow_run heredan el actor de la cadena
+          # (claude[bot] cuando el Creator empujó) y la etapa architect moría
+          # al nacer — las escaladas solo funcionaban desde cron/dispatch
+          # (actor humano). Seguro aquí: prompt interno fijo, etapa gateada
+          # por detect.
+          allowed_bots: "claude,github-actions"
+          # PAT, NO GITHUB_TOKEN: los comentarios y labels del watchdog
+          # DEBEN disparar los workflows del Creator/Reviewer. Eventos del
+          # GITHUB_TOKEN default no disparan otros workflows (anti-loop de
+          # GitHub) y además el @claude saldría de github-actions[bot].
+          # Con el PAT, el re-arm sale con autoría del humano — exactamente
+          # el mecanismo del rescate manual que este workflow automatiza.
+          github_token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          claude_args: |
+            --model ${{ inputs.resolve_model }}
+            --max-turns ${{ inputs.resolve_max_turns }}
+            --allowedTools "Read,Glob,Grep,Bash(gh issue view:*),Bash(gh issue comment:*),Bash(gh issue edit:*),Bash(gh issue create:*),Bash(gh issue close:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr checks:*),Bash(gh pr comment:*),Bash(gh pr edit:*),Bash(gh run list:*),Bash(gh run view:*),Bash(gh api repos/*)"
+          prompt: |
+            Eres el Architect en rol watchdog del repo ${{ github.repository }}.
+            Tu rol vinculante está en docs/agents/watchdog.md del checkout:
+            LÉELO ENTERO antes de actuar.
+
+            El detector ha encontrado estas anomalías (trabajo aparentemente
+            parado, sin runs activos en el pipeline):
+
+            ```json
+            ${{ needs.detect.outputs.anomalies }}
+            ```
+
+            Tipo `pr-ci-red-persistent` (CI rojo tras retry mecánico): baja
+            el log del fallo (`gh run view <ci_run> --log-failed`), identifica
+            el test y decide: si el fallo es atribuible al PR, ping-creator en
+            el PR con el log relevante citado y la instrucción de corregir;
+            si es un flaky ajeno al PR (pasa en local / falla intermitente en
+            runner), dilo en el comentario, re-lanza el CI una última vez con
+            `gh api -X POST repos/${{ github.repository }}/actions/runs/<ci_run>/rerun-failed-jobs`
+            y si reincide aplica label `stalled` + diagnóstico SIN @claude.
+            Cuenta como re-arm a efectos del cap.
+
+            Tipo `stalled-autonomous-resolve` (régimen autónomo 2026-07-07,
+            docs/agents/watchdog.md § Régimen autónomo): NO esperes al humano.
+            (1) Diagnostica: informes/diags/checklists del ítem, y la skill
+            `epic-context-<ADR>` del checkout si existe. (2) Decide:
+            resolver-protocol primero; si no es derivable, decide con tu
+            mejor juicio y publica el racional completo con el marcador
+            `<!-- autonomous-decision -->`. Caso especial (AP-037): si el
+            ítem lleva `estado:cierre-pendiente-humano`, aplica el caso
+            «Cierre autónomo de completitud por-estado» de watchdog.md —
+            verificación MATERIALIZADA del veredicto contra HEAD y
+            `gh issue close` si se sustenta; `gh issue close` está en tu
+            allowlist SOLO para ese caso. (3) Actúa: si el stall es de
+            tamaño (cap de parciales), re-dimensiona el restante según la
+            heurística de partición de architect.md (issues nuevos con label
+            `${{ inputs.epic_label }}`, encadenados, heredando el sentinel del padre y cerrando
+            el padre con trazabilidad); quita la label `stalled` (y
+            `estado:esperando-architect` si está presente — AP-017: dejarla 
+             puesta tras el ruling mantiene al dispatcher de turno cediendo
+             sobre el PR y lo vuelve invisible al detector de zombis); ARMA la
+            continuación (comentario `@claude` + `<!-- watchdog-rearm -->`).
+            Excepciones absolutas (ahí sí humano): `.github/workflows/*`,
+            `prototype.css`, promoción de la rama por defecto a la de producción.
+
+            IMPORTANTE: el log de Actions NO conserva los turnos de tu
+            En CADA comentario que publiques incluye, al final, el marcador de capa `<!-- watchdog-capa: ${{ github.event_name }} -->` (AP-011: el Auditor atribuye el fallo a la capa de vigilancia que lo recogió).
+            sesión (solo init y resultado). Si necesitas entregar contenido
+            a otro agente o al humano (cuerpos de issues, comandos, diffs),
+            PUBLÍCALO en un comentario — jamás lo referencies "en el log"
+            (incidente #1120, 2026-07-08: cuerpos irrecuperables).
+
+            Para cada anomalía: diagnostica con `gh` (comentarios, checklist
+            del último comment de claude[bot], estado de ramas/PRs/checks/
+            labels, runs recientes) y ejecuta la acción mínima que reanude la
+            cadena, respetando el cap de reintentos y las prohibiciones del
+            rol. Si un item no necesita acción, dilo y no toques nada.
+
+      - name: Materializar arm en ping-creator huérfanos (post-architect)
+        # fp#1344 (repesca A, auditoría #1343): el architect-etapa escribió
+        # `<!-- ping-creator -->` SIN la mención de arm anclada → Trigger
+        # result: false → cadena parada 2h45m. La co-ocurrencia marcador↔
+        # mención no puede depender de la prosa del agente: este post-step
+        # escanea los comentarios recientes del repo; si el ÚLTIMO comentario
+        # de un issue/PR lleva ping-creator sin `@claude` anclado a inicio de
+        # línea, publica el arm mínimo (con PAT: debe disparar) referenciando
+        # el diagnóstico. Idempotente por marcador.
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const since = new Date(Date.now() - 40 * 60 * 1000).toISOString();
+            const { data: comments } = await github.rest.issues.listCommentsForRepo({
+              owner, repo, since, per_page: 100, sort: 'created', direction: 'asc' });
+            const byIssue = {};
+            for (const c of comments) {
+              const n = Number((c.issue_url || '').split('/').pop());
+              if (n) (byIssue[n] = byIssue[n] || []).push(c);
+            }
+            for (const [n, cs] of Object.entries(byIssue)) {
+              const last = cs[cs.length - 1];
+              const body = last.body || '';
+              if (!/<!--\s*ping-creator\s*-->/.test(body)) continue;
+              if (/^@claude/m.test(body)) continue;               // co-ocurre: sano
+              if (/ping-creator-materializado/.test(body)) continue; // ya materializado
+              await github.rest.issues.createComment({ owner, repo, issue_number: Number(n),
+                body: `@claude — retoma según el diagnóstico del comentario anterior del watchdog (ping-creator sin mención de arm: co-ocurrencia materializada mecánicamente, fp#1344).\n\n<!-- ping-creator-materializado -->\n<!-- watchdog-capa: ${context.eventName} -->` });
+              core.warning(`#${n}: ping-creator sin mención de arm — arm materializado.`);
+            }
+
+  # ── Belt del propio detector (AP-059, repesca finplan#1684 / aud. fp#1700) ──
+  # El FALLO del detector no tenía CONSUMIDOR. 2026-07-27: `detect` murió en
+  # `Scan for stalled work` («Resource not accessible by integration», causa
+  # inmediata cerrada por AP-056) en TODOS los ticks durante ~1 h. El evento
+  # disparaba, el run NACÍA y el run moría — y para `watchdog-heartbeat.yml`,
+  # que solo mira la EDAD del último run, eso es un watchdog VIVO. Un `stalled`
+  # cuyo único consumidor es architect-resolve esperó 48 min a un resolutor que
+  # vive DENTRO del sistema caído, hasta que el propietario lo absorbió a mano.
+  #
+  # Este job cierra la CLASE, no la instancia: cualquier regresión futura que
+  # ponga detect en rojo (permiso nuevo — el ítem abierto «nadie verifica job ⊇
+  # escrituras del propio código» de AP-056—, cambio de API, SyntaxError
+  # embebido) pasa a ser estado DECLARADO con dueño en ≤K ticks.
+  #
+  # Terminal-humano por la MISMA doctrina que el heartbeat: arreglar un
+  # watchdog roto suele exigir tocar workflows o permisos (gate humano de todas
+  # formas) y su resolutor autónomo no puede autorrepararse. No abre ninguna
+  # vía nueva a humano: reutiliza la escalada ya doctrinal del heartbeat
+  # (mismo marcador de dedupe ⇒ belt y heartbeat NO pueden duplicar el issue).
+  detect-failure-belt:
+    needs: [detect]
+    if: failure()
+    # `ubuntu-latest` EXPLÍCITO y no `inputs.runner` (misma doctrina que
+    # watchdog-heartbeat.yml, MIGRATION §A5: el vigilante del vigilante corre
+    # en infraestructura independiente de lo que vigila). github-script no
+    # necesita nada del runner del consumidor ⇒ la independencia sale gratis y
+    # resta un modo de fallo compartido. El residual —runners GitHub-hosted
+    # caídos, o el runner muriendo con el job— lo cubre el heartbeat.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      # ⊆ ESTRICTO de la unión que el contrato YA publica (detect pide
+      # `actions: write` e `issues: write`): `requiredPermissions` de
+      # check-contracts toma el MÁXIMO por clave, luego esto no mueve
+      # `permissions_required` ni exige editar un solo stub. Declarar aquí una
+      # clave NUEVA (p. ej. `checks: read`) sería startup_failure de flota
+      # instantáneo en todo stub con bloque `permissions` explícito (AP-022,
+      # clase #57) — por eso el error del step se lee del LOG del job
+      # (`actions: read`) y no de las anotaciones del check-run.
+      actions: read
+      issues: write
+    steps:
+      - name: Escalar si el detector acumula K ticks en rojo
+        uses: actions/github-script@v7
+        env:
+          # K=3 corridas consecutivas en rojo, el run actual incluido: ≈40 min
+          # con el cron */20 (menos con los ticks por workflow_run), contra los
+          # 48 min que tardó el humano en fp#1684. Umbral ANTI-FLAKE: un fallo
+          # transitorio no despierta a nadie. No es input del `workflow_call` a
+          # propósito (AP-052): es presupuesto calibrado del central, no verdad
+          # de instancia — un consumidor que lo pinee lo congela.
+          STREAK_K: '3'
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const O = { owner, repo };
+            const K = Number(process.env.STREAK_K) || 3;
+            // MISMO marcador que el heartbeat, a propósito: es el canal de
+            // dedupe compartido (el riesgo «doble escalada belt+heartbeat» de
+            // la propuesta) y ya está clasificado como rescate/repesca en
+            // epic-auditor.md § tabla de marcadores ⇒ 5-whys obligatorio.
+            const MARK = '<!-- watchdog-heartbeat-escalation -->';
+            const MODE = '<!-- watchdog-detect-red-streak -->';   // atribución del MODO
+
+            // Conclusiones que cuentan como «el detector está roto».
+            // `success` es el ÚNICO reset: prueba que el detector funciona.
+            // `cancelled`/`skipped`/`neutral` NO cuentan y NO rompen la racha:
+            // el grupo de concurrencia del watchdog poda su cola en cada
+            // ráfaga de eventos y produce cancelaciones RUTINARIAS — tratarlas
+            // como reset dejaría este belt INDISPARABLE justo en los picos de
+            // actividad, que es cuando la vigilancia importa. `startup_failure`
+            // sí cuenta: es la clase #57/AP-022 (el run muere antes de que
+            // exista ningún job, luego este belt no llega a correr en ESE tick,
+            // pero sí lo ve como historia desde el siguiente que arranque).
+            const HARD = new Set(['failure', 'timed_out', 'startup_failure']);
+
+            // ── 1. Racha ────────────────────────────────────────────────────
+            // El run ACTUAL es el primer eslabón (estamos aquí porque detect
+            // falló) y NO aparece en el listado `status: completed`: sigue en
+            // vuelo. `workflow_id` se deriva del run en curso, no de un nombre
+            // de fichero horneado: el reusable corre bajo el STUB del
+            // consumidor y su nombre de fichero no es cognoscible aquí.
+            const { data: self } = await github.rest.actions.getWorkflowRun({ ...O, run_id: context.runId });
+            const { data: hist } = await github.rest.actions.listWorkflowRuns({
+              ...O, workflow_id: self.workflow_id, status: 'completed', per_page: 20 });
+            let streak = 1;
+            for (const r of (hist.workflow_runs || [])) {
+              if (r.id === context.runId) continue;
+              if (r.conclusion === 'success') break;
+              if (!HARD.has(r.conclusion)) continue;
+              streak++;
+              if (streak >= K) break;
+            }
+            core.info(`Racha de corridas en rojo (incluida la actual): ${streak} · umbral K=${K}`);
+            if (streak < K) {
+              core.warning(`detect en rojo, pero la racha (${streak}) no llega a K=${K}: no escalo todavía (umbral anti-flake).`);
+              return;
+            }
+
+            // ── 2. Nombrar el step fallido y su error ───────────────────────
+            // El «qué falló», no solo el «que falló»: sin esto la escalada
+            // obliga al humano a abrir Actions, que es exactamente la
+            // intervención manual que este belt existe para ahorrar.
+            let detalle = '';
+            try {
+              const { data: jl } = await github.rest.actions.listJobsForWorkflowRun({
+                ...O, run_id: context.runId, per_page: 50 });
+              for (const j of (jl.jobs || []).filter(j => j.conclusion === 'failure')) {
+                const steps = (j.steps || []).filter(s => s.conclusion === 'failure').map(s => s.name);
+                detalle += `\n- job \`${j.name}\` → step ${steps.length ? steps.map(s => '`' + s + '`').join(', ') : '(no identificado)'}`;
+                try {
+                  const log = await github.rest.actions.downloadJobLogsForWorkflowRun({ ...O, job_id: j.id });
+                  const lines = String(log.data || '').split('\n')
+                    .filter(l => /##\[error\]|HttpError|\bError:/.test(l))
+                    .slice(-4)
+                    .map(l => l.replace(/^\S+Z\s+/, '').trim().slice(0, 240));
+                  if (lines.length) detalle += '\n  ```\n  ' + lines.join('\n  ') + '\n  ```';
+                } catch (e) { core.info(`log de \`${j.name}\` no recuperable: ${e.message}`); }
+              }
+            } catch (e) { detalle = `\n- (no se pudieron enumerar los jobs: ${e.message})`; }
+
+            // ── 3. Dedupe y escalada ────────────────────────────────────────
+            // `listForRepo` y NO la API de búsqueda: su índice tarda minutos en
+            // ver un issue recién creado, y el dedupe belt↔heartbeat necesita
+            // ser INMEDIATO (pueden coincidir dentro de la misma ventana).
+            let abiertas = [];
+            try {
+              abiertas = await github.paginate(github.rest.issues.listForRepo,
+                { ...O, labels: 'human-needed', state: 'open', per_page: 100 });
+            } catch (e) { core.warning(`no se pudo listar escaladas abiertas (${e.message}): sigo, prefiero duplicar a callar.`); }
+            const abierta = abiertas.find(i => !i.pull_request && (i.body || '').includes(MARK));
+            if (abierta) {
+              core.info(`escalada de watchdog ya abierta (#${abierta.number}, mismo marcador): no duplico.`);
+              // Pero la TRANSICIÓN de modo no se pierde. El marcador de dedupe
+              // es común a los tres emisores, luego una escalada abierta en el
+              // modo «parado e irreanimable» silenciaba por completo este modo
+              // — un cambio de estado del vigilante perdido justo donde el
+              // valor declarado es «fallo SILENCIOSO ⇒ estado DECLARADO con
+              // dueño». «UN solo issue a la vez» se mantiene: la transición
+              // entra como COMENTARIO con el marcador del MODO, idempotente
+              // por ese mismo marcador (body + comentarios).
+              if (!(abierta.body || '').includes(MODE)) {
+                let previos = [];
+                try {
+                  previos = await github.paginate(github.rest.issues.listComments,
+                    { ...O, issue_number: abierta.number, per_page: 100 });
+                } catch (e) {
+                  core.warning(`no se pudieron listar los comentarios de #${abierta.number} (${e.message}): no comento (aquí prefiero callar a repetir cada tick).`);
+                  return;
+                }
+                if (!previos.some(c => (c.body || '').includes(MODE))) {
+                  await github.rest.issues.createComment({ ...O, issue_number: abierta.number, body: [
+                    `**Transición de modo.** El Watchdog ha pasado al modo «el detector **corre y FALLA**» (${streak} corridas consecutivas en rojo, umbral K=${K}) mientras esta escalada seguía abierta por otro modo. Un solo issue a propósito; esto declara el cambio de estado en vez de silenciarlo.`,
+                    ``,
+                    `**Fallo de este tick.**${detalle || ' (sin detalle recuperable — abre el run)'}`,
+                    ``,
+                    `**Run:** ${self.html_url}`,
+                    ``,
+                    MODE,
+                  ].join('\n') });
+                  core.warning(`Detector del watchdog en rojo ${streak} ticks: transición de modo declarada en #${abierta.number}.`);
+                }
+              }
+              return;
+            }
+
+            const body = [
+              `El job \`detect\` del Watchdog ha concluido en **ROJO en las últimas ${streak} corridas consecutivas** (umbral K=${K}). El evento dispara, el run NACE y el run muere: para \`watchdog-heartbeat.yml\`, que solo mira la EDAD del último run, esto es un watchdog VIVO — de ahí el silencio que motiva este belt.`,
+              ``,
+              `**Consecuencia mientras dure.** Las capas 2 y 3 de vigilancia están caídas. Todo ítem \`stalled\` cuyo único consumidor es architect-resolve espera a un resolutor que NO va a llegar, y el resolutor vive dentro del sistema caído (precedente: finplan#1684, 48 min de parada de cadena + des-stall humano).`,
+              ``,
+              `**Fallo de este tick.**${detalle || ' (sin detalle recuperable — abre el run)'}`,
+              ``,
+              `**Run:** ${self.html_url}`,
+              ``,
+              `**Qué comprobar, en este orden.**`,
+              `1. ¿El error es de PERMISOS (\`Resource not accessible by integration\`)? El job \`detect\` escribe algo que su bloque \`permissions\` no concede, o el stub de este repo concede menos que \`permissions_required\` del contrato del central. Precedentes: AP-056 (cap del job) y AP-022/#57 (stub ⊇ job).`,
+              `2. ¿\`SyntaxError\` en un script embebido? \`node scripts/check-embedded-js.mjs\` en agent-pipeline.`,
+              `3. ¿404 / cambio de API? El log del step citado arriba lo dice.`,
+              ``,
+              `**Por qué termina en humano y no en un agente.** Arreglar un watchdog roto suele exigir tocar \`.github/workflows/**\` o permisos, que es gate humano de todas formas, y su resolutor autónomo (architect-resolve) es precisamente la etapa que no corre.`,
+              ``,
+              `**Cerrar este issue NO resetea la racha.** La racha se deriva de la \`conclusion\` de las corridas, no del estado de los issues: cerrar esto solo retira el supresor de dedupe. El ÚNICO reset es una corrida \`success\` del Watchdog. Si lo cierras con el detector aún en rojo, el siguiente tick reabrirá la escalada.`,
+              ``,
+              MODE,
+              MARK,
+            ].join('\n');
+
+            await github.rest.issues.create({ ...O,
+              title: 'Watchdog roto: el detector corre y FALLA — intervención humana',
+              labels: ['human-needed'],
+              body });
+            core.warning(`Detector del watchdog en rojo ${streak} ticks: issue human-needed creado.`);
