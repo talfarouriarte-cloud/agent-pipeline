@@ -2275,6 +2275,8 @@ El allowlist casa por PREFIJO: `gh api -X POST repos/…` no empieza por `gh api
 
 **Reversión.** Restaurar el texto de 3b/6b anterior a este PR y registrar la enmienda aquí.
 
+> **Enmienda (2026-09-02, AP-082).** La remedición del 12-08 no se realizó; la moratoria queda SUSTITUIDA por el régimen de AP-082 (propuestas desarmadas, cola única en el central, revisión mensual).
+
 ## AP-079 — El push pasa de camino primario a camino ÚNICO de la transición Creator→Reviewer: `@reviewer` queda solo para turnos sin commits
 
 **Fecha**: 2026-07-30 · **Decisión del propietario** (auditoría de amputación AP-078 §4, primer corte)
@@ -2317,3 +2319,22 @@ El allowlist casa por PREFIJO: `gh api -X POST repos/…` no empieza por `gh api
 3. Ventana de 2 semanas: cero rearms espurios atribuibles a queued legítimos ignorados (el modo de fallo de la alternativa por edad).
 
 **Ejecución.** Human-execute (drag-and-drop de `watchdog.yml` completo; `Credencial_Workflows` caducada 12/08 — rotación pendiente). Blast radius compartido (finplan + wmcb) sin canary, riesgo estructural conocido.
+
+## AP-082 — El loop de mejora continua pasa de EJECUCIÓN AUTOMÁTICA a COLA DECIDIDA: las propuestas nacen desarmadas, el process-reviewer deja de editar el árbol y la revisión es mensual con el propietario (2026-09-02)
+
+**Contexto.** La moratoria AP-078 (30-07) fijaba una remedición el 12-08 que no se hizo; desde entonces el process-reviewer ha corrido en cada auditoría (finplan #1841→#1880, wmcb #82→#93) aplicando el umbral P0-only y emitiendo «Sin propuestas» en todos los ciclos. Medición 02-09: merges del central 34 (semana 31) → 1 (AP-081, 26-08); PRs de consumidores 55/8/1/2/27 por semana; en las 5 últimas auditorías de finplan 0 intervenciones humanas, 0 `stalled` al cierre, 0 repescas, falso-LGTM 0 en 24 ciclos. El producto convergió con el central congelado. Dos residuales de la moratoria: (a) series de recurrencia que el reviewer serializaba en sus «vigilancias» sin salida posible — `registro-fiel` 5 ciclos (#1828·#1846·#1849·#1877·#1880, 🔴 en el último), «partición sin invariantes en los hijos» (#1877), fidelidad/cobertura de test (3 ciclos no consecutivos); (b) 3 `process-proposal` abiertas en el central desde el 04-08 (#187, #193, #194) sin sesión que las trabaje, y PR #189 (cierra #187) `dirty` tras 36 días con `lgtm`+`ci-verde`.
+
+**Diagnóstico.** El volumen que motivó AP-078 no lo generaba PROPONER sino EJECUTAR sin decisión humana: desde 2026-07-15 toda propuesta nacía ARMADA (`@claude` en el body ⇒ Creator al instante o cola serial FIFO), y el paso 6b del reviewer commiteaba skill-edits por su cuenta (ADR-212). La moratoria atacó el síntoma (umbral de propuesta) y con ello cegó la señal. La palanca correcta es separar propuesta de ejecución.
+
+**Decisión del propietario.**
+1. **Se mantiene** la auditoría y la revisión de proceso por ciclo. **Se retira la ejecución automática**: ninguna `process-proposal` nace armada (prohibido `@claude` en su body); el process-reviewer tiene **prohibido modificar cualquier fichero de cualquier repo** (6a/6b pasan de commit a propuesta con el diff verbatim en el body).
+2. **Cola única en el central.** Toda propuesta se crea en `agent-pipeline` con `Origen: <repo>#<auditoría>` y `Destino: central | <consumidor>`. Motivo mecánico: una `process-proposal` abierta y desarmada en un consumidor bloquea el guard de panel consumido de `claude-code.yml` (arm de `epica`) durante todo el mes; en el central esa label es cola (AP-051) y el Watchdog solo vigila issues armadas (`issue-armed-no-pr`), así que espera sin generar anomalías.
+3. **Umbral de propuesta (3b)**: P0 **o** recurrencia del mismo eje en ≥2 ciclos del último mes (épicas o issues sueltos). «REPESCAS = FIX OBLIGATORIO» sigue suspendido. Caps por ciclo: 2 propuestas de mecánica + 2 de skill-edit.
+4. **Revisión mensual** propietario + Architect de mejora continua sobre la cola del central: se decide qué se ejecuta (el Architect abre PRs, el propietario mergea, AP-004/AP-006), qué se cierra con racional y qué sigue en observación. **Primera revisión: octubre 2026.** Entrada de esa primera revisión, además de lo que produzca el reviewer: #187/#189, #193, #194, la serie `registro-fiel`, el censo SENSOR en 403 (AP-066) y el revert de AP-080 (criterio $/PR sin cerrar).
+5. AP-078 queda **sustituida** (no levantada): la dirección «reducir superficie antes de ampliarla» se conserva como criterio de la revisión mensual.
+
+**Criterio falsable (revisión de octubre).** (a) Cero `process-proposal` armadas por el reviewer y cero commits suyos en ningún repo (verificable: sin `skill(loop):` en `git log` de finplan/wmcb; sin `@claude` en bodies de propuestas nuevas). (b) La cola mensual tiene ≤ ~8 entradas nuevas; si supera ~15, el umbral (ii) es demasiado laxo y se sube a ≥3 ciclos. (c) Cero P0 que el propietario detectara antes que el reviewer por haber quedado sin propuesta. (d) Ningún arm de `epica` bloqueado por panel-consumido a causa de propuestas locales (no debe haber ninguna).
+
+**Residuales declarados.** El toolbox del reviewer conserva `Bash(gh api:*)` (necesario para leer commits/ficheros y editar comentarios): la prohibición de escribir el árbol es de mandato, no mecánica. Se convierte en guard mecánico solo si el criterio (a) falla. El reusable `process-review.yml` sigue sirviendo a finplan y wmcb por `@main`: blast radius compartido, sin canary.
+
+**Reversión.** Restaurar 3b/5/6a/6b de `process-review.yml` al estado previo a este PR y registrar enmienda aquí.
