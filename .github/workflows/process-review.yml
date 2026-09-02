@@ -310,22 +310,27 @@ jobs:
                alza, stalls, intervenciones humanas que el sistema debería
                absorber, intervenciones repetidas del Watchdog por la misma
                causa.
-            3b. MORATORIA DE MECÁNICA (AP-078, 2026-07-30, decisión del
-               propietario — vigente hasta 2026-08-12 o hasta nueva edición
-               de este bloque). SUSPENDE el criterio «REPESCAS = FIX
-               OBLIGATORIO» (2026-07-13) y ELEVA el umbral de propuesta:
-               solo es proponible un incidente P0 — pipeline parado, trabajo
-               perdido, o intervención humana necesaria para restaurar el
-               flujo. Una repesca absorbida por un failsafe SIN intervención
-               humana y SIN pérdida de trabajo NO genera propuesta: se
-               registra en la línea de métricas y nada más (durante la
-               moratoria, el fallback trabajando es el sistema funcionando).
-               El patrón ≥2 épicas del paso 3 solo es proponible si cumple
-               también el criterio P0. Racional: 53 APs en 13 días y la
-               metástasis de central#166 (AP-064..AP-076) muestran que el
-               volumen de mecanismo es hoy el primer riesgo del sistema;
-               reducir superficie precede a mejorarla. La medición de
-               2026-08-12 (criterios AP-078) decide si se levanta.
+            3b. RÉGIMEN DE PROPUESTA (AP-082, 2026-09-02, decisión del
+               propietario; sustituye a la moratoria AP-078 y la convierte
+               en régimen). El criterio «REPESCAS = FIX OBLIGATORIO»
+               (2026-07-13) sigue SUSPENDIDO. Umbral de propuesta, DOS vías
+               (basta una):
+               (i) P0 — pipeline parado, trabajo perdido, o intervención
+                   humana necesaria para restaurar el flujo;
+               (ii) RECURRENCIA — el MISMO eje (tipo de hallazgo, clase de
+                   repesca, causa de intervención del Watchdog) aparece en
+                   ≥2 ciclos de auditoría del último mes (épicas O issues
+                   sueltos; cuenta lo que las «vigilancias» de las revisiones
+                   previas ya venían serializando).
+               Una repesca absorbida por un failsafe, sin intervención humana
+               y sin recurrencia, NO genera propuesta: línea de métricas y
+               nada más. Racional: la ejecución ya NO es automática (paso 5:
+               las propuestas nacen DESARMADAS y se deciden en la revisión
+               mensual con el propietario), así que el coste de sobreproponer
+               es ruido de cola, no trabajo; y el coste de subproponer es
+               perder series como las que la moratoria dejó sin salida
+               (registro-fiel, 5 ciclos sin propuesta). La vía (ii) es la
+               que recoge esas series.
             4. Si NO hay regresión, ni patrón ≥2 épicas, NI repescas sin fix
                propuesto: comenta en el issue de auditoría exactamente
                `Sin propuestas.` con una línea de métricas comparadas, y
@@ -342,28 +347,33 @@ jobs:
                coste y riesgo (incluido el riesgo de la interacción con el
                resto del pipeline — revisa «Known failure classes» del
                pipeline-map); y a quién toca aplicarla.
-               **ROUTING POR EJE (2026-07-14, decisión del propietario —
-               la cola vive donde se arregla):**
-               - Si el fix cambiaría ficheros de `agent-pipeline` (mandatos
-                 `vendored/`, hooks, workflows reusables, composite actions,
-                 templates, guards/post-steps): la propuesta va AL CENTRAL —
+               **DESTINO ÚNICO Y DESARMADO (AP-082, 2026-09-02, decisión del
+               propietario — sustituye al routing por eje de 2026-07-14):**
+               - TODA propuesta va AL CENTRAL:
                  `gh issue create --repo talfarouriarte-cloud/agent-pipeline
-                 --label process-proposal`, y el body EMPIEZA con
+                 --label process-proposal`. El body EMPIEZA con
                  `Origen: <repo>#<auditoría>` (enlace a la evidencia; el
-                 cierre cross-repo lo usará) seguido de `@claude` en su
-                 propia línea — **el issue nace ARMADO** (2026-07-15,
-                 decisión del propietario): su Creator lo ejecuta al
-                 instante, o el guard serial lo encola (`en-cola`) si hay
-                 serie ocupada y el merge humano armará el siguiente (FIFO).
-               - Si el fix cambiaría ficheros de ESTE repo (annexes, docs
-                 locales, `ci.yml` propio, skills del repo, dominio): issue
-                 LOCAL (`gh issue create --label process-proposal`), también
-                 con `@claude` en su propia línea al inicio del body — nace
-                 ARMADO igual; mismo régimen de cola serial.
+                 cierre cross-repo lo usará) y una segunda línea
+                 `Destino: central` o `Destino: <repo consumidor>` (dónde
+                 viviría el fix: `vendored/`/reusables/templates ⇒ central;
+                 annexes, skills del repo, `ci.yml` propio ⇒ consumidor).
+               - **PROHIBIDO armarla**: el body NO contiene la mención
+                 arroba+claude en ninguna forma. La propuesta es una ENTRADA
+                 DE COLA para la revisión mensual propietario+Architect;
+                 solo el propietario decide qué se ejecuta, y quien arma es
+                 él (o el Architect con su OK explícito). Racional: las
+                 propuestas armadas al nacer eran ejecución automática de
+                 mecánica sin decisión humana (53 APs en 13 días, AP-078).
+               - Por qué NO hay issues locales: una `process-proposal` abierta
+                 y desarmada en un consumidor bloquea el guard de panel
+                 consumido de `claude-code.yml` (arm de `epica`) durante todo
+                 el mes; en el central esa label es cola, no panel (AP-051), y
+                 el Watchdog solo vigila issues ARMADAS (`issue-armed-no-pr`),
+                 así que la cola puede esperar sin anomalías.
                - Si el create cross-repo FALLA (403/404: token sin alcance),
                  NO lo pierdas en silencio: créala LOCAL con el prefijo
-                 `[PARA-CENTRAL]` en el título y anota el fallo en el
-                 comentario del issue de auditoría.
+                 `[PARA-CENTRAL]` en el título (también desarmada) y anota el
+                 fallo en el comentario del issue de auditoría.
                Después comenta en el issue de auditoría la lista de
                propuestas creadas CON SU DESTINO (central/local); ese
                comentario TERMINA con DOS líneas de marcador:
@@ -416,13 +426,15 @@ jobs:
                    consumir cap.
                  - **Ausente ⇒ decide y materializa** (dos salidas, ninguna es
                    «dejarlo estar»):
-                   (a) **Evidencia vigente ⇒ ejecútalo VERBATIM.** El diff
-                   intendido ya pasó su ventana de veto asíncrono al ser
-                   publicado; **cero diseño nuevo** — no lo reformules, no lo
-                   «mejores», no lo re-anuncies como propio. Commit vía Git
-                   Data con el mensaje y el marcador del anuncio original, la
-                   MISMA verificación de integridad post-commit que exige 6b, y
-                   después edita el comentario ORIGINAL con el SHA.
+                   (a) **Evidencia vigente ⇒ conviértelo en propuesta
+                   (AP-082: el reviewer ya no commitea).** Crea una
+                   `process-proposal` en el central (paso 5: desarmada,
+                   `Destino: <repo>`, título `process-proposal · skill-edit ·
+                   <tipo>`) con el diff del anuncio VERBATIM — cero diseño
+                   nuevo — y edita el comentario ORIGINAL añadiendo el enlace
+                   a la propuesta y la línea `<!-- skill-edit-caducado -->`
+                   (el anuncio deja de estar pendiente: su dueño es ahora la
+                   cola mensual, no un commit). Consume cap de propuestas.
                    (b) **Evidencia caducada ⇒ decláralo caducado con
                    racional.** Caducidad = el tipo que atacaba ya no recurre
                    según el bloque del Auditor, o la sección destino cambió y
@@ -436,80 +448,62 @@ jobs:
                  invisible para el 5-whys del Auditor.
                  **El reporte lleva, POR CADA retomada, la MISMA marca que su
                  desenlace puso en el comentario original: el SHA cuando se
-                 ejecutó o se anotó, y `<!-- skill-edit-caducado -->` cuando se
-                 declaró caducidad.** El reporte es él mismo un comentario
+                 anotó (caso «ya ejecutado»), y `<!-- skill-edit-caducado -->`
+                 cuando se convirtió en propuesta o se declaró caducidad.** El reporte es él mismo un comentario
                  terminado en `<!-- autonomous-decision -->` que enlaza
                  skill-edits: sin esas marcas, el sweep del ciclo siguiente lo
                  clasificaría como PENDIENTE por la definición literal y
                  re-abriría decisiones ya cerradas. Queda fuera del conjunto
                  pendiente por la MISMA regla que todo lo demás, no por una
                  excepción que haya que recordar.
-               - **Cap COMPARTIDO y con prioridad.** Las retomadas consumen del
-                 mismo cap de 2 ediciones/época que las nuevas, y van PRIMERO:
-                 una retomada es una decisión ya tomada y ya vetable, una
-                 edición nueva es diseño sin rodar. Si las retomadas agotan el
-                 cap, no hay ediciones nuevas este ciclo — dilo en el reporte.
-                 Anotar un SHA (caso «ya ejecutado») y declarar una caducidad
-                 NO consumen cap: no tocan el árbol.
+               - **Cap COMPARTIDO y con prioridad.** Las retomadas convertidas
+                 en propuesta consumen del mismo cap de 2 propuestas de skill
+                 por ciclo que las nuevas (6b), y van PRIMERO. Anotar un SHA
+                 (caso «ya ejecutado») y declarar una caducidad NO consumen
+                 cap.
 
-            6b. EDICIONES NUEVAS. Con el sweep cerrado, evalúa el bloque
+            6b. PROPUESTAS DE SKILL-EDIT (AP-082, 2026-09-02 — sustituye a
+               las «ediciones nuevas» autónomas de ADR-212; el reviewer ya
+               NO edita el árbol). Con el sweep cerrado, evalúa el bloque
                «## Patrones de fallo del Creator» de las auditorías:
-               - Si un TIPO de hallazgo recurre (≥3 en la épica o ≥2 épicas),
-                 puedes ejecutar hasta 2 EDICIONES DE SKILL por épica,
-                 EXCLUSIVAMENTE dentro de la sección
-                 «## Heurísticas aprendidas (loop)» de las skills entrenables
-                 listadas en ADR-212. Operaciones add/delete/replace acotadas;
-                 cada add paga contexto del Creator: prefiere delete/replace.
-               - ORDEN OBLIGATORIO (2026-07-12, propuesta #1258 — el run
-                 29139108015 commiteó y murió sin publicar NADA: veto
-                 asíncrono puenteado en silencio). PRIMERO publica en el
-                 issue de auditoría el comentario con el diff INTENDIDO, el
-                 tipo que ataca y la evidencia citada, terminado en
-                 `<!-- autonomous-decision -->`. DESPUÉS ejecuta el commit
-                 vía Git Data (gh api, sobre la rama por defecto, mensaje
-                 `skill(loop): <tipo> — <resumen>`) con el marcador
-                 `<!-- skill-edit: <tipo> <fecha> -->` en cada línea
-                 añadida/sustituida. AL FINAL edita el comentario para
-                 añadir el SHA del commit. Via negativa: si mueres entre
-                 comentario y commit queda un anuncio sin ejecutar (visible,
-                 inocuo — un anuncio sin SHA final = edición no ejecutada);
-                 el orden inverso deja un commit sin anuncio (invisible,
-                 sin veto posible). Ese anuncio huérfano YA NO decae en
-                 silencio: tiene dueño nombrado — el sweep 6a del ciclo
-                 siguiente lo retoma o lo declara caducado (AP-060). Escribe
-                 el anuncio pensando en ESE lector: diff completo, fichero
-                 destino y marcador explícitos, ejecutables verbatim sin tu
-                 contexto de sesión.
-               - INTEGRIDAD POST-COMMIT (misma propuesta — el commit
-                 de3ada2f corrompió un carácter FUERA de la sección loop,
-                 mojibake UTF-8): tras commitear, baja el diff del commit
-                 contra su parent (gh api) y verifica que SOLO toca líneas
-                 dentro de «## Heurísticas aprendidas (loop)». Si toca
-                 CUALQUIER otra cosa: revierte el commit (Git Data, mismo
-                 mecanismo) y repórtalo en el comentario.
-               - REVERT por defecto: si una edición previa (marcador con ≥2
+               - Si un TIPO de hallazgo recurre (≥3 en la épica o ≥2 ciclos),
+                 emite hasta 2 PROPUESTAS de skill-edit por ciclo como
+                 `process-proposal` en el central (paso 5: desarmada,
+                 `Destino: <repo de la skill>`, título `process-proposal ·
+                 skill-edit · <tipo>`). El body lleva el diff COMPLETO
+                 intendido (add/delete/replace acotado a la sección
+                 «## Heurísticas aprendidas (loop)» de una skill entrenable de
+                 ADR-212, con el marcador `<!-- skill-edit: <tipo> <fecha> -->`
+                 en cada línea añadida/sustituida), el tipo que ataca y la
+                 evidencia citada — ejecutable verbatim sin tu contexto de
+                 sesión, porque quien lo aplique será otro, un mes después.
+                 Cada add paga contexto del Creator: prefiere delete/replace.
+               - Publica ADEMÁS en el issue de auditoría el comentario con el
+                 enlace a cada propuesta y su tipo, terminado en
+                 `<!-- autonomous-decision -->` (visibilidad para el 5-whys
+                 del Auditor; sin SHA, porque no hay commit — el sweep 6a lo
+                 reconoce como no pendiente por el enlace a la propuesta y la
+                 línea `<!-- skill-edit-caducado -->` que TAMBIÉN incluyes).
+               - REVERT: si una edición previa del árbol (marcador con ≥2
                  épicas) tiene su tipo aún recurriendo según el bloque del
-                 Auditor, reviértela igual (commit + autonomous-decision).
+                 Auditor, propón el revert por el mismo canal (diff inverso
+                 verbatim); no lo ejecutes.
                - Si el clúster no tiene casa en ninguna skill (test
-                 single-home) y lleva ≥2 épicas: NO crees la skill tú —
-                 emite un `process-proposal` de creación con la descripción
-                 de disparo propuesta (el alta exige pipeline-map, que te
-                 está vetado).
+                 single-home) y lleva ≥2 épicas: propuesta de creación con la
+                 descripción de disparo propuesta (el alta exige pipeline-map).
 
             Reglas duras:
             - PROHIBIDO escribir la mención de arm (arroba+claude) en
               cualquier body o comentario que publiques.
-            - PROHIBIDO modificar cualquier fichero FUERA de las secciones
-              «## Heurísticas aprendidas (loop)» de las skills entrenables
-              de ADR-212 (jamás docs, workflows, pipeline-map, protocol.md,
-              ni el resto de una skill): fuera de ese perímetro propones, el
-              humano decide, otros aplican.
-            - Máximo 2 propuestas y 2 skill-edits. El cap de skill-edits es
-              TOTAL y COMPARTIDO entre retomadas del sweep (6a) y ediciones
-              nuevas (6b), con prioridad para las retomadas. Sin evidencia ⇒
-              nada. MORATORIA AP-078 (hasta 2026-08-12): las ediciones
-              NUEVAS (6b) quedan suspendidas — solo retomadas del sweep,
-              anotaciones de SHA, caducidades y REVERTS.
+            - PROHIBIDO modificar CUALQUIER fichero de CUALQUIER repo
+              (AP-082): ni commits, ni Git Data, ni skills. Tu único
+              output son comentarios en el issue de auditoría y issues
+              `process-proposal` DESARMADOS en el central. Propones; el
+              propietario decide en la revisión mensual; otros aplican.
+            - Máximo 2 propuestas de mecánica (pasos 3-5) y 2 propuestas de
+              skill-edit (paso 6) por ciclo; el cap de skill es TOTAL y
+              COMPARTIDO entre retomadas del sweep (6a) y nuevas (6b), con
+              prioridad para las retomadas. Sin evidencia ⇒ nada.
 
       # finplan#1326 (2026-07-13, sustituye al `if: failure()` de #1258):
       # el exit code del step de sesión MIENTE. Verificado en 4 paneles de
