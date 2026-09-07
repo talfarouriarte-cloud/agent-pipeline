@@ -333,6 +333,23 @@ vacío; el arreglo es un PR en el central sobre el fichero FUENTE y su banco
 (`scripts/check-resolve-rerun.mjs`), y desde un consumidor lo que abres es
 la escalada.
 
+**Precondición de aplicación del parche: el token del step necesita
+`actions: write`** (repesca finplan#1806). Cuando el humano aplique el parche,
+el paso `watchdog-resolve-rerun` llama a `rerun-failed-jobs` con el token que
+le inyecta `github-token:` (en el central, `${{ github.token }}`, cuyo
+`actions: write` declara la etapa `architect` — ADR-217 §7). Si en un
+consumidor ese token —el `GITHUB_TOKEN` bajo su bloque `permissions:`, o un
+PAT si alguien lo cablea así— NO lleva `actions: write`, la llamada devuelve
+el MISMO `403 · Resource not accessible by personal access token` que hoy
+frena al resolver, y el ruling queda DECLARADO sin materializar. Desde la
+repesca finplan#1806 ese 403 **ya no es silencioso**: el belt publica el error
+literal en el PR con un marcador `watchdog-resolve-rerun-fallo: <headSha>`
+(verificable por estado, no una omisión que haya que recordar) en vez de morir
+dejando el marcador sin materializar —indistinguible del belt no desplegado—.
+Verifica ese scope antes de dar el parche por cerrado: un remedio diseñado que
+no se va a ejercer es superficie muerta (AP-078) y hay que retirarlo, no
+dejarlo fingiendo cobertura.
+
 ## Orden de ejecución: la transición CROSS-ISSUE va PRIMERO (AP-064)
 
 Cuando tu ruling toca un issue DISTINTO del que estás comentando (retirar
