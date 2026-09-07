@@ -4,6 +4,10 @@
 // drift-λ, cita «cero re-simulación» fabricada y propagada a 3 issues y
 // 4 PRs). Verifica lo verificable; lo semántico queda para el bloque de
 // decisión verbatim del propietario y la revisión humana.
+// Reglas 1b/1c (índice↔volúmenes, sin duplicados): origen finplan 0e762ba
+// (2026-09-07) — un commit repuso el volumen vivo desde un blob anterior,
+// borró ADR-243 y la regla 1 (solo volumen→índice) dio verde. Portadas de
+// finplan#2009 al fuente vendorizado (AP-084); banco: scripts/check-adr-lint.mjs.
 // Uso: node scripts/adr-lint.mjs   (verde: exit 0; rojo: exit 1 + listado)
 import { readFileSync } from 'fs';
 
@@ -40,6 +44,38 @@ const idx = readFileSync(INDEX, 'utf8');
 for (const n of new Set(headers)) {
   if (!new RegExp(`\\[ADR-0*${n}\\]`).test(idx)) errs.push(`ADR-${n} sin entrada en el índice (decisions.md)`);
 }
+
+// ── 1b. Índice → volúmenes: toda entrada del índice tiene cabecera ──
+// Simétrica de la regla 1. Sin ella, un commit que reemplace un volumen por
+// una copia vieja (blob stale) borra cabeceras que el índice conserva y el
+// lint pasa (incidente 0e762ba: ADR-243 desaparecida del volumen vivo, índice
+// intacto, regla 1 verde). Con ambas, ese commit falla el lint allí donde el
+// lint CORRE (sesión de agente sobre la copia injertada; CI del consumidor
+// solo en los caminos que lo invocan — ese gate es del consumidor, no de aquí).
+const allHeaders = new Set();
+for (const v of VOLS) {
+  try { for (const m of readFileSync(v, 'utf8').matchAll(/^## ADR-(\d+)\b/gm)) allHeaders.add(+m[1]); } catch {}
+}
+const idxEntries = [...idx.matchAll(/^\s*-\s*\[ADR-(\d+)\][^\n]*$/gm)];
+for (const n of new Set(idxEntries.map(m => +m[1]))) {
+  if (!allHeaders.has(n)) errs.push(`ADR-${n} en el índice sin cabecera en ningún volumen (¿borrado por blob stale?)`);
+}
+
+// ── 1c. Índice sin duplicados: una entrada por ADR ──
+// Una copia stale del índice, o un merge desafortunado, repite una entrada
+// idéntica (incidente 0e762ba: ADR-224 dos veces en decisions.md). Se detecta
+// la LÍNEA de entrada repetida byte a byte —la firma de la copia stale—. Una
+// colisión de numeración entre dos ADR distintos que comparten N (títulos y
+// anclas distintos, p.ej. la ADR-144 heredada en un volumen congelado) es otra
+// clase de defecto, de contenido y fuera de esta regla mecánica.
+const entryCount = new Map();
+for (const m of idxEntries) {
+  const key = norm(m[0]);
+  const rec = entryCount.get(key) ?? { n: +m[1], count: 0 };
+  rec.count++; entryCount.set(key, rec);
+}
+for (const n of [...new Set([...entryCount.values()].filter(r => r.count > 1).map(r => r.n))].sort((a, b) => a - b))
+  errs.push(`ADR-${n} duplicado en el índice`);
 
 // ── 2. Citas atribuidas: deben grep-existir en el corpus ──
 // Patrón: «...» en una línea que referencia ADR-NNN / spec / R·N.
