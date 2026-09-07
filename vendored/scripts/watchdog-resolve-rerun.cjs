@@ -292,7 +292,7 @@ async function run({ github, context, core, skipLabels }) {
       // ocurrió, no se afirma el remedio ni se quema el cap 1, que sigue
       // libre—. Misma doctrina que la inertidad de `checks: read` de arriba:
       // fail-open sí, silencio nunca.
-      const es403 = e.status === 403 || /not accessible|Resource not accessible/i.test(e.message || '');
+      const es403 = e.status === 403 || /not accessible/i.test(e.message || '');
       core.warning(`resolve-rerun: #${n} — \`rerun-failed-jobs\` sobre el run ${ci.id} falló (${e.message})${es403 ? ' — 403 de permiso: el token del step no lleva `actions: write` (precondición de AP-077, medido en finplan#1801 12:59Z)' : ''}; el remedio NO se ejerció y se DECLARA en el PR. NO se deja marcador de materialización: el cap sigue libre y la escalada del resolver (segundo rojo ⇒ stalled ⇒ human-needed) queda intacta.`);
       // Dedup best-effort por head sobre el historial ya leído: no re-declarar
       // el mismo fallo dos veces (una CITA en prosa del marcador tampoco lo

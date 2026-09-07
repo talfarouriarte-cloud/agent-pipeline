@@ -289,9 +289,11 @@ este head: no re-declares. Si no, declara.
 
 La condición es «ya declaré», no «veo el marcador
 `-materializado`», y la diferencia importa: el post-step tiene frentes que fallan en
-silencio (barrido caído, `IN_CI_WF` vacío, comentarios ilegibles, el propio
-`rerun-failed-jobs` denegado, el módulo no injertado), y en todos ellos el
-rojo sigue ahí sin marcador ninguno. Condicionar la escalada a ver el
+silencio (barrido caído, `IN_CI_WF` vacío, comentarios ilegibles, el módulo no
+injertado) —y uno, el `rerun-failed-jobs` denegado, que desde la repesca
+finplan#1806 ya NO es silencioso: deja un comentario de FALLO en el PR, aunque
+nunca el marcador `-materializado`—, y en todos ellos el rojo sigue ahí sin
+marcador de materialización ninguno. Condicionar la escalada a ver el
 marcador te devolvería a re-declarar tick tras tick sobre un remedio que no
 se ejerce — que es *exactamente* la clase que AP-077 mide y cierra, entrando
 por la puerta del mandato.

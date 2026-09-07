@@ -345,6 +345,17 @@ const CONTRATO = [
     (r) => r.escrituras.join(',') === 'rerun#777,createComment#1741'
       && r.cuerpos.length === 0
       && r.avisos.some((a) => /doble silencio/.test(a))],
+  // El comentario del caso de arriba PROMETE que un FALLO no consume el cap
+  // —`hechos` no se incrementa, el `continue` va antes de `hechos++`— pero
+  // ninguna aserción moría si la propiedad se rompía (el caso que sí mira `MAX`
+  // ejercita el camino de ÉXITO). Aquí se ejerce el camino de FALLO sobre 4 PRs:
+  // con el `continue` antes de contar, los cuatro se intentan; movido `hechos++`
+  // delante del `try`, el cuarto cae por `MAX=3` y este caso se pone rojo (🟡 2
+  // de la review). Mismo cierre que `:152-161` para el camino de éxito.
+  ['un FALLO no consume el tope MAX: 4 PRs con el re-run DENEGADO ⇒ 4 intentos, no 3',
+    { rulingsExtra: 3, rerunErr: Object.assign(new Error('403'), { status: 403 }) },
+    (r) => r.escrituras.filter((e) => e.startsWith('rerun#')).length === 4
+      && r.escrituras.filter((e) => e.startsWith('createComment#')).length === 4],
   ['comentario que entró por `updated_at` (edición vieja) ⇒ fuera de ventana',
     { creadoHace: 3 * 60 * 60 * 1000 },
     (r) => r.escrituras.length === 0],
