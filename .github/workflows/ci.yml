@@ -68,6 +68,13 @@ jobs:
       # y efecto en runtime = silencio.
       - name: check-hooks
         run: node scripts/check-hooks.mjs
+      # Banco del lint vendorizado (AP-084): `vendored/scripts/adr-lint.mjs` se
+      # sirve EN VIVO a finplan y wmcb (graft, AP-009) y hasta aquí no tenía
+      # caso alguno en el central — la evidencia de una regla nueva vivía en
+      # el body de un PR del consumidor. Ejecuta el lint real sobre corpus
+      # sintéticos: control verde + un caso negativo por regla de índice.
+      - name: check-adr-lint
+        run: node scripts/check-adr-lint.mjs
 
       - name: Marcar ci-verde
         if: github.event_name == 'pull_request'
