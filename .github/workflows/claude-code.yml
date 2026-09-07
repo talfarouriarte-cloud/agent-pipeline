@@ -787,6 +787,64 @@ jobs:
           git reset --hard "origin/$BASE"
           echo "$BASE sincronizado a $(git rev-parse --short HEAD)"
 
+      - name: Capturar HEAD del PR (pre-sesión, contexto PR)
+        # Para el re-review por ESTADO (2026-07-13, finplan#1319): la re-audit
+        # tras nits no puede depender de que el Creator escriba `@reviewer`
+        # (prosa estocástica — hoy lo omitió racionalizando trivialidad,
+        # contra ADR-193). El hecho es el push: se captura el HEAD antes de
+        # la sesión y el post-step compara.
+        # AP-084: se ejecuta ANTES del graft (antes iba después) porque el
+        # step siguiente necesita `ref` para colocar el workspace en la rama
+        # del PR antes de injertar. Cubre los tres eventos de contexto PR; el
+        # post-step de re-review sigue acotado por su propio `if`.
+        id: pr_head_before
+        if: |
+          (github.event_name == 'issue_comment' && github.event.issue.pull_request)
+          || github.event_name == 'pull_request_review'
+          || github.event_name == 'pull_request_review_comment'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const pull_number = context.payload.issue?.number ?? context.payload.pull_request?.number;
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number });
+            core.setOutput('sha', pr.head.sha);
+            core.setOutput('ref', pr.head.ref);
+            core.setOutput('same_repo', String(pr.head.repo?.full_name === `${owner}/${repo}`));
+
+      # ───────────────────────────────────────────────────────────────────
+      # AP-084 — Sync a la rama HEAD del PR antes del graft (solo PRs).
+      # Espejo del step anterior para issues. Causa raíz (finplan#2009, run
+      # 34146501162): en contexto PR, actions/checkout deja `github.sha`
+      # (rama base); el graft pisa `scripts/adr-lint.mjs` —TRACKEADO por
+      # finplan— y le pone `skip-worktree` (AP-044); después la action hace
+      # `git checkout <rama-del-PR> --` y, si esa rama difiere de la base en
+      # ese fichero, git aborta: «Your local changes … would be overwritten by
+      # checkout». Determinista: toda rama que toque un injertado trackeado
+      # era inaccesible para el Creator. Colocando el workspace en la rama
+      # del PR ANTES del graft, el checkout de la action es sobre la misma
+      # rama (no-op: «Already on …») y el skip-worktree no tiene nada que
+      # proteger. El injerto sigue pisando con la copia del central (AP-009/
+      # AP-044 intactos: el consumidor no gana derecho a divergir).
+      # Fork PRs: la rama no existe en origin ⇒ se deja el comportamiento
+      # previo (la action hace fetch vía refs/pull). No aplica a este pipeline.
+      # ───────────────────────────────────────────────────────────────────
+      - name: Sync a la rama head del PR antes del graft (solo PRs)
+        if: |
+          steps.check_pause.outputs.paused != 'true'
+          && steps.check_iterations.outputs.cap_reached != 'true'
+          && steps.check_chain.outputs.broken != 'true'
+          && steps.check_panel.outputs.blocked != 'true'
+          && steps.check_serial.outputs.blocked != 'true'
+          && steps.pr_head_before.outputs.ref != ''
+          && steps.pr_head_before.outputs.same_repo == 'true'
+        env:
+          HEAD_REF: ${{ steps.pr_head_before.outputs.ref }}
+        run: |
+          git fetch origin "$HEAD_REF"
+          git checkout -B "$HEAD_REF" "origin/$HEAD_REF"
+          echo "rama del PR sincronizada: $HEAD_REF @ $(git rev-parse --short HEAD)"
+
       - name: Graft vendored (capa común servida desde el central — AP-009)
         if: |
           steps.check_pause.outputs.paused != 'true'
@@ -795,24 +853,6 @@ jobs:
           && steps.check_panel.outputs.blocked != 'true'
           && steps.check_serial.outputs.blocked != 'true'
         uses: talfarouriarte-cloud/agent-pipeline/.github/actions/graft-vendored@main
-
-      - name: Capturar HEAD del PR (pre-sesión, contexto PR)
-        # Para el re-review por ESTADO (2026-07-13, finplan#1319): la re-audit
-        # tras nits no puede depender de que el Creator escriba `@reviewer`
-        # (prosa estocástica — hoy lo omitió racionalizando trivialidad,
-        # contra ADR-193). El hecho es el push: se captura el HEAD antes de
-        # la sesión y el post-step compara.
-        id: pr_head_before
-        if: |
-          github.event_name == 'issue_comment' && github.event.issue.pull_request
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const { owner, repo } = context.repo;
-            const { data: pr } = await github.rest.pulls.get({ owner, repo,
-              pull_number: context.payload.issue.number });
-            core.setOutput('sha', pr.head.sha);
-            core.setOutput('ref', pr.head.ref);
 
       - name: Run Claude Code
         if: |
