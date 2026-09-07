@@ -29,6 +29,22 @@
 // detector re-lanza jobs fallidos en su retry 1/1) y el remedio deja de
 // depender de que la sesión llegue viva al final.
 //
+// EL MURO DEL RESOLVER ES EL SCOPE, NO LA ALLOWLIST (repesca finplan#1806,
+// medido en finplan PR #1801, 2026-08-04T12:59Z). El primer redactado contaba
+// la no-ejercibilidad del resolver como problema de ALLOWLIST; el tercer tick
+// midió lo contrario: la forma con endpoint primero
+// (`gh api repos/<o>/<r>/actions/runs/<id>/rerun-failed-jobs --method POST`) SÍ
+// pasa la allowlist, llega a la API y aun así devuelve `403 · Resource not
+// accessible by personal access token` —el PAT del resolver no lleva
+// `actions: write`, y los reads de Actions de la misma sesión sí funcionan—.
+// Por eso este belt existe (escribe por `GITHUB_TOKEN`, no por el PAT) y por
+// eso ampliar la allowlist del resolver no habría desbloqueado nada. La MISMA
+// clase alcanza al PROPIO belt en un consumidor cuyo token de step no tenga
+// `actions: write`: su `rerun-failed-jobs` haría 403 — y desde esta repesca ese
+// 403 se DECLARA en el PR con un marcador de FALLO (ver el `catch` de
+// `reRunWorkflowFailedJobs` más abajo), no muere en el log. Fail-open sí,
+// silencio nunca, misma doctrina que la inertidad de `checks: read`.
+//
 // LO QUE ESTE BELT NO HACE. No decide nada: no clasifica el rojo, no juzga si
 // el flaky es de contención. Eso lo rula el resolver leyendo el log. Aquí solo
 // se verifica que lo declarado SIGUE describiendo el estado (el CI del head
@@ -85,6 +101,7 @@ const CERCA = /^[ \t]*(?:`{3,}|~{3,})[^\n]*\n[\s\S]*?^[ \t]*(?:`{3,}|~{3,})[^\n]
 const INLINE = /`+[^`\n]*`+/g;
 
 const MARK = (sha) => `<!-- watchdog-resolve-rerun-materializado: ${sha} -->`;
+const MARK_FALLO = (sha) => `<!-- watchdog-resolve-rerun-fallo: ${sha} -->`;
 const MAX = 3;            // tope duro de re-runs EJECUTADOS por corrida (se cuenta donde ocurre la llamada, no donde cuaja el marcador)
 const MAX_PAGS = 10;      // tope de páginas del barrido fresco
 const RESPALDO_MIN = 40;  // ventana de respaldo si `run_started_at` es ilegible
@@ -262,7 +279,33 @@ async function run({ github, context, core, skipLabels }) {
     // no ocurrió, que es la clase exacta que este belt existe para cerrar.
     try { await github.rest.actions.reRunWorkflowFailedJobs({ owner, repo, run_id: ci.id }); }
     catch (e) {
-      core.warning(`resolve-rerun: #${n} — \`rerun-failed-jobs\` sobre el run ${ci.id} falló (${e.message}); NO se afirma el re-run y NO se deja marcador: el cap sigue libre para el tick siguiente.`);
+      // EL REMEDIO NO SE EJERCE, Y ESO NO PUEDE SER SILENCIO (AP-077, repesca
+      // finplan#1806). Un `rerun-failed-jobs` que falla deja el ruling
+      // DECLARADO pero SIN materializar, y un `core.warning` en el log del job
+      // es indistinguible del belt no desplegado —la clase EXACTA que este belt
+      // existe para cerrar—, con el agravante de que un humano aplica el parche
+      // creyendo el remedio en servicio. El caso PERMANENTE y medido (finplan
+      // PR #1801, 12:59Z) es el 403 «Resource not accessible by personal access
+      // token»: el token con el que este step llama a Actions no lleva
+      // `actions: write`. Se DECLARA el fallo en el PR con el error LITERAL y un
+      // marcador de FALLO —que NO es el de materialización: el re-run no
+      // ocurrió, no se afirma el remedio ni se quema el cap 1, que sigue
+      // libre—. Misma doctrina que la inertidad de `checks: read` de arriba:
+      // fail-open sí, silencio nunca.
+      const es403 = e.status === 403 || /not accessible|Resource not accessible/i.test(e.message || '');
+      core.warning(`resolve-rerun: #${n} — \`rerun-failed-jobs\` sobre el run ${ci.id} falló (${e.message})${es403 ? ' — 403 de permiso: el token del step no lleva `actions: write` (precondición de AP-077, medido en finplan#1801 12:59Z)' : ''}; el remedio NO se ejerció y se DECLARA en el PR. NO se deja marcador de materialización: el cap sigue libre y la escalada del resolver (segundo rojo ⇒ stalled ⇒ human-needed) queda intacta.`);
+      // Dedup best-effort por head sobre el historial ya leído: no re-declarar
+      // el mismo fallo dos veces (una CITA en prosa del marcador tampoco lo
+      // re-dispara — clase AP-063, mismo despojo que el cap).
+      if (!cs.some((c) => despojar(c.body).includes(MARK_FALLO(head)))) {
+        const cuerpoFallo = `**watchdog · resolve-rerun (AP-077)**: el resolver rulló «rojo NO atribuible al diff — flaky de contención, re-lanzar» (${decl.html_url}) pero el remedio **NO se pudo ejercer**: \`rerun-failed-jobs\` sobre el run ${ci.id} (head \`${head.slice(0, 7)}\`) devolvió\n\n\`\`\`\n${String(e.message || e).slice(0, 500)}\n\`\`\`\n\n`
+          + (es403
+              ? 'Es un **403 de permiso**, no un fallo transitorio: el token con el que este step llama a la API de Actions **no lleva `actions: write`**. Es la PRECONDICIÓN de AP-077 (ver `docs/agents/watchdog.md`), medida en finplan PR #1801 (2026-08-04T12:59Z). Quien aplicó el parche debe conceder ese scope al token del step —o retirar el remedio si no se va a ejercer, contra la superficie muerta de AP-078—. '
+              : 'Fallo al llamar a `rerun-failed-jobs`. ')
+          + `El ruling queda **declarado pero NO materializado**: el re-run no ocurrió, no se deja marcador \`-materializado\` y el cortacircuito de siempre (segundo rojo sobre este head ⇒ \`stalled\` + diagnóstico ⇒ \`human-needed\`) sigue INTACTO. Sin este comentario ese estado sería indistinguible del belt no desplegado, que es la clase que AP-077 cierra.\n\n${MARK_FALLO(head)}\n${CAPA}`;
+        try { await github.rest.issues.createComment({ owner, repo, issue_number: n, body: cuerpoFallo }); }
+        catch (e2) { core.warning(`resolve-rerun: #${n} — el fallo del re-run tampoco se pudo DECLARAR en el PR (${e2.message}): doble silencio, queda solo en el log del job.`); }
+      }
       continue;
     }
     // El contador se incrementa DONDE OCURRE la llamada, no donde cuaja el
@@ -324,3 +367,4 @@ module.exports.despojar = despojar;
 // menos de lo que cree).
 module.exports.PATRONES = { RULING, CERCA, INLINE };
 module.exports.MARK = MARK;
+module.exports.MARK_FALLO = MARK_FALLO;
