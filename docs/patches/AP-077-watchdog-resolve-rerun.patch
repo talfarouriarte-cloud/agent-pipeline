@@ -1,6 +1,7 @@
 # AP-077 — post-step `watchdog-resolve-rerun` de la etapa `architect` de
 # `watchdog.yml`, + el cambio del prompt del resolver que sustituye una orden
-# IMPOSIBLE (un `gh api -X POST` que su allowlist no admite) por la DECLARACIÓN
+# IMPOSIBLE (un re-run que su PAT no puede ejercer: le falta `actions: write`,
+# NO un problema de allowlist — ver RECTIFICACIÓN) por la DECLARACIÓN
 # del ruling que ese post-step materializa.
 #
 # QUÉ CIERRA. Repesca finplan#1741 / aud. finplan#1743: la capa de vigilancia
@@ -12,6 +13,22 @@
 # rompe con el `-X POST` intercalado, y `gh run rerun` no está en la lista.
 # Coste medido: 3 h 26 min de cadena muerta, 3 corridas (2 REDUNDANTES) y 1 gate
 # humano.
+#
+# RECTIFICACIÓN — EL MURO DOMINANTE ES EL SCOPE DEL PAT, NO LA ALLOWLIST
+# (repesca finplan#1806, medido en finplan PR #1801, 2026-08-04T12:59Z). El
+# redactado de QUÉ CIERRA (y el de finplan#1741) contaba la no-ejercibilidad
+# del resolver como problema de ALLOWLIST — el `-X POST` intercalado que rompe
+# `Bash(gh api repos/*)`. El tercer tick midió lo contrario: la forma con
+# endpoint primero
+# `gh api repos/<o>/<r>/actions/runs/<id>/rerun-failed-jobs --method POST` SÍ
+# pasa la allowlist, llega a la API y devuelve `403 · Resource not accessible
+# by personal access token` — el PAT del resolver no lleva `actions: write`
+# (los reads de Actions de la misma sesión sí funcionan). El bloqueante
+# DOMINANTE es por tanto el SCOPE del token; la allowlist es muro SECUNDARIO y
+# ampliarla NO desbloquea nada por sí sola. El hunk de PROMPT y el comentario
+# del paso, más abajo, ya están redactados con este modelo — quien aplique este
+# parche NO debe concluir «amplío la allowlist y listo». NO toca el diseño del
+# belt, que escribe por `GITHUB_TOKEN` y no por el PAT.
 #
 # PENDIENTE DE APLICACIÓN HUMANA: la GitHub App de claude-code-action no tiene
 # permiso `workflows` (ADR-020), luego este cambio no se puede pushear desde una
@@ -73,10 +90,10 @@
 # «ancla VIGENTE», está correcto aunque nombre un commit viejo — no lo rotes por
 # costumbre.
 diff --git a/.github/workflows/watchdog.yml b/.github/workflows/watchdog.yml
-index 369b9f3..540f691 100644
+index 369b9f3..5947670 100644
 --- a/.github/workflows/watchdog.yml
 +++ b/.github/workflows/watchdog.yml
-@@ -1372,9 +1372,26 @@ jobs:
+@@ -1372,9 +1372,31 @@ jobs:
              el test y decide: si el fallo es atribuible al PR, ping-creator en
              el PR con el log relevante citado y la instrucción de corregir;
              si es un flaky ajeno al PR (pasa en local / falla intermitente en
@@ -86,11 +103,16 @@ index 369b9f3..540f691 100644
 +            runner), dilo en el comentario y DECLARA ahí mismo el ruling de
 +            re-run poniendo, EN SU PROPIA LÍNEA, el marcador
 +            `<!-- watchdog-resolve-rerun -->` (AP-077). NO intentes re-lanzar
-+            el CI tú: NINGUNA de las dos formas del comando está en tu
-+            allowlist y las dos salen DENEGADAS (medido 3 veces sobre
-+            finplan#1741 — `Bash(gh api repos/*)` no casa con el `-X POST`
-+            intercalado, y `gh run rerun` no está; coste: 3 h 26 min de cadena
-+            muerta y un gate humano). Quien ejecuta es el post-step
++            el CI tú: el muro DOMINANTE es el scope de tu token, no tu
++            allowlist. Aunque reordenes el comando para pasarla
++            (`gh api repos/<o>/<r>/actions/runs/<id>/rerun-failed-jobs --method POST`
++            SÍ casa con `Bash(gh api repos/*)`), tu PAT no lleva
++            `actions: write` y la API responde `403 · Resource not accessible
++            by personal access token` (medido en finplan PR #1801,
++            2026-08-04) — ampliar tu allowlist NO te desbloquea. Coste de esa
++            denegación cuando se creía de allowlist: 3 h 26 min de cadena
++            muerta sobre finplan#1741 y un gate humano. Quien ejecuta es el
++            post-step
 +            determinista `watchdog-resolve-rerun` de esta misma etapa, al
 +            cerrar el job, con cap 1 por PR y head SHA.
 +            El ruling se declara UNA sola vez por head: si ya lo declaraste
@@ -106,18 +128,20 @@ index 369b9f3..540f691 100644
              Cuenta como re-arm a efectos del cap.
  
              Tipo `stalled-autonomous-resolve` (régimen autónomo 2026-07-07,
-@@ -1413,6 +1430,77 @@ jobs:
+@@ -1413,6 +1435,79 @@ jobs:
              cadena, respetando el cap de reintentos y las prohibiciones del
              rol. Si un item no necesita acción, dilo y no toques nada.
  
 +      - name: Materializar el ruling de RE-RUN declarado por el resolver (watchdog-resolve-rerun)
 +        # AP-077 (repesca finplan#1741, aud. finplan#1743) — la capa de
 +        # vigilancia diagnosticaba el CI rojo NO-atribuible y no podía ejecutar
-+        # el único remedio que su propio diagnóstico prescribe: las dos formas
-+        # del comando (`gh api -X POST .../rerun-failed-jobs` y `gh run rerun
-+        # --failed`) salen DENEGADAS por el allowlist de arriba —
-+        # `Bash(gh api repos/*)` no casa con el `-X POST` intercalado, y
-+        # `gh run rerun` no está en la lista. Asimetría entre autoridad de
++        # el único remedio que su propio diagnóstico prescribe: re-lanzar los
++        # jobs fallidos. El muro DOMINANTE del resolver es el SCOPE de su PAT
++        # —`403 · Resource not accessible by personal access token`, sin
++        # `actions: write` (medido en finplan PR #1801, 2026-08-04)—, no el
++        # allowlist: la forma con endpoint primero SÍ casa con
++        # `Bash(gh api repos/*)` y aun así muere en ese 403, luego ampliar el
++        # allowlist no desbloquea nada por sí solo. Asimetría entre autoridad de
 +        # DIAGNÓSTICO y autoridad de REMEDIO (clase 5 del pipeline-map,
 +        # mandate/toolbox drift): 3 corridas, 2 de ellas REDUNDANTES, 3 h 26
 +        # min de cadena muerta y 1 gate humano.

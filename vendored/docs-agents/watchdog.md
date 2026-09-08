@@ -238,15 +238,24 @@ el patrón por-épica degenera.
 
 Cuando rules un `pr-ci-red-persistent` como **flaky ajeno al diff** (el rojo
 no lo causan ficheros que el PR toca), el remedio es re-lanzar los jobs
-fallidos — y **no puedes ejecutarlo**. Ninguna de las dos formas del comando
-está en tu allowlist: `gh api -X POST
-repos/<r>/actions/runs/<id>/rerun-failed-jobs` no casa con la entrada
+fallidos — y **no puedes ejecutarlo**. El muro DOMINANTE es el scope de tu
+token, no la forma del comando (corregido con la medición de finplan PR
+#1801, 2026-08-04T12:59Z): la forma con endpoint primero
+`gh api repos/<owner>/<repo>/actions/runs/<id>/rerun-failed-jobs --method POST`
+**SÍ** pasa tu allowlist, llega a la API y GitHub responde `403 · Resource not
+accessible by personal access token` — tu PAT no tiene `actions: write` (los
+reads de Actions de la misma sesión sí funcionan). La allowlist es un muro
+SECUNDARIO: la primera forma que se midió, `gh api -X POST
+repos/<r>/actions/runs/<id>/rerun-failed-jobs`, no casa con la entrada
 `Bash(gh api repos/*)` (el `-X POST` intercalado rompe el prefijo) y
-`gh run rerun` no está en la lista. No es conjetura: se midió tres veces
-seguidas sobre finplan#1741, con LGTM ya emitido, y costó 3 h 26 min de
-cadena muerta, 3 corridas —dos REDUNDANTES, porque volvieron a diagnosticar
-lo ya diagnosticado y volvieron a chocar contra la misma denegación— y la
-única intervención humana en vuelo en 6 unidades de trabajo consecutivas.
+`gh run rerun` no está en la lista — pero reordenar el comando para pasar la
+allowlist NO te desbloquea, porque detrás está el 403 de scope. Corolario:
+**ampliar tu allowlist no arregla nada por sí sola.** No es conjetura: la
+denegación se midió tres veces seguidas sobre finplan#1741 (con LGTM ya
+emitido), y costó 3 h 26 min de cadena muerta, 3 corridas —dos REDUNDANTES,
+porque volvieron a diagnosticar lo ya diagnosticado y volvieron a chocar
+contra el mismo muro— y la única intervención humana en vuelo en 6 unidades
+de trabajo consecutivas.
 
 **No lo intentes.** Reintentar el comando denegado es la forma más cara de
 gastar tu presupuesto: el diagnóstico ya estaba bien las tres veces. Lo que
@@ -280,9 +289,11 @@ este head: no re-declares. Si no, declara.
 
 La condición es «ya declaré», no «veo el marcador
 `-materializado`», y la diferencia importa: el post-step tiene frentes que fallan en
-silencio (barrido caído, `IN_CI_WF` vacío, comentarios ilegibles, el propio
-`rerun-failed-jobs` denegado, el módulo no injertado), y en todos ellos el
-rojo sigue ahí sin marcador ninguno. Condicionar la escalada a ver el
+silencio (barrido caído, `IN_CI_WF` vacío, comentarios ilegibles, el módulo no
+injertado) —y uno, el `rerun-failed-jobs` denegado, que desde la repesca
+finplan#1806 ya NO es silencioso: deja un comentario de FALLO en el PR, aunque
+nunca el marcador `-materializado`—, y en todos ellos el rojo sigue ahí sin
+marcador de materialización ninguno. Condicionar la escalada a ver el
 marcador te devolvería a re-declarar tick tras tick sobre un remedio que no
 se ejerce — que es *exactamente* la clase que AP-077 mide y cierra, entrando
 por la puerta del mandato.
@@ -323,6 +334,23 @@ copia de tu workspace** — está en `.git/info/exclude` y tu diff saldría
 vacío; el arreglo es un PR en el central sobre el fichero FUENTE y su banco
 (`scripts/check-resolve-rerun.mjs`), y desde un consumidor lo que abres es
 la escalada.
+
+**Precondición de aplicación del parche: el token del step necesita
+`actions: write`** (repesca finplan#1806). Cuando el humano aplique el parche,
+el paso `watchdog-resolve-rerun` llama a `rerun-failed-jobs` con el token que
+le inyecta `github-token:` (en el central, `${{ github.token }}`, cuyo
+`actions: write` declara la etapa `architect` — ADR-217 §7). Si en un
+consumidor ese token —el `GITHUB_TOKEN` bajo su bloque `permissions:`, o un
+PAT si alguien lo cablea así— NO lleva `actions: write`, la llamada devuelve
+el MISMO `403 · Resource not accessible by personal access token` que hoy
+frena al resolver, y el ruling queda DECLARADO sin materializar. Desde la
+repesca finplan#1806 ese 403 **ya no es silencioso**: el belt publica el error
+literal en el PR con un marcador `watchdog-resolve-rerun-fallo: <headSha>`
+(verificable por estado, no una omisión que haya que recordar) en vez de morir
+dejando el marcador sin materializar —indistinguible del belt no desplegado—.
+Verifica ese scope antes de dar el parche por cerrado: un remedio diseñado que
+no se va a ejercer es superficie muerta (AP-078) y hay que retirarlo, no
+dejarlo fingiendo cobertura.
 
 ## Orden de ejecución: la transición CROSS-ISSUE va PRIMERO (AP-064)
 
