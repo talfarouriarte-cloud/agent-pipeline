@@ -422,10 +422,27 @@ jobs:
         if: steps.gate.outputs.run == 'true' && steps.nitscap.outputs.skip != 'true'
         uses: talfarouriarte-cloud/agent-pipeline/.github/actions/graft-vendored@main
 
+      # AP-085 (2026-09-08): hedge INERTE ante el fallo del instalador nativo de
+      # Claude Code (upstream #1817). Si el instalador funciona, no hace nada; si
+      # vuelve a omitir la creación del directorio del launcher, ya existe. NO es el
+      # fix (mecanismo no demostrado en local): el fix es el pin del `uses` de abajo.
+      - name: Asegurar ~/.local/bin (instalador nativo de Claude Code)
+        if: steps.gate.outputs.run == 'true' && steps.nitscap.outputs.skip != 'true'
+        run: mkdir -p "$HOME/.local/bin"
+
       - name: Run Reviewer
         id: reviewer
         if: steps.gate.outputs.run == 'true' && steps.nitscap.outputs.skip != 'true'
-        uses: anthropics/claude-code-action@v1
+        # AP-085 (2026-09-08) — pin a SHA completo, no a `@v1`. v1.0.217 =
+        # 9c5ddab2e6d17b83ea679153b31f1d5f023cf636 (Claude Code 2.1.263,
+        # 2026-09-06T02:55Z): ÚLTIMA release conocida buena, única con evidencia
+        # cruzada de funcionar en el incidente. v1.0.218 = 0d0e0876d3eaa933f45dc692f7a4312c83caf36f
+        # (Claude Code 2.1.265, tag `v1` movido 2026-09-08T20:39Z): desde ~22:30Z su
+        # instalador nativo reporta éxito sin crear `~/.local/bin/claude` en runners
+        # (upstream anthropics/claude-code-action#1817; 7 muertes en finplan 22:56–23:22Z).
+        # Bump del pin = PR humano con criterio (AP-085). Mientras, el runtime sigue
+        # flotando sobre install.sh + bootstrap `latest`: cerrar esa clase es AP aparte.
+        uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1.0.217
         env:
           # Blindaje OAuth-only: bloquea cualquier fallback silencioso a API
           # key dentro de la SDK interna del action. Si OAuth Max falla, el
