@@ -305,9 +305,57 @@ const CONTRATO = [
   ['`IN_CI_WF` vacío ⇒ fail-closed anunciado',
     { envCiWf: '' },
     (r) => r.escrituras.length === 0 && r.avisos.some((a) => /IN_CI_WF/.test(a))],
-  ['el re-run FALLA ⇒ no se afirma nada y NO se deja marcador (el cap sigue libre)',
-    { rerunErr: new Error('403') },
-    (r) => r.escrituras.join(',') === 'rerun#777' && r.cuerpos.length === 0],
+  // El re-run FALLA: el remedio NO se ejerce. Antes esto era SILENCIO (solo
+  // log) y dejaba el ruling DECLARADO sin materializar, indistinguible del belt
+  // no desplegado —la clase EXACTA que AP-077 cierra— con el humano aplicando
+  // el parche creyendo el remedio en servicio (repesca finplan#1806). Ahora el
+  // fallo se DECLARA en el PR con el error LITERAL y un marcador de FALLO que
+  // NO es el de materialización: el re-run no ocurrió, no se afirma el remedio
+  // ni se quema el cap. El 403 de `actions: write` ausente es el caso
+  // PERMANENTE medido (finplan PR #1801, 12:59Z); un fallo transitorio (502) se
+  // declara igual pero sin la nota de scope.
+  ['el re-run 403 (token sin `actions: write`) ⇒ se DECLARA el fallo con el error LITERAL y la precondición de scope, SIN marcador de materialización',
+    { rerunErr: Object.assign(new Error('Resource not accessible by personal access token'), { status: 403 }) },
+    (r) => r.escrituras.join(',') === 'rerun#777,createComment#1741'
+      && /Resource not accessible by personal access token/.test(r.cuerpos[0])
+      && /actions: write/.test(r.cuerpos[0])
+      && r.cuerpos[0].includes(`<!-- watchdog-resolve-rerun-fallo: ${HEAD} -->`)
+      && !r.cuerpos[0].includes(`<!-- watchdog-resolve-rerun-materializado: ${HEAD} -->`)
+      && r.avisos.some((a) => /actions: write/.test(a))],
+  ['el comentario de FALLO tampoco despierta a nadie (sin `@claude` ni ping-creator)',
+    { rerunErr: Object.assign(new Error('Resource not accessible by personal access token'), { status: 403 }) },
+    (r) => !/@claude/.test(r.cuerpos[0]) && !/ping-creator/.test(r.cuerpos[0])],
+  ['un fallo NO-403 (transitorio) también se DECLARA, pero sin la nota de `actions: write`',
+    { rerunErr: new Error('502 Bad Gateway') },
+    (r) => r.escrituras.join(',') === 'rerun#777,createComment#1741'
+      && /502 Bad Gateway/.test(r.cuerpos[0])
+      && !/actions: write/.test(r.cuerpos[0])
+      && r.cuerpos[0].includes(`<!-- watchdog-resolve-rerun-fallo: ${HEAD} -->`)],
+  // Dedup por marcador de FALLO, leído con el MISMO despojo que el ruling y el
+  // cap: un fallo ya declarado para este head no se re-declara tick tras tick.
+  ['el fallo ya DECLARADO para este head no se re-declara (dedup por marcador de fallo)',
+    { rerunErr: Object.assign(new Error('403'), { status: 403 }),
+      comentariosPR: [{ body: `previo\n<!-- watchdog-resolve-rerun-fallo: ${HEAD} -->` }] },
+    (r) => r.escrituras.join(',') === 'rerun#777'],
+  // El re-run NO se cuenta como EJECUTADO cuando `reRunWorkflowFailedJobs`
+  // lanza: `hechos` no se incrementa (el `continue` va antes), luego el tope
+  // MAX sigue midiendo re-runs REALES.
+  ['un FALLO cuya declaración TAMBIÉN se cae ⇒ doble silencio anunciado en el log, sin reventar',
+    { rerunErr: Object.assign(new Error('403'), { status: 403 }), comentarioErr: new Error('502') },
+    (r) => r.escrituras.join(',') === 'rerun#777,createComment#1741'
+      && r.cuerpos.length === 0
+      && r.avisos.some((a) => /doble silencio/.test(a))],
+  // El comentario del caso de arriba PROMETE que un FALLO no consume el cap
+  // —`hechos` no se incrementa, el `continue` va antes de `hechos++`— pero
+  // ninguna aserción moría si la propiedad se rompía (el caso que sí mira `MAX`
+  // ejercita el camino de ÉXITO). Aquí se ejerce el camino de FALLO sobre 4 PRs:
+  // con el `continue` antes de contar, los cuatro se intentan; movido `hechos++`
+  // delante del `try`, el cuarto cae por `MAX=3` y este caso se pone rojo (🟡 2
+  // de la review). Mismo cierre que `:152-161` para el camino de éxito.
+  ['un FALLO no consume el tope MAX: 4 PRs con el re-run DENEGADO ⇒ 4 intentos, no 3',
+    { rulingsExtra: 3, rerunErr: Object.assign(new Error('403'), { status: 403 }) },
+    (r) => r.escrituras.filter((e) => e.startsWith('rerun#')).length === 4
+      && r.escrituras.filter((e) => e.startsWith('createComment#')).length === 4],
   ['comentario que entró por `updated_at` (edición vieja) ⇒ fuera de ventana',
     { creadoHace: 3 * 60 * 60 * 1000 },
     (r) => r.escrituras.length === 0],
@@ -370,4 +418,4 @@ if (errores.length) {
   errores.forEach((e) => console.error('  - ' + e));
   process.exit(1);
 }
-console.log(`check-resolve-rerun verde: ${CASOS_DET.length} casos de detección sobre el par REAL \`despojar\`+\`RULING\` de ${fuente} + ${CONTRATO.length} aserciones de runtime ejecutando \`run\` contra un doble de la API (control que escribe, cap 1 por head SHA leído con despojo, filtro no-atribuible y su INERTIDAD por \`checks: read\` anunciada —distinguida del cero-anotaciones legítimo—, kill-switch por parámetro y por env, frescura del rojo, barrido \`desc\` con el doble HONRANDO el \`direction\`, ejecutar-antes-de-afirmar, tope MAX sobre re-runs EJECUTADOS y los tres fail-open anunciados).`);
+console.log(`check-resolve-rerun verde: ${CASOS_DET.length} casos de detección sobre el par REAL \`despojar\`+\`RULING\` de ${fuente} + ${CONTRATO.length} aserciones de runtime ejecutando \`run\` contra un doble de la API (control que escribe, cap 1 por head SHA leído con despojo, filtro no-atribuible y su INERTIDAD por \`checks: read\` anunciada —distinguida del cero-anotaciones legítimo—, kill-switch por parámetro y por env, frescura del rojo, barrido \`desc\` con el doble HONRANDO el \`direction\`, ejecutar-antes-de-afirmar, el fallo del re-run DECLARADO en el PR —403 de \`actions: write\` con precondición nombrada, transitorio sin ella, dedup por marcador de fallo y doble silencio anunciado (repesca finplan#1806)—, tope MAX sobre re-runs EJECUTADOS y los tres fail-open anunciados).`);
