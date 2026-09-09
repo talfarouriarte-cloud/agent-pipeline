@@ -1,0 +1,121 @@
+# AP-086 — dos hunks en la etapa `detect` del reusable `watchdog.yml`:
+#   (1) checkout + graft-vendored al INICIO del job `detect` (era SOLO-API, sin
+#       checkout) para servir el cuerpo del belt al workspace; y
+#   (2) el stub de invocación de la firma `stalled-rederive`, que re-deriva por
+#       ESTADO los `stalled` cuyo run del evento `labeled` murió `cancelled`.
+#
+# QUÉ CIERRA. La retoma de un `stalled` dependía de que el run de `watchdog.yml`
+# disparado por su evento `issues: labeled` SOBREVIVIERA. Si moría `cancelled`
+# (colisión de concurrencia en ventana de tráfico) NINGÚN barrido posterior
+# re-derivaba desde estado el `stalled` pendiente de ruling: el issue quedaba
+# huérfano indefinidamente aunque el Watchdog corriera en verde cada tick.
+# Transición single-shot por evento sin re-derivación por estado — la misma
+# clase que AP-016 (`open-review-failsafe`), AP-024 (`watchdog-lgtm-rematerialize`)
+# y AP-025 (`reviewer-no-verdict-relaunch`), esta vez en la arista
+# `labeled: stalled` → architect-resolve. Evidencia: finplan#1810 (auditoría),
+# run del `labeled` (30933288304) cancelado a los segundos; ≥12 runs `success`
+# del Watchdog después y CERO ruling; >3 h huérfano frente a los 13 min de un
+# `stalled` cuyo run de evento sobrevivió (PR #1811, misma ventana).
+#
+# POR QUÉ EL HUNK (1). El job `detect` era SOLO-API (su scan usa `github.rest`,
+# no el filesystem) y no hacía checkout; el belt necesita su cuerpo en
+# `${GITHUB_WORKSPACE}/scripts/`, que `graft-vendored` (AP-009) puebla sobre un
+# workspace ya checked-out. Sin el hunk (1) el `require` del stub lanzaría
+# `MODULE_NOT_FOUND` en cada tick y el belt quedaría MUDO para siempre — la
+# firma nunca correría. Se replica el par checkout+graft de la etapa `architect`;
+# `detect` no commitea, así que el pisado del graft es inerte.
+#
+# QUÉ NO VIAJA AQUÍ (doctrina AP-068). El CUERPO del belt vive en
+# `vendored/scripts/watchdog-stalled-rederive.cjs` —pusheable por un agente,
+# gateado por el CI del central y ejecutado por el banco
+# `scripts/check-stalled-rederive.mjs`— y llega al workspace del consumidor por
+# `graft-vendored` (AP-009). Aquí solo queda la invocación (un `require` con
+# fail-open anunciado). Aplicar este parche es un acto ÚNICO: los arreglos
+# posteriores del belt no vuelven a pasar por aquí.
+#
+# PENDIENTE DE APLICACIÓN HUMANA: la GitHub App de claude-code-action no tiene
+# permiso `workflows` (ADR-020), luego este cambio no se puede pushear desde una
+# sesión de agente. Lo aplica un humano con:
+#     git apply docs/patches/AP-086-watchdog-stalled-rederive.patch
+#
+# CERO permiso nuevo. El step usa el PAT `REVIEWER_GITHUB_TOKEN` (ya secret
+# required del reusable) — imprescindible: el belt re-dispara la arista
+# relabelando `stalled` (remove+add) y un `labeled` del GITHUB_TOKEN no
+# dispararía el workflow del consumidor (anti-loop de GitHub, mismo motivo por el
+# que el scan ya usa el PAT para `needs-review`/`lgtm`). El job `detect` ya
+# concede `issues: write` y `contents: read` (checkout).
+#
+# verificado-contra: 384c27623909d77dbb3e6917d8789b8100cbdeb9
+diff --git a/.github/workflows/watchdog.yml b/.github/workflows/watchdog.yml
+index db6f1df..d0e36a1 100644
+--- a/.github/workflows/watchdog.yml
++++ b/.github/workflows/watchdog.yml
+@@ -150,6 +150,21 @@ jobs:
+       found: ${{ steps.scan.outputs.found }}
+       anomalies: ${{ steps.scan.outputs.anomalies }}
+     steps:
++      # AP-086: `detect` era un job SOLO-API (sin checkout). El belt
++      # `stalled-rederive` (último step de este job) necesita su cuerpo en el
++      # workspace, servido por `graft-vendored` desde `vendored/scripts/` (misma
++      # doctrina que los belts de la etapa `architect`, AP-068). Se hace checkout
++      # + graft aquí igual que en `architect`; `detect` no commitea, así que el
++      # pisado del graft sobre el workspace del runner es inerte. Coste: ~un
++      # checkout por tick (el settle event-driven ya domina la latencia del job).
++      - name: Checkout (para el belt stalled-rederive servido por graft — AP-086)
++        uses: actions/checkout@v4
++        with:
++          fetch-depth: 0
++
++      - name: Graft vendored (capa común servida desde el central — AP-009)
++        uses: talfarouriarte-cloud/agent-pipeline/.github/actions/graft-vendored@main
++
+       - name: Settle (event-driven only) — capa 2 de vigilancia (AP-011)
+         # Era sleep 90 (que los runs encadenados lleguen a queued antes del
+         # gate 0). 2026-07-13, AP-011: sube al bound de liveness COMPLETO
+@@ -1327,6 +1342,46 @@ jobs:
+               break; // uno por scan
+             }
+ 
++      - name: Re-derivar por estado los stalled con run de evento muerto (stalled-rederive)
++        # AP-086 (repesca finplan#1810, origen asesoramiento-financiero#1814) —
++        # la retoma de un `stalled` dependía de que el run del evento `labeled`
++        # SOBREVIVIERA; si moría `cancelled` (colisión de concurrencia en
++        # ventana de tráfico) ningún barrido re-derivaba desde estado el
++        # `stalled` pendiente de ruling y el issue quedaba huérfano aunque el
++        # Watchdog corriera en verde cada tick. Misma clase
++        # single-shot-por-evento-sin-re-derivación que AP-016
++        # (`open-review-failsafe`), AP-024 (`watchdog-lgtm-rematerialize`) y
++        # AP-025 (`reviewer-no-verdict-relaunch`), en la arista
++        # `labeled: stalled` → architect-resolve.
++        #
++        # El cuerpo NO vive aquí sino en
++        # `vendored/scripts/watchdog-stalled-rederive.cjs`, servido al workspace
++        # por el graft del INICIO de este job (doctrina AP-068): la App no tiene
++        # permiso `workflows` (ADR-020), luego el código embebido sería intocable
++        # para un agente. Aquí solo queda la invocación. Banco de casos:
++        # `scripts/check-stalled-rederive.mjs`.
++        #
++        # Sale con el PAT (`REVIEWER_GITHUB_TOKEN`): el belt re-dispara la arista
++        # relabelando `stalled` (remove+add) y un `labeled` del GITHUB_TOKEN NO
++        # dispararía el workflow del consumidor (anti-loop de GitHub, mismo
++        # motivo que AP-024/AP-016/AP-025). NO altera la derivación de turno del
++        # dispatcher (sus marcadores no son labels ni veredictos; ADR-217 §5
++        # considerado: sin cambio en el dispatcher). `if: always()` para
++        # re-derivar aun si el scan murió — es justo el silencio que cierra.
++        if: always()
++        uses: actions/github-script@v7
++        with:
++          github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
++          script: |
++            const ruta = `${process.env.GITHUB_WORKSPACE}/scripts/watchdog-stalled-rederive.cjs`;
++            let belt;
++            // Fail-open ANUNCIADO: si el graft no corrió (o sirvió una versión
++            // sin el módulo), el belt queda MUDO — pero que lo esté tiene que
++            // verse, que es la clase entera que AP-086 cierra.
++            try { belt = require(ruta); }
++            catch (e) { core.warning(`stalled-rederive: módulo no injertado en ${ruta} (${e.message}) — belt MUDO en esta corrida.`); return; }
++            await belt({ github, context, core });
++
+   architect:
+     needs: detect
+     if: needs.detect.outputs.found == 'true'
