@@ -1,0 +1,152 @@
+# AP-086 — corrige la RAÍZ del huérfano `stalled`: el barrido por ESTADO de
+# AP-038 (`watchdog.yml`, job `detect`) gatea por el KILL-SWITCH DURO, no por
+# `skip_labels` completo. Y propaga la enmienda a los tres sitios que la
+# describen (review ronda 2).
+#
+# QUÉ CIERRA. La re-derivación por ESTADO de la señal `stalled` YA EXISTE desde
+# AP-038 (`watchdog.yml`, bloque «Re-derivación por ESTADO de la señal `stalled`»):
+# cualquier run superviviente del Watchdog re-encamina a architect-resolve un
+# `stalled` `open` cuyo run del evento `labeled` murió `cancelled`. Pero ese
+# bucle gateaba en `if (skip(it.labels)) continue;` con `skip_labels`, cuyo
+# DEFAULT del reusable (`:106`) es
+# `pause-agents,human-needed,auditoria,process-proposal,registro-decisiones` y
+# que el stub del consumidor NO pinea. Resultado medido (finplan#1810): un
+# `stalled` sobre una AUDITORÍA cuyo run de evento murió `cancelled` (colisión de
+# concurrencia en ventana de tráfico) era saltado AQUÍ por su label `auditoria`
+# en ≥12 ticks verdes ⇒ >3 h huérfano, sin dejar el rastro `re-derivado del
+# estado (AP-038)` en ningún run. Es la REINCIDENCIA de AP-051 (que ya sacó
+# `process-proposal` de esta misma ruta en el CENTRAL, «el barrido AP-038 salía
+# con "Sin anomalías" sobre 5 stalled reales») en el otro consumidor y con otra
+# label — NO una clase nueva.
+#
+# EL FIX. `stalled` es la señal que DISPARA architect-resolve; un `stalled` sobre
+# un panel `auditoria`/`process-proposal`/`registro-decisiones` es trabajo
+# legítimo del resolver, y el camino por EVENTO (`labeled: stalled`, arriba en el
+# mismo job) YA lo encamina sin aplicar `skip_labels`. Se introduce
+# `hardStallSkip` y se cambian los DOS gates del bloque AP-038 (issues y PRs) de
+# `skip(...)` a `hardStallSkip(...)`, cuya lista es SOLO el kill-switch duro:
+# `pause-agents` (parada global) y `human-needed` (ya escalado). Esta política
+# NO es idéntica a la del camino por evento (que no aplica NINGUNA exclusión de
+# label): es DELIBERADAMENTE MÁS CONSERVADORA, porque el barrido por estado corre
+# en CADA tick sobre todo el repo. El resto del detector (dispatcher de turno y
+# demás belts) SIGUE usando `skip`/skip_labels sin cambio: la corrección es local
+# a la señal `stalled`. Cierra el caso medido en el PRIMER tick superviviente,
+# sin marcadores, relojes ni escalados nuevos, y para TODO consumidor y TODA
+# label de panel, sin depender del valor del input.
+#
+# HUNKS (5, todos en el MISMO acto de aplicación humana):
+#   (1) `watchdog.yml` — enmienda la `description` del input `skip_labels`: la
+#       re-derivación por ESTADO de `stalled` queda FUERA de esa lista (la doc del
+#       reusable dejaría de ser cierta sin esto — review 🟡 2).
+#   (2) `watchdog.yml` — `hardStallSkip` + comentario (incluye la NOTA de que la
+#       política es más conservadora que el camino por evento, no idéntica — 🟡 3).
+#   (3,4) `watchdog.yml` — los dos gates `skip(...)` → `hardStallSkip(...)`.
+#   (5) `self-watchdog.yml` — enmienda el comentario del pin `skip_labels` del
+#       CENTRAL: tras AP-086 el pin ya NO lo sostiene el barrido de `stalled` sino
+#       el RESTO del detector; el próximo agente NO debe retirarlo (review 🟡 4).
+#
+# POR QUÉ UN PARCHE (no un push). La GitHub App de claude-code-action no tiene
+# permiso `workflows` (ADR-020): un cambio en `.github/workflows/**` producido por
+# un agente no se puede pushear. Lo aplica un humano con:
+#     git apply docs/patches/AP-086-watchdog-stalled-rederive.patch
+#
+# CERO permiso nuevo, CERO superficie nueva: no toca inputs/secrets/permisos del
+# `workflow_call`, no añade steps ni checkout, no crea labels/veredictos ⇒ ADR-217
+# §5 no aplica (sin cambio en el dispatcher de turno). Es un cambio de exclusión
+# de tres líneas efectivas dentro de un `github-script` ya existente, más dos
+# enmiendas de comentario/description (hunks 1 y 5).
+#
+# verificado-contra: 44a70f226be4d77f1a8341bbc4c7b38e0dc4e7a2
+diff --git a/.github/workflows/self-watchdog.yml b/.github/workflows/self-watchdog.yml
+index f88cf97..c03cd62 100644
+--- a/.github/workflows/self-watchdog.yml
++++ b/.github/workflows/self-watchdog.yml
+@@ -47,9 +47,16 @@ jobs:
+       # `self-reviewer.yml`. Son los DOS MISMOS valores que este PR retira de
+       # `templates/stubs/stub-watchdog.yml`. Ausencia deliberada: sin línea
+       # rige el default y las lecciones futuras del central llegan solas.
+-      # AP-051: en el CENTRAL `process-proposal` es la COLA, no un panel —
+-      # sin esta línea el barrido AP-038 la excluye y `stalled` muere en
+-      # silencio (incidente #125/#128/#129/#131/#142, 2026-07-22/27).
++      # AP-051: en el CENTRAL `process-proposal` es la COLA, no un panel, por eso
++      # se retira de la lista de exclusión (incidente #125/#128/#129/#131/#142,
++      # 2026-07-22/27).
++      # AP-086: el pin SIGUE siendo necesario, pero YA NO por el barrido de
++      # `stalled` — ese barrido (bloque AP-038 en `detect`) dejó de mirar
++      # `skip_labels` y solo respeta el kill-switch duro. El pin sostiene el RESTO
++      # del detector (dispatcher de turno y demás belts), que sigue gateando con
++      # `skip`/`skip_labels`: para ellos `process-proposal` debe seguir siendo
++      # visible en el central. NO retirar el pin creyendo que AP-086 ya lo cubre:
++      # rompería ese resto.
+       skip_labels: "pause-agents,human-needed,auditoria,registro-decisiones"
+       # AP-058: merge humano en el central (AP-012, espejo de
+       # `automerge: false` en self-epic-merge) — LGTM+gates verdes+abierto
+diff --git a/.github/workflows/watchdog.yml b/.github/workflows/watchdog.yml
+index db6f1df..8e95928 100644
+--- a/.github/workflows/watchdog.yml
++++ b/.github/workflows/watchdog.yml
+@@ -101,7 +101,12 @@ on:
+           la lista histórica de consumidor (paneles abiertos por diseño). El
+           CENTRAL la pasa SIN `process-proposal`: aquí esa label es la COLA de
+           trabajo, no un panel (AP-051 — el barrido AP-038 salía con «Sin
+-          anomalías» sobre 5 stalled reales).
++          anomalías» sobre 5 stalled reales). EXCEPCIÓN (AP-086): la
++          re-derivación por ESTADO de la señal `stalled` (bloque AP-038 en
++          `detect`) NO consulta esta lista — solo respeta el kill-switch duro
++          `pause-agents`/`human-needed`, porque `stalled` es la señal que DISPARA
++          a architect-resolve y un `stalled` sobre un panel es trabajo legítimo
++          del resolver.
+         type: string
+         default: "pause-agents,human-needed,auditoria,process-proposal,registro-decisiones"
+     secrets:
+@@ -350,6 +355,32 @@ jobs:
+               return res;
+             };
+             const { data: prs } = await github.rest.pulls.list({ ...O, state: 'open', per_page: 50 });
++            // AP-086 (repesca finplan#1810, reincidencia de AP-051 en el otro
++            // consumidor): el barrido de `stalled` por ESTADO de AQUÍ (AP-038)
++            // NO aplica `skip_labels` completo, solo el kill-switch duro. `stalled`
++            // es la señal que DISPARA architect-resolve, así que un `stalled` sobre
++            // un panel `auditoria`/`process-proposal`/`registro-decisiones` —labels
++            // que el default de `skip_labels` (:106) excluye del RESTO del detector—
++            // sigue siendo trabajo legítimo del resolver: el camino por EVENTO
++            // (`labeled: stalled`, arriba) ya lo encamina sin mirar `skip_labels`, y
++            // gatear la re-derivación por estado con la lista completa dejaba
++            // huérfano justo el caso medido (finplan#1810 es una auditoría; su run
++            // de evento murió `cancelled` y ≥12 ticks verdes lo saltaron AQUÍ por
++            // `auditoria`, sin dejar el rastro `re-derivado del estado`). AP-051 ya
++            // sacó `process-proposal` de esta ruta en el CENTRAL vía input; esto lo
++            // cierra en la RAÍZ para todo consumidor y toda label de panel, sin
++            // depender del valor del input.
++            //
++            // Por qué SOLO el kill-switch duro (NO idéntico al camino por evento):
++            // el camino por evento (`:290-306`) no aplica NINGUNA exclusión de
++            // label —solo el cortacircuito de doble rebote—. La re-derivación por
++            // ESTADO es DELIBERADAMENTE MÁS CONSERVADORA que el camino por evento
++            // porque corre en CADA tick sobre TODO el repo (el evento es puntual y
++            // de payload): por eso conserva las dos paradas duras `pause-agents`
++            // (parada global) y `human-needed` (ya escalado — no se re-dispara
++            // sobre lo que un humano ya posee).
++            const HARD_STALL_SKIP = ['pause-agents', 'human-needed'];
++            const hardStallSkip = labels => (labels || []).some(l => HARD_STALL_SKIP.includes(l.name));
+             // ── Re-derivación por ESTADO de la señal `stalled` (AP-038).
+             // El camino por evento (labeled=stalled ⇒ anomalía directa, arriba)
+             // solo existe en el PAYLOAD de su run — y la concurrency global del
+@@ -369,7 +400,7 @@ jobs:
+                 state: 'open', labels: 'stalled', per_page: 30 });
+               for (const it of stIss) {
+                 if (it.pull_request) continue;             // PRs: los cubre el bloque de PRs abajo
+-                if (skip(it.labels)) continue;
++                if (hardStallSkip(it.labels)) continue;    // AP-086: solo kill-switch duro, NO skip_labels (ver arriba)
+                 if (anomalies.some(a => a.number === it.number)) continue;
+                 const { data: cs } = await github.rest.issues.listComments({ ...O, issue_number: it.number, per_page: 100 });
+                 const autos = cs.filter(c => (c.body || '').includes('<!-- autonomous-decision -->')).length;
+@@ -386,7 +417,7 @@ jobs:
+                 }
+               }
+               for (const pr of prs.filter(p => p.labels?.some(l => l.name === 'stalled'))) {
+-                if (skip(pr.labels)) continue;
++                if (hardStallSkip(pr.labels)) continue;    // AP-086: solo kill-switch duro, NO skip_labels (ver arriba)
+                 if (anomalies.some(a => a.number === pr.number)) continue;
+                 anomalies.push({ type: 'stalled-autonomous-resolve', number: pr.number });
+                 core.notice(`PR #${pr.number}: stalled re-derivado del estado (AP-038).`);
