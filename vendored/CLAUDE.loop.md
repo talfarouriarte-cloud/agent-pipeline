@@ -201,6 +201,30 @@ overflows token budget.
 If none apply, treat the Reviewer’s comment as clear: apply, commit,
 push — the push closes the turn (AP-079). No tag needed.
 
+**Cadence WITHIN a review round: commit+push PER BATCH, never one
+end-of-session commit (AP-087).** A REVIEW/NITS round is NOT a single
+milestone. When the Reviewer returns N findings, apply them **in
+batches and `commit`+`push` each batch** (by severity group, or every
+≤4 items), running the batch’s typecheck/tests before its commit. Do
+NOT hold every finding in the working tree for one final commit: a
+session that dies before that last `git push` loses every fix in the
+tree, and a fresh session redoes them from zero. This is the SAME rule
+as “cadence per milestone, not at the end” (§ «PR creation» /
+`creator.md` § «Persistencia incremental»); it is made explicit here
+because the reading that cost the P0 was «one round of nits = one
+milestone». Measured: finplan#1974 batched 13 items into one final
+commit and died before the push ⇒ **12 nits lost and redone** by a
+fresh session; the recurrence (finplan#2004) wrote-and-lost the fix
+**twice** ⇒ `human-needed` + manual human re-arm. Intra-round pushes
+are for DURABILITY only: they do NOT re-summon the Reviewer (its
+trigger is `[opened, labeled]`, no `synchronize`; the App-token push
+does not trigger workflows either) — the `needs-review` relabel is
+still done once, by the workflow, at turn close (AP-079). The
+mechanical belt `commit-discipline.sh` (Check 3, AP-087) enforces a
+floor — it blocks the next edit after too many edits without an
+intervening push — but the belt is a backstop, not the plan: push each
+green batch as you go.
+
 **Hard caps enforced by the workflow:**
 
 - Maximum 8 `claude[bot]` comments on a PR before the workflow
