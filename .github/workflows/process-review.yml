@@ -265,7 +265,11 @@ jobs:
         # (upstream anthropics/claude-code-action#1817; 7 muertes en finplan 22:56–23:22Z).
         # Bump del pin = PR humano con criterio (AP-085). Mientras, el runtime sigue
         # flotando sobre install.sh + bootstrap `latest`: cerrar esa clase es AP aparte.
-        uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1.0.217
+        # AP-087 (2026-09-25) — bump del pin a v1.0.233 = 8cf3482550831fb35a4fc3fbf7ca139cf8028b4c
+        # (Claude Code 2.1.281, 2026-09-23T19:40Z): ≥48 h publicada, sin P1 upstream al
+        # bumpear. Prerrequisito para `claude-opus-5-5` (soporte desde CLI 2.1.280). El
+        # propietario decidió meter runtime y modelo (Creator+Reviewer) en el mismo PR.
+        uses: anthropics/claude-code-action@8cf3482550831fb35a4fc3fbf7ca139cf8028b4c # v1.0.233
         env:
           # Blindaje OAuth-only (mismo patrón que reviewer.yml): si OAuth Max
           # falla, el job da rojo en lugar de facturar por API key.

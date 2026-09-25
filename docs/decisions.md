@@ -2303,6 +2303,8 @@ El allowlist casa por PREFIJO: `gh api -X POST repos/…` no empieza por `gh api
 
 **Criterio falsable.** Ventana 30-07..06-08: si el $/PR vuelve a ~$11–13 con reviews/PR ≤ nivel Opus 5, el revert se consolida. Si el $/PR no baja (⇒ el driver era otro: mix de trabajo, stall, ritmo del propietario), se registra enmienda y se re-evalúa Opus 5.
 
+> **Enmienda (2026-09-25, AP-087).** El criterio de esta ventana NO se evaluó. Queda cerrado por sustitución: el Creator pasa a `claude-opus-5-5` por decisión del propietario con criterio calidad/token sobre datos publicados por Anthropic, no por $/PR. Ver AP-087.
+
 **Nota de régimen.** Fuera de la moratoria AP-078: es configuración de coste decidida por el propietario, no mecanismo nuevo del loop de mejora.
 
 **Reversión.** `default: claude-opus-5` y enmienda aquí.
@@ -2443,3 +2445,17 @@ Si algún item sale con ≥2, el humano lo verá pasar a `human-needed` en el pr
 **Falsable.** `check-patches` reporta el parche `ancla VIGENTE`. Al aplicar el humano el parche y desplegar, el siguiente tick superviviente del Watchdog sobre un `stalled` de auditoría/process-proposal huérfano deja rastro en su log, y ese rastro tiene DOS desenlaces posibles según el conteo de doble rebote del item (ambos falsan la ausencia actual): (a) con <2 `autonomous-decision`, la línea `#N: stalled re-derivado del estado (AP-038)` + la anomalía `stalled-autonomous-resolve` (el caso normal, hoy AUSENTE para esos items: es esa ausencia en los ≥12 runs de finplan#1810 lo que confirma que el gate de `:372` lo saltaba); (b) con ≥2 `autonomous-decision` HISTÓRICOS, la línea `#N: doble rebote (scan) ⇒ human-needed` (`watchdog.yml:381`) + la label `human-needed` — el efecto que la §Blast radius manda enumerar ANTES de aplicar. Cualquiera de las dos líneas, sobre un item que hoy no las tiene, confirma que el gate dejó de saltarlo. Discrimina esta corrección del belt retirado: no aparece marcador `stalled-rederivado-por-estado` alguno; el rescate lo firma el rastro de AP-038.
 
 <!-- ancla-espejo: AP-086-watchdog-stalled-rederive.patch = 44a70f226be4d77f1a8341bbc4c7b38e0dc4e7a2 -->
+
+## AP-087 — Bump del pin de `anthropics/claude-code-action` a v1.0.233 (CLI 2.1.281) y paso de Creator y Reviewer a `claude-opus-5-5` en el mismo PR (2026-09-25)
+
+**Contexto.** El propietario decide (22-09) pasar Creator y Reviewer a `claude-opus-5-5` (publicado 22-09). Criterio declarado: calidad del software por token consumido en el plan Max (menos reviews, mejor), tomando los datos publicados por Anthropic —FrontierCode 54,6% a effort medio vs 48,0% de Opus 5 a max; Deloitte: 72% de bugs detectados en code review vs 56% de Opus 5, con menos falsas alarmas y una fracción del output— en lugar de una medición propia. El soporte de Opus 5.5 entra en Claude Code 2.1.280; el pin de AP-085 instala 2.1.263.
+
+**Decisión.** (1) Los cuatro `uses:` pasan a `8cf3482550831fb35a4fc3fbf7ca139cf8028b4c` (v1.0.233, Claude Code 2.1.281, 2026-09-23T19:40Z), elegida con el criterio de AP-085: ≥48 h publicada y sin P1 abierto upstream al bumpear (v1.0.234, 24-09, se descarta por no cumplir las 48 h). 2.1.281 corrige además un turno que reintentaba indefinidamente ignorando `--max-turns` y tool calls duplicadas por eventos de stream repetidos. (2) `creator_model` pasa de `claude-opus-4-8` a `claude-opus-5-5` y `reviewer_model` de `claude-opus-5` a `claude-opus-5-5`, effort por defecto. `resolve_model` (watchdog) y `process_review_model` no cambian. (3) El Architect propuso tres PRs con una variable cada uno (pin → Creator → Reviewer) para no repetir el confusor de AP-080; el propietario decidió meter las tres en este PR. Consecuencia aceptada: una muerte de sesión tras el merge no discrimina CLI de modelo, y el revert es del PR completo.
+
+**Cierre de AP-080.** El criterio falsable de AP-080 (ventana 30-07..06-08) nunca se evaluó ni se enmendó. Queda cerrado por sustitución: la elección de modelo del Creator pasa a regirse por el criterio del propietario arriba, no por $/PR.
+
+**Criterio falsable.** 24 h tras el merge: ninguna sesión de la flota muere en el step de instalación (`ENOENT ~/.local/bin/claude` o equivalente) ni por rechazo del modelo (`model not found` / 400 en la primera llamada). Si ocurre, revert del PR completo y se ejecuta la alternativa (3) de AP-085 sin esperar a la revisión mensual.
+
+**Alternativa (3) de AP-085, diferida EXPLÍCITAMENTE.** AP-085 fijó «el primer bump de pin» como señal de disparo para descargar nosotros el binario con checksum del `manifest.json` y pasar `path_to_claude_code_executable`. Este bump la dispara y se decide NO ejecutarla ahora: es mecanismo nuevo y por AP-082 corresponde a la revisión mensual de octubre. Se registra para que no quede como olvido.
+
+**Residuales.** (a) Opus 5.5 desvía de forma transparente a Opus 4.8 la mayoría de tareas de ciberseguridad; si los guards/hooks del pipeline lo disparan, algunas sesiones correrán en 4.8 sin señal en los logs. (b) Creator y Reviewer pasan a ser el MISMO modelo; posibles puntos ciegos compartidos entre autor y juez (inferencia, sin dato). (c) Regresión abierta en 2.1.281: OAuth de MCP en macOS (`anthropics/claude-code#96738`); no aplica a runners ubuntu. (d) `anthropics/claude-code-action#1852` (automation mode termina en el primer `result` con subagentes en background) es anterior al bump y no depende del CLI.
