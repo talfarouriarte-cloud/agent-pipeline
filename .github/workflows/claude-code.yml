@@ -29,7 +29,7 @@ on:
       creator_model:
         description: Modelo del Creator
         type: string
-        default: claude-opus-4-8  # AP-080: revert medido del Creator (Reviewer sigue en Opus 5)
+        default: claude-opus-5-5  # AP-087 (2026-09-25): decisión del propietario, criterio calidad/token; cierra AP-080
       creator_max_turns:
         description: max-turns del Creator
         type: number
@@ -909,14 +909,14 @@ jobs:
         # flotando sobre install.sh + bootstrap `latest`: cerrar esa clase es AP aparte.
         # AP-087 (2026-09-25) — bump del pin a v1.0.233 = 8cf3482550831fb35a4fc3fbf7ca139cf8028b4c
         # (Claude Code 2.1.281, 2026-09-23T19:40Z): ≥48 h publicada, sin P1 upstream al
-        # bumpear. Prerrequisito para `claude-opus-5-5` (soporte desde CLI 2.1.280): esta
-        # PR cambia SOLO el runtime; el modelo va en PR aparte (una variable por PR).
+        # bumpear. Prerrequisito para `claude-opus-5-5` (soporte desde CLI 2.1.280). El
+        # propietario decidió meter runtime y modelo (Creator+Reviewer) en el mismo PR.
         uses: anthropics/claude-code-action@8cf3482550831fb35a4fc3fbf7ca139cf8028b4c # v1.0.233
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Modelo: input `creator_model`, default en workflow_call —
-          # claude-opus-5 desde 2026-07-27 (mismo precio que 4.8, mejor
-          # coding y verificación del propio trabajo). El modelo se gobierna
+          # claude-opus-5-5 desde 2026-09-25 (AP-087; antes opus-5 27-07 y
+          # revert a 4.8 por AP-080). El modelo se gobierna
           # SOLO por el default del central: los stubs NO lo pinean (clase
           # #142 — un pin de stub pisa en silencio el default aprendido).
           # max-turns 100 razonable con OAuth Max (no hay coste por uso,
