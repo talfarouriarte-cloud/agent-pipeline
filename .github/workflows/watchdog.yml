@@ -78,7 +78,10 @@ on:
         default: epica
       resolve_model:
         type: string
-        default: claude-opus-5
+        default: claude-fable-5-1  # AP-088 (2026-09-28): antes claude-opus-5; el único rol que decide sin humano
+      resolve_fallback_model:
+        type: string
+        default: claude-opus-5-5  # AP-088: Fable en Max va por créditos/límite semanal aparte; sin fallback, una no-ejecución del resolver es silenciosa
       resolve_max_turns:
         type: number
         default: 40
@@ -1390,8 +1393,12 @@ jobs:
           # Con el PAT, el re-arm sale con autoría del humano — exactamente
           # el mecanismo del rescate manual que este workflow automatiza.
           github_token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          # AP-088 (2026-09-28): `--effort medium` explícito; sin flag cada modelo aplica
+          # su default de lanzamiento y un cambio upstream lo movería sin aviso.
           claude_args: |
             --model ${{ inputs.resolve_model }}
+            --fallback-model ${{ inputs.resolve_fallback_model }}
+            --effort medium
             --max-turns ${{ inputs.resolve_max_turns }}
             --allowedTools "Read,Glob,Grep,Bash(gh issue view:*),Bash(gh issue comment:*),Bash(gh issue edit:*),Bash(gh issue create:*),Bash(gh issue close:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr checks:*),Bash(gh pr comment:*),Bash(gh pr edit:*),Bash(gh run list:*),Bash(gh run view:*),Bash(gh api repos/*)"
           prompt: |

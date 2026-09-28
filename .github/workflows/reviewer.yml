@@ -484,8 +484,11 @@ jobs:
           # de su implementación, no una cláusula de su contrato de inputs: el
           # día que deje de hacerlo, el `#` se comería `--max-turns` y
           # `--allowedTools` EN VERDE. Coste de no depender de eso: cero.
+          # AP-088 (2026-09-28): `--effort medium` explícito; sin flag cada modelo aplica
+          # su default de lanzamiento y un cambio upstream lo movería sin aviso.
           claude_args: |
             --model ${{ inputs.reviewer_model }}
+            --effort medium
             --max-turns ${{ (inputs.budget_pin_forzado && inputs.reviewer_max_turns) || (inputs.reviewer_max_turns >= 80 && inputs.reviewer_max_turns) || 80 }}
             --allowedTools "Read,Glob,Grep,Write,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*)"
 

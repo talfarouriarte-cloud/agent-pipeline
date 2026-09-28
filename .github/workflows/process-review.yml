@@ -28,10 +28,10 @@ on:
         default: main
       process_model:
         type: string
-        default: claude-fable-5
+        default: claude-fable-5-1  # AP-088 (2026-09-28): antes claude-fable-5
       process_fallback_model:
         type: string
-        default: claude-opus-5
+        default: claude-opus-5-5  # AP-088: antes claude-opus-5
       process_max_turns:
         # LESSON-BEARING (AP-052): este default NO es una preferencia de
         # instancia — es una lección aprendida. Si lo cambias, actualiza EN EL
@@ -297,9 +297,12 @@ jobs:
           # su implementación, no una cláusula de su contrato de inputs: el día
           # que deje de hacerlo, el `#` se comería `--max-turns` y
           # `--allowedTools` EN VERDE. Coste de no depender de eso: cero.
+          # AP-088 (2026-09-28): `--effort medium` explícito; sin flag cada modelo aplica
+          # su default de lanzamiento y un cambio upstream lo movería sin aviso.
           claude_args: |
             --model ${{ inputs.process_model }}
             --fallback-model ${{ inputs.process_fallback_model }}
+            --effort medium
             --max-turns ${{ (inputs.budget_pin_forzado && inputs.process_max_turns) || (inputs.process_max_turns >= 80 && inputs.process_max_turns) || 80 }}
             --allowedTools "Read,Glob,Grep,Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh issue create:*),Bash(gh issue comment:*),Bash(gh api:*)"
           prompt: |
