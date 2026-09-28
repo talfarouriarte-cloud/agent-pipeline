@@ -231,6 +231,10 @@
         "has_default": true,
         "required": false
       },
+      "resolve_fallback_model": {
+        "has_default": true,
+        "required": false
+      },
       "resolve_model": {
         "has_default": true,
         "required": false

@@ -939,8 +939,11 @@ jobs:
           # Explícito además del `bypassPermissions` ya activo: el allowlist es
           # central en el reusable ⇒ uniforme para toda la flota (clase 5
           # mandate/toolbox drift).
+          # AP-088 (2026-09-28): `--effort medium` explícito; sin flag cada modelo aplica
+          # su default de lanzamiento y un cambio upstream lo movería sin aviso.
           claude_args: |
             --model ${{ inputs.creator_model }}
+            --effort medium
             --max-turns ${{ inputs.creator_max_turns }}
             --permission-mode bypassPermissions
             --allowedTools "Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr edit:*),Bash(gh pr ready:*),Bash(gh pr checks:*),Bash(gh pr merge:*),Bash(gh api:*)"

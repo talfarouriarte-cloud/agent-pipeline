@@ -41,10 +41,10 @@
 # commit viejo — NO lo rotes por costumbre. Solo hay que tocarlo si cambia
 # `.github/workflows/claude-code.yml`.
 diff --git a/.github/workflows/claude-code.yml b/.github/workflows/claude-code.yml
-index c12d8b7..819b424 100644
+index 0bbf304..aa1ad0b 100644
 --- a/.github/workflows/claude-code.yml
 +++ b/.github/workflows/claude-code.yml
-@@ -873,11 +873,27 @@ jobs:
+@@ -939,6 +939,22 @@ jobs:
            # Explícito además del `bypassPermissions` ya activo: el allowlist es
            # central en el reusable ⇒ uniforme para toda la flota (clase 5
            # mandate/toolbox drift).
@@ -64,8 +64,11 @@ index c12d8b7..819b424 100644
 +          # estarlo — se declara donde la flota lo lee. `gh run view` viaja con
 +          # él porque el censo sin duraciones no cierra el ledger (AP-066: es
 +          # la única fuente de duración de los actores sin tracking comment).
+           # AP-088 (2026-09-28): `--effort medium` explícito; sin flag cada modelo aplica
+           # su default de lanzamiento y un cambio upstream lo movería sin aviso.
            claude_args: |
-             --model ${{ inputs.creator_model }}
+@@ -946,7 +962,7 @@ jobs:
+             --effort medium
              --max-turns ${{ inputs.creator_max_turns }}
              --permission-mode bypassPermissions
 -            --allowedTools "Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr edit:*),Bash(gh pr ready:*),Bash(gh pr checks:*),Bash(gh pr merge:*),Bash(gh api:*)"
