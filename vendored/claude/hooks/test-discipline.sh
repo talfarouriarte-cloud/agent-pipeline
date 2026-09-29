@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Hook PreToolUse (Bash) — disciplina de tests: SOLO ficheros afectados.
+# Hook PreToolUse (Bash) — disciplina de tests: SOLO ficheros afectados,
+# y (AP-089) push antes de verificar en ramas ya publicadas.
 #
 # Motivo: la suite completa (`pnpm test`, `vitest run` sin rutas) cuelga la
 # sesión del Creator y ha causado pérdida de trabajo reincidente pese a la
@@ -27,8 +28,32 @@ fi
 # .claude/hooks/test-discipline.pattern (una línea, ERE). Default: stack JS del origen.
 PATTERN_FILE="$CLAUDE_PROJECT_DIR/.claude/hooks/test-discipline.pattern"
 if [ -f "$PATTERN_FILE" ]; then RUNNER_ERE=$(head -1 "$PATTERN_FILE"); else RUNNER_ERE='(^|[;&|[:space:]])(npx[[:space:]]+)?vitest([[:space:]]|$)|pnpm([[:space:]]+-r)?([[:space:]]+--[^[:space:]]+)*[[:space:]]+test([[:space:]]|$|:)|npm[[:space:]]+(run[[:space:]]+)?test([[:space:]]|$)'; fi
-if ! printf '%s' "$cmd" | grep -Eq "$RUNNER_ERE"; then
+BENCH_ERE='(^|[;&|[:space:]])(pnpm([[:space:]]+--filter[[:space:]]+[^[:space:]]+)?[[:space:]]+(run[[:space:]]+)?bench|npm[[:space:]]+run[[:space:]]+bench)([[:space:]:]|$)'
+if ! printf '%s' "$cmd" | grep -Eq "$RUNNER_ERE" && ! printf '%s' "$cmd" | grep -Eq "$BENCH_ERE"; then
   exit 0
+fi
+
+# ── Check «push antes de verificar» (AP-089). Orden de ronda: fix → typecheck
+# → commit → push → tests. Si la rama ya está publicada (tiene upstream) y hay
+# trabajo sin pushear, bloquear la verificación: un árbol sin pushear muere
+# con la sesión (finplan PR #1974: 12 nits perdidos; #2299/#2301: rondas
+# «success» con checklist marcado y tip remoto sin mover), mientras que un
+# push aún sin verificar cuesta un run de CI que ci.yml cancela al siguiente
+# push. Sin upstream (antes del hito 1) no actúa: ahí cubre draft-pr-on-push.
+# Sobreescribible por repo con PIPELINE_VERIFY_AFTER_PUSH=0. Fail-open.
+if [ "${PIPELINE_VERIFY_AFTER_PUSH:-1}" != "0" ] && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)
+  if [ -n "$upstream" ]; then
+    dirty=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+    ahead=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
+    if [ "${dirty:-0}" -gt 0 ] || [ "${ahead:-0}" -gt 0 ]; then
+      cat >&2 <<EOF2
+BLOQUEADO por disciplina de push (AP-089): vas a lanzar verificación con ${dirty} ficheros sin commitear y ${ahead} commits sin pushear en una rama ya publicada.
+Orden de ronda: fix → typecheck → commit → push → tests. Commitea y pushea lo que llevas AHORA (git push origin HEAD) y después lanza los tests. Si la sesión muere durante la verificación, lo que no está pusheado se pierde; CI es el gate de la suite.
+EOF2
+      exit 2
+    fi
+  fi
 fi
 
 # Permitido si trae rutas de fichero (test scoped) DESPUÉS del runner:
