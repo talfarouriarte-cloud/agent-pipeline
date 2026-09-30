@@ -199,6 +199,10 @@
         "has_default": true,
         "required": false
       },
+      "budget_pin_forzado": {
+        "has_default": true,
+        "required": false
+      },
       "ci_workflow_name": {
         "has_default": true,
         "required": false
@@ -263,6 +267,13 @@
       "statuses": "write",
       "actions": "write",
       "id-token": "write"
+    },
+    "lesson_bearing": {
+      "resolve_max_turns": {
+        "default": 80,
+        "ap": "AP-092",
+        "leccion": "central#247 (aud. finplan#2276/#2289) — 2 de 2 muertes de architect-resolve en 4 ciclos fueron error_max_turns a 41/40, una DESPUÉS de publicar su Δ; el mandato creció (ADR-217, AP-021, AP-029) y el presupuesto seguía en su valor de alta. El stub de finplan pineaba 40: desde AP-092 el clamp AP-061 lo eleva"
+      }
     }
   }
 }
