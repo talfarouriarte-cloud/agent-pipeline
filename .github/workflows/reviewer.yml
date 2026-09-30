@@ -560,6 +560,48 @@ jobs:
             - Respeta el formato y los criterios de severidad definidos
               en `docs/agents/reviewer.md` exactamente.
 
+      # Firma de FLOTA CAÍDA (AP-091, central#212): materializa la clase de la
+      # sesión LLM (muerte instantánea / viva) como la conclusión de UNO de los
+      # dos steps-marcador de abajo. El `detect` del Watchdog los lee por API
+      # (nombre EXACTO del step — no renombrar sin tocar la firma de flota).
+      - name: Clasificar la ejecución LLM (firma de flota, AP-091)
+        id: llm_exec
+        if: always() && steps.reviewer.outcome != 'skipped' && steps.reviewer.outcome != 'cancelled'
+        uses: actions/github-script@v7
+        env:
+          EXEC_FILE: ${{ steps.reviewer.outputs.execution_file }}
+        with:
+          script: |
+            // Firma de muerte INSTANTÁNEA de la sesión LLM (AP-091, central#212). Lee la
+            // salida ESTRUCTURADA de la action (execution file, AP-040) — jamás substring
+            // de log — y la materializa como la conclusión de UNO de los dos steps
+            // siguientes, que el `detect` del Watchdog lee por API (`listJobsForWorkflowRun`,
+            // `actions: read`, sin permiso nuevo) para computar la firma de FLOTA CAÍDA.
+            // Firma COMPLETA exigida (anti falso positivo): `num_turns ≤ 1` · coste 0 ·
+            // `modelUsage` objeto vacío. Execution file ilegible, o `num_turns ≤ 1` y coste 0
+            // SIN campo `modelUsage` (firma no juzgable), ⇒ ni uno ni otro (neutro).
+            const fs = require('fs');
+            const f = process.env.EXEC_FILE || `${process.env.RUNNER_TEMP || '/tmp'}/claude-execution-output.json`;
+            let d = null;
+            try { d = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (e) { core.info(`execution file ilegible (${e.message}): neutro.`); }
+            const msgs = Array.isArray(d) ? d : (d ? [d] : []);
+            const r = [...msgs].reverse().find(m => m && m.type === 'result') || null;
+            if (!r) { core.setOutput('kind', 'ilegible'); return; }
+            const turns = Number(r.num_turns), cost = Number(r.total_cost_usd);
+            const mu = r.modelUsage;
+            const muVacio = !!mu && typeof mu === 'object' && Object.keys(mu).length === 0;
+            const corta = Number.isFinite(turns) && turns <= 1 && cost === 0;
+            const kind = corta && muVacio ? 'instant' : (corta && mu === undefined ? 'ilegible' : 'alive');
+            core.info(`ejecución LLM: num_turns=${r.num_turns} · total_cost_usd=${r.total_cost_usd} · modelUsage=${mu === undefined ? '(ausente)' : muVacio ? '{}' : 'con uso'} ⇒ ${kind}`);
+            core.setOutput('kind', kind);
+      - name: 'llm-flota: muerte instantánea'
+        if: always() && steps.llm_exec.outputs.kind == 'instant'
+        run: echo "::warning::Sesión LLM muerta al nacer (num_turns ≤ 1, coste 0, modelUsage vacío) — cuenta para la firma de FLOTA CAÍDA del Watchdog (AP-091)."
+      - name: 'llm-flota: sesión viva'
+        if: always() && steps.llm_exec.outputs.kind == 'alive'
+        run: echo "Sesión LLM viva — resetea la firma de FLOTA CAÍDA del Watchdog (AP-091)."
+
+
       # ── Estado materializado (ADR-218 + AP-025): un paso DETERMINISTA (cero
       # LLM) cierra la costura «sesión del Reviewer → estado» (la disciplina de
       # un LLM es olvidable; el mecanismo no). DOS ramas DISJUNTAS por «¿existe

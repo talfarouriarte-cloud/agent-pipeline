@@ -153,6 +153,211 @@ jobs:
       found: ${{ steps.scan.outputs.found }}
       anomalies: ${{ steps.scan.outputs.anomalies }}
     steps:
+      # Preflight de credencial (AP-091, central#259): con el PAT muerto, el
+      # detect moría en `Orphan PR net` y escalaba a los K=3 ticks (~20 min);
+      # aquí escala en el PRIMER tick. Antes del settle de 330 s.
+      - name: Preflight de credencial (fail-fast, AP-091)
+        id: preflight
+        uses: actions/github-script@v7
+        env:
+          PREFLIGHT_PAT: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          PREFLIGHT_ROLE: watchdog-detect
+        with:
+          script: |
+            // Preflight de credencial fail-fast (AP-091, central#259). Primer step del
+            // job: una llamada barata con el PAT ANTES de checkout/setup. 401 dos veces
+            // (10 s entre intentos) ⇒ credencial INVÁLIDA: escalar por el canal de dedupe
+            // AP-059 con el GITHUB_TOKEN del job (el PAT es justo lo que está muerto) y
+            // abortar el job en segundos. Cualquier otro status (5xx, red) es fail-open:
+            // el preflight solo aborta en credencial inválida, jamás por un GitHub lento.
+            const { owner, repo } = context.repo;
+            const O = { owner, repo };
+            const PAT = process.env.PREFLIGHT_PAT || '';
+            const ROLE = process.env.PREFLIGHT_ROLE || 'pipeline';
+            const WAIT_MS = Number(process.env.PREFLIGHT_WAIT_MS || 10000);
+            const MARK = '<!-- watchdog-heartbeat-escalation -->';   // dedupe COMPARTIDO (AP-059)
+            const MODE = '<!-- pipeline-credential-401 -->';          // modo «credencial inválida»
+            // Marcador ANCLADO a línea propia, jamás substring: una CITA del marcador en
+            // prosa (backticks) dentro de un issue `human-needed` abierto no es una
+            // escalada — con `includes()` silenciaba el canal entero (central#212).
+            const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const anclado = (txt, m) => new RegExp('^[ \\t]*' + esc(m) + '[ \\t]*$', 'm').test(txt || '');
+
+            async function probe() {
+              try {
+                const res = await fetch('https://api.github.com/rate_limit', {
+                  headers: { Authorization: `Bearer ${PAT}`, Accept: 'application/vnd.github+json' } });
+                return res.status;
+              } catch (e) { core.info(`preflight: error de red (${e.message})`); return 0; }
+            }
+            const s1 = await probe();
+            const s2 = s1 === 200 ? 200 : (await new Promise(r => setTimeout(r, WAIT_MS)), await probe());
+            core.info(`preflight (${ROLE}): GET /rate_limit con el PAT ⇒ ${s1}${s1 === 200 ? '' : ` · reintento ⇒ ${s2}`}`);
+            if (!(s1 === 401 && s2 === 401)) {
+              if (s2 !== 200) core.warning(`preflight (${ROLE}): /rate_limit devolvió ${s1}/${s2}, no 401/401 — transitorio, sigo (fail-open).`);
+              core.setOutput('dead', 'false');
+              return;
+            }
+            core.setOutput('dead', 'true');
+            const runUrl = `${process.env.GITHUB_SERVER_URL || 'https://github.com'}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const texto = [
+              `El PAT del pipeline (\`REVIEWER_GITHUB_TOKEN\`) devuelve **401 Bad credentials** (2 intentos, ${WAIT_MS / 1000} s entre ellos). Detectado por el preflight del job \`${ROLE}\`, que ha abortado en segundos en vez de quemar el setup contra una credencial muerta.`,
+              ``,
+              `**Consecuencia mientras dure.** Creator (Guard serial), Watchdog (detect y rescates) y todo post-step que escriba con el PAT caen JUNTOS: el primario y el rescate comparten la credencial.`,
+              ``,
+              `**Qué hacer.** Runbook «Rotación del PAT» del central (\`docs/runbook-rotacion-pat.md\` en agent-pipeline): regenerar/actualizar el secret en TODOS los repos que lo consumen, verificar con \`gh api rate_limit\`, \`workflow_dispatch\` del Watchdog y confirmar \`success\`. Los arms que murieron durante la caída hay que re-armarlos (el Watchdog los recoge por \`issue-armed-no-pr\`).`,
+              ``,
+              `**Run:** ${runUrl}`,
+            ].join('\n');
+            try {
+              let abiertas = [];
+              try {
+                abiertas = await github.paginate(github.rest.issues.listForRepo,
+                  { ...O, labels: 'human-needed', state: 'open', per_page: 100 });
+              } catch (e) { core.warning(`no se pudo listar escaladas abiertas (${e.message}): sigo, prefiero duplicar a callar.`); }
+              const abierta = abiertas.find(i => !i.pull_request && anclado(i.body, MARK));
+              if (abierta) {
+                if (!anclado(abierta.body, MODE)) {
+                  const previos = await github.paginate(github.rest.issues.listComments,
+                    { ...O, issue_number: abierta.number, per_page: 100 });
+                  if (!previos.some(c => anclado(c.body, MODE))) {
+                    await github.rest.issues.createComment({ ...O, issue_number: abierta.number,
+                      body: `**Transición de modo.** Credencial del pipeline inválida (PAT 401) mientras esta escalada seguía abierta por otro modo. Un solo issue a propósito.\n\n${texto}\n\n${MODE}` });
+                  }
+                }
+                core.info(`escalada ya abierta (#${abierta.number}): no duplico.`);
+              } else {
+                await github.rest.issues.create({ ...O,
+                  title: 'Credencial del pipeline inválida (PAT 401) — intervención humana',
+                  labels: ['human-needed'], body: `${texto}\n\n${MODE}\n${MARK}` });
+                core.warning('preflight: escalada human-needed abierta (credencial inválida).');
+              }
+            } catch (e) { core.warning(`preflight: la escalada falló (${e.message}); el aborto sigue en pie.`); }
+            core.setFailed(`PAT del pipeline inválido (401 ×2): job \`${ROLE}\` abortado por el preflight de credencial (AP-091).`);
+
+      # Firma de FLOTA CAÍDA (AP-091, central#212): K=3 sesiones LLM consecutivas
+      # muertas al nacer en CUALQUIER etapa ⇒ UNA escalada por el canal AP-059.
+      # Antes del settle: lee historial, no necesita esperar a nada.
+      - name: Firma de flota caída (AP-091)
+        id: fleet
+        uses: actions/github-script@v7
+        env:
+          IN_CREATOR_WF: ${{ inputs.creator_workflow_name }}
+          IN_REVIEWER_WF: ${{ inputs.reviewer_workflow_name }}
+        with:
+          script: |
+            // Firma de FLOTA CAÍDA (AP-091, central#212 punto 2). Caída de credencial o
+            // cuota de la flota LLM: toda sesión muere al nacer (`num_turns ≤ 1`, coste 0,
+            // `modelUsage` vacío). El detector determinista sigue VERDE (no necesita LLM),
+            // así que el belt `if: failure()` de `detect` no la ve, y el heartbeat medía la
+            // conclusión del RUN entero: los ticks sin anomalías (architect `skipped`)
+            // concluyen `success` y reseteaban su racha (178 rojos de la etapa architect
+            // en ~61 h sin escalada, finplan PR #2085). Aquí la racha se computa sobre las
+            // SESIONES LLM (Creator, Reviewer y architect de este mismo workflow), leídas
+            // del step-marcador que cada etapa materializa desde su execution file, de DOS
+            // formas: (a) la flota entera en orden temporal (cualquier sesión viva
+            // resetea) y (b) cada etapa por separado (solo una sesión viva DE ESA etapa
+            // resetea): el resolver corre con otro modelo y otra cuota que Creator y
+            // Reviewer (AP-088), y su caída sola no debe quedar tapada por ellos. Un run
+            // sin sesión es neutro. Fail-soft: un fallo aquí NO tumba el job.
+            const { owner, repo } = context.repo;
+            const O = { owner, repo };
+            const K = Number(process.env.FLEET_K || 3);
+            // En `detect` el run propio aún no tiene sesión (FLEET_SELF_KIND vacío). En la
+            // etapa architect el step corre tras el clasificador: una muerte de ESTE run
+            // es el primer eslabón, y la escalada sale en el mismo tick que la 3.ª muerte.
+            const SELF_KIND = process.env.FLEET_SELF_KIND || '';
+            const MAX_CALLS = 25;   // presupuesto de llamadas listJobs por corrida
+            const STEP_DEAD = 'llm-flota: muerte instantánea';
+            const STEP_ALIVE = 'llm-flota: sesión viva';
+            const MARK = '<!-- watchdog-heartbeat-escalation -->';
+            const MODE = '<!-- pipeline-fleet-down -->';
+            const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const anclado = (txt, m) => new RegExp('^[ \\t]*' + esc(m) + '[ \\t]*$', 'm').test(txt || '');
+            try {
+              const { data: self } = await github.rest.actions.getWorkflowRun({ ...O, run_id: context.runId });
+              const nombres = new Set([process.env.IN_CREATOR_WF, process.env.IN_REVIEWER_WF].filter(Boolean));
+              const wfs = await github.paginate(github.rest.actions.listRepoWorkflows, { ...O, per_page: 100 });
+              const etapas = [{ id: self.workflow_id, nombre: `${self.name || 'Watchdog'} · architect` },
+                ...wfs.filter(w => nombres.has(w.name) && w.id !== self.workflow_id).map(w => ({ id: w.id, nombre: w.name }))];
+              const porFecha = (a, b) => new Date(b.updated_at) - new Date(a.updated_at);
+              for (const e of etapas) {
+                // Los runs del Watchdog sin etapa architect son neutros y ocupan sitio: ventana mayor.
+                const { data } = await github.rest.actions.listWorkflowRuns({ ...O, workflow_id: e.id, status: 'completed',
+                  per_page: e.id === self.workflow_id ? 30 : 10 });
+                e.runs = (data.workflow_runs || []).filter(r => r.id !== context.runId && r.conclusion !== 'skipped').sort(porFecha);
+              }
+              const propio = { name: `${self.name || 'Watchdog'} (este run, etapa architect)`, updated_at: new Date().toISOString(), html_url: self.html_url };
+              const clase = new Map();
+              let llamadas = 0;
+              async function clasificar(r) {
+                if (clase.has(r.id)) return clase.get(r.id);
+                if (llamadas >= MAX_CALLS) return 'fin';
+                llamadas++;
+                const { data: jl } = await github.rest.actions.listJobsForWorkflowRun({ ...O, run_id: r.id, per_page: 50 });
+                const steps = (jl.jobs || []).flatMap(j => j.steps || []);
+                const k = steps.some(s => s.name === STEP_ALIVE && s.conclusion === 'success') ? 'alive'
+                  : steps.some(s => s.name === STEP_DEAD && s.conclusion === 'success') ? 'instant' : 'none';
+                clase.set(r.id, k);
+                return k;
+              }
+              async function racha(lista, conPropio) {
+                const m = conPropio ? [propio] : [];
+                for (const r of lista) {
+                  if (m.length >= K) break;
+                  const k = await clasificar(r);
+                  if (k === 'fin' || k === 'alive') break;   // presupuesto agotado / sesión viva: reset
+                  if (k === 'instant') m.push(r);
+                }
+                return m;
+              }
+              const conPropio = SELF_KIND === 'instant';
+              const disparos = [];
+              const flota = await racha(etapas.flatMap(e => e.runs).sort(porFecha), conPropio);
+              if (flota.length >= K) disparos.push({ nombre: 'toda la flota (etapas mezcladas, en orden temporal)', m: flota });
+              for (const e of etapas) {
+                const m = await racha(e.runs, conPropio && e.id === self.workflow_id);
+                if (m.length >= K) disparos.push({ nombre: `etapa ${e.nombre}`, m });
+              }
+              core.info(`Flota LLM: racha global ${flota.length} · ${etapas.map(e => e.nombre).join(', ')} · umbral K=${K} · ${llamadas} runs inspeccionados.`);
+              core.setOutput('fleet_down', String(disparos.length > 0));
+              if (!disparos.length) return;
+
+              const lista = disparos.map(d => `**${d.nombre}** — ${d.m.length} sesiones consecutivas muertas al nacer:\n` +
+                d.m.map(r => `- ${r.name} · ${r.updated_at} · ${r.html_url}`).join('\n')).join('\n\n');
+              const texto = [
+                `**Flota LLM caída.** Sesiones LLM del pipeline muertas al nacer (\`num_turns ≤ 1\`, coste 0, \`modelUsage\` vacío — leído del execution file de cada una, AP-040), umbral K=${K}:`,
+                ``, lista, ``,
+                `Firma típica de credencial/cuota de Claude caída (\`CLAUDE_CODE_OAUTH_TOKEN\` caducado o revocado, límite del plan agotado; el resolver usa otro modelo y otra cuota que Creator y Reviewer, AP-088). El detector determinista sigue verde, así que ningún otro belt lo ve; architect-resolve —el resolutor de todo \`stalled\`— puede ser una de las etapas muertas. Precedente: finplan PR #2085, ~61 h parado sin escalada (central#212).`,
+                ``,
+                `**Qué comprobar.** El log del step \`Run …\` de cualquiera de los runs citados (error de auth / quota), el estado del plan y el secret \`CLAUDE_CODE_OAUTH_TOKEN\`. La racha se resetea sola con la primera sesión VIVA; cerrar este issue no la resetea.`,
+              ].join('\n');
+              let abiertas = [];
+              try {
+                abiertas = await github.paginate(github.rest.issues.listForRepo,
+                  { ...O, labels: 'human-needed', state: 'open', per_page: 100 });
+              } catch (e) { core.warning(`no se pudo listar escaladas abiertas (${e.message}): sigo, prefiero duplicar a callar.`); }
+              const abierta = abiertas.find(i => !i.pull_request && anclado(i.body, MARK));
+              if (abierta) {
+                if (!anclado(abierta.body, MODE)) {
+                  const previos = await github.paginate(github.rest.issues.listComments,
+                    { ...O, issue_number: abierta.number, per_page: 100 });
+                  if (!previos.some(c => anclado(c.body, MODE))) {
+                    await github.rest.issues.createComment({ ...O, issue_number: abierta.number,
+                      body: `**Transición de modo.** Flota LLM caída mientras esta escalada seguía abierta por otro modo. Un solo issue a propósito.\n\n${texto}\n\n${MODE}` });
+                  }
+                }
+                core.info(`escalada ya abierta (#${abierta.number}): no duplico.`);
+                return;
+              }
+              await github.rest.issues.create({ ...O,
+                title: 'Flota LLM caída: sesiones muertas al nacer — intervención humana',
+                labels: ['human-needed'], body: `${texto}\n\n${MODE}\n${MARK}` });
+              core.warning(`Flota LLM caída (${disparos.map(d => d.nombre).join('; ')}): escalada human-needed abierta.`);
+            } catch (e) {
+              core.warning(`firma de flota: ${e.message} (fail-soft, el job sigue).`);
+            }
+
       - name: Settle (event-driven only) — capa 2 de vigilancia (AP-011)
         # Era sleep 90 (que los runs encadenados lleguen a queued antes del
         # gate 0). 2026-07-13, AP-011: sube al bound de liveness COMPLETO
@@ -950,8 +1155,11 @@ jobs:
                 // Nota: el gate 0 (runs activos => no hacer nada) ya cubre la
                 // reparación en curso; aquí solo cap de reintentos via marca.
                 if (rebases < 2) {
-                  await github.rest.issues.createComment({
-                    ...O, issue_number: pr.number,
+                  // Con el PAT (central#268): con el GITHUB_TOKEN el ping nacía de
+                  // `github-actions[bot]` y el anti-loop de GitHub impedía que su
+                  // mención de arm disparase claude-code.yml — 3 de 3 pings
+                  // estériles en la historia del marcador, cap 2 quemado en 6 min.
+                  await patCall('POST', `/issues/${pr.number}/comments`, {
                     body: `${REBASE_MARK}\n@claude rebasa esta rama sobre \`origin/${process.env.IN_DEFAULT_BRANCH}\` y resuelve los conflictos (watchdog: PR en conflicto sin checks posibles — sin merge-ref no corren CI ni Reviewer). Alcance intacto: solo rebase + resolución. <!-- ping-creator -->\n${CAPA}`,
                   });
                   core.notice(`PR #${pr.number}: dirty sin checks; ping de rebase ${rebases + 1}/2.`);
@@ -1004,9 +1212,12 @@ jobs:
                 if (attributable) {
                   const attrPings = prComments.filter(c => (c.body || '').includes(ATTR_MARK)).length;
                   if (attrPings === 0) {
-                    await github.rest.issues.createComment({
-                      ...O, issue_number: pr.number,
-                      body: `${ATTR_MARK}\n@claude CI en rojo (run ${ci.id}) con fallos ATRIBUIBLES a este PR — todos los tests fallidos viven en ficheros que el PR toca:\n\n${failedFiles.map(f => '- \n${CAPA}`' + f + '`').join('\n')}\n\nBaja el detalle con \`gh run view ${ci.id} --log-failed\`, corrige y pushea. (watchdog: fast-path sin retry de flaky — el rojo atribuible no se reintenta.) <!-- ping-creator -->`,
+                    // Con el PAT, misma causa que el ping de rebase (central#268).
+                    // La lista de ficheros llevaba además `${CAPA}` pegado dentro
+                    // de cada ítem (literal, fuera de template) y sin marcador de
+                    // capa al final: corregido.
+                    await patCall('POST', `/issues/${pr.number}/comments`, {
+                      body: `${ATTR_MARK}\n@claude CI en rojo (run ${ci.id}) con fallos ATRIBUIBLES a este PR — todos los tests fallidos viven en ficheros que el PR toca:\n\n${failedFiles.map(f => '- `' + f + '`').join('\n')}\n\nBaja el detalle con \`gh run view ${ci.id} --log-failed\`, corrige y pushea. (watchdog: fast-path sin retry de flaky — el rojo atribuible no se reintenta.) <!-- ping-creator -->\n${CAPA}`,
                     });
                     core.notice(`PR #${pr.number}: CI rojo ATRIBUIBLE (${failedFiles.length} ficheros del diff); escalado directo sin retry.`);
                   } else {
@@ -1358,6 +1569,7 @@ jobs:
         run: mkdir -p "$HOME/.local/bin"
 
       - name: Run Architect watchdog
+        id: architect
         # AP-085 (2026-09-08) — pin a SHA completo, no a `@v1`. v1.0.217 =
         # 9c5ddab2e6d17b83ea679153b31f1d5f023cf636 (Claude Code 2.1.263,
         # 2026-09-06T02:55Z): ÚLTIMA release conocida buena, única con evidencia
@@ -1493,6 +1705,172 @@ jobs:
               core.warning(`#${n}: ping-creator sin mención de arm — arm materializado.`);
             }
 
+      # Firma de FLOTA CAÍDA (AP-091, central#212): materializa la clase de la
+      # sesión LLM (muerte instantánea / viva) como la conclusión de UNO de los
+      # dos steps-marcador de abajo. El `detect` del Watchdog los lee por API
+      # (nombre EXACTO del step — no renombrar sin tocar la firma de flota).
+      - name: Clasificar la ejecución LLM (firma de flota, AP-091)
+        id: llm_exec
+        if: always() && steps.architect.outcome != 'skipped' && steps.architect.outcome != 'cancelled'
+        uses: actions/github-script@v7
+        env:
+          EXEC_FILE: ${{ steps.architect.outputs.execution_file }}
+        with:
+          script: |
+            // Firma de muerte INSTANTÁNEA de la sesión LLM (AP-091, central#212). Lee la
+            // salida ESTRUCTURADA de la action (execution file, AP-040) — jamás substring
+            // de log — y la materializa como la conclusión de UNO de los dos steps
+            // siguientes, que el `detect` del Watchdog lee por API (`listJobsForWorkflowRun`,
+            // `actions: read`, sin permiso nuevo) para computar la firma de FLOTA CAÍDA.
+            // Firma COMPLETA exigida (anti falso positivo): `num_turns ≤ 1` · coste 0 ·
+            // `modelUsage` objeto vacío. Execution file ilegible, o `num_turns ≤ 1` y coste 0
+            // SIN campo `modelUsage` (firma no juzgable), ⇒ ni uno ni otro (neutro).
+            const fs = require('fs');
+            const f = process.env.EXEC_FILE || `${process.env.RUNNER_TEMP || '/tmp'}/claude-execution-output.json`;
+            let d = null;
+            try { d = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (e) { core.info(`execution file ilegible (${e.message}): neutro.`); }
+            const msgs = Array.isArray(d) ? d : (d ? [d] : []);
+            const r = [...msgs].reverse().find(m => m && m.type === 'result') || null;
+            if (!r) { core.setOutput('kind', 'ilegible'); return; }
+            const turns = Number(r.num_turns), cost = Number(r.total_cost_usd);
+            const mu = r.modelUsage;
+            const muVacio = !!mu && typeof mu === 'object' && Object.keys(mu).length === 0;
+            const corta = Number.isFinite(turns) && turns <= 1 && cost === 0;
+            const kind = corta && muVacio ? 'instant' : (corta && mu === undefined ? 'ilegible' : 'alive');
+            core.info(`ejecución LLM: num_turns=${r.num_turns} · total_cost_usd=${r.total_cost_usd} · modelUsage=${mu === undefined ? '(ausente)' : muVacio ? '{}' : 'con uso'} ⇒ ${kind}`);
+            core.setOutput('kind', kind);
+      - name: 'llm-flota: muerte instantánea'
+        if: always() && steps.llm_exec.outputs.kind == 'instant'
+        run: echo "::warning::Sesión LLM muerta al nacer (num_turns ≤ 1, coste 0, modelUsage vacío) — cuenta para la firma de FLOTA CAÍDA del Watchdog (AP-091)."
+      - name: 'llm-flota: sesión viva'
+        if: always() && steps.llm_exec.outputs.kind == 'alive'
+        run: echo "Sesión LLM viva — resetea la firma de FLOTA CAÍDA del Watchdog (AP-091)."
+
+      # Firma de FLOTA CAÍDA en el MISMO tick (AP-091): el step de `detect` solo ve
+      # sesiones de runs ya COMPLETADOS; si la 3.ª muerte es la de esta etapa, aquí
+      # sale la escalada sin esperar al tick siguiente. Mismo script que en detect.
+      - name: Firma de flota caída (AP-091)
+        id: fleet
+        if: always() && steps.llm_exec.outputs.kind == 'instant'
+        uses: actions/github-script@v7
+        env:
+          FLEET_SELF_KIND: ${{ steps.llm_exec.outputs.kind }}
+          IN_CREATOR_WF: ${{ inputs.creator_workflow_name }}
+          IN_REVIEWER_WF: ${{ inputs.reviewer_workflow_name }}
+        with:
+          script: |
+            // Firma de FLOTA CAÍDA (AP-091, central#212 punto 2). Caída de credencial o
+            // cuota de la flota LLM: toda sesión muere al nacer (`num_turns ≤ 1`, coste 0,
+            // `modelUsage` vacío). El detector determinista sigue VERDE (no necesita LLM),
+            // así que el belt `if: failure()` de `detect` no la ve, y el heartbeat medía la
+            // conclusión del RUN entero: los ticks sin anomalías (architect `skipped`)
+            // concluyen `success` y reseteaban su racha (178 rojos de la etapa architect
+            // en ~61 h sin escalada, finplan PR #2085). Aquí la racha se computa sobre las
+            // SESIONES LLM (Creator, Reviewer y architect de este mismo workflow), leídas
+            // del step-marcador que cada etapa materializa desde su execution file, de DOS
+            // formas: (a) la flota entera en orden temporal (cualquier sesión viva
+            // resetea) y (b) cada etapa por separado (solo una sesión viva DE ESA etapa
+            // resetea): el resolver corre con otro modelo y otra cuota que Creator y
+            // Reviewer (AP-088), y su caída sola no debe quedar tapada por ellos. Un run
+            // sin sesión es neutro. Fail-soft: un fallo aquí NO tumba el job.
+            const { owner, repo } = context.repo;
+            const O = { owner, repo };
+            const K = Number(process.env.FLEET_K || 3);
+            // En `detect` el run propio aún no tiene sesión (FLEET_SELF_KIND vacío). En la
+            // etapa architect el step corre tras el clasificador: una muerte de ESTE run
+            // es el primer eslabón, y la escalada sale en el mismo tick que la 3.ª muerte.
+            const SELF_KIND = process.env.FLEET_SELF_KIND || '';
+            const MAX_CALLS = 25;   // presupuesto de llamadas listJobs por corrida
+            const STEP_DEAD = 'llm-flota: muerte instantánea';
+            const STEP_ALIVE = 'llm-flota: sesión viva';
+            const MARK = '<!-- watchdog-heartbeat-escalation -->';
+            const MODE = '<!-- pipeline-fleet-down -->';
+            const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const anclado = (txt, m) => new RegExp('^[ \\t]*' + esc(m) + '[ \\t]*$', 'm').test(txt || '');
+            try {
+              const { data: self } = await github.rest.actions.getWorkflowRun({ ...O, run_id: context.runId });
+              const nombres = new Set([process.env.IN_CREATOR_WF, process.env.IN_REVIEWER_WF].filter(Boolean));
+              const wfs = await github.paginate(github.rest.actions.listRepoWorkflows, { ...O, per_page: 100 });
+              const etapas = [{ id: self.workflow_id, nombre: `${self.name || 'Watchdog'} · architect` },
+                ...wfs.filter(w => nombres.has(w.name) && w.id !== self.workflow_id).map(w => ({ id: w.id, nombre: w.name }))];
+              const porFecha = (a, b) => new Date(b.updated_at) - new Date(a.updated_at);
+              for (const e of etapas) {
+                // Los runs del Watchdog sin etapa architect son neutros y ocupan sitio: ventana mayor.
+                const { data } = await github.rest.actions.listWorkflowRuns({ ...O, workflow_id: e.id, status: 'completed',
+                  per_page: e.id === self.workflow_id ? 30 : 10 });
+                e.runs = (data.workflow_runs || []).filter(r => r.id !== context.runId && r.conclusion !== 'skipped').sort(porFecha);
+              }
+              const propio = { name: `${self.name || 'Watchdog'} (este run, etapa architect)`, updated_at: new Date().toISOString(), html_url: self.html_url };
+              const clase = new Map();
+              let llamadas = 0;
+              async function clasificar(r) {
+                if (clase.has(r.id)) return clase.get(r.id);
+                if (llamadas >= MAX_CALLS) return 'fin';
+                llamadas++;
+                const { data: jl } = await github.rest.actions.listJobsForWorkflowRun({ ...O, run_id: r.id, per_page: 50 });
+                const steps = (jl.jobs || []).flatMap(j => j.steps || []);
+                const k = steps.some(s => s.name === STEP_ALIVE && s.conclusion === 'success') ? 'alive'
+                  : steps.some(s => s.name === STEP_DEAD && s.conclusion === 'success') ? 'instant' : 'none';
+                clase.set(r.id, k);
+                return k;
+              }
+              async function racha(lista, conPropio) {
+                const m = conPropio ? [propio] : [];
+                for (const r of lista) {
+                  if (m.length >= K) break;
+                  const k = await clasificar(r);
+                  if (k === 'fin' || k === 'alive') break;   // presupuesto agotado / sesión viva: reset
+                  if (k === 'instant') m.push(r);
+                }
+                return m;
+              }
+              const conPropio = SELF_KIND === 'instant';
+              const disparos = [];
+              const flota = await racha(etapas.flatMap(e => e.runs).sort(porFecha), conPropio);
+              if (flota.length >= K) disparos.push({ nombre: 'toda la flota (etapas mezcladas, en orden temporal)', m: flota });
+              for (const e of etapas) {
+                const m = await racha(e.runs, conPropio && e.id === self.workflow_id);
+                if (m.length >= K) disparos.push({ nombre: `etapa ${e.nombre}`, m });
+              }
+              core.info(`Flota LLM: racha global ${flota.length} · ${etapas.map(e => e.nombre).join(', ')} · umbral K=${K} · ${llamadas} runs inspeccionados.`);
+              core.setOutput('fleet_down', String(disparos.length > 0));
+              if (!disparos.length) return;
+
+              const lista = disparos.map(d => `**${d.nombre}** — ${d.m.length} sesiones consecutivas muertas al nacer:\n` +
+                d.m.map(r => `- ${r.name} · ${r.updated_at} · ${r.html_url}`).join('\n')).join('\n\n');
+              const texto = [
+                `**Flota LLM caída.** Sesiones LLM del pipeline muertas al nacer (\`num_turns ≤ 1\`, coste 0, \`modelUsage\` vacío — leído del execution file de cada una, AP-040), umbral K=${K}:`,
+                ``, lista, ``,
+                `Firma típica de credencial/cuota de Claude caída (\`CLAUDE_CODE_OAUTH_TOKEN\` caducado o revocado, límite del plan agotado; el resolver usa otro modelo y otra cuota que Creator y Reviewer, AP-088). El detector determinista sigue verde, así que ningún otro belt lo ve; architect-resolve —el resolutor de todo \`stalled\`— puede ser una de las etapas muertas. Precedente: finplan PR #2085, ~61 h parado sin escalada (central#212).`,
+                ``,
+                `**Qué comprobar.** El log del step \`Run …\` de cualquiera de los runs citados (error de auth / quota), el estado del plan y el secret \`CLAUDE_CODE_OAUTH_TOKEN\`. La racha se resetea sola con la primera sesión VIVA; cerrar este issue no la resetea.`,
+              ].join('\n');
+              let abiertas = [];
+              try {
+                abiertas = await github.paginate(github.rest.issues.listForRepo,
+                  { ...O, labels: 'human-needed', state: 'open', per_page: 100 });
+              } catch (e) { core.warning(`no se pudo listar escaladas abiertas (${e.message}): sigo, prefiero duplicar a callar.`); }
+              const abierta = abiertas.find(i => !i.pull_request && anclado(i.body, MARK));
+              if (abierta) {
+                if (!anclado(abierta.body, MODE)) {
+                  const previos = await github.paginate(github.rest.issues.listComments,
+                    { ...O, issue_number: abierta.number, per_page: 100 });
+                  if (!previos.some(c => anclado(c.body, MODE))) {
+                    await github.rest.issues.createComment({ ...O, issue_number: abierta.number,
+                      body: `**Transición de modo.** Flota LLM caída mientras esta escalada seguía abierta por otro modo. Un solo issue a propósito.\n\n${texto}\n\n${MODE}` });
+                  }
+                }
+                core.info(`escalada ya abierta (#${abierta.number}): no duplico.`);
+                return;
+              }
+              await github.rest.issues.create({ ...O,
+                title: 'Flota LLM caída: sesiones muertas al nacer — intervención humana',
+                labels: ['human-needed'], body: `${texto}\n\n${MODE}\n${MARK}` });
+              core.warning(`Flota LLM caída (${disparos.map(d => d.nombre).join('; ')}): escalada human-needed abierta.`);
+            } catch (e) {
+              core.warning(`firma de flota: ${e.message} (fail-soft, el job sigue).`);
+            }
+
   # ── Belt del propio detector (AP-059, repesca finplan#1684 / aud. fp#1700) ──
   # El FALLO del detector no tenía CONSUMIDOR. 2026-07-27: `detect` murió en
   # `Scan for stalled work` («Resource not accessible by integration», causa
@@ -1556,6 +1934,12 @@ jobs:
             // epic-auditor.md § tabla de marcadores ⇒ 5-whys obligatorio.
             const MARK = '<!-- watchdog-heartbeat-escalation -->';
             const MODE = '<!-- watchdog-detect-red-streak -->';   // atribución del MODO
+            // Marcadores ANCLADOS a línea propia (AP-091, central#212): con
+            // `includes()` una CITA del marcador en prosa dentro de cualquier
+            // issue `human-needed` abierto pasaba por escalada vigente y
+            // silenciaba el canal entero.
+            const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const anclado = (txt, m) => new RegExp('^[ \\t]*' + esc(m) + '[ \\t]*$', 'm').test(txt || '');
 
             // Conclusiones que cuentan como «el detector está roto».
             // `success` es el ÚNICO reset: prueba que el detector funciona.
@@ -1568,6 +1952,20 @@ jobs:
             // exista ningún job, luego este belt no llega a correr en ESE tick,
             // pero sí lo ve como historia desde el siguiente que arranque).
             const HARD = new Set(['failure', 'timed_out', 'startup_failure']);
+
+            // ── 0. Rojo por credencial: ya escalado ─────────────────────────
+            // Si lo que falló en ESTE tick es el preflight de credencial
+            // (AP-091), ese step ya escaló en el primer tick con su modo propio
+            // (`pipeline-credential-401`); sumar aquí «detector corre y FALLA» a
+            // los K ticks declararía un segundo modo para la MISMA causa.
+            try {
+              const { data: jl0 } = await github.rest.actions.listJobsForWorkflowRun({ ...O, run_id: context.runId, per_page: 50 });
+              const fallidos = (jl0.jobs || []).flatMap(j => (j.steps || []).filter(s => s.conclusion === 'failure').map(s => s.name));
+              if (fallidos.length && fallidos.every(n => n.startsWith('Preflight de credencial'))) {
+                core.info('detect en rojo por el preflight de credencial: escalado por su propio modo, no duplico.');
+                return;
+              }
+            } catch (e) { core.info(`no se pudieron enumerar los steps fallidos (${e.message}): sigo con la racha.`); }
 
             // ── 1. Racha ────────────────────────────────────────────────────
             // El run ACTUAL es el primer eslabón (estamos aquí porque detect
@@ -1623,7 +2021,7 @@ jobs:
               abiertas = await github.paginate(github.rest.issues.listForRepo,
                 { ...O, labels: 'human-needed', state: 'open', per_page: 100 });
             } catch (e) { core.warning(`no se pudo listar escaladas abiertas (${e.message}): sigo, prefiero duplicar a callar.`); }
-            const abierta = abiertas.find(i => !i.pull_request && (i.body || '').includes(MARK));
+            const abierta = abiertas.find(i => !i.pull_request && anclado(i.body, MARK));
             if (abierta) {
               core.info(`escalada de watchdog ya abierta (#${abierta.number}, mismo marcador): no duplico.`);
               // Pero la TRANSICIÓN de modo no se pierde. El marcador de dedupe
@@ -1634,7 +2032,7 @@ jobs:
               // dueño». «UN solo issue a la vez» se mantiene: la transición
               // entra como COMENTARIO con el marcador del MODO, idempotente
               // por ese mismo marcador (body + comentarios).
-              if (!(abierta.body || '').includes(MODE)) {
+              if (!anclado(abierta.body, MODE)) {
                 let previos = [];
                 try {
                   previos = await github.paginate(github.rest.issues.listComments,
@@ -1643,7 +2041,7 @@ jobs:
                   core.warning(`no se pudieron listar los comentarios de #${abierta.number} (${e.message}): no comento (aquí prefiero callar a repetir cada tick).`);
                   return;
                 }
-                if (!previos.some(c => (c.body || '').includes(MODE))) {
+                if (!previos.some(c => anclado(c.body, MODE))) {
                   await github.rest.issues.createComment({ ...O, issue_number: abierta.number, body: [
                     `**Transición de modo.** El Watchdog ha pasado al modo «el detector **corre y FALLA**» (${streak} corridas consecutivas en rojo, umbral K=${K}) mientras esta escalada seguía abierta por otro modo. Un solo issue a propósito; esto declara el cambio de estado en vez de silenciarlo.`,
                     ``,
