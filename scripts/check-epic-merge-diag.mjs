@@ -9,7 +9,7 @@
 // congela la clase es ejecutar los casos, no releer el código.
 //
 // Verde: exit 0. Rojo: el comportamiento real cambió y el banco lo nota.
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { createRequire } from 'module';
 import { resolve } from 'path';
 
@@ -79,6 +79,36 @@ caso('dedupe manual acotado al sticky: una review que cita «MERGEADO» y el mar
 const pre = m.construirCuerpo(b1, 'serie libre (barrido): armado #5.', 'T', { pop: 5 });
 caso('pop PRE-merge (barrido del finally) NO se registra como pop del merge', m.estadoDe(pre).pops.length === 0);
 caso('sin sticky no consta merge (el camino manual procesa)', !m.stickyMergeado(null));
+
+// ── El estado sale del HECHO, no del texto (review de AP-093, 🔴 1) ────────
+// Suelto con `loose_audit=true` y `issues.create` de la auditoría en 5xx:
+// `createAuditIdempotent` diagnostica «crear auditoría … falló» y devuelve null
+// SIN lanzar, así que ningún diag dice «mergeado». Con el estado derivado del
+// mensaje, el pop se descartaba, el `closed` del mismo merge se declaraba
+// «merge MANUAL» y el 2.º `armQueue` armaba la cabeza nueva: #21 y #22 por UN
+// merge (ciclo 2 de #264). `merged` es `mergeEnEsteJob` del reusable.
+const f0 = m.construirCuerpo(b1, 'suelto #19 sin label de épica: régimen de SUELTO.', 'T0');
+const f1 = m.construirCuerpo(f0, 'crear auditoría «Auditoría #19» falló: 502 Bad Gateway', 'T1', { merged: true });
+caso('merge en este job + mensaje sin «mergeado» (crear auditoría falló) ⇒ consta merge', m.stickyMergeado(c(9, f1)));
+const f2 = m.construirCuerpo(f1, 'serie libre (merge del suelto #19): armado el siguiente de la cola, #21.', 'T2', { pop: 21, merged: true });
+caso('…y el pop de ese merge queda registrado', m.estadoDe(f2).pops.join() === '21');
+caso('…y el `closed` del mismo merge NO se declara «merge MANUAL»', m.stickyMergeado(c(9, f2)));
+caso('…y el 2.º armQueue (cabeza nueva #22) es no-op (a)',
+  m.popYaEmitido({ sticky: c(9, f2), comentariosSiguiente: [], next: 22, pr: 20, login: PAT }) !== null);
+caso('evaluación PRE-merge (`merged: false`) con pop del barrido ⇒ ni merge ni pop',
+  (() => { const b = m.construirCuerpo(f0, 'serie libre (barrido): armado #5.', 'T', { pop: 5, merged: false }); return !m.stickyMergeado(c(9, b)) && m.estadoDe(b).pops.length === 0; })());
+// Costura con el reusable: el hecho solo protege si `diag()` lo pasa. En el
+// consumidor el workflow no existe (llega por `workflow_call`): se omite.
+const WF = '.github/workflows/epic-merge.yml';
+if (existsSync(WF)) {
+  const wf = readFileSync(WF, 'utf8');
+  caso('epic-merge.yml: `diag()` pasa `merged: mergeEnEsteJob` a `construirCuerpo`',
+    /EMD\.construirCuerpo\([^\n]*merged:\s*mergeEnEsteJob/.test(wf));
+  caso('epic-merge.yml: `mergeEnEsteJob` se declara ANTES de `diag()` (sin zona muerta del `let`)',
+    wf.indexOf('let mergeEnEsteJob') !== -1 && wf.indexOf('let mergeEnEsteJob') < wf.indexOf('async function diag('));
+  caso('epic-merge.yml: `postMerge` fija `mergeEnEsteJob = true`',
+    /async function postMerge\([^)]*\)\s*\{[^]*?mergeEnEsteJob = true/.test(wf));
+}
 
 // ── Idempotencia de armQueue por merge (ruling, punto 5 / #264) ────────────
 // Simulación del estado que ven dos evaluaciones del MISMO merge (PR #20):

@@ -37,14 +37,18 @@ const MARKER = '<!-- epic-merge-diag -->';
 const STICKY_L1 = /^\s*<!--\s*epic-merge-diag\s*-->\s*$/;
 // Estado persistente del sticky, en LÍNEA PROPIA tras el mensaje. `diag()` lo
 // arrastra de la versión anterior en cada reescritura: el mensaje es volátil,
-// el estado no.
+// el estado no. `epic-merge-merged` se fija por el HECHO (`merged` de
+// `construirCuerpo`: el job ya entró en `postMerge`), no por el texto.
 const MERGED_LINE = '<!-- epic-merge-merged -->';
 const MERGED_RE = /^[ \t]*<!--\s*epic-merge-merged\s*-->[ \t]*$/m;
 const POP_RE = /^[ \t]*<!--\s*serial-pop:\s*#(\d+)\s*-->[ \t]*$/gm;
 // Legacy (stickies anteriores a AP-093, sin línea de estado): el mensaje de
 // merge en el FORMATO PROPIO de la línea 2, no «MERGEADO» suelto en el cuerpo.
 const LEGACY_MERGED_RE = /^\*\*epic-merge\*\* \([^)\n]*\): MERGEADO\b/m;
-// Mensajes de `diag()` que certifican que ESTE job procesó un merge.
+// Compatibilidad: mensajes de `diag()` que certifican que ESTE job procesó un
+// merge. NO es la fuente del estado — hay caminos post-merge sin mensaje así
+// (crear la auditoría falla y devuelve null, auditoría «ya reclamada» sin
+// `→ #N`): ahí manda `merged`.
 const MSG_MERGED_RE = /^mergeado\b/i;
 
 const popLine = (n) => `<!-- serial-pop: #${n} -->`;
@@ -85,10 +89,12 @@ function stickyMergeado(sticky) {
 }
 
 // Cuerpo nuevo del sticky: marcador en línea 1, mensaje, y el estado de la
-// versión anterior + el que aporte esta llamada.
-function construirCuerpo(prevBody, msg, iso, { pop } = {}) {
+// versión anterior + el que aporte esta llamada. `merged` es el hecho «este
+// job procesa un merge» (`mergeEnEsteJob` del reusable); la regex del mensaje
+// queda solo como compatibilidad.
+function construirCuerpo(prevBody, msg, iso, { pop, merged: mergeHecho } = {}) {
   const prev = prevBody ? estadoDe(prevBody) : { merged: false, pops: [] };
-  const merged = prev.merged || MSG_MERGED_RE.test(String(msg || ''));
+  const merged = prev.merged || !!mergeHecho || MSG_MERGED_RE.test(String(msg || ''));
   // Un pop solo es «de este merge» si el merge ya consta: el barrido de cola
   // del `finally` corre también en evaluaciones PRE-merge, y un pop suyo
   // registrado aquí vetaría el pop legítimo del merge posterior.
