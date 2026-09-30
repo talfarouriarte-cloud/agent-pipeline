@@ -3,7 +3,7 @@
 
 ---
 name: talla-issue
-description: Rúbrica común de talla de un issue (S/M/L/XL = 1/2/4/8 puntos) con criterios anclados y 8 ejemplos calibrados de finplan. Leer SIEMPRE antes de publicar una talla pre o post (Auditor, AP-099) o de dimensionar un issue contra ella.
+description: Rúbrica común de talla de un issue (S/M/L/XL = 1/2/4/8 puntos) con criterios anclados y 7 ejemplos calibrados de finplan. Leer SIEMPRE antes de publicar una talla pre o post (Auditor, AP-099) o de dimensionar un issue contra ella.
 ---
 
 # talla-issue — rúbrica común de talla (AP-099, central#281)
@@ -69,7 +69,6 @@ C1·C2·C3·C4·C5 = suma → talla.
 | finplan#2118 | Selector truncado + gasto de vida en €/mes con conversión en el borde | 1·1·1·0·2 = 5 | **M** | 6 ítems de DoD; `styles` + `mortgage-compare` + `messages`; UI; el dato persistido NO cambia (el issue lo fija: sin migración ⇒ C4 = 0); 4 aserciones nuevas (render, conversión, hidratado, paridad). Frontera alta de M: un contrato tocado la habría subido a L. |
 | finplan#1959 | Sección «Imprevistos» en Datos + infodot del fan | 1·2·1·0·2 = 6 | **L** | U1–U6 (6 aserciones); `plan-datos`, `PlanIndex`, `plan/vision`, `messages` (≥ 4 módulos); UI pura sobre el esquema de #1960 (sin contrato propio); 6 tests nuevos. |
 | finplan#2206 | Spec base del explorador + post por retire-now + token `ax3` (E1 4/4) | 2·2·1·1·2 = 8 | **L** | ≥ 7 criterios; `lib/optimize`, página, skills, `docs/design`; lógica de app sin fórmula nueva; bump del token de caché persistido (`ax2`→`ax3`: cambio de contrato); tests por rama (sin frontera ⇒ error visible, `ax2` no se rehidrata). Frontera alta de L. |
-| finplan#1907 | Informe R·7: §6 desglose de ingresos, ticks quinquenales, controles ocultos, prototipo-contrato | 2·2·1·1·2 = 8 | **L** | 4 invariantes + 5 bloques de alcance; `components/report`, `styles`, `lib/plan`, `docs/design`; UI; el prototipo-contrato se actualiza (cambio de contrato existente); histograma log por rama (`scale` ausente ⇒ byte-idéntico). |
 | finplan#2101 | ADR-248·R·1: σ efectivo = ρ·σ, isolíneas rotuladas, par de legado sin ∞ | 2·2·2·1·2 = 9 | **XL** | ≥ 7 criterios; `lib`, `components`, `messages`, informe; **fórmula nueva** de una magnitud mostrada (C3 = 2 aunque viva en la app); cambia la semántica de `sigmaEff`, exportada; tests por rama (ρ ≤ 0 ⇒ 0) y de propiedad. |
 | finplan#2011 | ADR-244 E11: momentos de `d` sobre el perímetro consumible P | 1·2·2·2·2 = 9 | **XL** | 5 criterios de DoD; `packages/engine` + `packages/app` (2 paquetes); motor; **emisión nueva** (`paths_household_consumable_return_by_year`: contrato nuevo); tests por rama (`v2` vs `'legacy'`, con/sin `never`). |
 
