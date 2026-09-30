@@ -29,7 +29,7 @@
 # `scripts/check-embedded-js.mjs` —pusheable y ya cableado en `ci.yml`— y está
 # VIVO hoy, sin humano.
 #
-# verificado-contra: b6de3e34f2e5584c56918cb938c86406ebe20114
+# verificado-contra: 8b232b27a495474028b18abe96101d2608623d55
 #
 # AP-065 — QUÉ significa este SHA y quién lo comprueba. Lo que el ancla fija NO
 # es «el commit en que se escribió el parche» —ese es inalcanzable por
@@ -47,10 +47,10 @@
 # `.github/workflows/watchdog.yml`. Mientras el check diga «ancla VIGENTE»,
 # está correcto aunque nombre un commit viejo — no lo rotes por costumbre.
 diff --git a/.github/workflows/watchdog.yml b/.github/workflows/watchdog.yml
-index 369b9f3..0b091de 100644
+index ee575b1..20c0375 100644
 --- a/.github/workflows/watchdog.yml
 +++ b/.github/workflows/watchdog.yml
-@@ -1401,7 +1401,7 @@ jobs:
+@@ -1659,7 +1659,7 @@ jobs:
              `prototype.css`, promoción de la rama por defecto a la de producción.
  
              IMPORTANTE: el log de Actions NO conserva los turnos de tu
@@ -59,8 +59,8 @@ index 369b9f3..0b091de 100644
              sesión (solo init y resultado). Si necesitas entregar contenido
              a otro agente o al humano (cuerpos de issues, comandos, diffs),
              PUBLÍCALO en un comentario — jamás lo referencies "en el log"
-@@ -1447,6 +1447,36 @@ jobs:
-               core.warning(`#${n}: ping-creator sin mención de arm — arm materializado.`);
+@@ -1871,6 +1871,36 @@ jobs:
+               core.warning(`firma de flota: ${e.message} (fail-soft, el job sigue).`);
              }
  
 +      - name: Materializar transición CROSS-ISSUE declarada por el resolver (resolve-cross-issue-failsafe)
