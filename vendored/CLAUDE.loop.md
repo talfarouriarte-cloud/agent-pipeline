@@ -170,9 +170,11 @@ cannot:
 **Token-first on turns that close WITHOUT a push** (AP-095,
 central#236). If your turn closes with no push (prose answer,
 escalation, a body-only `gh pr edit`), publish the token as the
-FIRST line of your FIRST closing comment BEFORE writing the long
-analysis: a session that dies mid-analysis has then already
-declared its terminal. A turn whose only change is `gh pr edit`
+FIRST line of your closing comment BEFORE writing the long
+analysis, and extend that SAME comment afterwards (on a PR the
+Auto-label reads only the LAST `claude[bot]` comment: a later
+comment of yours would hide the token). A session that dies
+mid-analysis has then already declared its terminal. A turn whose only change is `gh pr edit`
 is a no-push turn ⇒ `@reviewer`. The vocabulary depends on the
 context: on a PR, `@reviewer` / `[CREATOR-ESCALATED]` /
 `[NEEDS-HUMAN]` / `[READY-TO-MERGE]`; on an ISSUE without a PR, only
@@ -287,8 +289,8 @@ Flujo de los tres momentos:
    ÚLTIMO commit pusheado y ANTES de cualquier verificación larga:
    (a) body DEFINITIVO (polaridad real, `Closes`/`Refs` coherente,
    título) con `gh pr edit --body-file` **y** el mismo body en el
-   ISSUE como bloque `pr-body-declarado` con la línea `ready: sí`
-   (si mueres, el post-step lo aplica y marca `ready` por estado);
+   ISSUE como bloque `pr-body-declarado` con la línea `ready: sí`,
+   en un comentario NUEVO (si mueres, el post-step lo aplica y marca `ready` por estado);
    (b) pre-reviewer: RECOMENDADO si el harness lo permite, NO
    obligatorio (`pre-reviewer: no ejecutado — <motivo>` es huella
    válida; si aplicas hallazgos, push + `gh pr edit` + bloque
