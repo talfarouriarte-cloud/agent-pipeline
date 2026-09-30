@@ -1485,10 +1485,37 @@ jobs:
                 core.notice(`Creator de #${n} concluyó con PR #${openPr.number} ya ready — flujo PR-driven gobierna; nada que materializar aquí.`);
                 return;
               }
+              // AP-095 (central#219): cierre DECLARADO. Si el bloque `pr-body-declarado`
+              // válido más reciente de la sesión lleva `ready: sí` (paso (a) del orden
+              // barato-primero de creator.md), el Creator ya fijó el body definitivo.
+              // Se aplica al draft antes del `ready`, con cualquier outcome. Guardas:
+              // el bloque es posterior a la apertura del draft (`updated_at`: cubre
+              // también un bloque pre-draft editado para añadir la línea), así que un bloque de
+              // una sesión anterior no entra aunque el arm no tenga comentario
+              // disparador (trigTs = 0). `freshDeclaredPr` ya exige polaridad y
+              // referencia coherentes y devuelve el body sin la línea `ready:`.
+              // Fallo al leer o aplicar ⇒ se degrada a AP-047 (body del draft tal cual).
+              let declaredReady = null;
+              try {
+                const d = await freshDeclaredPr();
+                if (d && d.ready && new Date(d.updatedAt || d.createdAt).getTime() > new Date(openPr.created_at).getTime()) declaredReady = d;
+              } catch (e) {
+                core.warning(`AP-095: lectura del bloque pr-body-declarado falló para #${n}: ${e.message} — se sigue con el body del draft (AP-047).`);
+              }
+              let bodyApplied = false;
+              if (declaredReady) {
+                try {
+                  await github.rest.pulls.update({ owner, repo, pull_number: openPr.number, body: declaredReady.body });
+                  bodyApplied = true;
+                } catch (e) {
+                  core.warning(`AP-095: no se pudo aplicar el body declarado al PR #${openPr.number}: ${e.message} — se sigue con el body del draft (AP-047).`);
+                }
+              }
               // Draft huérfano (Creator murió antes del `gh pr ready` del cierre):
               // materializar la transición ready POR ESTADO. `markReady` con el
               // GITHUB_TOKEN (AP-094): su `ready_for_review` no dispara al Reviewer,
               // así que la única convocatoria es el `needs-review` por PAT de abajo.
+              let readyOk = true;
               try {
                 const res = await fetch('https://api.github.com/graphql', {
                   method: 'POST',
@@ -1499,6 +1526,7 @@ jobs:
                 const j = await res.json().catch(() => ({}));
                 if (!res.ok || j.errors) throw new Error(`HTTP ${res.status} ${JSON.stringify(j.errors || '')}`);
               } catch (e) {
+                readyOk = false;
                 core.warning(`AP-047: markReadyForReview falló para PR #${openPr.number} de #${n}: ${e.message} — se aplica needs-review igual (el gate del Reviewer saltará si el PR sigue en draft; queda el watchdog).`);
               }
               // `needs-review` con el PAT (remove+add para forzar el evento `labeled`
@@ -1506,6 +1534,12 @@ jobs:
               // corre; el `labeled` del PAT (no claude[bot]) pasa su anti-recursión.
               await github.rest.issues.removeLabel({ owner, repo, issue_number: openPr.number, name: 'needs-review' }).catch(() => {});
               await github.rest.issues.addLabels({ owner, repo, issue_number: openPr.number, labels: ['needs-review'] });
+              if (bodyApplied) {
+                await github.rest.issues.createComment({ owner, repo, issue_number: openPr.number,
+                  body: `**claude-code · post-step**: la sesión del Creator de #${n} terminó en \`${process.env.STEP_CREATOR_OUTCOME}\` con su PR en DRAFT, pero había DECLARADO el cierre: bloque \`pr-body-declarado\` con \`ready: sí\` (AP-095, orden barato-primero). Transición ejecutada por estado:\n\n- **Body del PR** = el del bloque declarado (polaridad \`${declaredReady.polarity}\`, sin la línea \`ready:\`).\n- ${readyOk ? `**PR #${openPr.number} marcado \`ready\`** (\`markPullRequestReadyForReview\` con el token del job; su \`ready_for_review\` no convoca, AP-094).` : `**\`markPullRequestReadyForReview\` FALLÓ** para PR #${openPr.number}: sigue en draft y lo recoge el backstop del watchdog (AP-047), ya con el body declarado.`}\n- **\`needs-review\`** aplicada con el PAT: una sola convocatoria del Reviewer.\n\nEs una transición con dueño, no una repesca: el Creator declaró el cierre y el post-step lo ejecuta.\n\n<!-- ready-declarado-materializado -->` });
+                core.notice(`AP-095: PR #${openPr.number} de #${n} con body declarado aplicado + ready + needs-review por PAT (cierre declarado con ready: sí).`);
+                return;
+              }
               await github.rest.issues.createComment({ owner, repo, issue_number: openPr.number,
                 body: `**claude-code · post-step**: la sesión del Creator de #${n} terminó en \`${process.env.STEP_CREATOR_OUTCOME}\` con su PR **en DRAFT** (abierto en el primer push de hito, AP-047) y SIN marcarlo ready — el acto de cierre discrecional que esta clase de incidente (muerte-en-\`success\` sin PR) pierde. Materializado por ESTADO en el instante:\n\n- **PR #${openPr.number} marcado \`ready\`** (\`markPullRequestReadyForReview\` con el token del job — su \`ready_for_review\` no convoca, AP-094) con el body del último hito (fidelidad por construcción — lo que AP-042 perseguía, ahora por artefacto real).\n- **\`needs-review\`** aplicada con el PAT ⇒ el Reviewer dispara por \`labeled\` (su gate ya ve el PR ready), sin depender del \`opened\` (que un draft salta) sin doble convocatoria.\n- \`serial-activo\` ya retirada al existir el PR (post-step de liberación); el PR ready es la señal de vuelo — la serie la libera el MERGE.\n\n<!-- creator-muerto-draft-materializado-ready -->` });
               core.warning(`AP-047: PR #${openPr.number} de #${n} en draft materializado a ready + needs-review por PAT (muerte antes del cierre en verde).`);
@@ -1697,7 +1731,15 @@ jobs:
                 const antiRef = isFull ? 'refs' : 'closes';
                 if (!new RegExp(`${ref}\\s+#${n}(?!\\d)`, 'i').test(declaredBody)) continue;
                 if (new RegExp(`${antiRef}\\s+#${n}(?!\\d)`, 'i').test(declaredBody)) continue;
-                return { body: declaredBody, polarity: isFull ? 'full-pr' : 'partial-pr' };
+                // AP-095 (central#219): línea opcional `ready: sí` (cierre declarado),
+                // anclada a línea propia DENTRO del par. Se retira del body que se
+                // devuelve: es una instrucción para el post-step, no contenido del PR.
+                const readyRe = /^[ \t]*ready:[ \t]*s[ií][ \t]*$/im;
+                const ready = readyRe.test(declaredBody);
+                const cleanBody = ready
+                  ? declaredBody.split(/\r?\n/).filter(l => !/^[ \t]*ready:[ \t]*s[ií][ \t]*$/i.test(l)).join('\n').trim()
+                  : declaredBody;
+                return { body: cleanBody, polarity: isFull ? 'full-pr' : 'partial-pr', ready, createdAt: freshBots[i].created_at, updatedAt: freshBots[i].updated_at };
               }
               return null;
             }
