@@ -108,5 +108,25 @@
     "name": "auto-archivada",
     "color": "c5def5",
     "description": "Panel de auditoría cerrado mecánicamente al completar su ciclo (audit-verdict + process-proposals)"
+  },
+  {
+    "name": "mensual:aprobada",
+    "color": "0e8a16",
+    "description": "Ruling mensual: ejecutar. La cola la arma sola tras cada merge; el humano mergea."
+  },
+  {
+    "name": "mensual:fundida",
+    "color": "c5def5",
+    "description": "Se ejecuta dentro del PR de otra propuesta (ver ruling)."
+  },
+  {
+    "name": "eje:local",
+    "color": "fbca04",
+    "description": "Ruling mensual: el fix vive en el consumidor, no en el central."
+  },
+  {
+    "name": "accion:propietario",
+    "color": "d93f0b",
+    "description": "Ruling mensual: configuración/decisión del propietario, no código."
   }
 ]
