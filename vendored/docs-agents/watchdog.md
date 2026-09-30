@@ -217,6 +217,12 @@ actor o de otro instante. Contradicción que obliga a re-leer, no a cerrar:
 por construcción. Incidente: 3 paneles válidos cerrados como «HUECOS» con
 sus informes publicados 5–8 h antes, sobre una afirmación heredada (clase
 fabricated-citation drift operando sobre el estado de los paneles).
+**Desde AP-098 (central#279):** la revisión de proceso va POR LOTES (10
+auditorías o 14 días; P0 inmediato). Una auditoría con `audit-verdict` y
+SIN `process-review-done` está ESPERANDO SU LOTE, no es hueco: está
+consumida a efectos de arm (el guard de panel ya no la cuenta) y NO se
+cierra — el selector de lote solo recoge paneles ABIERTOS, así que
+cerrarla la deja sin revisión de proceso para siempre.
 
 **Cap acumulado de parciales (`<!-- rounds-cap-reached -->`):** si el
 stall viene con este marcador (6 relanzamientos parciales en la VIDA del
