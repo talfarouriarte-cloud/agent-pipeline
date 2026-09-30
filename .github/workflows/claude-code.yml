@@ -104,6 +104,91 @@ jobs:
       id-token: write
 
     steps:
+      # Preflight de credencial (AP-091, central#259 — asesoramiento#2318): el
+      # PAT es punto único de fallo compartido por el primario (Guard serial) y
+      # el rescate (Watchdog). Con el PAT revocado, cada arm quemaba 6-7 min de
+      # setup para morir en el Guard serial con 401. PRIMER step del job: sin
+      # checkout ni setup delante. 401 ×2 ⇒ escala y aborta; los steps
+      # `always()` de abajo se gatean con `steps.preflight.outputs.dead`.
+      - name: Preflight de credencial (fail-fast, AP-091)
+        id: preflight
+        uses: actions/github-script@v7
+        env:
+          PREFLIGHT_PAT: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          PREFLIGHT_ROLE: creator
+        with:
+          script: |
+            // Preflight de credencial fail-fast (AP-091, central#259). Primer step del
+            // job: una llamada barata con el PAT ANTES de checkout/setup. 401 dos veces
+            // (10 s entre intentos) ⇒ credencial INVÁLIDA: escalar por el canal de dedupe
+            // AP-059 con el GITHUB_TOKEN del job (el PAT es justo lo que está muerto) y
+            // abortar el job en segundos. Cualquier otro status (5xx, red) es fail-open:
+            // el preflight solo aborta en credencial inválida, jamás por un GitHub lento.
+            const { owner, repo } = context.repo;
+            const O = { owner, repo };
+            const PAT = process.env.PREFLIGHT_PAT || '';
+            const ROLE = process.env.PREFLIGHT_ROLE || 'pipeline';
+            const WAIT_MS = Number(process.env.PREFLIGHT_WAIT_MS || 10000);
+            const MARK = '<!-- watchdog-heartbeat-escalation -->';   // dedupe COMPARTIDO (AP-059)
+            const MODE = '<!-- pipeline-credential-401 -->';          // modo «credencial inválida»
+            // Marcador ANCLADO a línea propia, jamás substring: una CITA del marcador en
+            // prosa (backticks) dentro de un issue `human-needed` abierto no es una
+            // escalada — con `includes()` silenciaba el canal entero (central#212).
+            const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const anclado = (txt, m) => new RegExp('^[ \\t]*' + esc(m) + '[ \\t]*$', 'm').test(txt || '');
+
+            async function probe() {
+              try {
+                const res = await fetch('https://api.github.com/rate_limit', {
+                  headers: { Authorization: `Bearer ${PAT}`, Accept: 'application/vnd.github+json' } });
+                return res.status;
+              } catch (e) { core.info(`preflight: error de red (${e.message})`); return 0; }
+            }
+            const s1 = await probe();
+            const s2 = s1 === 200 ? 200 : (await new Promise(r => setTimeout(r, WAIT_MS)), await probe());
+            core.info(`preflight (${ROLE}): GET /rate_limit con el PAT ⇒ ${s1}${s1 === 200 ? '' : ` · reintento ⇒ ${s2}`}`);
+            if (!(s1 === 401 && s2 === 401)) {
+              if (s2 !== 200) core.warning(`preflight (${ROLE}): /rate_limit devolvió ${s1}/${s2}, no 401/401 — transitorio, sigo (fail-open).`);
+              core.setOutput('dead', 'false');
+              return;
+            }
+            core.setOutput('dead', 'true');
+            const runUrl = `${process.env.GITHUB_SERVER_URL || 'https://github.com'}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const texto = [
+              `El PAT del pipeline (\`REVIEWER_GITHUB_TOKEN\`) devuelve **401 Bad credentials** (2 intentos, ${WAIT_MS / 1000} s entre ellos). Detectado por el preflight del job \`${ROLE}\`, que ha abortado en segundos en vez de quemar el setup contra una credencial muerta.`,
+              ``,
+              `**Consecuencia mientras dure.** Creator (Guard serial), Watchdog (detect y rescates) y todo post-step que escriba con el PAT caen JUNTOS: el primario y el rescate comparten la credencial.`,
+              ``,
+              `**Qué hacer.** Runbook «Rotación del PAT» del central (\`docs/runbook-rotacion-pat.md\` en agent-pipeline): regenerar/actualizar el secret en TODOS los repos que lo consumen, verificar con \`gh api rate_limit\`, \`workflow_dispatch\` del Watchdog y confirmar \`success\`. Los arms que murieron durante la caída hay que re-armarlos (el Watchdog los recoge por \`issue-armed-no-pr\`).`,
+              ``,
+              `**Run:** ${runUrl}`,
+            ].join('\n');
+            try {
+              let abiertas = [];
+              try {
+                abiertas = await github.paginate(github.rest.issues.listForRepo,
+                  { ...O, labels: 'human-needed', state: 'open', per_page: 100 });
+              } catch (e) { core.warning(`no se pudo listar escaladas abiertas (${e.message}): sigo, prefiero duplicar a callar.`); }
+              const abierta = abiertas.find(i => !i.pull_request && anclado(i.body, MARK));
+              if (abierta) {
+                if (!anclado(abierta.body, MODE)) {
+                  const previos = await github.paginate(github.rest.issues.listComments,
+                    { ...O, issue_number: abierta.number, per_page: 100 });
+                  if (!previos.some(c => anclado(c.body, MODE))) {
+                    await github.rest.issues.createComment({ ...O, issue_number: abierta.number,
+                      body: `**Transición de modo.** Credencial del pipeline inválida (PAT 401) mientras esta escalada seguía abierta por otro modo. Un solo issue a propósito.\n\n${texto}\n\n${MODE}` });
+                  }
+                }
+                core.info(`escalada ya abierta (#${abierta.number}): no duplico.`);
+              } else {
+                await github.rest.issues.create({ ...O,
+                  title: 'Credencial del pipeline inválida (PAT 401) — intervención humana',
+                  labels: ['human-needed'], body: `${texto}\n\n${MODE}\n${MARK}` });
+                core.warning('preflight: escalada human-needed abierta (credencial inválida).');
+              }
+            } catch (e) { core.warning(`preflight: la escalada falló (${e.message}); el aborto sigue en pie.`); }
+            core.setFailed(`PAT del pipeline inválido (401 ×2): job \`${ROLE}\` abortado por el preflight de credencial (AP-091).`);
+
       # Kill-switch: si el issue/PR tiene la label `pause-agents`,
       # aborta sin correr el agente. ADR-063.
       - name: Check pause-agents kill-switch
@@ -974,7 +1059,7 @@ jobs:
         # la URL credencializada (inmune al credential helper de la action)
         # y abre el PR si falta. Guard duro: SOLO ramas claude/*, jamás main.
         # Sin el secret (consumidores): env vacío ⇒ step skipped.
-        if: always() && env.WF_PUSH != ''
+        if: always() && env.WF_PUSH != '' && steps.preflight.outputs.dead != 'true'
         env:
           WF_PUSH: ${{ secrets.WORKFLOWS_PUSH_TOKEN }}
           GH_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
@@ -1008,6 +1093,51 @@ jobs:
             gh pr create --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base "${{ inputs.default_branch }}" --title "$TITLE" --body "$FULLBODY"
           fi
 
+      # Firma de FLOTA CAÍDA (AP-091, central#212): materializa la clase de la
+      # sesión LLM (muerte instantánea / viva) como la conclusión de UNO de los
+      # dos steps-marcador de abajo. El `detect` del Watchdog los lee por API
+      # (nombre EXACTO del step — no renombrar sin tocar la firma de flota).
+      - name: Clasificar la ejecución LLM (firma de flota, AP-091)
+        id: llm_exec
+        if: always() && steps.creator.outcome != 'skipped' && steps.creator.outcome != 'cancelled'
+        uses: actions/github-script@v7
+        env:
+          EXEC_FILE: ${{ steps.creator.outputs.execution_file }}
+        with:
+          script: |
+            // Firma de muerte INSTANTÁNEA de la sesión LLM (AP-091, central#212). Lee la
+            // salida ESTRUCTURADA de la action (execution file, AP-040) — jamás substring
+            // de log — y la materializa como la conclusión de UNO de los dos steps
+            // siguientes, que el `detect` del Watchdog lee por API (`listJobsForWorkflowRun`,
+            // `actions: read`, sin permiso nuevo) para computar la firma de FLOTA CAÍDA.
+            // Firma COMPLETA exigida (anti falso positivo): `num_turns ≤ 1` · coste 0 ·
+            // `modelUsage` objeto vacío. `alive` exige EVIDENCIA de vida (turnos > 1, coste
+            // > 0 o `modelUsage` con uso). Lo demás —execution file ilegible, o un campo de
+            // la firma ausente (`total_cost_usd`, `modelUsage`)— es firma no juzgable ⇒ ni
+            // uno ni otro (neutro): ni suma a la racha ni la resetea (review de #280).
+            const fs = require('fs');
+            const f = process.env.EXEC_FILE || `${process.env.RUNNER_TEMP || '/tmp'}/claude-execution-output.json`;
+            let d = null;
+            try { d = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (e) { core.info(`execution file ilegible (${e.message}): neutro.`); }
+            const msgs = Array.isArray(d) ? d : (d ? [d] : []);
+            const r = [...msgs].reverse().find(m => m && m.type === 'result') || null;
+            if (!r) { core.setOutput('kind', 'ilegible'); return; }
+            const turns = Number(r.num_turns), cost = Number(r.total_cost_usd);
+            const mu = r.modelUsage;
+            const muObj = !!mu && typeof mu === 'object';
+            const muVacio = muObj && Object.keys(mu).length === 0;
+            const viva = (Number.isFinite(turns) && turns > 1) || (Number.isFinite(cost) && cost > 0) || (muObj && !muVacio);
+            const kind = viva ? 'alive'
+              : (Number.isFinite(turns) && turns <= 1 && cost === 0 && muVacio ? 'instant' : 'ilegible');
+            core.info(`ejecución LLM: num_turns=${r.num_turns} · total_cost_usd=${r.total_cost_usd} · modelUsage=${mu === undefined ? '(ausente)' : muVacio ? '{}' : 'con uso'} ⇒ ${kind}`);
+            core.setOutput('kind', kind);
+      - name: 'llm-flota: muerte instantánea'
+        if: always() && steps.llm_exec.outputs.kind == 'instant'
+        run: echo "::warning::Sesión LLM muerta al nacer (num_turns ≤ 1, coste 0, modelUsage vacío) — cuenta para la firma de FLOTA CAÍDA del Watchdog (AP-091)."
+      - name: 'llm-flota: sesión viva'
+        if: always() && steps.llm_exec.outputs.kind == 'alive'
+        run: echo "Sesión LLM viva — resetea la firma de FLOTA CAÍDA del Watchdog (AP-091)."
+
       - name: Materializar auditoria-completa (post-step determinista)
         # Fix 2026-07-12 (propuesta #1288 finplan): el informe del Auditor
         # aparece cuando la acción reescribe el tracking comment AL TERMINAR
@@ -1019,6 +1149,7 @@ jobs:
         # Sale con el PAT: su evento labeled es el trigger.
         if: |
           always()
+          && steps.preflight.outputs.dead != 'true'
           && steps.check_pause.outputs.paused != 'true'
           && contains(join(github.event.issue.labels.*.name, ','), 'auditoria')
           && !contains(join(github.event.issue.labels.*.name, ','), 'auditoria-completa')
@@ -1116,6 +1247,7 @@ jobs:
         # abrir PR, el flag NO se borra aquí — lo libera el watchdog.
         if: |
           always()
+          && steps.preflight.outputs.dead != 'true'
           && steps.check_serial.outputs.blocked != 'true'
           && (
             (github.event_name == 'issue_comment' && !github.event.issue.pull_request)
@@ -1160,6 +1292,7 @@ jobs:
         # caer a ~0 (métrica de la próxima auditoría de cada consumidor).
         if: |
           always()
+          && steps.preflight.outputs.dead != 'true'
           && steps.check_serial.outputs.blocked != 'true'
           && (
             (github.event_name == 'issue_comment' && !github.event.issue.pull_request)
@@ -2507,6 +2640,7 @@ jobs:
       - name: Barrido de cola al cierre del job (segunda lectura, AP-062)
         if: |
           always()
+          && steps.preflight.outputs.dead != 'true'
           && steps.check_pause.outputs.paused != 'true'
           && steps.post_muerte_sin_pr.outputs.armed != 'true'
           && steps.launch_next.outputs.armed != 'true'

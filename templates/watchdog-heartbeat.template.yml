@@ -84,6 +84,13 @@ jobs:
             const MARK = '<!-- watchdog-heartbeat-escalation -->';   // dedupe COMPARTIDO con el belt del reusable
             const MODE_RED = '<!-- watchdog-detect-red-streak -->';  // modo «corre y FALLA»
             const MODE_DEAD = '<!-- watchdog-dead-unrevivable -->';  // modo «parado e irreanimable»
+            const MODE_STAGE = '<!-- watchdog-stage-red-streak -->'; // AP-091: modo «la etapa architect corre y FALLA»
+            // Marcadores ANCLADOS a línea propia, jamás substring (AP-091,
+            // central#212): con `includes()` cualquier issue `human-needed`
+            // abierto que CITARA el marcador en prosa pasaba por la escalada
+            // vigente y el canal entero quedaba mudo (clase central#119).
+            const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const anclado = (txt, m) => new RegExp('^[ \\t]*' + esc(m) + '[ \\t]*$', 'm').test(txt || '');
 
             // Conclusiones que cuentan como «el watchdog está roto». `success`
             // es el ÚNICO reset. `cancelled`/`skipped` NO cuentan y NO rompen
@@ -119,6 +126,43 @@ jobs:
               return n;
             }
 
+            // Racha POR ETAPA (AP-091, auditoría de central#212). `redStreak()`
+            // mide la conclusión del RUN entero, y la etapa `architect` del
+            // reusable solo corre cuando `detect` encuentra anomalías: todo tick
+            // sin anomalías (o con runs vivos, gate 0) concluye `success` con
+            // architect `skipped` y RESETEABA la racha. Así 178 corridas rojas
+            // de architect en ~61 h (finplan PR #2085) no llegaron nunca a
+            // K=3 CONSECUTIVAS a nivel de run. Aquí un run donde la etapa no
+            // corrió es NEUTRO (no suma ni resetea); solo un `success` DE LA
+            // ETAPA resetea. Nombre de job por sufijo: bajo el stub del
+            // consumidor el job se llama `<job-del-stub> / architect`.
+            //
+            // Devuelve también la EDAD del eslabón más reciente (review de
+            // #280): la etapa solo corre con anomalías, así que tras arreglar
+            // la causa puede pasar días sin correr y sin producir el `success`
+            // que resetea. Sin cota, cerrar la escalada la reabría en cada
+            // tick sobre rojos ya viejos. `age <= STALE_MIN` mide la frescura
+            // del último run del Watchdog, no la del rojo: aquí se exige la
+            // del rojo.
+            async function stageRedStreak(stage) {
+              const { data } = await github.rest.actions.listWorkflowRuns({
+                owner, repo, workflow_id: WF, status: 'completed', per_page: 30 });
+              const esEtapa = n => n === stage || String(n || '').endsWith(` / ${stage}`);
+              let n = 0, lastAge = Infinity;
+              for (const r of (data.workflow_runs || [])) {
+                const { data: jl } = await github.rest.actions.listJobsForWorkflowRun({
+                  owner, repo, run_id: r.id, per_page: 50 });
+                const j = (jl.jobs || []).find(x => esEtapa(x.name));
+                if (!j) continue;                          // la etapa no existió en ese run: neutro
+                if (j.conclusion === 'success') break;     // único reset
+                if (!HARD.has(j.conclusion)) continue;     // skipped/cancelled: neutro
+                if (!n) lastAge = (now - new Date(r.created_at).getTime()) / 60000;
+                n++;
+                if (n >= STREAK_K) break;
+              }
+              return { n, lastAge };
+            }
+
             // Dedupe por MARCADOR y con listForRepo, no por título ni con la
             // API de búsqueda (AP-059): (a) hay dos modos de escalada con
             // títulos distintos y UN solo issue debe existir — el marcador es
@@ -141,7 +185,7 @@ jobs:
                 core.warning(`no se pudo listar escaladas abiertas (${e.message}): sigo, prefiero duplicar a callar.`);
                 return null;
               }
-              return open.find(i => !i.pull_request && (i.body || '').includes(MARK)) || null;
+              return open.find(i => !i.pull_request && anclado(i.body, MARK)) || null;
             }
 
             // Transición de MODO sin duplicar el issue. El marcador de dedupe
@@ -153,7 +197,7 @@ jobs:
             // perderse es la transición, que entra como COMENTARIO con el
             // marcador del modo nuevo (idempotente por ese mismo marcador).
             async function declareMode(issue, mode, texto) {
-              if ((issue.body || '').includes(mode)) return;
+              if (anclado(issue.body, mode)) return;
               let comments = [];
               try {
                 comments = await github.paginate(github.rest.issues.listComments,
@@ -162,7 +206,7 @@ jobs:
                 core.warning(`no se pudieron listar los comentarios de #${issue.number} (${e.message}): no comento (aquí sí prefiero callar a repetir cada tick).`);
                 return;
               }
-              if (comments.some(c => (c.body || '').includes(mode))) return;
+              if (comments.some(c => anclado(c.body, mode))) return;
               await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
                 body: `${texto}\n\n${mode}` });
               core.warning(`Watchdog: transición de modo declarada en #${issue.number}.`);
@@ -229,6 +273,31 @@ jobs:
                 `**Cerrar este issue NO resetea la racha.** La racha se deriva de la \`conclusion\` de las corridas, no del estado de los issues: cerrar esto solo retira el supresor de dedupe. El ÚNICO reset es una corrida \`success\` del Watchdog. Si lo cierras con el detector aún en rojo, el siguiente tick reabrirá la escalada.`,
               ].join('\n'), MODE_RED,
                 `**Transición de modo.** El Watchdog ha pasado al modo «corre y FALLA» (${streak} corridas completadas en rojo, umbral K=${STREAK_K}) mientras esta escalada seguía abierta por otro modo. Un solo issue a propósito; esto declara el cambio de estado en vez de silenciarlo.`);
+              return;
+            }
+
+            // Belt POR ETAPA (AP-091): mismo gate de frescura, misma escalada
+            // terminal-humano. Fail-soft: un fallo de la API aquí no puede
+            // tumbar el revival de abajo.
+            let stageStreak = 0, stageAge = Infinity;
+            try { ({ n: stageStreak, lastAge: stageAge } = await stageRedStreak('architect')); }
+            catch (e) { core.warning(`racha por etapa no computable (${e.message}): sigo.`); }
+            core.info(`Corridas consecutivas de la etapa architect en rojo: ${stageStreak} (la más reciente hace ${Math.round(stageAge)} min) · umbral K=${STREAK_K}`);
+            if (stageStreak >= STREAK_K && stageAge > STALE_MIN) core.info(`racha de la etapa architect NO fresca (último rojo hace >${STALE_MIN} min): no escalo.`);
+            if (stageStreak >= STREAK_K && stageAge <= STALE_MIN && age <= STALE_MIN) {
+              core.warning(`La etapa architect del Watchdog corre pero FALLA (${stageStreak} corridas en rojo). Escalo.`);
+              await escalate('Watchdog roto: la etapa architect-resolve corre y FALLA — intervención humana', [
+                `La etapa **architect** (architect-resolve) del Watchdog ha concluido en rojo en sus últimas **${stageStreak} corridas** (umbral K=${STREAK_K}); los ticks intermedios sin anomalías (etapa \`skipped\`) no cuentan ni resetean.`,
+                ``,
+                `El detector sigue verde, así que ni el belt \`if: failure()\` de \`detect\` ni la racha por conclusión del run lo ven. Precedente: finplan PR #2085, ~61 h de cadena parada con 178 rojos de esta etapa y ninguna escalada (central#212).`,
+                ``,
+                `**Consecuencia mientras dure.** Todo ítem \`stalled\` cuyo único consumidor es architect-resolve espera a un resolutor que no llega.`,
+                ``,
+                `**Qué comprobar.** Actions → Watchdog → el último run en rojo → job \`architect\`: credencial/cuota de Claude (\`CLAUDE_CODE_OAUTH_TOKEN\`, sesión muerta al nacer — ver también la firma \`pipeline-fleet-down\`), instalador de Claude Code (AP-085), o el PAT (\`pipeline-credential-401\`).`,
+                ``,
+                `**Cerrar este issue NO resetea la racha.** El único reset es una corrida \`success\` de la etapa architect. Solo reabre si el rojo más reciente de la etapa tiene menos de ${STALE_MIN} min: cerrarlo tras arreglar la causa no lo reabre sobre rojos viejos.`,
+              ].join('\n'), MODE_STAGE,
+                `**Transición de modo.** La etapa architect del Watchdog ha pasado al modo «corre y FALLA» (${stageStreak} corridas en rojo, umbral K=${STREAK_K}) mientras esta escalada seguía abierta por otro modo. Un solo issue a propósito.`);
               return;
             }
 
