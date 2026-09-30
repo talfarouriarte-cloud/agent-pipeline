@@ -67,7 +67,11 @@ momento, sin arms en vuelo.
 6. **Cerrar la escalada** si existe (issue `human-needed` con el marcador
    `watchdog-heartbeat-escalation` y el modo `pipeline-credential-401`),
    citando el run verde del paso 5. Cerrarla con el preflight aún en rojo solo
-   hace que el siguiente tick la reabra.
+   hace que el siguiente tick la reabra. Si el modo es `pipeline-fleet-down`
+   (rotaste `CLAUDE_CODE_OAUTH_TOKEN` o se repuso la cuota), ciérrala en
+   cuanto arregles la causa: la firma solo reabre con una muerte NUEVA (la más
+   reciente de la racha debe tener ≤ 90 min), no hace falta esperar a que una
+   sesión viva la resetee.
 7. **Re-armar lo que murió durante la caída.** Los arms que cayeron en el
    Guard serial no dejaron sesión ni rama. El Watchdog los recoge por
    `issue-armed-no-pr` tras su umbral; si hay prisa, basta un `@claude` en el

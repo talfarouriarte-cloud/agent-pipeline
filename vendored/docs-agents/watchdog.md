@@ -581,7 +581,10 @@ primario y del rescate, y antes solo se veía a los K=3 ticks.
 `<!-- pipeline-fleet-down -->`: `detect` ve K=3 sesiones LLM consecutivas
 muertas al nacer (execution file: `num_turns ≤ 1`, coste 0, `modelUsage`
 vacío) en cualquier etapa, architect-resolve incluida — el detector sigue
-verde y ningún otro belt lo ve. `<!-- watchdog-stage-red-streak -->`: el
+verde y ningún otro belt lo ve. Ambas rachas exigen que su eslabón más
+reciente sea FRESCO (≤ 90 min): cerrar la escalada tras arreglar la causa no
+la reabre sobre muertes o rojos viejos mientras la etapa no vuelva a correr.
+`<!-- watchdog-stage-red-streak -->`: el
 heartbeat cuenta la racha de la etapa `architect` por JOB, con los ticks sin
 anomalías (etapa `skipped`) como neutros; la racha por conclusión del run se
 reseteaba con ellos (178 rojos sin escalada, finplan PR #2085). Los tres
