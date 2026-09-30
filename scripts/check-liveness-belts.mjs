@@ -41,7 +41,7 @@ const leer = (f, job, name) => stepScript(readFileSync(f, 'utf8'), job, name);
 
 // ── Doble de la API ──────────────────────────────────────────────────────────
 function doble({ workflows = [], runs = {}, jobs = {}, issues = [], comments = {}, fetchStatus = [200], throwOn = null } = {}) {
-  const log = { created: [], commented: [], outputs: {}, failed: null, warnings: [], dispatch: 0 };
+  const log = { created: [], commented: [], outputs: {}, failed: null, warnings: [], notices: [], dispatch: 0 };
   const guard = n => { if (throwOn === n) throw new Error(`API caída (${n})`); };
   const github = {
     paginate: async (fn, p) => (await fn(p)).data,
@@ -66,7 +66,7 @@ function doble({ workflows = [], runs = {}, jobs = {}, issues = [], comments = {
     },
   };
   const core = {
-    info() {}, notice() {}, warning: m => log.warnings.push(String(m)),
+    info() {}, notice: m => log.notices.push(String(m)), warning: m => log.warnings.push(String(m)),
     setOutput: (k, v) => { log.outputs[k] = String(v); },
     setFailed: m => { log.failed = String(m); },
   };
@@ -154,6 +154,23 @@ for (const [nombre, f, esperado] of [
   const k = (await correr(clsC, { EXEC_FILE: f }, doble())).outputs.kind;
   return k === esperado || `dio ${k}`;
 });
+
+// Cuarta copia del materializador `model-usage:` (AP-099, cierre del residual
+// de central#281): `process-review.yml` la emite desde un step PROPIO, sin los
+// marcadores de flota, así que no entra en la comparación de copias de arriba.
+// La costura que se vigila es el shape de la anotación que suma el Auditor: con
+// la misma entrada, process-review debe emitir EXACTAMENTE la línea
+// `model-usage:` que emite el clasificador; sin `modelUsage` con uso, nada.
+const MU = 'Anotar el consumo LLM (model-usage, AP-099)';
+const muP = leer('.github/workflows/process-review.yml', 'review', MU);
+const soloMU = l => l.notices.filter(n => n.startsWith('model-usage:'));
+for (const [nombre, fich] of [['sesión viva', 'b.json'], ['muerte instantánea (modelUsage {})', 'a.json'], ['execution file ausente', 'no-existe.json']])
+  await caso(`model-usage · process-review = clasificador · ${nombre}`, async () => {
+    const f = join(tmp, fich);
+    const p = soloMU(await correr(muP, { EXEC_FILE: f }, doble())), c = soloMU(await correr(clsC, { EXEC_FILE: f }, doble()));
+    const n = fich === 'b.json' ? 1 : 0;
+    return (p.length === n && j(p) === j(c)) || `process-review ${j(p)} vs clasificador ${j(c)}`;
+  });
 
 // ── 3. Firma de FLOTA CAÍDA (detect) ────────────────────────────────────────
 const FLEET = leer('.github/workflows/watchdog.yml', 'detect', 'Firma de flota caída (AP-091)');

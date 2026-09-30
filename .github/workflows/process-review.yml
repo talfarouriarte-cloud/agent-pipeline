@@ -384,6 +384,7 @@ jobs:
         run: mkdir -p "$HOME/.local/bin"
 
       - name: Run process review
+        id: process
         if: steps.lote.outputs.modo == 'p0' || steps.lote.outputs.modo == 'lote'
         # AP-085 (2026-09-08) — pin a SHA completo, no a `@v1`. v1.0.217 =
         # 9c5ddab2e6d17b83ea679153b31f1d5f023cf636 (Claude Code 2.1.263,
@@ -747,6 +748,35 @@ jobs:
               cap de skill es TOTAL y COMPARTIDO entre retomadas del sweep
               (6a) y nuevas (6b), con prioridad para las retomadas. Sin
               evidencia ⇒ nada.
+
+      # Ledger de coste del Auditor (AP-099, central#281 — residual cerrado): el
+      # mismo materializador `model-usage:` que el clasificador AP-091 de
+      # claude-code/reviewer/watchdog, SIN los steps-marcador `llm-flota:` — la
+      # firma de flota del Watchdog no lee este workflow (solo Creator, Reviewer y
+      # su propia etapa architect), así que un marcador aquí no tendría consumidor.
+      - name: Anotar el consumo LLM (model-usage, AP-099)
+        if: always() && steps.process.outcome != 'skipped' && steps.process.outcome != 'cancelled'
+        uses: actions/github-script@v7
+        env:
+          EXEC_FILE: ${{ steps.process.outputs.execution_file }}
+        with:
+          script: |
+            // El execution file (AP-040) muere con el runner: su `modelUsage` se publica
+            // como UNA anotación `model-usage:` legible por la API de annotations (canal
+            // de AP-070). Solo tokens por modelo: el peso lo pone `templates/model-costs.json`
+            // (una tabla, una casa). Sin `modelUsage` legible no se anota nada: «sin dato», jamás 0.
+            const fs = require('fs');
+            const f = process.env.EXEC_FILE || `${process.env.RUNNER_TEMP || '/tmp'}/claude-execution-output.json`;
+            let d = null;
+            try { d = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (e) { core.info(`execution file ilegible (${e.message}): sin dato.`); return; }
+            const msgs = Array.isArray(d) ? d : (d ? [d] : []);
+            const r = [...msgs].reverse().find(m => m && m.type === 'result') || null;
+            const mu = r && r.modelUsage;
+            if (!mu || typeof mu !== 'object' || Object.keys(mu).length === 0) { core.info('sin modelUsage con uso: sin dato.'); return; }
+            const tok = Object.fromEntries(Object.entries(mu).map(([m, u]) => [m, {
+              in: Number(u && u.inputTokens) || 0, out: Number(u && u.outputTokens) || 0,
+              cr: Number(u && u.cacheReadInputTokens) || 0, cw: Number(u && u.cacheCreationInputTokens) || 0 }]));
+            core.notice(`model-usage: ${JSON.stringify({ num_turns: r.num_turns, models: tok })}`);
 
       # finplan#1326 (2026-07-13, sustituye al `if: failure()` de #1258):
       # el exit code del step de sesión MIENTE. Verificado en 4 paneles de
