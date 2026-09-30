@@ -25,8 +25,35 @@ jobs:
           script: |
             const { owner, repo } = context.repo;
             const ARM = '<!-- cola-mensual-arm -->';
+            // Issues que el PR recién mergeado cierra (Closes #N en el body, o
+            // rama claude/issue-N-*): el evento de merge llega ANTES de que
+            // GitHub las cierre (carrera vista el 2026-09-30 con #259), así que
+            // se excluyen del «en vuelo» y se cierran aquí junto con sus fundidas.
+            const closedByPr = new Set();
+            const pr = context.payload.pull_request;
+            if (pr) {
+              for (const m of (pr.body || '').matchAll(/\bcloses?\s+#(\d+)/gi)) closedByPr.add(parseInt(m[1], 10));
+              const b = /^claude\/issue-(\d+)-/.exec(pr.head.ref || ''); if (b) closedByPr.add(parseInt(b[1], 10));
+            }
             const { data: open } = await github.rest.issues.listForRepo({ owner, repo, state: 'open', labels: 'mensual:aprobada', per_page: 100 });
-            const issues = open.filter(i => !i.pull_request);
+            let issues = open.filter(i => !i.pull_request);
+            for (const n of closedByPr) {
+              const veh = issues.find(i => i.number === n);
+              if (!veh) continue;
+              // Cierra el vehículo si sigue abierto y toda fundida cuyo ruling diga «FUNDIDA en #n».
+              try { await github.rest.issues.update({ owner, repo, issue_number: n, state: 'closed', state_reason: 'completed' }); } catch (e) {}
+              const { data: fused } = await github.rest.issues.listForRepo({ owner, repo, state: 'open', labels: 'mensual:fundida', per_page: 100 });
+              for (const f of fused) {
+                const { data: fc } = await github.rest.issues.listComments({ owner, repo, issue_number: f.number, per_page: 100 });
+                if (fc.some(c => new RegExp(`FUNDIDA en #${n}\\b`).test(c.body || ''))) {
+                  try {
+                    await github.rest.issues.createComment({ owner, repo, issue_number: f.number, body: `Ejecutada dentro de #${n} (PR #${pr.number} mergeado). Cierre automático de la cola mensual.` });
+                    await github.rest.issues.update({ owner, repo, issue_number: f.number, state: 'closed', state_reason: 'completed' });
+                  } catch (e) {}
+                }
+              }
+              issues = issues.filter(i => i.number !== n);
+            }
             if (!issues.length) { core.notice('cola mensual: vacía — nada que armar.'); return; }
             const info = [];
             for (const i of issues) {
