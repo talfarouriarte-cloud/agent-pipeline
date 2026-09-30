@@ -93,3 +93,5 @@ finplan#2101 es XL por la fórmula, no por sus 15 ficheros).
 - Formato de publicación (marcadores, canal, orden): lo fija
   `epic-auditor.md` § «Ledger de valor por proceso». Esta skill solo fija
   la rúbrica.
+
+<!-- FUERA del loop ADR-212 (sin «Sección entrenable», a propósito): esta skill es un INSTRUMENTO DE MEDIDA; si el loop la editara se rompería la comparabilidad de la serie |pre−post| entre auditorías. Cambiar la rúbrica o las anclas es decisión de la revisión mensual (`docs/architect-mejora-continua.md`), no del process-reviewer. -->
