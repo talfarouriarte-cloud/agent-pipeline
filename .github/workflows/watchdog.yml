@@ -83,8 +83,26 @@ on:
         type: string
         default: claude-opus-5-5  # AP-088: Fable en Max va por créditos/límite semanal aparte; sin fallback, una no-ejecución del resolver es silenciosa
       resolve_max_turns:
+        # LESSON-BEARING (AP-052): si cambias el default, actualiza EN EL MISMO
+        # PR la tabla del step «Divergencia pin↔default» de la etapa architect,
+        # el bloque `lesson_bearing` de templates/workflow-contracts.json y el
+        # literal de cada expresión de CLAMP (AP-061). check-contracts gatea las
+        # cuatro.
+        #
+        # 80 y no 40 (AP-092, central#247): ADR-217, AP-021 y AP-029 ampliaron
+        # lo que el resolver produce en una corrida y el presupuesto seguía en su
+        # valor de alta. Aud. finplan#2276/#2289: 2 de 2 muertes del resolver en
+        # 4 ciclos fueron `error_max_turns` con 41/40 turnos, una DESPUÉS de
+        # publicar su Δ. Solo se paga si se usa.
         type: number
-        default: 40
+        default: 80
+      budget_pin_forzado:
+        # VÁLVULA del clamp de presupuesto (AP-061; en este reusable desde
+        # AP-092). `true` honra un pin de `resolve_max_turns` por debajo del
+        # default bajo responsabilidad del consumidor; `false` (default) lo
+        # eleva al default y anota la divergencia (`[clamp→N]`).
+        type: boolean
+        default: false
       lookback_min:
         type: number
         default: 45
@@ -920,6 +938,44 @@ jobs:
                 core.warning(`watchdog: draft #${pr.number} materializado a ready + needs-review (backstop residual AP-047).`);
                 continue;
               }
+              // ── Cesión ante `reviewer-no-verdict-persistent` VIGENTE (AP-092,
+              // central#213 punto 1). La rama persistent del post-step del Reviewer
+              // (AP-025/AP-040) existe para NO reabrir una sesión condenada: emite
+              // `stalled` y cede a architect-resolve. El dispatcher, viendo «PR sin
+              // veredicto», re-aplicaba `needs-review` encima (finplan PR #2085: 2
+              // relanzamientos + 5 avisos persistent en 22 min sobre el mismo head,
+              // flota caída). Vigente = aviso persistent para el head ACTUAL + `stalled`
+              // aún puesto (el resolver no ha ruleado). Retirado `stalled`, el
+              // dispatcher recupera el turno: una cesión sin fin dejaría el PR colgado
+              // si el resolver ruló sin actuar (riesgo (a) de #213). Clave anclada a
+              // línea propia (`reviewer-no-verdict-persistent-key: <head> · <causa>`);
+              // los avisos previos a AP-092 no llevan clave y cuentan si son
+              // posteriores al commit del head (misma comprobación que AP-025).
+              if (labels.includes('stalled')) {
+                let pcs = hcs;
+                if (hcs.length >= 100) {
+                  try { pcs = await github.paginate(github.rest.issues.listComments, { ...O, issue_number: pr.number, per_page: 100 }); }
+                  catch (e) { core.info(`persistent/paginate #${pr.number}: ${e.message}`); }
+                }
+                // Solo cuenta la clave EMITIDA por el post-step del Reviewer (corre con el
+                // GITHUB_TOKEN ⇒ autor `github-actions[bot]`): una review o un informe que
+                // la CITE no cede el turno (clase AP-063, marcador citado ≠ emitido).
+                const emitidos = pcs.filter(c => c.user && c.user.login === 'github-actions[bot]');
+                const keyRe = new RegExp(`^[ \\t]*<!--\\s*reviewer-no-verdict-persistent-key:\\s*${pr.head.sha}\\b`, 'm');
+                let vigente = emitidos.some(c => keyRe.test(c.body || ''));
+                const legacy = emitidos.filter(c => /^[ \t]*<!--\s*reviewer-no-verdict-persistent\s*-->[ \t]*$/m.test(c.body || '')
+                  && !/reviewer-no-verdict-persistent-key:/.test(c.body || ''));
+                if (!vigente && legacy.length) {
+                  try {
+                    const { data: hc } = await github.rest.repos.getCommit({ ...O, ref: pr.head.sha });
+                    vigente = legacy.some(c => new Date(c.created_at) > new Date(hc.commit.committer.date));
+                  } catch (e) { core.info(`persistent/head-check #${pr.number}: ${e.message}`); }
+                }
+                if (vigente) {
+                  core.notice(`PR #${pr.number}: reviewer-no-verdict-persistent vigente para ${pr.head.sha.slice(0, 7)} con \`stalled\` — el turno es de architect-resolve; el dispatcher de turno cede (AP-092).`);
+                  continue;
+                }
+              }
               const verdicts = hcs.filter(c => verdictRe.test((c.body || '').trim()));
               const lastVerdict = verdicts[verdicts.length - 1] || null;
               const lastV = lastVerdict ? (lastVerdict.body || '').trim().split(/\s/)[0].replace(':','') : null;
@@ -1556,7 +1612,11 @@ jobs:
     needs: detect
     if: needs.detect.outputs.found == 'true'
     runs-on: ${{ inputs.runner }}
-    timeout-minutes: 20
+    # 35 y no 20 (AP-092): el wall-clock escala con los turnos o el bump es
+    # inerte (lección AP-025). A 40 turnos el resolver medido tardó 6-10 min
+    # (aud. finplan#2276/#2289); a 80, ~20 min + setup + post-steps rozaban el
+    # techo de 20 y el timeout se habría vuelto el nuevo modo de muerte.
+    timeout-minutes: 35
     permissions:
       contents: read
       issues: write
@@ -1579,8 +1639,79 @@ jobs:
       - name: Asegurar ~/.local/bin (instalador nativo de Claude Code)
         run: mkdir -p "$HOME/.local/bin"
 
+      # ── Divergencia pin↔default (AP-052; en este reusable desde AP-092) ──────
+      # Mismo step que el de reviewer.yml (ver allí el racional completo): anota
+      # un pin del stub por debajo de un default lesson-bearing y su desenlace
+      # (`[clamp→N]` / `[pin forzado]`). El clamp NO depende de este step: vive
+      # en la expresión de `--max-turns`. Fail-open total.
+      - name: Divergencia pin↔default (inputs con lección AP — AP-052)
+        id: pindiv
+        continue-on-error: true
+        uses: actions/github-script@v7
+        env:
+          LESSON_BEARING: |
+            [
+              {"input": "resolve_max_turns", "default": 80, "ap": "AP-092", "leccion": "central#247 — 2 de 2 muertes del resolver en 4 ciclos por error_max_turns a 41/40"}
+            ]
+          PINS_RECIBIDOS: |
+            {
+              "resolve_max_turns": ${{ toJSON(inputs.resolve_max_turns) }}
+            }
+          FORZADO: ${{ toJSON(inputs.budget_pin_forzado) }}
+        with:
+          script: |
+            try {
+              const tabla = JSON.parse(process.env.LESSON_BEARING || '[]');
+              const pins = JSON.parse(process.env.PINS_RECIBIDOS || '{}');
+              let forzado = false;
+              try { forzado = JSON.parse(process.env.FORZADO || 'false') === true; } catch { forzado = false; }
+              const div = [];
+              for (const e of tabla) {
+                const got = pins[e.input];
+                if (got === undefined || got === null || got === '') continue;
+                const nGot = Number(got), nDef = Number(e.default);
+                const esNum = Number.isFinite(nGot) && Number.isFinite(nDef);
+                if (!(esNum ? nGot < nDef : String(got) !== String(e.default))) continue;
+                // Desenlace = el que ejecuta la expresión de clamp (AP-061).
+                const clampado = !(forzado && Number(got) !== 0);
+                div.push({ ...e, recibido: got, efectivo: clampado ? e.default : got, clampado });
+              }
+              if (!div.length) { core.info('AP-052: sin divergencia pin↔default en los inputs lesson-bearing.'); core.setOutput('linea', ''); return; }
+              const linea = 'pin-divergente: ' + div
+                .map(d => `${d.input}=${d.recibido} (default central: ${d.default}, ${d.ap}) ${d.clampado ? `[clamp→${d.efectivo}]` : '[pin forzado]'}`)
+                .join('; ');
+              const hayForzado = div.some(d => !d.clampado);
+              const msg = `AP-052/AP-061 · ${linea} — ${hayForzado ? '`budget_pin_forzado` HONRA el pin: el resolver corre con el presupuesto PRE-lección.' : 'el reusable ELEVÓ el presupuesto al default del central (clamp AP-061). Retirar la línea del `with:` del stub apaga este aviso.'} Los stubs son territorio HUMANO (ADR-020).`;
+              if (hayForzado) core.notice(msg); else core.info(msg);
+              await core.summary
+                .addHeading('Divergencia pin↔default (AP-052 · clamp AP-061)', 3)
+                .addTable([
+                  [{ data: 'Input', header: true }, { data: 'Pin del stub', header: true }, { data: 'Default central', header: true }, { data: 'Efectivo', header: true }, { data: 'Desenlace', header: true }, { data: 'AP', header: true }, { data: 'Lección', header: true }],
+                  ...div.map(d => [d.input, String(d.recibido), String(d.default), String(d.efectivo), d.clampado ? 'clamp ↑' : 'pin forzado', d.ap, d.leccion || '']),
+                ])
+                .write();
+              core.setOutput('linea', linea);
+            } catch (e) {
+              core.warning(`AP-052: comparación pin↔default no evaluable (${e.message}) — se continúa sin aviso.`);
+              core.setOutput('linea', '');
+            }
+
+      # Instante de arranque de la sesión (AP-092): ventana en la que el
+      # terminal por presupuesto busca el Δ que la sesión publicó.
+      - name: Marca de arranque del resolver (AP-092)
+        id: t0
+        run: echo "t0=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: Run Architect watchdog
         id: architect
+        # AP-092: el step NO tumba el job por sí solo. La conclusión la decide el
+        # step final «Conclusión de la etapa architect» a partir del terminal
+        # clasificado: una muerte por `max-turns` CON Δ publicado es
+        # `resolve-presupuesto-agotado-con-delta` — trabajo hecho, run verde, no
+        # suma a las rachas rojas (AP-059/AP-091); cualquier otro fallo sigue
+        # rojo. `steps.architect.outcome` conserva el resultado real (los steps
+        # de la firma de flota lo leen así).
+        continue-on-error: true
         # AP-085 (2026-09-08) — pin a SHA completo, no a `@v1`. v1.0.217 =
         # 9c5ddab2e6d17b83ea679153b31f1d5f023cf636 (Claude Code 2.1.263,
         # 2026-09-06T02:55Z): ÚLTIMA release conocida buena, única con evidencia
@@ -1618,11 +1749,13 @@ jobs:
           github_token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
           # AP-088 (2026-09-28): `--effort medium` explícito; sin flag cada modelo aplica
           # su default de lanzamiento y un cambio upstream lo movería sin aviso.
+          # `--max-turns` lleva el CLAMP AP-061 (forma canónica, gateada por
+          # check-contracts; AP-092). El comentario vive fuera del block scalar.
           claude_args: |
             --model ${{ inputs.resolve_model }}
             --fallback-model ${{ inputs.resolve_fallback_model }}
             --effort medium
-            --max-turns ${{ inputs.resolve_max_turns }}
+            --max-turns ${{ (inputs.budget_pin_forzado && inputs.resolve_max_turns) || (inputs.resolve_max_turns >= 80 && inputs.resolve_max_turns) || 80 }}
             --allowedTools "Read,Glob,Grep,Bash(gh issue view:*),Bash(gh issue comment:*),Bash(gh issue edit:*),Bash(gh issue create:*),Bash(gh issue close:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr checks:*),Bash(gh pr comment:*),Bash(gh pr edit:*),Bash(gh run list:*),Bash(gh run view:*),Bash(gh api repos/*)"
           prompt: |
             Eres el Architect en rol watchdog del repo ${{ github.repository }}.
@@ -1715,6 +1848,105 @@ jobs:
                 body: `@claude — retoma según el diagnóstico del comentario anterior del watchdog (ping-creator sin mención de arm: co-ocurrencia materializada mecánicamente, fp#1344).\n\n<!-- ping-creator-materializado -->\n<!-- watchdog-capa: ${context.eventName} -->` });
               core.warning(`#${n}: ping-creator sin mención de arm — arm materializado.`);
             }
+
+      # ── Terminal por presupuesto DECLARADO del resolver (AP-092, central#247) ──
+      # Una muerte por `error_max_turns` del resolver solo se veía abriendo el log
+      # del job (aud. finplan#2276/#2289 la reconstruyeron a mano), y el run
+      # constaba `failure` aunque el Δ hubiera sobrevivido — rojo que suma a las
+      # rachas del heartbeat (AP-059, K=3 ⇒ `human-needed`) por una causa que no
+      # es vigilancia caída. Este step lee la salida ESTRUCTURADA de la sesión
+      # (execution file, AP-040: `subtype`, `num_turns`, `total_cost_usd`) y:
+      #   · `max-turns` CON Δ ⇒ `resolve-presupuesto-agotado-con-delta`: comentario
+      #     en cada ítem donde la sesión publicó (GITHUB_TOKEN: no dispara
+      #     workflows, no fabrica ticks) y `con_delta=true` ⇒ la etapa concluye
+      #     verde (step final).
+      #   · `max-turns` SIN Δ ⇒ anotación `resolve-presupuesto-agotado-sin-delta`
+      #     y la etapa sigue ROJA (una racha de muertes sin trabajo SÍ es señal).
+      # Δ = comentario con el marcador de capa anclado a FIN DE LÍNEA, de actor no
+      # bot (el PAT), creado desde `t0` (arranque de la sesión). Fin de línea y no
+      # línea propia: el prompt pide el marcador «al final» sin exigir línea
+      # aparte, y uno pegado a la última frase es un Δ igual (sin esto, una muerte
+      # que SÍ publicó quedaría roja). Tampoco fin de cuerpo: el parche AP-064
+      # añade `watchdog-rol` en la línea siguiente. Sigue anclado: un marcador
+      # citado a media frase o entre backticks no casa. En la ventana
+      # solo publica la sesión: `detect` terminó antes, el grupo de concurrency
+      # del stub serializa los Watchdogs y los post-steps que escriben con el
+      # GITHUB_TOKEN salen como bot. El único post-step previo con el PAT
+      # (`ping-creator-materializado`, arriba) solo escribe donde la sesión YA
+      # publicó un `ping-creator`, así que no fabrica un Δ que no existiera.
+      # Va DESPUÉS de ese step y antes de la firma de flota para no mover el
+      # contexto de los parches pendientes de AP-064/AP-077 (check-patches).
+      - name: Terminal por presupuesto del resolver (AP-092)
+        id: budget_terminal
+        if: always() && steps.architect.outcome != 'skipped' && steps.architect.outcome != 'cancelled'
+        uses: actions/github-script@v7
+        env:
+          EXEC_FILE: ${{ steps.architect.outputs.execution_file }}
+          STEP_OUTCOME: ${{ steps.architect.outcome }}
+          T0: ${{ steps.t0.outputs.t0 }}
+          MAX_TURNS: ${{ (inputs.budget_pin_forzado && inputs.resolve_max_turns) || (inputs.resolve_max_turns >= 80 && inputs.resolve_max_turns) || 80 }}
+          PIN_DIVERGENTE: ${{ steps.pindiv.outputs.linea }}
+        with:
+          script: |
+            const fs = require('fs');
+            const O = context.repo;
+            core.setOutput('con_delta', 'false');
+            const f = process.env.EXEC_FILE || `${process.env.RUNNER_TEMP || '/tmp'}/claude-execution-output.json`;
+            let r = null;
+            try {
+              const d = JSON.parse(fs.readFileSync(f, 'utf8'));
+              r = [...(Array.isArray(d) ? d : [d])].reverse().find(m => m && m.type === 'result') || null;
+            } catch (e) { core.info(`execution file ilegible (${e.message}).`); }
+            const outcome = process.env.STEP_OUTCOME || '';
+            if (outcome !== 'failure' || !r || r.subtype !== 'error_max_turns') {
+              const causa = outcome === 'success' ? 'ok' : (r ? (r.subtype || 'crash') : 'ilegible');
+              core.setOutput('causa', causa);
+              core.info(`terminal del resolver: outcome=${outcome} · causa=${causa} — no es muerte por presupuesto.`);
+              return;
+            }
+            const usd = Number(r.total_cost_usd);
+            const causaLine = `causa: max-turns · ${r.num_turns} turnos · ${Number.isFinite(usd) ? usd.toFixed(2) : '?'} USD · presupuesto ${process.env.MAX_TURNS}`;
+            const pin = (process.env.PIN_DIVERGENTE || '').trim();
+            const t0 = new Date(process.env.T0 || Date.now() - 25 * 60 * 1000);
+            const capaRe = /<!--\s*watchdog-capa:[^\n>]*-->[ \t]*$/m;
+            let delta = [];
+            try {
+              const cs = await github.paginate(github.rest.issues.listCommentsForRepo,
+                { ...O, since: t0.toISOString(), sort: 'created', direction: 'asc', per_page: 100 });
+              delta = cs.filter(c => new Date(c.created_at) >= t0 && !(c.user && c.user.type === 'Bot') && capaRe.test(c.body || ''));
+            } catch (e) { core.warning(`terminal del resolver: no se pudo leer el Δ (${e.message}) — se trata como SIN Δ (fail-closed a rojo).`); }
+            const items = [...new Set(delta.map(c => Number((c.issue_url || '').split('/').pop())).filter(Boolean))];
+            if (!items.length) {
+              core.setOutput('causa', 'max-turns-sin-delta');
+              core.error(`resolve-presupuesto-agotado-sin-delta · ${causaLine}${pin ? ` · ${pin}` : ''} — la sesión agotó el presupuesto sin publicar nada; la etapa queda en ROJO.`);
+              await core.summary.addHeading('architect-resolve: presupuesto agotado SIN Δ (AP-092)', 3).addRaw(`\`${causaLine}\``).write();
+              return;
+            }
+            for (const n of items) {
+              const k = delta.filter(c => (c.issue_url || '').endsWith(`/${n}`)).length;
+              try {
+                await github.rest.issues.createComment({ ...O, issue_number: n,
+                  body: `**watchdog · terminal por presupuesto de architect-resolve (AP-092)**: la sesión agotó su presupuesto de turnos DESPUÉS de publicar su Δ en este ítem (${k} comentario(s) desde ${t0.toISOString()}). No es un fallo: lo publicado rige; la etapa \`architect\` concluye en verde y no suma a las rachas rojas del Watchdog (AP-059/AP-091). Si el Δ quedó a medias, el siguiente tick lo re-detecta por estado.\n\n\`${causaLine}\`${pin ? `\n\n\`${pin}\`` : ''}\n\n<!-- resolve-presupuesto-agotado-con-delta -->\n<!-- watchdog-capa: ${context.eventName} -->` });
+              } catch (e) { core.warning(`terminal del resolver #${n}: ${e.message}`); }
+            }
+            core.setOutput('con_delta', 'true');
+            core.setOutput('causa', 'max-turns-con-delta');
+            core.warning(`resolve-presupuesto-agotado-con-delta · ${causaLine} · Δ en ${items.map(n => '#' + n).join(', ')} — etapa en verde.`);
+            await core.summary.addHeading('architect-resolve: presupuesto agotado CON Δ (AP-092)', 3)
+              .addRaw(`\`${causaLine}\` · Δ publicado en ${items.map(n => '#' + n).join(', ')}.`).write();
+
+      # Conclusión de la etapa (AP-092). El step de la sesión lleva
+      # `continue-on-error`; aquí se devuelve el rojo a todo fallo que NO sea
+      # `resolve-presupuesto-agotado-con-delta`. Fail-closed: si el terminal no
+      # pudo clasificar (step muerto, output vacío), la etapa queda roja como
+      # antes de AP-092.
+      - name: Conclusión de la etapa architect (AP-092)
+        if: always() && steps.architect.outcome == 'failure' && steps.budget_terminal.outputs.con_delta != 'true'
+        env:
+          CAUSA: ${{ steps.budget_terminal.outputs.causa }}
+        run: |
+          echo "::error::architect-resolve concluyó en fallo (causa: ${CAUSA:-sin clasificar}) — la etapa queda en rojo."
+          exit 1
 
       # Firma de FLOTA CAÍDA (AP-091, central#212): materializa la clase de la
       # sesión LLM (muerte instantánea / viva) como la conclusión de UNO de los

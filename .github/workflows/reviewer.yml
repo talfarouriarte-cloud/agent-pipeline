@@ -21,6 +21,14 @@ on:
         # CLAMP donde se consume el input (AP-061). check-contracts exige
         # fidelidad de las cuatro.
         #
+        # QUINTA declaración, FUERA del gate (AP-092): los fallbacks literales
+        # `80` del step `budget` (`Number(process.env.BASE_TURNS) || 80`) y de
+        # `--max-turns` (`steps.budget.outputs.max_turns || 80`). El gate de
+        # AP-061 exige el clamp canónico EXACTO en cada `${{ … }}` que toca el
+        # input, así que el fallback no puede ser el clamp. Solo rigen si el
+        # step `budget` no llega a fijar su base; si cambias el default,
+        # actualízalos A MANO en el mismo PR.
+        #
         # 80 y no 50 (AP-025, repesca finplan#1450): el mandato universal-strict
         # (2026-07-12, fidelidad ADR cláusula-a-cláusula en TODO PR) expandió el
         # trabajo por sesión y provocó la 1ª muerte por presupuesto observada del
@@ -311,6 +319,47 @@ jobs:
               core.setOutput('efecto', '');
             }
 
+      # ── Presupuesto por tamaño del diff (AP-092, central#209) ────────────────
+      # El presupuesto plano no escala con la densidad del diff: muertes por
+      # `max-turns` sin veredicto concentradas en los diffs grandes de RESTANTE
+      # (aud. finplan#2044 ×9, #2074 ×1). Escalón DETERMINISTA, sin LLM, sobre
+      # `additions+deletions` del PR: ≤600 líneas ⇒ base · >600 ⇒ ×1.5 · >1500
+      # ⇒ ×2. La base es el presupuesto EFECTIVO post-clamp (AP-061), así que un
+      # pin forzado escala desde el pin. `changed_files` se lee y se imprime
+      # (diagnóstico), no decide. El valor aplicado va al log, al job summary, al
+      # prompt (el Reviewer lo copia a su cabecera de control) y al diagnóstico
+      # de la rama sin-veredicto. El primer `setOutput` es la base: si algo de
+      # abajo falla, la sesión corre con el presupuesto de antes de AP-092.
+      - name: Presupuesto del Reviewer por tamaño del diff (AP-092)
+        id: budget
+        if: steps.gate.outputs.run == 'true'
+        continue-on-error: true
+        uses: actions/github-script@v7
+        env:
+          BASE_TURNS: ${{ (inputs.budget_pin_forzado && inputs.reviewer_max_turns) || (inputs.reviewer_max_turns >= 80 && inputs.reviewer_max_turns) || 80 }}
+        with:
+          script: |
+            const base = Number(process.env.BASE_TURNS) || 80;
+            core.setOutput('max_turns', String(base));
+            core.setOutput('linea', `presupuesto: ${base} turnos · escalón base (diff no evaluado)`);
+            try {
+              const pr0 = context.payload.pull_request;
+              let pr = pr0;
+              try { ({ data: pr } = await github.rest.pulls.get({ ...context.repo, pull_number: pr0.number })); }
+              catch (e) { core.info(`pulls.get: ${e.message} — se usa el payload del evento.`); }
+              const lineas = (Number(pr.additions) || 0) + (Number(pr.deletions) || 0);
+              const ficheros = Number(pr.changed_files) || 0;
+              const [factor, esc] = lineas > 1500 ? [2, '×2 (>1500 líneas)'] : lineas > 600 ? [1.5, '×1.5 (>600 líneas)'] : [1, 'base (≤600 líneas)'];
+              const turns = Math.ceil(base * factor);
+              const linea = `presupuesto: ${turns} turnos · escalón ${esc} · diff +${pr.additions || 0}/−${pr.deletions || 0} (${lineas} líneas, ${ficheros} ficheros) · base ${base}`;
+              core.setOutput('max_turns', String(turns));
+              core.setOutput('linea', linea);
+              core.notice(`AP-092 · ${linea}`);
+              await core.summary.addHeading('Presupuesto del Reviewer (AP-092)', 3).addRaw(`\`${linea}\``).write();
+            } catch (e) {
+              core.warning(`AP-092: escalón no evaluable (${e.message}) — se usa la base ${base}.`);
+            }
+
       # Patrón ADR-063: el agente disparado por una label la quita como
       # primer paso. Así el próximo add (del Creator tras responder a
       # los comentarios) vuelve a disparar el evento `labeled`. Sin
@@ -472,8 +521,9 @@ jobs:
           # manual. Trade-off aceptable: pierdes comment de progreso
           # visible, pero ganas robustez de invocación.
           #
-          # `--max-turns` lleva el CLAMP AP-061 (forma canónica — ver el
-          # `timeout-minutes` del job). El comentario vive AQUÍ, fuera de
+          # `--max-turns` es el escalón por tamaño del diff (AP-092) calculado
+          # sobre el CLAMP AP-061 (forma canónica en el `BASE_TURNS` del step
+          # `budget` — ver el `timeout-minutes` del job). El comentario vive AQUÍ, fuera de
           # `claude_args`, y no dentro: `claude_args: |` es un block scalar y
           # YAML no reconoce comentarios dentro de él, así que una línea `#`
           # ahí es CONTENIDO del string que recibe el action. Que hoy
@@ -489,7 +539,7 @@ jobs:
           claude_args: |
             --model ${{ inputs.reviewer_model }}
             --effort medium
-            --max-turns ${{ (inputs.budget_pin_forzado && inputs.reviewer_max_turns) || (inputs.reviewer_max_turns >= 80 && inputs.reviewer_max_turns) || 80 }}
+            --max-turns ${{ steps.budget.outputs.max_turns || 80 }}
             --allowedTools "Read,Glob,Grep,Write,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*)"
 
           prompt: |
@@ -497,6 +547,7 @@ jobs:
             PR NUMBER: ${{ github.event.pull_request.number }}
             PR HEAD SHA: ${{ github.event.pull_request.head.sha }}
             PR BASE SHA: ${{ github.event.pull_request.base.sha }}
+            PRESUPUESTO APLICADO: ${{ steps.budget.outputs.linea }}
 
             Eres el Reviewer del repo. Tu rol completo, criterios de
             severidad, formato del comment de output (cabecera de control
@@ -549,6 +600,10 @@ jobs:
                en cabecera al principio del comment para sobrevivir
                truncamiento, TOC al principio, severidad por issue,
                verificaciones.
+               Cierra la cabecera de control con la línea
+               `<!-- reviewer-presupuesto: ${{ steps.budget.outputs.max_turns }} turnos -->`
+               (AP-092; ver `docs/agents/reviewer.md` § «Cabecera de control
+               de loop»).
 
             Reglas absolutas:
 
@@ -660,6 +715,11 @@ jobs:
           # después en el caso normal, y una atribución falsa en el comentario
           # que pide actuar es peor que ninguna.
           PIN_EFECTO: ${{ steps.pindiv.outputs.efecto }}
+          # Clase de la sesión (AP-091: `instant` = muerta al nacer, `alive`,
+          # `ilegible`) — distingue «no arrancó» de «murió trabajando» (AP-092).
+          LLM_KIND: ${{ steps.llm_exec.outputs.kind }}
+          # Presupuesto aplicado por escalón de diff (AP-092).
+          BUDGET_LINE: ${{ steps.budget.outputs.linea }}
         with:
           script: |
             const O = { owner: context.repo.owner, repo: context.repo.repo };
@@ -730,6 +790,10 @@ jobs:
               const wallMs = last && Number.isFinite(last.duration_ms) ? last.duration_ms : NaN;
               const wall = fmtWall(wallMs);
               if (last && last.subtype === 'error_max_turns') return { causa: 'max-turns', wall };
+              // Muerte INSTANTÁNEA (AP-092, central#213 punto 2): la firma completa
+              // de AP-091 (`num_turns ≤ 1` · coste 0 · `modelUsage` vacío) no es
+              // crash de la review sino «no hubo sesión» (credencial/cuota/infra).
+              if (process.env.LLM_KIND === 'instant') return { causa: 'no-arranco', wall };
               // Timeout de job: el step se cancela (result no llega) o el wall roza el
               // techo (margen 30s). Positivo, pero NO presupuesto-de-turnos ⇒ relanzar.
               if (outcome === 'cancelled' ||
@@ -755,9 +819,33 @@ jobs:
               const budgetDeath = diag.causa === 'max-turns';
               if (prior >= 1 || budgetDeath) {
                 await patCall('POST', `/issues/${n}/labels`, { labels: ['stalled'] });
+                // Texto CONDICIONADO a la causa (AP-092, central#213 punto 2). Antes
+                // afirmaba «no cabe en el presupuesto» incondicionalmente y lo repetía
+                // sobre muertes de coste 0 (finplan PR #2085: 5 avisos, flota caída) —
+                // el diagnóstico erróneo es lo primero que lee architect-resolve.
+                const lectura = {
+                  'max-turns': 'la review no cabe en el presupuesto de turnos: **re-dimensionar** (partir el PR o subir el presupuesto)',
+                  'no-arranco': '**no arrancó (credencial/cuota/infra): NO re-dimensionar, NO relanzar** — firma de muerte instantánea (`num_turns ≤ 1` · coste 0 · `modelUsage` vacío); comprobar la credencial de la flota (firma de flota caída, AP-091)',
+                  'timeout': 'la sesión agotó el wall-clock del job (`timeout_minutes`): presupuesto de tiempo, no de turnos — re-dimensionar el PR o el timeout',
+                  'crash': 'la sesión arrancó y murió sin veredicto por otra causa (no presupuesto): **no re-dimensionar**; diagnosticar el log del run',
+                  'ilegible': 'causa terminal no legible (sin execution file): no atribuir a presupuesto; diagnosticar el log del run',
+                }[diag.causa] || 'causa no clasificada';
                 const motivo = budgetDeath && prior < 1
-                  ? `muerte-por-presupuesto POSITIVA (\`error_max_turns\`) en la 1ª conclusión — fast-path AP-040: relanzar una sesión idéntica moriría igual, no se quema el cap-1`
-                  : `2ª conclusión del Reviewer SIN veredicto para el mismo head — una 2ª muerte indica que la review no cabe en el presupuesto (no un flake)`;
+                  ? `muerte-por-presupuesto POSITIVA (\`error_max_turns\`) en la 1ª conclusión — fast-path AP-040: relanzar una sesión idéntica moriría igual, no se quema el cap-1; lectura por causa: ${lectura}`
+                  : `2ª conclusión del Reviewer SIN veredicto para el mismo head — lectura por causa: ${lectura}`;
+                // Dedupe por (head, causa) (AP-092): el mismo aviso para el mismo head y
+                // la misma causa no se re-emite (×5 en finplan PR #2085). La label
+                // `stalled` se re-asegura igual (idempotente). Clave anclada a línea
+                // propia, jamás substring (clase central#119).
+                const KEY = `<!-- reviewer-no-verdict-persistent-key: ${headSha} · ${diag.causa} -->`;
+                const keyRe = new RegExp(`^[ \\t]*${KEY.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[ \\t]*$`, 'm');
+                // Solo la clave EMITIDA por este post-step (GITHUB_TOKEN ⇒ autor
+                // `github-actions[bot]`) deduplica: una review que la CITE no calla el
+                // aviso (clase AP-063, marcador citado ≠ emitido).
+                if (cs.some(c => c.user && c.user.login === 'github-actions[bot]' && keyRe.test(c.body || ''))) {
+                  core.notice(`AP-092: aviso persistent ya emitido para (${headSha.slice(0,7)}, ${diag.causa}) — sin re-emisión.`);
+                  return;
+                }
                 // AP-052: si el stub de este repo pinea un input lesson-bearing
                 // por debajo del default del central, el pin culpable viaja EN
                 // ESTE comentario. Sin marcador nuevo (nada lo consume): es
@@ -774,7 +862,7 @@ jobs:
                       : 'el stub pinea por debajo un default *lesson-bearing*, pero el reusable elevó el presupuesto al default del central (clamp AP-061): esta sesión NO corrió con el pin, así que el pin **no** explica la muerte — re-dimensionar el PR. Retirar la línea del `with:` apaga el aviso.'}`
                   : '';
                 await github.rest.issues.createComment({ ...O, issue_number: n,
-                  body: `**reviewer · rama sin-veredicto (AP-025/AP-040)**: ${motivo}. Anomalía para architect-resolve (\`stalled\`). \`${causaLine}\`${pinLine}\n\n<!-- reviewer-no-verdict-persistent -->` });
+                  body: `**reviewer · rama sin-veredicto (AP-025/AP-040)**: ${motivo}. Anomalía para architect-resolve (\`stalled\`). \`${causaLine}\`${process.env.BUDGET_LINE ? ` · \`${process.env.BUDGET_LINE}\`` : ''}${pinLine}\n\n<!-- reviewer-no-verdict-persistent -->\n${KEY}` });
                 core.warning(`AP-040: escalada a architect-resolve para ${headSha.slice(0,7)} — ${causaLine}${budgetDeath ? ' (fast-path presupuesto)' : ''}.`);
                 return;
               }

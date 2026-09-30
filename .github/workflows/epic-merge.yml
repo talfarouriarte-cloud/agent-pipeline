@@ -92,6 +92,19 @@ jobs:
       statuses: write     # espejo del gate en la caja de checks del PR (2026-07-10)
       contents: read
     steps:
+      # AP-093 (central#245): el selector del sticky `epic-merge-diag` y el
+      # dedupe del pop de cola viven en `vendored/scripts/epic-merge-diag.cjs`
+      # (AP-068: pusheable por un agente y con banco en el CI del central).
+      # Sparse checkout del central, mismo origen que `graft-vendored`.
+      - name: Módulos vendored del central (epic-merge-diag)
+        uses: actions/checkout@v4
+        with:
+          repository: talfarouriarte-cloud/agent-pipeline
+          ref: main
+          path: .epic-merge-central
+          sparse-checkout: vendored/scripts
+          sparse-checkout-cone-mode: true
+
       - name: Evaluar y mergear
         uses: actions/github-script@v7
         env:
@@ -116,19 +129,45 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const run = context.payload.workflow_run || null;
+            // AP-093: identidad POSITIVA del sticky (marcador en la línea 1 del
+            // cuerpo despojado de código + autor = login del PAT). El Reviewer
+            // postea con el MISMO PAT, luego el autor solo no discrimina, y un
+            // `includes` del marcador casaba una review que lo CITABA y la
+            // sobrescribía (asesoramiento#2286; antes, review de AP-064).
+            const EMD = require(`${process.env.GITHUB_WORKSPACE}/.epic-merge-central/vendored/scripts/epic-merge-diag.cjs`);
+            let patLogin = null;
+            async function loginPAT() {
+              if (patLogin) return patLogin;
+              try { patLogin = (await github.rest.users.getAuthenticated()).data.login; }
+              catch (e) { core.info('getAuthenticated: ' + e.message + ' — uso REVIEWER_LOGIN'); patLogin = REVIEWER_LOGIN; }
+              return patLogin;
+            }
+            async function stickyDe(prNumber) {
+              const { data: cs } = await github.rest.issues.listComments({
+                owner, repo, issue_number: prNumber, per_page: 100 });
+              return EMD.seleccionarSticky(cs, await loginPAT());
+            }
+
+            // AP-093: true desde que ESTE job entra a procesar un merge
+            // (`postMerge`); con él, un pop de cola es «de este merge» y el
+            // sticky fija `epic-merge-merged`. Declarado ANTES de `diag()`,
+            // que lo lee (nada de zona muerta temporal del `let`).
+            let mergeEnEsteJob = false;
 
             // Helper: deja/actualiza un comentario diagnóstico legible por API.
-            async function diag(prNumber, msg) {
+            // El cuerpo arrastra el ESTADO de la versión anterior (merge
+            // procesado, pop de cola de este merge): el mensaje es volátil.
+            // `merged` lo fija el HECHO (`mergeEnEsteJob`), no el texto: hay
+            // caminos post-merge sin ningún mensaje «mergeado…» (crear la
+            // auditoría falla y devuelve null).
+            async function diag(prNumber, msg, opts) {
               try {
                 core.info('[epic-merge] ' + msg);
                 if (!prNumber) return;
-                const marker = '<!-- epic-merge-diag -->';
-                const { data: cs } = await github.rest.issues.listComments({
-                  owner, repo, issue_number: prNumber, per_page: 100 });
-                const mine = cs.filter(c => (c.body || '').includes(marker));
-                const body = `${marker}\n**epic-merge** (${new Date().toISOString()}): ${msg}`;
-                if (mine.length) {
-                  await github.rest.issues.updateComment({ owner, repo, comment_id: mine[mine.length-1].id, body });
+                const mine = await stickyDe(prNumber);
+                const body = EMD.construirCuerpo(mine && mine.body, msg, new Date().toISOString(), { ...(opts || {}), merged: mergeEnEsteJob });
+                if (mine) {
+                  await github.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body });
                 } else {
                   await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
                 }
@@ -171,12 +210,28 @@ jobs:
                   core.info(`[epic-merge] arm de cola (${why}): sin candidato — listForRepo?labels=en-cola devolvió ${queued.length} ítem(s), 0 issues tras filtrar PRs.`);
                   return;
                 }
+                // Idempotencia por merge (AP-093, central#264): sobre un MISMO
+                // merge llegan ≥2 evaluaciones (`workflow_run` y `closed`); cada
+                // una llegaba aquí y armaba — dos veces el mismo issue, o dos
+                // issues distintos. Se lee el estado del sticky del PR y los
+                // comentarios del siguiente; con cualquiera de los dos, no-op.
+                const sticky = prNumber ? await stickyDe(prNumber) : null;
+                const origen = (mergeEnEsteJob || EMD.stickyMergeado(sticky)) ? prNumber : null;
+                if (origen) {
+                  const { data: ncs } = await github.rest.issues.listComments({
+                    owner, repo, issue_number: next.number, per_page: 100 });
+                  const ya = EMD.popYaEmitido({ sticky, comentariosSiguiente: ncs, next: next.number, pr: origen, login: await loginPAT() });
+                  if (ya) {
+                    core.info(`[epic-merge] arm de cola (${why}): no-op — ${ya}.`);
+                    return;
+                  }
+                }
                 await github.rest.issues.removeLabel({ owner, repo, issue_number: next.number, name: 'en-cola' }).catch(() => {});
                 await github.rest.issues.removeLabel({ owner, repo, issue_number: next.number, name: 'stalled' }).catch(() => {});
                 await github.rest.issues.createComment({ owner, repo, issue_number: next.number,
-                  body: `@claude arranca — turno de cola: la serie quedó libre (${why}). Eras el más antiguo en \`en-cola\`.\n\n<!-- arm-de-cola -->` });
+                  body: `@claude arranca — turno de cola: la serie quedó libre (${why}). Eras el más antiguo en \`en-cola\`.\n\n<!-- arm-de-cola -->\n${EMD.marcadoresPop(next.number, origen)}` });
                 serieTomada = true;
-                await diag(prNumber, `serie libre (${why}): armado el siguiente de la cola, #${next.number}.`);
+                await diag(prNumber, `serie libre (${why}): armado el siguiente de la cola, #${next.number}.`, { pop: origen ? next.number : null });
               } catch (e) { await diag(prNumber, `arm de cola falló: ${e.message}`); }
             }
 
@@ -399,6 +454,7 @@ jobs:
             // para merge automático y manual (movimiento verbatim 2026-07-05).
             async function postMerge(pr, issueNumber, issue) {
               const prNumber = pr.number;
+              mergeEnEsteJob = true; // AP-093: los pops de cola desde aquí son «de este merge»
               // PR PARCIAL (marcador `<!-- partial-pr -->` o "cierra parcialmente" en el
               // body del PR): mergea, pero NO cierra el issue ni sigue el sentinel —
               // re-arma el MISMO issue para el alcance restante. Cap de 3 relanzamientos
@@ -820,11 +876,14 @@ jobs:
                 const mb = (p.head.ref || '').match(/issue-(\d+)/);
                 if (!mb) { core.info('manual: rama sin issue; no-op.'); return; }
                 const mIssueNumber = Number(mb[1]);
-                // Dedupe con el camino automático: si epic-merge ya mergeó él
-                // mismo, su diag contiene «MERGEADO» — no reprocesar sentinels.
+                // Dedupe con el camino automático, ACOTADO al sticky
+                // positivamente identificado (AP-093): su línea de estado
+                // `epic-merge-merged` sobrevive a los diags posteriores al merge,
+                // que antes borraban el «MERGEADO» del cuerpo y hacían que el
+                // `closed` del mismo merge se declarase MANUAL (asesoramiento#2280).
+                // Sin sticky, `diag()` crea uno nuevo (nunca reescribe uno ajeno).
                 try {
-                  const { data: cs } = await github.rest.issues.listComments({ owner, repo, issue_number: prNumber, per_page: 100 });
-                  if (cs.some(c => (c.body || '').includes('<!-- epic-merge-diag -->') && /MERGEADO/.test(c.body || ''))) {
+                  if (EMD.stickyMergeado(await stickyDe(prNumber))) {
                     core.info('manual: epic-merge ya procesó este merge; no-op.'); return;
                   }
                 } catch (e) { core.warning('manual dedupe: ' + e.message); }
