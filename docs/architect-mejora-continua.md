@@ -81,6 +81,18 @@ Cuando una mejora de mecánica aterriza en el central, **cierras/enlazas la issu
 
 ---
 
+## Cola mensual (AP-090, 2026-09-30)
+
+La revisión mensual **decide TODO de una vez** y deja la cola montada; no hay «diferido»: una propuesta se ejecuta o se cierra. Salidas posibles de cada `process-proposal` del central, siempre con un comentario de ruling que empieza por `**Ruling de la revisión mensual (<fecha>…)**`:
+
+- **`mensual:aprobada`** + ruling con posición en la cola, alcance fijado (qué sí, qué no), fichero(s) y criterio falsable. El ruling PREVALECE sobre la propuesta. El propietario arma (comentario `@claude`), el Creator del central ejecuta el ruling, el propietario mergea. Un vehículo puede llevar varias propuestas fundidas: su PR las cierra con `Closes`.
+- **`mensual:fundida`** — se ejecuta dentro del PR de otra (el ruling dice cuál). No se arma por separado.
+- **`eje:local`** — el fix vive en el consumidor. Se deja abierta como entrada de cola del proyecto del consumidor; el central no la toca.
+- **`accion:propietario`** — configuración/decisión del propietario, no código.
+- **Cerrada `not_planned`** con ruling de una línea (coste bajo, ya cubierta, o sin vehículo que compense).
+
+Al arrancar la siguiente mensual: primero el estado de la cola anterior (qué se mergeó, qué criterio falsable venció y con qué resultado), después las nuevas. Una propuesta nueva del mismo eje que una `mensual:aprobada` pendiente se funde en ella, no abre otra.
+
 ## Flujo de una mejora (resumen)
 
 1. Lees la cola (`process-proposal`/`auditoria` de finplan+wmcb) y **trias por el eje**.

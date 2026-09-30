@@ -341,11 +341,25 @@ jobs:
                (basta una):
                (i) P0 — pipeline parado, trabajo perdido, o intervención
                    humana necesaria para restaurar el flujo;
-               (ii) RECURRENCIA — el MISMO eje (tipo de hallazgo, clase de
-                   repesca, causa de intervención del Watchdog) aparece en
-                   ≥2 ciclos de auditoría del último mes (épicas O issues
-                   sueltos; cuenta lo que las «vigilancias» de las revisiones
-                   previas ya venían serializando).
+               (ii) RECURRENCIA CON COSTE (AP-090, 2026-09-30, revisión
+                   mensual: 54+16 propuestas en septiembre, ninguna filtrada
+                   por este umbral) — el MISMO eje (tipo de hallazgo, clase
+                   de repesca, causa de intervención del Watchdog) aparece
+                   en ≥2 ciclos de auditoría del último mes Y en al menos
+                   uno de ellos tuvo coste MEDIDO: trabajo perdido, sesión
+                   NULO, intervención humana, o ≥1 corrida de
+                   architect-resolve que no habría existido sin él. Un eje
+                   que recurre pero se absorbe solo (failsafe, resolver de
+                   rutina, ronda extra de review) NO es propuesta hasta el
+                   3.er ciclo: es línea de vigilancia en el comentario.
+               ANTES de crear cualquier propuesta: busca en el central
+               (`gh issue list --repo talfarouriarte-cloud/agent-pipeline
+               --label process-proposal --state open --search "<eje>"`) si
+               ya existe una ABIERTA del mismo eje o de la misma skill.
+               Si existe, NO crees otra: añade la evidencia nueva como
+               comentario en esa (dedupe por eje; `registro-fiel` acumuló 5
+               issues del mismo tipo en un mes). Si la existente lleva
+               `mensual:fundida`, comenta en la que la absorbe.
                Una repesca absorbida por un failsafe, sin intervención humana
                y sin recurrencia, NO genera propuesta: línea de métricas y
                nada más. Racional: la ejecución ya NO es automática (paso 5:
@@ -524,8 +538,9 @@ jobs:
               output son comentarios en el issue de auditoría y issues
               `process-proposal` DESARMADOS en el central. Propones; el
               propietario decide en la revisión mensual; otros aplican.
-            - Máximo 2 propuestas de mecánica (pasos 3-5) y 2 propuestas de
-              skill-edit (paso 6) por ciclo; el cap de skill es TOTAL y
+            - Máximo 1 propuesta de mecánica (pasos 3-5) y 1 propuesta de
+              skill-edit (paso 6) por ciclo (AP-090: antes 2+2; con ~10
+              ciclos/mes el cap por ciclo, no el umbral, fijaba el volumen); el cap de skill es TOTAL y
               COMPARTIDO entre retomadas del sweep (6a) y nuevas (6b), con
               prioridad para las retomadas. Sin evidencia ⇒ nada.
 
@@ -624,6 +639,13 @@ jobs:
             const hasReview = /<!--\s*process-proposals:\s*\d+\s*-->/.test(all);
             if (!hasVerdict || !hasReview) {
               core.notice(`auditoría #${n}: ciclo incompleto (verdict=${hasVerdict}, review=${hasReview}) — queda abierta señalando la anomalía.`);
+              return;
+            }
+            // AP-090 (central#265): un panel con `human-needed` vigente tiene una
+            // decisión humana pendiente EN el panel; cerrarlo la entierra.
+            const { data: issue } = await github.rest.issues.get({ owner, repo, issue_number: n });
+            if ((issue.labels || []).some(l => (l.name || l) === 'human-needed')) {
+              core.notice(`auditoría #${n}: ciclo completo pero human-needed vigente — NO se archiva hasta que el humano retire la label.`);
               return;
             }
             await github.rest.issues.addLabels({ owner, repo, issue_number: n, labels: ['auto-archivada'] });
