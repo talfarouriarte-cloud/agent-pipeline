@@ -129,6 +129,14 @@ const CAPA_MARK = /^[ \t]*<!--\s*watchdog-capa:[^>]*-->[ \t]*$/m;
 // anuncia. Compartirlo es el punto — el aviso mide EXACTAMENTE lo que el belt
 // habría hecho de haber reconocido al emisor, no una aproximación suya que
 // pudiera derivar de ella.
+// Despojo de código (bloques cercados y spans inline): un marcador CITADO no
+// es un marcador emitido (clase AP-063, EFECTUAR ≠ CITAR). Exportado (AP-093)
+// para que el selector del sticky de `epic-merge` (`epic-merge-diag.cjs`) use
+// ESTE despojo y no una copia que pudiera divergir en silencio.
+function despojarCodigo(raw) {
+  return String(raw || '').replace(/```[\s\S]*?```/g, ' ').replace(/`[^`\n]*`/g, ' ');
+}
+
 function escanear(raw, host) {
   const pares = [];                                        // [{ n, desStall, arm }]
   const fallos = [];                                       // [{ clase, refs }]
@@ -185,7 +193,7 @@ function derivar(comentarios) {
     // EFECTUAR ≠ CITAR.
     const host = c.host;
     if (!host) continue;
-    const despojado = raw.replace(/```[\s\S]*?```/g, ' ').replace(/`[^`\n]*`/g, ' ');
+    const despojado = despojarCodigo(raw);
     const { pares, fallos } = escanear(raw, host);
     if (!ROL.test(despojado)) {
       // AP-070 — cierre del residual (c) de AP-064. Hasta aquí la ausencia del
@@ -373,3 +381,4 @@ module.exports.derivar = derivar;
 // lista contra los `const X = /…/` del FUENTE y se pone rojo si divergen.
 module.exports.PATRONES = { DES_STALL, ARM, AMBIGUO, FUTURO, FALLIDO, AUTO_DEST, ROL, CAPA_MARK };
 module.exports.MARK = MARK;
+module.exports.despojarCodigo = despojarCodigo;
