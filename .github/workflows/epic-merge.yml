@@ -998,6 +998,19 @@ jobs:
               // MERGE (directo; si ya estuviera cerrado/mergeado, el propio merge lo reporta).
               try {
                 if (process.env.IN_AUTOMERGE !== 'true') { await diag(prNumber, 'gates verdes, pero automerge=false en este repo: el merge es humano (AP-012). Esperando.'); return; }
+                // Rama `behind` con protección «up to date» (strict): el merge
+                // falla con «Required status check … is expected» (visto 2026-09-30,
+                // central #280/#284: cada merge de la cola deja al siguiente PR
+                // behind). Traer la rama al día aquí; el CI vuelve a correr y este
+                // workflow re-entra por workflow_run y mergea. Sin bucle: tras el
+                // update la rama ya no está behind. Un `dirty` (conflicto real)
+                // sigue siendo del Watchdog (modo rebase), no de aquí.
+                const { data: fresh } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+                if (fresh.mergeable_state === 'behind') {
+                  await github.rest.pulls.updateBranch({ owner, repo, pull_number: prNumber });
+                  await diag(prNumber, 'gates verdes pero rama behind de la base con protección strict: rama actualizada; el CI re-evalúa y se mergea en la siguiente pasada.');
+                  return;
+                }
                 await github.rest.pulls.merge({ owner, repo, pull_number: prNumber, merge_method: 'squash' });
               } catch (e) { await diag(prNumber, `MERGE FALLÓ: ${e.message} (¿ya mergeado / protección de rama / token sin contents:write?)`); return; }
               try { await github.rest.git.deleteRef({ owner, repo, ref: `heads/${headBranch}` }); } catch (e) {}
