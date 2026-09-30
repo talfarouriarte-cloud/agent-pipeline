@@ -44,7 +44,9 @@ fi
 if [ "${PIPELINE_VERIFY_AFTER_PUSH:-1}" != "0" ] && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)
   if [ -n "$upstream" ]; then
-    dirty=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+    # .claude/** se excluye del conteo: el graft vendored puede dejarlo sucio
+    # al arrancar (central#271) y no es trabajo del Creator.
+    dirty=$(git status --porcelain 2>/dev/null | grep -Ev '^.. \.claude/' | wc -l | tr -d ' ')
     ahead=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
     if [ "${dirty:-0}" -gt 0 ] || [ "${ahead:-0}" -gt 0 ]; then
       cat >&2 <<EOF2

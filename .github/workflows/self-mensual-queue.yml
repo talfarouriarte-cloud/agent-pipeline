@@ -1,0 +1,48 @@
+# Cola mensual del central (AP-090, 2026-09-30). Al mergear un PR en main (o
+# por dispatch), si NO hay ninguna `process-proposal` con `mensual:aprobada`
+# en vuelo (ya armada y aún abierta), arma la siguiente por posición
+# (`<!-- cola-mensual: N -->` en su ruling; sin marcador, la de menor número).
+# Solo arma lo APROBADO en la revisión mensual: la cola se detiene sola cuando
+# no queda ninguna con la label. El arm lo publica el PAT (actor humano; el
+# token default no dispara workflows). El merge sigue siendo humano.
+name: Cola mensual
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  issues: write
+  pull-requests: read
+jobs:
+  next:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const ARM = '<!-- cola-mensual-arm -->';
+            const { data: open } = await github.rest.issues.listForRepo({ owner, repo, state: 'open', labels: 'mensual:aprobada', per_page: 100 });
+            const issues = open.filter(i => !i.pull_request);
+            if (!issues.length) { core.notice('cola mensual: vacía — nada que armar.'); return; }
+            const info = [];
+            for (const i of issues) {
+              const { data: cs } = await github.rest.issues.listComments({ owner, repo, issue_number: i.number, per_page: 100 });
+              const all = cs.map(c => c.body || '').join('\n');
+              const m = /<!--\s*cola-mensual:\s*(\d+)\s*-->/.exec(all);
+              info.push({ n: i.number, pos: m ? parseInt(m[1], 10) : 1e6, armed: all.includes(ARM) });
+            }
+            const inflight = info.filter(x => x.armed);
+            if (inflight.length) { core.notice(`cola mensual: #${inflight.map(x => x.n).join(', #')} en vuelo — no se arma otra.`); return; }
+            info.sort((a, b) => a.pos - b.pos || a.n - b.n);
+            const next = info[0];
+            const body = [
+              `@claude Ejecuta el **ruling de la revisión mensual** publicado en este issue (comentario que empieza por «Ruling de la revisión mensual» y contiene «APROBADA»). El ruling PREVALECE sobre la propuesta original donde difieran. Un solo PR contra \`main\`; en su body pon \`Closes #${next.n}\` y \`Closes #<n>\` por cada issue que el ruling funde. Si tocas \`.github/workflows/**\`, commitea en local: el post-step publica la rama.`,
+              '',
+              `<!-- cola-mensual-arm --> (posición ${next.pos === 1e6 ? 'sin marcador' : next.pos}; armado automáticamente por self-mensual-queue.yml tras ${context.eventName === 'workflow_dispatch' ? 'dispatch manual' : 'el merge de #' + context.payload.pull_request.number})`
+            ].join('\n');
+            await github.rest.issues.createComment({ owner, repo, issue_number: next.n, body });
+            core.notice(`cola mensual: armada #${next.n} (posición ${next.pos}).`);
