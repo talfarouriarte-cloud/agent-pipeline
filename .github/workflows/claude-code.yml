@@ -579,6 +579,25 @@ jobs:
               if (!TRUSTED.has(c.author_association)) continue;
               for (const m of (c.body || '').matchAll(/<!--\s*panel-consumido:\s*#?(\d+)\s*-->/g)) consumed.add(Number(m[1]));
             }
+            // AP-098 (central#279, ruling mensual 2026-09-30; sustituye al punto 3
+            // del ruling de #267): panel consumido = VEREDICTO DEL AUDITOR. Una
+            // auditoría abierta con `audit-verdict` está consumida a efectos de
+            // arm aunque siga abierta esperando su lote de revisión de proceso
+            // (hasta 14 días): la revisión de proceso ya no gatea arms. Solo
+            // auditorías; una `process-proposal` local abierta sigue contando.
+            // Fail-closed: si los comentarios de un panel no se pueden leer,
+            // ese panel cuenta como SIN consumir (statu quo, nunca peor).
+            const RE_VERDICT = /<!--\s*audit-verdict:\s*(clean|findings)\s*-->/;
+            for (const i of openByNum.values()) {
+              if (consumed.has(i.number)) continue;
+              if (!(i.labels || []).map(l => l.name).includes('auditoria')) continue;
+              try {
+                const cs = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: i.number, per_page: 100 });
+                if (cs.some(c => RE_VERDICT.test(c.body || ''))) consumed.add(i.number);
+              } catch (e) {
+                core.warning(`guard de panel: comentarios de #${i.number} ilegibles (${e.message}) — cuenta como sin consumir.`);
+              }
+            }
             const open = [...openByNum.values()].filter(i => !consumed.has(i.number));
             if (!open.length) { core.setOutput('blocked', 'false'); return; }
             // Exención 3: correctivo de una auditoría viva — su body cita el nº
@@ -1378,6 +1397,32 @@ jobs:
               await github.rest.issues.createComment({ owner, repo, issue_number,
                 body: `**claude-code · post-step de auditoría**: \`audit-verdict\` DERIVADO por ESTADO (correctivos vinculados=${correctivos}, escalada=${escalated}) y publicado por PAT — el Auditor no pudo materializarlo por su canal (tracking comment pierde HTML, AP-013).\n\n<!-- audit-verdict: ${verdict} -->` });
               core.notice(`auditoría #${issue_number}: audit-verdict=${verdict} DERIVADO por estado (correctivos=${correctivos}, escalada=${escalated}) y publicado por PAT (AP-013).`);
+            }
+            // AP-098 (central#279): marcador P0 POR ESTADO, ANTES de la label (el
+            // `labeled` de `auditoria-completa` es el trigger de process-review, y
+            // su selector decide P0 ⇒ revisión inmediata vs. esperar lote). El
+            // camino primario es el Auditor por `gh api` (`<!-- audit-p0 -->` en el
+            // mismo comentario que su `audit-verdict`, epic-auditor.md §7:
+            // trabajo perdido, sesión NULO por
+            // credencial, pipeline parado); este step solo materializa la causa
+            // que el estado declara: `human-needed`/`needs-human` sobre el panel.
+            // Fail-open: sin marcador, el panel entra en el siguiente lote
+            // (latencia, no pérdida) — jamás impide aplicar la label.
+            try {
+              const RE_P0 = /<!--\s*audit-p0(?::[^>]*)?\s*-->/;
+              const comentariosP0 = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 });
+              if (!comentariosP0.some(c => RE_P0.test(c.body || ''))) {
+                const { data: freshP0 } = await github.rest.issues.get({ owner, repo, issue_number });
+                const lblP0 = (freshP0.labels || []).map(l => (typeof l === 'string' ? l : l.name));
+                const causa = lblP0.find(n => n === 'human-needed' || n === 'needs-human');
+                if (causa) {
+                  await github.rest.issues.createComment({ owner, repo, issue_number,
+                    body: `**claude-code · post-step de auditoría**: panel con \`${causa}\` vigente ⇒ **P0** materializado por estado (AP-098; causa: \`${causa}\`): la revisión de proceso de ESTE panel es inmediata, sin esperar lote.\n\n<!-- audit-p0 -->` });
+                  core.notice(`auditoría #${issue_number}: audit-p0 materializado por estado (${causa}).`);
+                }
+              }
+            } catch (e) {
+              core.warning(`AP-098: marcador P0 no evaluable (${e.message}) — el panel irá al siguiente lote.`);
             }
             await github.rest.issues.addLabels({ owner, repo, issue_number,
               labels: ['auditoria-completa'] });
