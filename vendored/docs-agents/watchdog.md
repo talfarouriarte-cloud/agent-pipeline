@@ -220,9 +220,11 @@ fabricated-citation drift operando sobre el estado de los paneles).
 **Desde AP-098 (central#279):** la revisión de proceso va POR LOTES (10
 auditorías o 14 días; P0 inmediato). Una auditoría con `audit-verdict` y
 SIN `process-review-done` está ESPERANDO SU LOTE, no es hueco: está
-consumida a efectos de arm (el guard de panel ya no la cuenta) y NO se
-cierra — el selector de lote solo recoge paneles ABIERTOS, así que
-cerrarla la deja sin revisión de proceso para siempre.
+consumida a efectos de arm (el guard de panel ya no la cuenta), así que no
+hace falta cerrarla para armar. Si se cierra (limpieza de cola), sigue
+pendiente: el selector de lote recoge también los paneles CERRADOS sin
+`process-review-done` durante 30 días. Cerrarla como `not_planned` la
+excluye del lote: úsalo solo para duplicados.
 
 **Cap acumulado de parciales (`<!-- rounds-cap-reached -->`):** si el
 stall viene con este marcador (6 relanzamientos parciales en la VIDA del

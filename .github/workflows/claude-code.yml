@@ -1410,7 +1410,7 @@ jobs:
             // (latencia, no pérdida) — jamás impide aplicar la label.
             try {
               const RE_P0 = /<!--\s*audit-p0(?::[^>]*)?\s*-->/;
-              const { data: comentariosP0 } = await github.rest.issues.listComments({ owner, repo, issue_number, per_page: 100 });
+              const comentariosP0 = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 });
               if (!comentariosP0.some(c => RE_P0.test(c.body || ''))) {
                 const { data: freshP0 } = await github.rest.issues.get({ owner, repo, issue_number });
                 const lblP0 = (freshP0.labels || []).map(l => (typeof l === 'string' ? l : l.name));

@@ -5,7 +5,10 @@
 # vivo de la épica hasta que el Architect limpia la cola al lanzar la
 # épica siguiente — cerrados desaparecían de la vista y el humano no los
 # leía; el trigger por `closed` habría disparado esta revisión en el
-# momento equivocado). Lee el
+# momento equivocado). AP-098: la limpieza de cola YA NO hace falta para
+# armar (guard: panel consumido = `audit-verdict`) y un panel cerrado sin
+# `process-review-done` SIGUE pendiente: el selector lo mete en su lote.
+# Lee el
 # pipeline-map, las métricas de proceso de los últimos informes de auditoría
 # y publica como máximo 2 issues `process-proposal` con evidencia y
 # coste/riesgo — o comenta «Sin propuestas» en la auditoría.
@@ -149,9 +152,16 @@ jobs:
       #
       # SELECTOR DE LOTE (AP-098, central#279). Determinista, cero LLM. Decide
       # `modo` ∈ {p0, lote, nada} y la lista de `paneles` de la sesión:
-      #  - pendiente := auditoría ABIERTA con `audit-verdict` y SIN
-      #    `process-review-done` (y sin `pause-agents`). Las cerradas están
-      #    consumidas (auto-archivo o cierre humano).
+      #  - pendiente := auditoría con `audit-verdict` y SIN `process-review-
+      #    done` (y sin `pause-agents`), ABIERTA o CERRADA. Cerrada cuenta
+      #    (review #293 §2): la limpieza de cola del Architect al lanzar la
+      #    épica siguiente cierra paneles antes de su lote, y sin esto su
+      #    revisión de proceso desaparecería en silencio (clase wmcb#27).
+      #    Excepciones: `state_reason: not_planned` (duplicados
+      #    `audit-dup-closed` de epic-merge) y veredictos anteriores al corte
+      #    AP-098 (bajo el régimen inmediato previo, un cierre sin marcador
+      #    ya dejó rastro `process-review-pendiente`). Las cerradas se leen con
+      #    `since` = hace 30 días.
       #  - P0 := panel con `<!-- audit-p0 -->` (admite `: <causa>`; lo publica el
       #    Auditor por `gh api` junto a su veredicto; el post-step de `claude-code.yml` lo materializa por
       #    estado si el panel lleva `human-needed`/`needs-human`) o, como
@@ -162,8 +172,9 @@ jobs:
       #    si hay ≥1 pendiente y han pasado ≥ 14 días desde la última revisión
       #    de lote (último `process-review-done` sobre un panel NO-P0; sin
       #    ninguna, cuenta desde el `audit-verdict` pendiente más antiguo). Sin
-      #    lote, `schedule` recoge los P0 pendientes rezagados (revisión
-      #    inmediata que murió o no llegó a correr): solo esos.
+      #    lote, CUALQUIER tick recoge los P0 pendientes rezagados (revisión
+      #    inmediata que murió, o cuyo run pendiente canceló otro en la cola de
+      #    concurrencia — review #293 §3): solo esos.
       #  - `workflow_dispatch`: lote forzado con lo pendiente (≥1).
       # Banco: scripts/check-process-review-lote.mjs (ejecuta ESTE script).
       # Fail-closed: si la API no responde, `nada` + run rojo — jamás una
@@ -176,6 +187,9 @@ jobs:
           script: |
             const { owner, repo } = context.repo;
             const N_LOTE = 10, DIAS_LOTE = 14, DIA = 24 * 3600 * 1000;
+            // Corte AP-098: veredictos anteriores vivieron el régimen inmediato;
+            // una cerrada de entonces sin marcador no es pendiente de lote.
+            const CORTE = Date.parse('2026-09-30T00:00:00Z');
             const RE_VERDICT = /<!--\s*audit-verdict:\s*(clean|findings)\s*-->/;
             const RE_DONE = /<!--\s*process-review-done\s*-->/;
             const RE_P0 = /<!--\s*audit-p0(?::[^>]*)?\s*-->/;
@@ -192,12 +206,17 @@ jobs:
             try {
               const abiertas = await github.paginate(github.rest.issues.listForRepo,
                 { owner, repo, state: 'open', labels: 'auditoria', per_page: 100 });
-              // Las cerradas recientes solo aportan la fecha de la última
-              // revisión de lote (un lote auto-archiva sus paneles).
+              // Las cerradas del último mes: paneles cerrados por la limpieza de
+              // cola antes de su lote (pendientes) y fecha de la última revisión
+              // de lote (un lote auto-archiva sus paneles).
+              const cerradas = await github.paginate(github.rest.issues.listForRepo,
+                { owner, repo, state: 'closed', labels: 'auditoria', since: new Date(Date.now() - 30 * DIA).toISOString(), per_page: 100 });
+              // Y las 30 más recientes, por si la última revisión de lote es más
+              // vieja que la ventana.
               const { data: recientes } = await github.rest.issues.listForRepo(
                 { owner, repo, state: 'all', labels: 'auditoria', sort: 'updated', direction: 'desc', per_page: 30 });
               const porNum = new Map();
-              for (const i of [...abiertas, ...recientes]) if (!i.pull_request) porNum.set(i.number, i);
+              for (const i of [...abiertas, ...cerradas, ...recientes]) if (!i.pull_request) porNum.set(i.number, i);
               paneles = [];
               for (const i of porNum.values()) {
                 const cs = await github.paginate(github.rest.issues.listComments,
@@ -208,6 +227,7 @@ jobs:
                 paneles.push({
                   n: i.number,
                   abierto: i.state === 'open',
+                  noPlaneado: i.state_reason === 'not_planned',
                   pausa: labels.includes('pause-agents'),
                   p0: cs.some(c => RE_P0.test(c.body || '')) || labels.some(l => LABELS_P0.includes(l)),
                   verdictAt: verdict ? Date.parse(verdict.created_at) : null,
@@ -220,7 +240,8 @@ jobs:
               return;
             }
             const pend = paneles
-              .filter(p => p.abierto && !p.pausa && p.verdictAt !== null && p.doneAt === null)
+              .filter(p => !p.pausa && p.verdictAt !== null && p.doneAt === null
+                && (p.abierto || (!p.noPlaneado && p.verdictAt >= CORTE)))
               .sort((a, b) => a.verdictAt - b.verdictAt);
             if (trigger !== null) {
               const t = paneles.find(p => p.n === trigger);
@@ -237,7 +258,7 @@ jobs:
             if (nums.length >= N_LOTE) return fin('lote', nums, `${nums.length} pendientes ≥ ${N_LOTE}`);
             if (dias >= DIAS_LOTE) return fin('lote', nums, `${nums.length} pendiente(s) y ${dias.toFixed(1)} días desde ${ref} ≥ ${DIAS_LOTE}`);
             const p0s = pend.filter(p => p.p0).map(p => p.n);
-            if (evento === 'schedule' && p0s.length) return fin('p0', p0s, `lote no cumplido; P0 pendiente(s) rezagado(s) — revisión inmediata solo de ellos`);
+            if (p0s.length) return fin('p0', p0s, `lote no cumplido; P0 pendiente(s) rezagado(s) — revisión inmediata solo de ellos`);
             fin('nada', [], `lote no cumplido: ${nums.length} pendiente(s) < ${N_LOTE} y ${dias.toFixed(1)} días desde ${ref} < ${DIAS_LOTE}`);
 
       # ── Divergencia pin↔default (AP-052; primer sujeto fuera de reviewer.yml) ─
@@ -439,6 +460,8 @@ jobs:
               perdido, sesión NULO por credencial, pipeline parado,
               `human-needed` sobre el panel). Revisas SOLO ese panel (o
               los P0 listados), en el acto.
+            Un panel de PANELES puede estar CERRADO (limpieza de cola del
+            Architect antes de su lote): se revisa igual, no lo reabras.
             LEE cada panel de PANELES entero (`gh issue view <n>
             --comments`), uno por uno: con varios paneles en contexto el
             riesgo es resumir en vez de leer, y por eso el comentario de
@@ -797,23 +820,39 @@ jobs:
             const { owner, repo } = context.repo;
             const nums = new Set((process.env.PANELES || '').split(/\s+/).filter(Boolean).map(Number));
             if (context.payload.issue && !context.payload.issue.pull_request) nums.add(context.payload.issue.number);
+            // Review #293 §4: try/catch POR PANEL — con un lote, un error puntual
+            // en el panel k no deja sin archivar k+1…N (el siguiente lote ya no
+            // los vería: tienen `done`). Fallos ⇒ warning por panel y rojo al final.
+            const fallidos = [];
             for (const n of nums) {
-              const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number: n, per_page: 100 });
-              const all = comments.map(c => c.body || '').join('\n');
-              const hasVerdict = /<!--\s*audit-verdict:\s*(clean|findings)\s*-->/.test(all);
-              const hasReview = /<!--\s*process-proposals:\s*\d+\s*-->/.test(all);
-              if (!hasVerdict || !hasReview) {
-                core.notice(`auditoría #${n}: ciclo incompleto (verdict=${hasVerdict}, review=${hasReview}) — queda abierta (en modo lote: esperando su lote).`);
-                continue;
+              try {
+                const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: n, per_page: 100 });
+                const all = comments.map(c => c.body || '').join('\n');
+                const hasVerdict = /<!--\s*audit-verdict:\s*(clean|findings)\s*-->/.test(all);
+                const hasReview = /<!--\s*process-proposals:\s*\d+\s*-->/.test(all);
+                if (!hasVerdict || !hasReview) {
+                  core.notice(`auditoría #${n}: ciclo incompleto (verdict=${hasVerdict}, review=${hasReview}) — queda abierta (en modo lote: esperando su lote).`);
+                  continue;
+                }
+                const { data: issue } = await github.rest.issues.get({ owner, repo, issue_number: n });
+                // Panel cerrado antes de su lote (limpieza de cola): ya está cerrado,
+                // no se re-etiqueta como auto-archivado.
+                if (issue.state === 'closed') {
+                  core.notice(`auditoría #${n}: ciclo completo; ya estaba cerrada (limpieza de cola) — nada que archivar.`);
+                  continue;
+                }
+                // AP-090 (central#265): un panel con `human-needed` vigente tiene una
+                // decisión humana pendiente EN el panel; cerrarlo la entierra.
+                if ((issue.labels || []).some(l => (l.name || l) === 'human-needed')) {
+                  core.notice(`auditoría #${n}: ciclo completo pero human-needed vigente — NO se archiva hasta que el humano retire la label.`);
+                  continue;
+                }
+                await github.rest.issues.addLabels({ owner, repo, issue_number: n, labels: ['auto-archivada'] });
+                await github.rest.issues.update({ owner, repo, issue_number: n, state: 'closed', state_reason: 'completed' });
+                core.notice(`auditoría #${n}: ciclo completo — auto-archivada.`);
+              } catch (e) {
+                fallidos.push(n);
+                core.warning(`auditoría #${n}: auto-archivo fallido (${e.message}) — se sigue con el resto del lote.`);
               }
-              // AP-090 (central#265): un panel con `human-needed` vigente tiene una
-              // decisión humana pendiente EN el panel; cerrarlo la entierra.
-              const { data: issue } = await github.rest.issues.get({ owner, repo, issue_number: n });
-              if ((issue.labels || []).some(l => (l.name || l) === 'human-needed')) {
-                core.notice(`auditoría #${n}: ciclo completo pero human-needed vigente — NO se archiva hasta que el humano retire la label.`);
-                continue;
-              }
-              await github.rest.issues.addLabels({ owner, repo, issue_number: n, labels: ['auto-archivada'] });
-              await github.rest.issues.update({ owner, repo, issue_number: n, state: 'closed', state_reason: 'completed' });
-              core.notice(`auditoría #${n}: ciclo completo — auto-archivada.`);
             }
+            if (fallidos.length) core.setFailed(`auto-archivo fallido en: ${fallidos.map(n => '#' + n).join(' ')} — archivarlos a mano (o re-aplicar \`auditoria-completa\`).`);

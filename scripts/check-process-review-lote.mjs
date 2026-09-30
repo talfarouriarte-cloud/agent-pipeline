@@ -28,8 +28,8 @@ const hace = d => new Date(Date.now() - d * DIA).toISOString();
 const VERDICT = '<!-- audit-verdict: findings -->';
 const DONE = 'Sin propuestas.\n<!-- process-proposals: 0 -->\n<!-- process-review-done -->';
 // Panel de auditoría: `verdict`/`done` = días atrás (null = ausente).
-const panel = (number, { verdict = 1, done = null, p0 = false, labels = [], state = 'open' } = {}) => ({
-  number, state, title: `Auditoría ${number}`,
+const panel = (number, { verdict = 1, done = null, p0 = false, labels = [], state = 'open', state_reason = null } = {}) => ({
+  number, state, state_reason, title: `Auditoría ${number}`,
   labels: ['auditoria', 'auditoria-completa', ...labels].map(name => ({ name })),
   comments: [
     ...(verdict !== null ? [{ body: VERDICT, created_at: hace(verdict) }] : []),
@@ -48,7 +48,10 @@ function api(world, w) {
     if (p.labels) xs = xs.filter(i => i.labels.some(l => l.name === p.labels));
     return { data: xs };
   };
-  const listComments = async p => ({ data: byNum.has(p.issue_number) ? byNum.get(p.issue_number).comments : (world.issueComments || {})[p.issue_number] || [] });
+  const listComments = async p => {
+    if ((world.commentsDown || []).includes(p.issue_number)) throw new Error('comentarios ilegibles');
+    return { data: byNum.has(p.issue_number) ? byNum.get(p.issue_number).comments : (world.issueComments || {})[p.issue_number] || [] };
+  };
   return {
     paginate: async (fn, p) => (await fn(p)).data,
     rest: {
@@ -136,6 +139,28 @@ const BANCO = [
       const w = await lote({ panels: [REVISADO, ...nPend(4), panel(210, { p0: true })] });
       return w.outputs.modo === 'p0' && paneles(w).join() === '210';
     }],
+  ['labeled NO-P0 sin lote cumplido y un P0 rezagado (run P0 cancelado en la cola) ⇒ corre SOLO el P0',
+    async () => {
+      const ps = [REVISADO, ...nPend(4), panel(211, { p0: true })];
+      const w = await lote({ panels: ps }, { evento: 'issues', issue: ps[2] });
+      return w.outputs.modo === 'p0' && paneles(w).join() === '211';
+    }],
+  ['panel CERRADO (limpieza de cola) sin process-review-done ⇒ entra en el lote',
+    async () => {
+      const w = await lote({ panels: [REVISADO, ...nPend(9), panel(220, { verdict: 0, state: 'closed', state_reason: 'completed' })] });
+      return w.outputs.modo === 'lote' && paneles(w).length === 10 && paneles(w).includes(220);
+    }],
+  ['panel cerrado como not_planned (duplicado audit-dup-closed) ⇒ no es pendiente',
+    async () => {
+      const w = await lote({ panels: [REVISADO, ...nPend(9), panel(221, { state: 'closed', state_reason: 'not_planned' })] });
+      return w.outputs.modo === 'nada';
+    }],
+  ['panel cerrado con veredicto anterior al corte AP-098 ⇒ no es pendiente',
+    async () => {
+      const viejo = panel(222, { verdict: 400, state: 'closed', state_reason: 'completed' });
+      const w = await lote({ panels: [REVISADO, ...nPend(9), viejo] });
+      return w.outputs.modo === 'nada';
+    }],
   ['workflow_dispatch con 2 pendientes ⇒ lote forzado',
     async () => { const w = await lote({ panels: [REVISADO, ...nPend(2)] }, { evento: 'workflow_dispatch' }); return w.outputs.modo === 'lote' && paneles(w).length === 2; }],
   ['panel sin audit-verdict o con pause-agents ⇒ no es pendiente',
@@ -162,6 +187,8 @@ BANCO.push(
     async () => { const w = await guard({ panels: [panel(500)] }); return w.outputs.blocked === 'false' && !w.added.length; }],
   ['guard de panel: auditoría abierta SIN audit-verdict ⇒ bloquea',
     async () => { const w = await guard({ panels: [panel(501, { verdict: null })] }); return w.outputs.blocked === 'true' && w.added.includes('1:stalled'); }],
+  ['guard de panel: comentarios del panel ilegibles ⇒ fail-closed, cuenta como sin consumir y bloquea',
+    async () => { const w = await guard({ panels: [panel(502)], commentsDown: [502] }); return w.outputs.blocked === 'true'; }],
 );
 
 let rojos = 0;
