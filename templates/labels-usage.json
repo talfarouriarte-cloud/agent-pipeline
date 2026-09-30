@@ -44,5 +44,8 @@
   "self-reviewer.yml": [],
   "signal-closer.yml": [],
   "self-epic-merge.yml": [],
-  "self-watchdog.yml": []
+  "self-watchdog.yml": [],
+  "self-mensual-queue.yml": [
+    "mensual:aprobada"
+  ]
 }
