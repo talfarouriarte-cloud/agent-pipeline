@@ -155,6 +155,8 @@ for (const [nombre, f, esperado] of [
 
 // ── 3. Firma de FLOTA CAÍDA (detect) ────────────────────────────────────────
 const FLEET = leer('.github/workflows/watchdog.yml', 'detect', 'Firma de flota caída (AP-091)');
+const FLEET_ARCH = leer('.github/workflows/watchdog.yml', 'architect', 'Firma de flota caída (AP-091)');
+if (FLEET !== FLEET_ARCH) fallos.push('flota: las copias de detect y de la etapa architect DIVERGEN');
 const MODE_FLEET = '<!-- pipeline-fleet-down -->';
 const WFS = [{ id: 1, name: 'Claude Code' }, { id: 2, name: 'Opus Reviewer' }, { id: 3, name: 'Watchdog' }];
 const envFleet = { IN_CREATOR_WF: 'Claude Code', IN_REVIEWER_WF: 'Opus Reviewer' };
@@ -186,6 +188,14 @@ await caso('flota · etapas mezcladas con un run sin sesión (neutro) ⇒ escala
 await caso('flota · escalada abierta en otro modo ⇒ transición por comentario', async () => {
   const l = await correr(FLEET, envFleet, doble({ ...flota([[3, 'instant'], [3, 'instant'], [3, 'instant']]), issues: [ABIERTA(MODE_401)] }));
   return (!l.created.length && l.commented.length === 1 && anclado(l.commented[0].body, MODE_FLEET)) || j(l);
+});
+await caso('flota · etapa architect: la 3.ª muerte es la de ESTE run ⇒ escala en el mismo tick', async () => {
+  const l = await correr(FLEET_ARCH, { ...envFleet, FLEET_SELF_KIND: 'instant' }, doble(flota([[3, 'instant'], [2, 'instant'], [1, 'alive']])));
+  return (l.created.length === 1 && anclado(l.created[0].body, MODE_FLEET)) || j(l);
+});
+await caso('flota · la misma historia vista desde detect (sin run propio) ⇒ aún no escala', async () => {
+  const l = await correr(FLEET, envFleet, doble(flota([[3, 'instant'], [2, 'instant'], [1, 'alive']])));
+  return !l.created.length || j(l);
 });
 await caso('flota · API caída ⇒ fail-soft (no lanza, avisa)', async () => {
   const l = await correr(FLEET, envFleet, doble({ throwOn: 'getWorkflowRun' }));
