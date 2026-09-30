@@ -115,6 +115,28 @@ runs:
         rm -rf .graft-tmp
         note ".graft-tmp/"
 
+        # 7. Árbol limpio tras el graft (AP-097, central#271). El graft sólo
+        #    escribe paths registrados (exclude / skip-worktree), así que un
+        #    `M` trackeado aquí es una regresión del propio graft: bajo
+        #    `.claude/` se restaura a la versión de la RAMA (`git checkout --`
+        #    sobre lo que la rama versiona) y se registra; fuera de `.claude/`
+        #    sólo se registra (no se adivina qué es legítimo). OJO: esto NO
+        #    cubre el síntoma medido en asesoramiento#2332/#2345/#2348 — ese
+        #    `M .claude/**` con la copia de la BASE lo produce DESPUÉS, dentro
+        #    del step de la action, `restoreConfigFromBase` de
+        #    claude-code-action en contexto PR (ver AP-097 en decisions.md).
+        dirty="$(git status --porcelain --untracked-files=no)"
+        if [ -n "$dirty" ]; then
+          echo "::warning title=graft: árbol sucio tras el injerto (AP-097)::$(printf '%s' "$dirty" | tr '\n' ';')"
+          git status --porcelain --untracked-files=no -- .claude/ | cut -c4- | while IFS= read -r p; do
+            git checkout -- "$p" && echo "graft: restaurado a la versión de la rama: $p" || echo "::warning::graft: no se pudo restaurar $p"
+          done
+          left="$(git status --porcelain --untracked-files=no)"
+          { echo "### graft-vendored: árbol sucio tras el injerto (AP-097)"; echo '```'; printf '%s\n' "$dirty"; echo '```';
+            echo "Tras restaurar \`.claude/\`: ${left:-limpio}"; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          [ -z "$left" ] || echo "::warning title=graft: árbol sucio fuera de .claude/ (AP-097)::$(printf '%s' "$left" | tr '\n' ';')"
+        fi
+
         # Requirements locales del consumidor (MIGRATION A7-bis, 2026-07-13):
         # el graft es el único punto del central que pisa el workspace del
         # consumidor en cada run — verifica aquí lo que el alta exige committear.
