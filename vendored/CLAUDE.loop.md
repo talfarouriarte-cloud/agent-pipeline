@@ -211,12 +211,15 @@ triggers the Reviewer via the `opened` event (condition on
 `claude[bot]` as author) — that is the residual path (post-step
 opening from state), not your normal flow.
 
-**If the Reviewer issues verdict `LGTM` or `NITS` (no `@claude` ping):**
+**If the Reviewer issues verdict `LGTM` (never pinged):**
 do not respond. The loop ends silently: `epic-merge` merges on
 `lgtm` + `ci-verde`, epic or loose (AP-095; human merge only where
 the Domain section declares `automerge: false`). Do not consume a turn closing with `[READY-TO-MERGE]` — it
 adds nothing and burns one slot of the cap=8. The closing tags are
-only useful when the Reviewer pinged you (verdict `REVIEW`). The
+only useful when the Reviewer pinged you (verdict `REVIEW` or `NITS`).
+`NITS` pings you every round (ADR-193) and does NOT write `lgtm`
+(`reviewer.yml` removes it on every non-LGTM verdict): apply the nits
+and close with `@reviewer`; the merge waits for the next `LGTM`. The
 verdict and `@claude` ping live at the START of the Reviewer’s
 comment (ADR-063 — see `docs/agents/reviewer.md` § “Cabecera de
 control de loop”) so they survive truncation if the review body
