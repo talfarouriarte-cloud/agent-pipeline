@@ -79,6 +79,22 @@ Perder esto es la causa raíz de trabajo repetido y ramas huérfanas.
   explícitamente otra base, sigue esa instrucción; en ausencia de
   instrucción explícita, **parte siempre de `origin/<rama-base>`**.
   
+  **Excepción esperada en contexto PR (AP-097, central#271):** antes de
+  tu sesión, `claude-code-action` sustituye `.claude/`, `CLAUDE.md`,
+  `.mcp.json` (y otros ficheros de config) por su versión de la rama
+  BASE, por seguridad: la rama del PR no es de confianza para la
+  action (`restoreConfigFromBase`; en el log del step:
+  «Restoring .claude, … from origin/<base> (PR head is untrusted)»).
+  Si tu PR modifica un fichero trackeado de esas rutas, lo verás como
+  ` M` con el contenido de la base. Esa modificación no es inesperada:
+  no pares por ella. **No la commitees nunca** (nada de `git add -A`,
+  `git add .` ni `git commit -a`: subirías la reversión a la rama del
+  PR). Si el turno tiene que editar ese fichero, recupera antes la
+  versión del PR con `git checkout HEAD -- <ruta>`; si no, déjalo
+  como está. La versión del PR antes de la restauración está en
+  `.claude-pr/`, que no se trackea. Cualquier otra suciedad sigue
+  la regla de arriba: repórtala y para.
+  
   Esta realineación NO es ceremonial. Saltársela es la causa raíz de
   fallos del tipo “imports a módulos inexistentes”, “tests se rompen
   con errores sin sentido”, “el código que el issue describe no
