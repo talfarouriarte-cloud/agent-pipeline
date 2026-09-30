@@ -896,6 +896,10 @@ jobs:
             core.setOutput('sha', pr.head.sha);
             core.setOutput('ref', pr.head.ref);
             core.setOutput('same_repo', String(pr.head.repo?.full_name === `${owner}/${repo}`));
+            // AP-094: ¿el PR era DRAFT al arrancar la sesión? Si la sesión lo marca
+            // ready, su `ready_for_review` ya convoca al Reviewer; Auto-label y
+            // Re-review por estado lo usan para no convocar una segunda sesión.
+            core.setOutput('draft', String(!!pr.draft));
 
       # ───────────────────────────────────────────────────────────────────
       # AP-084 — Sync a la rama HEAD del PR antes del graft (solo PRs).
@@ -1290,6 +1294,12 @@ jobs:
         # común), el run existe y el step no toca nada. El dispatcher del watchdog
         # (ADR-217) queda como red; sus relanzamientos por `opened` perdido deben
         # caer a ~0 (métrica de la próxima auditoría de cada consumidor).
+        # AP-094 (central#224): bajo draft-first el `opened` de un draft se salta
+        # por construcción y este belt disparaba en el 100% de los PRs ordinarios.
+        # Desde AP-094 el evento primario es `ready_for_review` (el `gh pr ready`
+        # del cierre del Creator; trigger del stub del Reviewer) y este belt vuelve
+        # a ser RESIDUAL: su mismo dedupe por runs del head SHA lo apaga cuando el
+        # evento convocó. Sin cambio de lógica aquí.
         if: |
           always()
           && steps.preflight.outputs.dead != 'true'
@@ -1355,7 +1365,7 @@ jobs:
             // el riesgo que el settle cubre (nit de la review de PR #57).
             const first = await found();
             if (first !== false) {
-              if (first) core.notice(`open-review-failsafe: run del Reviewer ya existe para ${pr.head.sha.slice(0,7)} (trigger opened OK) — no se duplica.`);
+              if (first) core.notice(`open-review-failsafe: run del Reviewer ya existe para ${pr.head.sha.slice(0,7)} (trigger opened/ready_for_review OK) — no se duplica.`);
               return;
             }
             // Sólo el caso dudoso (run ausente) paga el settle al bound de liveness
@@ -1383,8 +1393,8 @@ jobs:
             await patCall('DELETE', `/issues/${pr.number}/labels/needs-review`);
             await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['needs-review'] });
             await github.rest.issues.createComment({ owner, repo, issue_number: pr.number,
-              body: '**claude-code · open-review-failsafe**: el evento `opened` que auto-dispara al Reviewer al nacer el PR no produjo ningún run tras el settle de liveness (~90s). Transición Creator→Reviewer materializada por ESTADO: `needs-review` aplicada con el PAT en el mismo job (repesca finplan#1382, AP-016). Idempotente por dedupe: si el `opened` hubiera disparado, este step no habría tocado nada.\n\n<!-- open-review-failsafe -->' });
-            core.warning(`open-review-failsafe: PR #${pr.number} sin run del Reviewer para ${pr.head.sha.slice(0,7)} — needs-review aplicada por PAT (opened perdido).`);
+              body: '**claude-code · open-review-failsafe**: el evento que auto-dispara al Reviewer al volverse revisable el PR (`ready_for_review` del cierre draft-first, AP-094; `opened` si nació no-draft) no produjo ningún run tras el settle de liveness (~90s). Transición Creator→Reviewer materializada por ESTADO (camino RESIDUAL): `needs-review` aplicada con el PAT en el mismo job (repesca finplan#1382, AP-016). Idempotente por dedupe: si el evento hubiera disparado, este step no habría tocado nada. Si el stub del Reviewer de este repo no declara `ready_for_review` en sus `types`, este disparo es esperado (MIGRATION.md, AP-094).\n\n<!-- open-review-failsafe -->' });
+            core.warning(`open-review-failsafe: PR #${pr.number} sin run del Reviewer para ${pr.head.sha.slice(0,7)} — needs-review aplicada por PAT (evento opened/ready_for_review perdido o no cableado en el stub).`);
 
       - name: Materializar muerte del Creator sin PR (post-step determinista)
         id: post_muerte_sin_pr
@@ -1433,6 +1443,14 @@ jobs:
           # epic-merge (Fase C): inputs y outputs de steps via env.
           STEP_CREATOR_OUTCOME: ${{ steps.creator.outcome }}
           IN_DEFAULT_BRANCH: ${{ inputs.default_branch }}
+          # AP-094: token por defecto SOLO para el `markReady` del draft huérfano.
+          # Con el PAT, el `ready_for_review` que emite convocaría al Reviewer
+          # (trigger nuevo del stub) Y el `needs-review` por PAT de a continuación
+          # también ⇒ dos sesiones Opus en serie (`cancel-in-progress: false`).
+          # Con el GITHUB_TOKEN el evento no dispara nada y la convocatoria es
+          # UNA: el `labeled` por PAT, como hasta ahora (mismo reparto que el
+          # backstop del watchdog).
+          DEFAULT_GH_TOKEN: ${{ github.token }}
         with:
           # PAT, no GITHUB_TOKEN default (2026-07-14, finplan#1350): la label
           # `stalled` que aplica este step es el trigger por EVENTO de
@@ -1454,8 +1472,9 @@ jobs:
             // materializa aquí POR ESTADO: el draft EXISTE (abierto en el hito 1),
             // así que basta marcarlo ready + `needs-review` con el PAT (este step
             // corre con REVIEWER_GITHUB_TOKEN ⇒ el `labeled` dispara al Reviewer y su
-            // gate ya ve el PR ready, sin depender del `opened` que un draft salta ni
-            // de un evento `ready_for_review` nuevo). El body es el del último hito
+            // gate ya ve el PR ready, sin depender del `opened` que un draft salta; el
+            // `markReady` va con el GITHUB_TOKEN para que su `ready_for_review` no
+            // convoque una segunda sesión, AP-094). El body es el del último hito
             // (fidelidad por construcción — lo que el belt declarativo AP-042
             // perseguía, ahora garantizado por el ARTEFACTO real). PR ya-ready ⇒ el
             // flujo PR-driven gobierna, nada que materializar.
@@ -1467,11 +1486,18 @@ jobs:
                 return;
               }
               // Draft huérfano (Creator murió antes del `gh pr ready` del cierre):
-              // materializar la transición ready POR ESTADO.
+              // materializar la transición ready POR ESTADO. `markReady` con el
+              // GITHUB_TOKEN (AP-094): su `ready_for_review` no dispara al Reviewer,
+              // así que la única convocatoria es el `needs-review` por PAT de abajo.
               try {
-                await github.graphql(
-                  `mutation($id:ID!){ markPullRequestReadyForReview(input:{pullRequestId:$id}){ pullRequest { number isDraft } } }`,
-                  { id: openPr.node_id });
+                const res = await fetch('https://api.github.com/graphql', {
+                  method: 'POST',
+                  headers: { Authorization: `Bearer ${process.env.DEFAULT_GH_TOKEN}`, 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    query: `mutation($id:ID!){ markPullRequestReadyForReview(input:{pullRequestId:$id}){ pullRequest { number isDraft } } }`,
+                    variables: { id: openPr.node_id } }) });
+                const j = await res.json().catch(() => ({}));
+                if (!res.ok || j.errors) throw new Error(`HTTP ${res.status} ${JSON.stringify(j.errors || '')}`);
               } catch (e) {
                 core.warning(`AP-047: markReadyForReview falló para PR #${openPr.number} de #${n}: ${e.message} — se aplica needs-review igual (el gate del Reviewer saltará si el PR sigue en draft; queda el watchdog).`);
               }
@@ -1481,7 +1507,7 @@ jobs:
               await github.rest.issues.removeLabel({ owner, repo, issue_number: openPr.number, name: 'needs-review' }).catch(() => {});
               await github.rest.issues.addLabels({ owner, repo, issue_number: openPr.number, labels: ['needs-review'] });
               await github.rest.issues.createComment({ owner, repo, issue_number: openPr.number,
-                body: `**claude-code · post-step**: la sesión del Creator de #${n} terminó en \`${process.env.STEP_CREATOR_OUTCOME}\` con su PR **en DRAFT** (abierto en el primer push de hito, AP-047) y SIN marcarlo ready — el acto de cierre discrecional que esta clase de incidente (muerte-en-\`success\` sin PR) pierde. Materializado por ESTADO en el instante:\n\n- **PR #${openPr.number} marcado \`ready\`** (\`markPullRequestReadyForReview\` vía PAT) con el body del último hito (fidelidad por construcción — lo que AP-042 perseguía, ahora por artefacto real).\n- **\`needs-review\`** aplicada con el PAT ⇒ el Reviewer dispara por \`labeled\` (su gate ya ve el PR ready), sin depender del \`opened\` (que un draft salta) ni de un \`ready_for_review\` nuevo.\n- \`serial-activo\` ya retirada al existir el PR (post-step de liberación); el PR ready es la señal de vuelo — la serie la libera el MERGE.\n\n<!-- creator-muerto-draft-materializado-ready -->` });
+                body: `**claude-code · post-step**: la sesión del Creator de #${n} terminó en \`${process.env.STEP_CREATOR_OUTCOME}\` con su PR **en DRAFT** (abierto en el primer push de hito, AP-047) y SIN marcarlo ready — el acto de cierre discrecional que esta clase de incidente (muerte-en-\`success\` sin PR) pierde. Materializado por ESTADO en el instante:\n\n- **PR #${openPr.number} marcado \`ready\`** (\`markPullRequestReadyForReview\` con el token del job — su \`ready_for_review\` no convoca, AP-094) con el body del último hito (fidelidad por construcción — lo que AP-042 perseguía, ahora por artefacto real).\n- **\`needs-review\`** aplicada con el PAT ⇒ el Reviewer dispara por \`labeled\` (su gate ya ve el PR ready), sin depender del \`opened\` (que un draft salta) sin doble convocatoria.\n- \`serial-activo\` ya retirada al existir el PR (post-step de liberación); el PR ready es la señal de vuelo — la serie la libera el MERGE.\n\n<!-- creator-muerto-draft-materializado-ready -->` });
               core.warning(`AP-047: PR #${openPr.number} de #${n} en draft materializado a ready + needs-review por PAT (muerte antes del cierre en verde).`);
               return;
             }
@@ -2105,6 +2131,9 @@ jobs:
                 && github.event.issue.pull_request)
           )
         uses: actions/github-script@v7
+        env:
+          WAS_DRAFT: ${{ steps.pr_head_before.outputs.draft }}
+          IN_REVIEWER_WF: ${{ inputs.reviewer_workflow_name }}
         with:
           # IMPORTANTE: usar el PAT (REVIEWER_GITHUB_TOKEN), NO el GITHUB_TOKEN
           # default. Razón: este step aplica la label `needs-review` que DEBE
@@ -2117,6 +2146,30 @@ jobs:
           script: |
             const prNumber = context.payload.issue?.number
               || context.payload.pull_request?.number;
+            // AP-094 — dedupe de la doble convocatoria. Si el PR era DRAFT al
+            // arrancar la sesión y ahora es ready, la sesión hizo `gh pr ready` y su
+            // `ready_for_review` ya convocó al Reviewer (stub con el trigger nuevo):
+            // un `needs-review` por PAT encima abriría una SEGUNDA sesión Opus en
+            // serie (`cancel-in-progress: false`). Se cede SOLO si hay un run del
+            // Reviewer para el head SHA nacido tras el disparador de esta sesión
+            // (vivo o `success`) — un stub consumidor sin el trigger no tiene ese
+            // run y la label se aplica como siempre. Lectura fallida ⇒ se aplica
+            // (fail-open hacia la review, nunca hacia el silencio).
+            const readyYaConvoca = async (num) => {
+              if (process.env.WAS_DRAFT !== 'true') return false;
+              try {
+                const { data: cur } = await github.rest.pulls.get({ owner: context.repo.owner, repo: context.repo.repo, pull_number: num });
+                if (cur.draft) return false;
+                const since = new Date(context.payload.comment?.created_at || context.payload.review?.submitted_at || 0).getTime();
+                const { data: rr } = await github.rest.actions.listWorkflowRunsForRepo({ owner: context.repo.owner, repo: context.repo.repo, head_sha: cur.head.sha, per_page: 50 });
+                const wf = process.env.IN_REVIEWER_WF || 'Opus Reviewer';
+                return rr.workflow_runs.some(r => r.name === wf && new Date(r.created_at).getTime() >= since
+                  && (r.status === 'queued' || r.status === 'in_progress' || (r.status === 'completed' && r.conclusion === 'success')));
+              } catch (e) {
+                core.warning(`AP-094 dedupe ready_for_review: lectura fallida (${e.message}) — se aplica needs-review.`);
+                return false;
+              }
+            };
 
             // Releer comentarios (el agente acaba de añadir el suyo).
             const { data: comments } = await github.rest.issues.listComments({
@@ -2360,6 +2413,10 @@ jobs:
             // (ADR-063 self-remove pattern), así que en estado normal la
             // label NO está aquí. El remove defensivo cubre fallos
             // parciales donde el Reviewer no llegó a autoborrarse.
+            if (label === 'needs-review' && await readyYaConvoca(prNumber)) {
+              core.notice(`AP-094: PR #${prNumber} pasó de draft a ready en esta sesión y su ready_for_review ya convocó al Reviewer — needs-review no se duplica.`);
+              return;
+            }
             if (label === 'needs-review') {
               try {
                 await github.rest.issues.removeLabel({
@@ -2517,6 +2574,9 @@ jobs:
           success() && steps.pr_head_before.outputs.sha != ''
           && github.event_name == 'issue_comment' && github.event.issue.pull_request
         uses: actions/github-script@v7
+        env:
+          WAS_DRAFT: ${{ steps.pr_head_before.outputs.draft }}
+          IN_REVIEWER_WF: ${{ inputs.reviewer_workflow_name }}
         with:
           # PAT: mismo motivo que el Auto-label — labeled de GITHUB_TOKEN no
           # dispara reviewer.yml (anti-loop de GitHub).
@@ -2537,6 +2597,31 @@ jobs:
             // PR a dos dueños a la vez (AP-017).
             if (labels.includes('estado:esperando-architect')) { core.notice('PR escalado a architect-resolve (creator-escalated) — no re-review por estado.'); return; }
             if (labels.includes('needs-review')) { core.notice('needs-review ya presente (Auto-label actuó) — sin duplicar.'); return; }
+            // AP-094 — dedupe de la doble convocatoria. Si el PR era DRAFT al
+            // arrancar la sesión y ahora es ready, la sesión hizo `gh pr ready` y su
+            // `ready_for_review` ya convocó al Reviewer (stub con el trigger nuevo):
+            // un `needs-review` por PAT encima abriría una SEGUNDA sesión Opus en
+            // serie (`cancel-in-progress: false`). Se cede SOLO si hay un run del
+            // Reviewer para el head SHA nacido tras el disparador de esta sesión
+            // (vivo o `success`) — un stub consumidor sin el trigger no tiene ese
+            // run y la label se aplica como siempre. Lectura fallida ⇒ se aplica
+            // (fail-open hacia la review, nunca hacia el silencio).
+            const readyYaConvoca = async (num) => {
+              if (process.env.WAS_DRAFT !== 'true') return false;
+              try {
+                const { data: cur } = await github.rest.pulls.get({ owner: context.repo.owner, repo: context.repo.repo, pull_number: num });
+                if (cur.draft) return false;
+                const since = new Date(context.payload.comment?.created_at || context.payload.review?.submitted_at || 0).getTime();
+                const { data: rr } = await github.rest.actions.listWorkflowRunsForRepo({ owner: context.repo.owner, repo: context.repo.repo, head_sha: cur.head.sha, per_page: 50 });
+                const wf = process.env.IN_REVIEWER_WF || 'Opus Reviewer';
+                return rr.workflow_runs.some(r => r.name === wf && new Date(r.created_at).getTime() >= since
+                  && (r.status === 'queued' || r.status === 'in_progress' || (r.status === 'completed' && r.conclusion === 'success')));
+              } catch (e) {
+                core.warning(`AP-094 dedupe ready_for_review: lectura fallida (${e.message}) — se aplica needs-review.`);
+                return false;
+              }
+            };
+            if (await readyYaConvoca(n)) { core.notice(`AP-094: PR #${n} pasó de draft a ready en esta sesión y su ready_for_review ya convocó al Reviewer — sin re-review por estado.`); return; }
             // remove+add para forzar el evento labeled aunque hubiera restos
             await github.rest.issues.removeLabel({ owner, repo, issue_number: n, name: 'needs-review' }).catch(() => {});
             await github.rest.issues.addLabels({ owner, repo, issue_number: n, labels: ['needs-review'] });
