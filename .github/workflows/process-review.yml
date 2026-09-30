@@ -446,6 +446,24 @@ jobs:
             Jamás propones cambios de producto, modelo financiero o código
             de la aplicación.
 
+            FUNCIONES OBJETIVO DECLARADAS (AP-099, central#281, ruling
+            mensual 2026-09-30). Son DOS y se leen juntas:
+            (a) AUTONOMÍA — intervención humana y trabajo perdido por
+                punto entregado;
+            (b) TOKENS PONDERADOS POR PUNTO ENTREGADO — del bloque «Ledger
+                de valor por proceso» de cada auditoría (tallas post
+                S/M/L/XL = 1/2/4/8 de la skill `talla-issue`; tokens del
+                `modelUsage` de cada sesión × precio relativo de
+                `templates/model-costs.json`), por actor y total.
+            (b) va SIEMPRE en par con la fuga y el rework de la «Matriz de
+            calidad» del mismo panel (guardián anti-Goodhart): un coste por
+            punto que baja mientras sube la fuga o el rework es un
+            EMPEORAMIENTO, no una mejora, y ninguna propuesta cita (b) sin
+            citar la fuga y el rework del mismo ciclo. La serie «control»
+            (tokens por 100 líneas netas) NO sostiene ninguna propuesta por
+            sí sola. Cobertura parcial («N de M sesiones con dato») se cita
+            tal cual; «sin dato» nunca se lee como 0.
+
             RÉGIMEN DE LOTE (AP-098, central#279, ruling mensual 2026-09-30).
             PANELES son los issues de auditoría que revisas en ESTA sesión;
             los ha elegido un selector determinista, no los re-selecciones.
@@ -490,8 +508,8 @@ jobs:
             3b. RÉGIMEN DE PROPUESTA (AP-082, 2026-09-02, decisión del
                propietario; sustituye a la moratoria AP-078 y la convierte
                en régimen). El criterio «REPESCAS = FIX OBLIGATORIO»
-               (2026-07-13) sigue SUSPENDIDO. Umbral de propuesta, DOS vías
-               (basta una):
+               (2026-07-13) sigue SUSPENDIDO. Umbral de propuesta, TRES vías
+               (basta una; la (iii) es de AP-099):
                (i) P0 — pipeline parado, trabajo perdido, o intervención
                    humana necesaria para restaurar el flujo;
                (ii) RECURRENCIA CON COSTE (AP-090, 2026-09-30, revisión
@@ -505,6 +523,26 @@ jobs:
                    que recurre pero se absorbe solo (failsafe, resolver de
                    rutina, ronda extra de review) NO es propuesta hasta el
                    3.er ciclo: es línea de vigilancia en el comentario.
+               (iii) COSTE POR PUNTO (AP-099, central#281) — un eje cuyo
+                   coste por punto (tokens ponderados / puntos entregados)
+                   sube ≥30 % en 2 auditorías del mes, o un actor cuyo peso
+                   en el total de tokens ponderados sube 2 ciclos seguidos.
+                   Solo con series de cobertura comparable (misma fuente
+                   `model-usage`; no compares una auditoría con dato contra
+                   una «sin dato»). Palancas LEGÍTIMAS de una propuesta por
+                   esta vía: pasos constantes sin consumidor (consulta (i)
+                   del ledger), verificación en sesión que ya hace el CI,
+                   rondas de nits, arranques sin caché (caché-lectura baja
+                   frente a input), sesiones NULO. PROHIBIDO proponer
+                   recortes de presupuesto (`max_turns`, `--effort`,
+                   timeouts) sin cruzarlos con las muertes por `max-turns`
+                   y las sesiones NULO del MISMO ciclo, pegando ese cruce en
+                   la propuesta: el presupuesto que se recorta sin mirar
+                   quién murió por falta de él es la clase de AP-025/AP-061.
+                   Si ningún eje ni actor cumple el umbral, dilo en la línea
+                   de métricas del comentario de cada panel («vía (iii): sin
+                   eje sobre umbral») — el criterio falsable de AP-099 exige
+                   que conste.
                ANTES de crear cualquier propuesta: busca en el central
                (`gh issue list --repo talfarouriarte-cloud/agent-pipeline
                --label process-proposal --state open --search "<eje>"`) si
