@@ -957,9 +957,13 @@ jobs:
                   try { pcs = await github.paginate(github.rest.issues.listComments, { ...O, issue_number: pr.number, per_page: 100 }); }
                   catch (e) { core.info(`persistent/paginate #${pr.number}: ${e.message}`); }
                 }
+                // Solo cuenta la clave EMITIDA por el post-step del Reviewer (corre con el
+                // GITHUB_TOKEN ⇒ autor `github-actions[bot]`): una review o un informe que
+                // la CITE no cede el turno (clase AP-063, marcador citado ≠ emitido).
+                const emitidos = pcs.filter(c => c.user && c.user.login === 'github-actions[bot]');
                 const keyRe = new RegExp(`^[ \\t]*<!--\\s*reviewer-no-verdict-persistent-key:\\s*${pr.head.sha}\\b`, 'm');
-                let vigente = pcs.some(c => keyRe.test(c.body || ''));
-                const legacy = pcs.filter(c => /^[ \t]*<!--\s*reviewer-no-verdict-persistent\s*-->[ \t]*$/m.test(c.body || '')
+                let vigente = emitidos.some(c => keyRe.test(c.body || ''));
+                const legacy = emitidos.filter(c => /^[ \t]*<!--\s*reviewer-no-verdict-persistent\s*-->[ \t]*$/m.test(c.body || '')
                   && !/reviewer-no-verdict-persistent-key:/.test(c.body || ''));
                 if (!vigente && legacy.length) {
                   try {
@@ -1858,8 +1862,13 @@ jobs:
       #     verde (step final).
       #   · `max-turns` SIN Δ ⇒ anotación `resolve-presupuesto-agotado-sin-delta`
       #     y la etapa sigue ROJA (una racha de muertes sin trabajo SÍ es señal).
-      # Δ = comentario con el marcador de capa anclado a línea propia, de actor no
-      # bot (el PAT), creado desde `t0` (arranque de la sesión). En la ventana
+      # Δ = comentario con el marcador de capa anclado a FIN DE LÍNEA, de actor no
+      # bot (el PAT), creado desde `t0` (arranque de la sesión). Fin de línea y no
+      # línea propia: el prompt pide el marcador «al final» sin exigir línea
+      # aparte, y uno pegado a la última frase es un Δ igual (sin esto, una muerte
+      # que SÍ publicó quedaría roja). Tampoco fin de cuerpo: el parche AP-064
+      # añade `watchdog-rol` en la línea siguiente. Sigue anclado: un marcador
+      # citado a media frase o entre backticks no casa. En la ventana
       # solo publica la sesión: `detect` terminó antes, el grupo de concurrency
       # del stub serializa los Watchdogs y los post-steps que escriben con el
       # GITHUB_TOKEN salen como bot. El único post-step previo con el PAT
@@ -1899,7 +1908,7 @@ jobs:
             const causaLine = `causa: max-turns · ${r.num_turns} turnos · ${Number.isFinite(usd) ? usd.toFixed(2) : '?'} USD · presupuesto ${process.env.MAX_TURNS}`;
             const pin = (process.env.PIN_DIVERGENTE || '').trim();
             const t0 = new Date(process.env.T0 || Date.now() - 25 * 60 * 1000);
-            const capaRe = /^[ \t]*<!--\s*watchdog-capa:[^\n]*-->[ \t]*$/m;
+            const capaRe = /<!--\s*watchdog-capa:[^\n>]*-->[ \t]*$/m;
             let delta = [];
             try {
               const cs = await github.paginate(github.rest.issues.listCommentsForRepo,

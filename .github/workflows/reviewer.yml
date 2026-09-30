@@ -21,6 +21,14 @@ on:
         # CLAMP donde se consume el input (AP-061). check-contracts exige
         # fidelidad de las cuatro.
         #
+        # QUINTA declaración, FUERA del gate (AP-092): los fallbacks literales
+        # `80` del step `budget` (`Number(process.env.BASE_TURNS) || 80`) y de
+        # `--max-turns` (`steps.budget.outputs.max_turns || 80`). El gate de
+        # AP-061 exige el clamp canónico EXACTO en cada `${{ … }}` que toca el
+        # input, así que el fallback no puede ser el clamp. Solo rigen si el
+        # step `budget` no llega a fijar su base; si cambias el default,
+        # actualízalos A MANO en el mismo PR.
+        #
         # 80 y no 50 (AP-025, repesca finplan#1450): el mandato universal-strict
         # (2026-07-12, fidelidad ADR cláusula-a-cláusula en TODO PR) expandió el
         # trabajo por sesión y provocó la 1ª muerte por presupuesto observada del
@@ -831,7 +839,10 @@ jobs:
                 // propia, jamás substring (clase central#119).
                 const KEY = `<!-- reviewer-no-verdict-persistent-key: ${headSha} · ${diag.causa} -->`;
                 const keyRe = new RegExp(`^[ \\t]*${KEY.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[ \\t]*$`, 'm');
-                if (cs.some(c => keyRe.test(c.body || ''))) {
+                // Solo la clave EMITIDA por este post-step (GITHUB_TOKEN ⇒ autor
+                // `github-actions[bot]`) deduplica: una review que la CITE no calla el
+                // aviso (clase AP-063, marcador citado ≠ emitido).
+                if (cs.some(c => c.user && c.user.login === 'github-actions[bot]' && keyRe.test(c.body || ''))) {
                   core.notice(`AP-092: aviso persistent ya emitido para (${headSha.slice(0,7)}, ${diag.causa}) — sin re-emisión.`);
                   return;
                 }
