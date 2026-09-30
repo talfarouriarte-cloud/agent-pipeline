@@ -94,8 +94,9 @@ Perder esto es la causa raíz de trabajo repetido y ramas huérfanas.
   draft en `reviewer.yml`, AP-047). Con draft-first (§ «PR
   creation») esto significa que el draft de tu primer hito no
   levanta al Reviewer: la review llega cuando marcas `ready` al
-  cerrar, materializada por estado (`open-review-failsafe` aplica
-  `needs-review` con PAT). No es tu trabajo añadir label — eso lo
+  cerrar — el `ready_for_review` de tu `gh pr ready` la convoca
+  (AP-094); `open-review-failsafe` (`needs-review` con PAT) queda
+  como residual si el evento no produjo run. No es tu trabajo añadir label — eso lo
   decide el humano para sus propios PRs (no para los tuyos).
 - Si una tarea parece estar consumiendo turnos sin avanzar, repasa si
   estás chocando con una de las limitaciones anteriores antes de
@@ -138,8 +139,8 @@ cannot:
   label yourself: the Reviewer's guard ignores `labeled` events from
   `claude[bot]` (anti-recursion); only the workflow's Auto-label
   step (PAT) can re-trigger it. A push alone does NOT re-trigger
-  the Reviewer either (its trigger is `[opened, labeled]`, no
-  `synchronize`) — the state relabel is done BY the workflow, not by
+  the Reviewer either (its trigger is `[opened, ready_for_review,
+  labeled]` since AP-094, no `synchronize`) — the state relabel is done BY the workflow, not by
   the event. Without `@reviewer`, a no-commit turn hangs the chain
   waiting for an LGTM that never comes (seen in PR #948).
 - `[READY-TO-MERGE]` — the PR is complete, no outstanding Reviewer
@@ -177,11 +178,13 @@ for `@claude` in ADR-064.)
 tag. The closing tags only apply when responding inside a PR loop.
 Note that under draft-first (§ «PR creation») the DRAFT you open in
 your first milestone does NOT summon the Reviewer (draft guard in
-`reviewer.yml`, AP-047): the review is materialized by state when
-you mark it `ready` at close. Only a PR opened NON-draft triggers
-the Reviewer via the `opened` event (condition on `claude[bot]` as
-author) — that is the residual path (post-step opening from state),
-not your normal flow.
+`reviewer.yml`, AP-047): the review is summoned when you mark it
+`ready` at close — your `gh pr ready` emits `ready_for_review`, a
+Reviewer trigger since AP-094 (`open-review-failsafe` materializes it
+by state only if that event produced no run). A PR opened NON-draft
+triggers the Reviewer via the `opened` event (condition on
+`claude[bot]` as author) — that is the residual path (post-step
+opening from state), not your normal flow.
 
 **If the Reviewer issues verdict `LGTM` or `NITS` (no `@claude` ping):**
 do not respond. The loop ends silently and the human decides the

@@ -114,8 +114,17 @@ jobs:
     # `draft == false` es campo probado del payload pull_request; sin él cada
     # push de hito quemaría un spin-up de gate. El guard semántico (gate step)
     # re-cubre el caso `labeled` sobre un draft (belt).
+    # AP-094 (central#224, ruling mensual): `ready_for_review` es el EVENTO
+    # PRIMARIO de convocatoria en el flujo draft-first — el `opened` de un draft
+    # se salta por construcción y la transición a ready era invisible al stub
+    # (`[opened, labeled]`), así que open-review-failsafe disparaba en el 100%
+    # de los PRs ordinarios. Con el trigger en el stub, el `gh pr ready` del
+    # Creator convoca al Reviewer y el failsafe (dedupe por runs del head SHA)
+    # queda como residual genuino. Un stub consumidor sin el trigger nuevo no
+    # rompe nada: sigue por el camino por estado de siempre.
     if: |
       (github.event.action == 'opened' && github.event.pull_request.draft == false)
+      || (github.event.action == 'ready_for_review' && github.event.pull_request.draft == false)
       || (github.event.action == 'labeled' && github.event.label.name == 'needs-review')
 
     # v1.4: el gate vive como PRIMER STEP github-script, no como job-if.
@@ -154,20 +163,25 @@ jobs:
               reason = 'kill-switch pause-agents (ADR-063)';
             } else if (pr.draft) {
               // AP-047: un draft es el PR de un hito intermedio del Creator; NUNCA
-              // se revisa. La review llega en la transición ready, materializada por
-              // ESTADO vía `needs-review`/PAT (post-step «Materializar muerte» al
-              // marcar ready un draft huérfano, o open-review-failsafe al cierre en
-              // verde) — ambas usan el trigger `labeled` que todo stub ya tiene, sin
-              // evento `ready_for_review` nuevo. Belt del job-if (que ya salta el
-              // `opened`+draft): cubre cualquier `labeled` que llegue mientras el PR
-              // siga en draft (p.ej. antes de que el post-step lo marque ready).
+              // se revisa. La review llega en la transición ready: desde AP-094 por
+              // el evento `ready_for_review` (el `gh pr ready` del cierre del
+              // Creator); por ESTADO vía `needs-review`/PAT como residual
+              // (open-review-failsafe si el evento no produjo run; post-step
+              // «Materializar muerte» y watchdog al marcar ready un draft huérfano
+              // con el GITHUB_TOKEN, cuyo `ready_for_review` no dispara nada).
+              // Belt del job-if (que ya salta el `opened`+draft): cubre cualquier
+              // `labeled` que llegue mientras el PR siga en draft.
               reason = 'PR en draft (primer hito, AP-047) — review diferida a ready-por-estado; un draft nunca se revisa';
-            } else if (action === 'opened') {
+            } else if (action === 'opened' || action === 'ready_for_review') {
+              // AP-094: `ready_for_review` lleva el MISMO guard que `opened` — es
+              // el nacimiento a revisable de un PR draft-first. Lo emite el propio
+              // claude[bot] (`gh pr ready`), así que el anti-recursión por sender
+              // de la cláusula `labeled` NO aplica aquí: el filtro es autor/rama.
               const isBot = author === 'claude[bot]' || (authorType === 'Bot' && author.startsWith('claude'));
               const isAgentBranch = headRef.startsWith(prefix);
               run = isBot || isAgentBranch;
-              reason = run ? (isBot ? 'opened por claude[bot]' : `opened con rama de agente (${prefix}*)`)
-                           : 'opened humano en rama no-agente';
+              reason = run ? (isBot ? `${action} por claude[bot]` : `${action} con rama de agente (${prefix}*)`)
+                           : `${action} humano en rama no-agente`;
             } else if (action === 'labeled') {
               run = eventLabel === 'needs-review' && sender !== 'claude[bot]';
               reason = run ? 'label needs-review de actor no-bot'
@@ -453,6 +467,77 @@ jobs:
         with:
           fetch-depth: 0
 
+      # ── Hechos de la base materializados (AP-094, central#252) ──────────────
+      # `reviewer.md` § «El contraste se ancla al HEAD de la rama base» mandaba a
+      # la SESIÓN ejecutar `git fetch origin` + log/diff de `*decisions*.md`; la
+      # sesión no tiene esa herramienta (allowlist sin `git`) y dos LGTM
+      # consecutivos declararon el sub-paso NO ejecutado (aud. asesoramiento
+      # #2291/#2294) — el gate no existía cuando hiciera falta (clase 5,
+      # mandate/toolbox drift). Doctrina ADR-218: el agente LEE hechos, no los
+      # infiere. Este step determinista (cero LLM, cero escritura en el PR ⇒ no
+      # toca triggers ni concurrencia) computa los tres comandos sobre
+      # `merge-base(head del PR, origin/<base>)..origin/<base>` acotados a
+      # `*decisions*.md` y los inyecta en el prompt. Fail-open DECLARADO: si el
+      # fetch falla, el bloque lo dice y el Reviewer lo cita como limitación.
+      # Ventana residual (una ·R·N que aterriza DURANTE la sesión): AP-055.
+      - name: Hechos de la base (BASE_HEAD, AP-094)
+        id: basefacts
+        if: steps.gate.outputs.run == 'true' && steps.nitscap.outputs.skip != 'true'
+        continue-on-error: true
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set +e
+          out=/tmp/base-facts.txt
+          sum=/tmp/base-facts-sum.txt
+          : > "$sum"
+          {
+            echo '```'
+            echo "\$ git fetch origin $BASE_REF"
+            fetch_err=$(git fetch --no-tags origin "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF" 2>&1)
+            rc=$?
+            [ -n "$fetch_err" ] && echo "$fetch_err"
+            if [ $rc -ne 0 ]; then
+              echo '```'
+              echo "BASE_HEAD: no disponible (fetch falló: exit $rc — $(echo "$fetch_err" | tail -1))" > "$sum"
+            else
+              base_head=$(git rev-parse "origin/$BASE_REF" 2>/dev/null)
+              mb=$(git merge-base "$PR_HEAD" "origin/$BASE_REF" 2>/dev/null)
+              if [ -z "$base_head" ] || [ -z "$mb" ]; then
+                echo '```'
+                echo "BASE_HEAD: no disponible (rev-parse/merge-base falló: base_head='$base_head' merge_base='$mb')" > "$sum"
+              else
+                echo "\$ git log --oneline $mb..origin/$BASE_REF -- '*decisions*.md'"
+                log=$(git log --oneline "$mb..origin/$BASE_REF" -- '*decisions*.md')
+                [ -n "$log" ] && echo "$log"
+                echo "\$ git diff $mb..origin/$BASE_REF -- '*decisions*.md' | grep -nEi '^\+.*(Rectifica|Deroga|Enmienda|Revisi[oó]n|R[·.][0-9])'"
+                hits=$(git diff "$mb..origin/$BASE_REF" -- '*decisions*.md' | grep -nEi '^\+.*(Rectifica|Deroga|Enmienda|Revisi[oó]n|R[·.][0-9])')
+                [ -n "$hits" ] && echo "$hits"
+                echo '```'
+                {
+                  echo "BASE_HEAD=$base_head · merge-base del PR=$mb"
+                  if [ -z "$log" ] && [ -z "$hits" ]; then
+                    echo "rectificaciones en la base desde la apertura del PR: ninguna (BASE_HEAD=$base_head)"
+                  fi
+                } > "$sum"
+              fi
+            fi
+          } > "$out" 2>&1
+          # Tope de tamaño (presupuesto del Reviewer, clase 5): el bloque es
+          # corto por construcción; si no lo es, se trunca DECLARÁNDOLO. La línea
+          # de resumen (`BASE_HEAD=…` / «ninguna» / «no disponible») va ARRIBA y
+          # fuera del truncado: es el dato que el Reviewer debe citar siempre.
+          if [ "$(wc -c < "$out")" -gt 12000 ]; then
+            head -c 12000 "$out" > "$out.t"; mv "$out.t" "$out"
+            printf '\n```\n[bloque truncado a 12000 bytes por el reusable — completa el contraste leyendo `*decisions*.md` con Read]\n' >> "$out"
+          fi
+          cat "$sum" "$out" > "$out.f"; mv "$out.f" "$out"
+          cat "$out"
+          delim="BASEFACTS_$(date +%s%N)"
+          { echo "bloque<<$delim"; cat "$out"; echo "$delim"; } >> "$GITHUB_OUTPUT"
+
       # Migración 2026-05-19: el Reviewer estaba en `scripts/reviewer.mjs`
       # llamando Messages API directamente con CLAUDE_CODE_OAUTH_TOKEN. Eso
       # NO funciona — OAuth tokens no son válidos contra Messages API (ver
@@ -548,6 +633,11 @@ jobs:
             PR HEAD SHA: ${{ github.event.pull_request.head.sha }}
             PR BASE SHA: ${{ github.event.pull_request.base.sha }}
             PRESUPUESTO APLICADO: ${{ steps.budget.outputs.linea }}
+
+            HECHOS DE LA BASE (materializados por el reusable, AP-094 — ver
+            `docs/agents/reviewer.md` § «El contraste se ancla al HEAD de la
+            rama base»; NO los recalcules, no tienes `git`):
+            ${{ steps.basefacts.outputs.bloque || 'AUSENTE — el step «Hechos de la base» no produjo bloque: defecto del reusable, decláralo en el veredicto.' }}
 
             Eres el Reviewer del repo. Tu rol completo, criterios de
             severidad, formato del comment de output (cabecera de control

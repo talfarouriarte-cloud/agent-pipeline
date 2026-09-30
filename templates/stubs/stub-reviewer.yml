@@ -3,7 +3,9 @@
 name: Opus Reviewer
 on:
   pull_request:
-    types: [opened, labeled]
+    # `ready_for_review` (AP-094, central#224): evento primario de convocatoria
+    # bajo draft-first — el `opened` de un draft se salta en el reusable.
+    types: [opened, ready_for_review, labeled]
 permissions:
   contents: read
   pull-requests: write

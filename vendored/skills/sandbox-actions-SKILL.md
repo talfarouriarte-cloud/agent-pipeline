@@ -317,6 +317,8 @@ El chunking del script (un PR previo) resolvió los OOMs operativamente — cada
 
 Visual se introdujo en ADR-085 como agente de inspección visual de la preview de Vercel. Tres puntos operativos a recordar:
 
+> **Retirado del mandato del Reviewer (AP-094, central#263).** El Reviewer ya NO define casos para Visual ni escribe `@visual-reviewer`: el bloque no tenía consumidor (100/100 runs de `visual.yml` `skipped` en el consumidor, último `success` 2026-06-04). Los puntos 1–2 describen el diseño original y quedan como histórico; Visual sigue pudiendo lanzarse a mano con `@visual` (suite fija + exploración libre, sin bloque de casos).
+
 1. **El Reviewer es quien decide cuándo invocar a Visual** en PRs de UI. El prompt del Reviewer (`docs/agents/reviewer.md` § "Invocación de Visual al final del PR") tiene las tres condiciones que se evalúan: veredicto `LGTM`/`NITS`, PR toca archivos UI, no hay informe de Visual previo sobre el SHA actual.
 
 2. **Paso de contexto Reviewer → Visual vía bloque delimitado en el comment.** El Reviewer pega los casos dirigidos entre los marcadores HTML `<!-- visual-cases-start -->` y `<!-- visual-cases-end -->` en su comment. El workflow de Visual hace `awk` sobre el comment disparador para extraer ese bloque y lo deposita en `/tmp/visual-cases.txt` antes de invocar a Claude. Si el bloque no existe (camino manual), Visual ejecuta solo la suite fija + exploración libre.

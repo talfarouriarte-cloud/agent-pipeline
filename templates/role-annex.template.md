@@ -21,7 +21,7 @@ repo. Ejemplo de contenido para un reviewer-annex.md (adaptar por rol): -->
 
 ## Rutas UI para Visual
 
-- (ej.) `src/components/**`, `src/app/**` — o «no aplica».
+- **Sin consumidor desde AP-094 (central#263):** el Reviewer ya no define casos para Visual. Sección conservada para annexes existentes; no hace falta rellenarla.
 
 ## Ficheros congelados del repo
 
