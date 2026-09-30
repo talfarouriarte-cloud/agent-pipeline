@@ -1,7 +1,9 @@
-# STUB del CENTRAL (2026-07-14, AP-012): SIN automerge (el merge aquí es
-# SIEMPRE humano) y SIN auditoría de sueltos. Su función: post-merge — al
-# mergear el humano un PR de agente, cerrar el ciclo y ARMAR el siguiente
-# issue de la cola serial (en-cola, FIFO).
+# STUB del CENTRAL (2026-07-14, AP-012; enmendado 2026-09-30, AP-090 opción A
+# del propietario): CON automerge — un PR con LGTM + CI verde se mergea solo,
+# también los de la cola mensual; el gate humano es el ruling del issue, no
+# el merge. SIN auditoría de sueltos. Post-merge: cerrar el ciclo y armar el
+# siguiente de la cola serial (en-cola, FIFO); la cola mensual la arma
+# self-mensual-queue.yml sobre el mismo evento de merge.
 name: Epic Merge
 on:
   # Cierre POR ESTADO (AP-031, repesca finplan#1478): una épica que termina
@@ -33,7 +35,8 @@ jobs:
       runner: ubuntu-latest
       default_branch: main
       ci_workflow_name: CI
-      automerge: false
+      # AP-090 opción A (2026-09-30): antes false (AP-012, merge humano).
+      automerge: true
       loose_audit: false
     secrets:
       REVIEWER_GITHUB_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
