@@ -85,6 +85,9 @@ try {
   bank.push(['upstream, ahead sin push, tests ⇒ BLOQUEA', run('npx vitest run a.ts', wt), 2]);
   sh('git push -q', wt);
   bank.push(['upstream, pusheado, tests ⇒ permite', run('npx vitest run a.ts', wt), 0]);
+  sh('mkdir -p .claude/skills && echo x > .claude/skills/S.md', wt);
+  bank.push(['upstream, solo .claude/ sucio (graft), tests ⇒ permite (central#271)', run('npx vitest run a.ts', wt), 0]);
+  sh('rm -rf .claude', wt);
   bank.push(['pusheado, suite completa ⇒ BLOQUEA (check original intacto)', run('pnpm test', wt), 2]);
   writeFileSync(join(wt, 'a.ts'), 'c');
   bank.push(['override PIPELINE_VERIFY_AFTER_PUSH=0 ⇒ permite', spawnSync('bash', [HOOK], { cwd: wt, input: JSON.stringify({ tool_input: { command: 'npx vitest run a.ts' } }), env: { ...process.env, CLAUDE_PROJECT_DIR: wt, PIPELINE_VERIFY_AFTER_PUSH: '0' }, encoding: 'utf8' }).status, 0]);
