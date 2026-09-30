@@ -147,6 +147,8 @@ for (const [nombre, f, esperado] of [
   ['sesión viva', exec('b.json', RES({ num_turns: 14, total_cost_usd: 1.3, modelUsage: { 'claude-opus-5-5': { inputTokens: 9 } } })), 'alive'],
   ['firma incompleta: coste > 0', exec('c.json', RES({ num_turns: 1, total_cost_usd: 0.02, modelUsage: {} })), 'alive'],
   ['firma no juzgable: sin campo modelUsage', exec('d.json', RES({ num_turns: 1, total_cost_usd: 0 })), 'ilegible'],
+  ['firma no juzgable: sin campo total_cost_usd', exec('e.json', RES({ num_turns: 1, modelUsage: {} })), 'ilegible'],
+  ['sin coste pero con turnos > 1', exec('f.json', RES({ num_turns: 9, modelUsage: {} })), 'alive'],
   ['execution file ausente', exec('no-existe.json', null), 'ilegible'],
 ]) await caso(`clasificador · ${nombre} ⇒ ${esperado}`, async () => {
   const k = (await correr(clsC, { EXEC_FILE: f }, doble())).outputs.kind;
@@ -181,13 +183,14 @@ const WFS = [{ id: 1, name: 'Claude Code' }, { id: 2, name: 'Opus Reviewer' }, {
 const envFleet = { IN_CREATOR_WF: 'Claude Code', IN_REVIEWER_WF: 'Opus Reviewer' };
 const marcador = k => [{ name: STEP_DEAD, conclusion: k === 'instant' ? 'success' : 'skipped' },
   { name: STEP_ALIVE, conclusion: k === 'alive' ? 'success' : 'skipped' }];
-// Secuencia, más reciente primero: [workflow_id, instant|alive|none].
-function flota(seq) {
+// Secuencia, más reciente primero: [workflow_id, instant|alive|none]. Un minuto
+// entre runs; `haceMin` desplaza toda la historia hacia el pasado (frescura).
+function flota(seq, haceMin = 0) {
   const runs = {}, jobs = {};
   seq.forEach(([wf, k], i) => {
     const id = 100 + i;
     (runs[wf] = runs[wf] || []).push({ id, name: WFS[wf - 1].name, conclusion: k === 'alive' ? 'success' : 'failure',
-      updated_at: new Date(Date.UTC(2026, 8, 12, 12, 0) - i * 60000).toISOString(), html_url: `https://x/run/${id}` });
+      updated_at: new Date(Date.now() - (haceMin + i + 1) * 60000).toISOString(), html_url: `https://x/run/${id}` });
     jobs[id] = [{ name: 'job', conclusion: 'failure', steps: k === 'none' ? [{ name: 'Scan', conclusion: 'success' }] : marcador(k) }];
   });
   return { workflows: WFS, runs, jobs };
@@ -227,6 +230,18 @@ await caso('flota · resolver: 3.ª muerte en ESTE run con Creator vivo intercal
 await caso('flota · resolver con una sesión viva propia entre medias ⇒ no escala', async () => {
   const l = await correr(FLEET, envFleet, doble(flota([[3, 'instant'], [3, 'instant'], [3, 'alive'], [3, 'instant']])));
   return !l.created.length || j(l);
+});
+await caso('flota · 3 muertes de hace 6 h y ninguna sesión después ⇒ NO escala (frescura; cerrar el issue es seguro)', async () => {
+  const l = await correr(FLEET, envFleet, doble(flota([[2, 'instant'], [2, 'instant'], [2, 'instant'], [1, 'alive']], 360)));
+  return (!l.created.length && l.outputs.fleet_down === 'false') || j(l);
+});
+await caso('flota · etapa architect: muerte PROPIA sobre 2 muertes viejas ⇒ escala (el eslabón propio es fresco)', async () => {
+  const l = await correr(FLEET_ARCH, { ...envFleet, FLEET_SELF_KIND: 'instant' }, doble(flota([[3, 'instant'], [3, 'instant']], 360)));
+  return l.created.length === 1 || j(l);
+});
+await caso('flota · presupuesto de listJobs agotado con racha a medias ⇒ avisa (no reset mudo)', async () => {
+  const l = await correr(FLEET, envFleet, doble(flota([[3, 'instant'], ...Array.from({ length: 29 }, () => [3, 'none'])])));
+  return (!l.created.length && l.warnings.some(w => /presupuesto/.test(w))) || j(l);
 });
 await caso('flota · API caída ⇒ fail-soft (no lanza, avisa)', async () => {
   const l = await correr(FLEET, envFleet, doble({ throwOn: 'getWorkflowRun' }));

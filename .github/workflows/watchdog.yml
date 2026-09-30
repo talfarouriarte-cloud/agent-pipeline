@@ -260,6 +260,12 @@ jobs:
             // resetea): el resolver corre con otro modelo y otra cuota que Creator y
             // Reviewer (AP-088), y su caída sola no debe quedar tapada por ellos. Un run
             // sin sesión es neutro. Fail-soft: un fallo aquí NO tumba el job.
+            // FRESCURA (review de #280, la lección de AP-059 un piso más abajo): la racha
+            // se lee de historial INMUTABLE y su único reset es una sesión viva de la
+            // etapa, que puede tardar días (sin PR en needs-review no hay Reviewer; sin
+            // anomalías no hay architect). Sin cota, cerrar el issue tras arreglar la
+            // causa lo reabría en cada tick. Se exige que la muerte MÁS RECIENTE de la
+            // racha disparada tenga ≤ FRESH_MIN; el eslabón propio lo es por construcción.
             const { owner, repo } = context.repo;
             const O = { owner, repo };
             const K = Number(process.env.FLEET_K || 3);
@@ -268,6 +274,7 @@ jobs:
             // es el primer eslabón, y la escalada sale en el mismo tick que la 3.ª muerte.
             const SELF_KIND = process.env.FLEET_SELF_KIND || '';
             const MAX_CALLS = 25;   // presupuesto de llamadas listJobs por corrida
+            const FRESH_MIN = Number(process.env.FLEET_FRESH_MIN || 90);   // ≈ 2×cadencia del cron + margen
             const STEP_DEAD = 'llm-flota: muerte instantánea';
             const STEP_ALIVE = 'llm-flota: sesión viva';
             const MARK = '<!-- watchdog-heartbeat-escalation -->';
@@ -301,24 +308,28 @@ jobs:
                 clase.set(r.id, k);
                 return k;
               }
-              async function racha(lista, conPropio) {
+              async function racha(lista, conPropio, nombre) {
                 const m = conPropio ? [propio] : [];
                 for (const r of lista) {
                   if (m.length >= K) break;
                   const k = await clasificar(r);
+                  if (k === 'fin' && m.length) core.warning(`firma de flota: presupuesto de ${MAX_CALLS} listJobs agotado con la racha de ${nombre} en ${m.length} (<K=${K}): truncada, no es un reset medido.`);
                   if (k === 'fin' || k === 'alive') break;   // presupuesto agotado / sesión viva: reset
                   if (k === 'instant') m.push(r);
                 }
                 return m;
               }
+              const edadMin = r => (Date.now() - new Date(r.updated_at).getTime()) / 60000;
+              const dispara = (nombre, m) => {
+                if (m.length < K) return;
+                if (edadMin(m[0]) <= FRESH_MIN) disparos.push({ nombre, m });
+                else core.info(`racha de ${nombre} (${m.length}) NO fresca: muerte más reciente hace ${Math.round(edadMin(m[0]))} min > ${FRESH_MIN}; no escalo.`);
+              };
               const conPropio = SELF_KIND === 'instant';
               const disparos = [];
-              const flota = await racha(etapas.flatMap(e => e.runs).sort(porFecha), conPropio);
-              if (flota.length >= K) disparos.push({ nombre: 'toda la flota (etapas mezcladas, en orden temporal)', m: flota });
-              for (const e of etapas) {
-                const m = await racha(e.runs, conPropio && e.id === self.workflow_id);
-                if (m.length >= K) disparos.push({ nombre: `etapa ${e.nombre}`, m });
-              }
+              const flota = await racha(etapas.flatMap(e => e.runs).sort(porFecha), conPropio, 'la flota');
+              dispara('toda la flota (etapas mezcladas, en orden temporal)', flota);
+              for (const e of etapas) dispara(`etapa ${e.nombre}`, await racha(e.runs, conPropio && e.id === self.workflow_id, `la etapa ${e.nombre}`));
               core.info(`Flota LLM: racha global ${flota.length} · ${etapas.map(e => e.nombre).join(', ')} · umbral K=${K} · ${llamadas} runs inspeccionados.`);
               core.setOutput('fleet_down', String(disparos.length > 0));
               if (!disparos.length) return;
@@ -330,7 +341,7 @@ jobs:
                 ``, lista, ``,
                 `Firma típica de credencial/cuota de Claude caída (\`CLAUDE_CODE_OAUTH_TOKEN\` caducado o revocado, límite del plan agotado; el resolver usa otro modelo y otra cuota que Creator y Reviewer, AP-088). El detector determinista sigue verde, así que ningún otro belt lo ve; architect-resolve —el resolutor de todo \`stalled\`— puede ser una de las etapas muertas. Precedente: finplan PR #2085, ~61 h parado sin escalada (central#212).`,
                 ``,
-                `**Qué comprobar.** El log del step \`Run …\` de cualquiera de los runs citados (error de auth / quota), el estado del plan y el secret \`CLAUDE_CODE_OAUTH_TOKEN\`. La racha se resetea sola con la primera sesión VIVA; cerrar este issue no la resetea.`,
+                `**Qué comprobar.** El log del step \`Run …\` de cualquiera de los runs citados (error de auth / quota), el estado del plan y el secret \`CLAUDE_CODE_OAUTH_TOKEN\`. La racha se resetea sola con la primera sesión VIVA; cerrar este issue no la resetea, pero solo reabre con una muerte NUEVA (la más reciente de la racha debe tener ≤ ${FRESH_MIN} min): cerrarlo tras arreglar la causa es seguro.`,
               ].join('\n');
               let abiertas = [];
               try {
@@ -1723,8 +1734,10 @@ jobs:
             // siguientes, que el `detect` del Watchdog lee por API (`listJobsForWorkflowRun`,
             // `actions: read`, sin permiso nuevo) para computar la firma de FLOTA CAÍDA.
             // Firma COMPLETA exigida (anti falso positivo): `num_turns ≤ 1` · coste 0 ·
-            // `modelUsage` objeto vacío. Execution file ilegible, o `num_turns ≤ 1` y coste 0
-            // SIN campo `modelUsage` (firma no juzgable), ⇒ ni uno ni otro (neutro).
+            // `modelUsage` objeto vacío. `alive` exige EVIDENCIA de vida (turnos > 1, coste
+            // > 0 o `modelUsage` con uso). Lo demás —execution file ilegible, o un campo de
+            // la firma ausente (`total_cost_usd`, `modelUsage`)— es firma no juzgable ⇒ ni
+            // uno ni otro (neutro): ni suma a la racha ni la resetea (review de #280).
             const fs = require('fs');
             const f = process.env.EXEC_FILE || `${process.env.RUNNER_TEMP || '/tmp'}/claude-execution-output.json`;
             let d = null;
@@ -1734,9 +1747,11 @@ jobs:
             if (!r) { core.setOutput('kind', 'ilegible'); return; }
             const turns = Number(r.num_turns), cost = Number(r.total_cost_usd);
             const mu = r.modelUsage;
-            const muVacio = !!mu && typeof mu === 'object' && Object.keys(mu).length === 0;
-            const corta = Number.isFinite(turns) && turns <= 1 && cost === 0;
-            const kind = corta && muVacio ? 'instant' : (corta && mu === undefined ? 'ilegible' : 'alive');
+            const muObj = !!mu && typeof mu === 'object';
+            const muVacio = muObj && Object.keys(mu).length === 0;
+            const viva = (Number.isFinite(turns) && turns > 1) || (Number.isFinite(cost) && cost > 0) || (muObj && !muVacio);
+            const kind = viva ? 'alive'
+              : (Number.isFinite(turns) && turns <= 1 && cost === 0 && muVacio ? 'instant' : 'ilegible');
             core.info(`ejecución LLM: num_turns=${r.num_turns} · total_cost_usd=${r.total_cost_usd} · modelUsage=${mu === undefined ? '(ausente)' : muVacio ? '{}' : 'con uso'} ⇒ ${kind}`);
             core.setOutput('kind', kind);
       - name: 'llm-flota: muerte instantánea'
@@ -1773,6 +1788,12 @@ jobs:
             // resetea): el resolver corre con otro modelo y otra cuota que Creator y
             // Reviewer (AP-088), y su caída sola no debe quedar tapada por ellos. Un run
             // sin sesión es neutro. Fail-soft: un fallo aquí NO tumba el job.
+            // FRESCURA (review de #280, la lección de AP-059 un piso más abajo): la racha
+            // se lee de historial INMUTABLE y su único reset es una sesión viva de la
+            // etapa, que puede tardar días (sin PR en needs-review no hay Reviewer; sin
+            // anomalías no hay architect). Sin cota, cerrar el issue tras arreglar la
+            // causa lo reabría en cada tick. Se exige que la muerte MÁS RECIENTE de la
+            // racha disparada tenga ≤ FRESH_MIN; el eslabón propio lo es por construcción.
             const { owner, repo } = context.repo;
             const O = { owner, repo };
             const K = Number(process.env.FLEET_K || 3);
@@ -1781,6 +1802,7 @@ jobs:
             // es el primer eslabón, y la escalada sale en el mismo tick que la 3.ª muerte.
             const SELF_KIND = process.env.FLEET_SELF_KIND || '';
             const MAX_CALLS = 25;   // presupuesto de llamadas listJobs por corrida
+            const FRESH_MIN = Number(process.env.FLEET_FRESH_MIN || 90);   // ≈ 2×cadencia del cron + margen
             const STEP_DEAD = 'llm-flota: muerte instantánea';
             const STEP_ALIVE = 'llm-flota: sesión viva';
             const MARK = '<!-- watchdog-heartbeat-escalation -->';
@@ -1814,24 +1836,28 @@ jobs:
                 clase.set(r.id, k);
                 return k;
               }
-              async function racha(lista, conPropio) {
+              async function racha(lista, conPropio, nombre) {
                 const m = conPropio ? [propio] : [];
                 for (const r of lista) {
                   if (m.length >= K) break;
                   const k = await clasificar(r);
+                  if (k === 'fin' && m.length) core.warning(`firma de flota: presupuesto de ${MAX_CALLS} listJobs agotado con la racha de ${nombre} en ${m.length} (<K=${K}): truncada, no es un reset medido.`);
                   if (k === 'fin' || k === 'alive') break;   // presupuesto agotado / sesión viva: reset
                   if (k === 'instant') m.push(r);
                 }
                 return m;
               }
+              const edadMin = r => (Date.now() - new Date(r.updated_at).getTime()) / 60000;
+              const dispara = (nombre, m) => {
+                if (m.length < K) return;
+                if (edadMin(m[0]) <= FRESH_MIN) disparos.push({ nombre, m });
+                else core.info(`racha de ${nombre} (${m.length}) NO fresca: muerte más reciente hace ${Math.round(edadMin(m[0]))} min > ${FRESH_MIN}; no escalo.`);
+              };
               const conPropio = SELF_KIND === 'instant';
               const disparos = [];
-              const flota = await racha(etapas.flatMap(e => e.runs).sort(porFecha), conPropio);
-              if (flota.length >= K) disparos.push({ nombre: 'toda la flota (etapas mezcladas, en orden temporal)', m: flota });
-              for (const e of etapas) {
-                const m = await racha(e.runs, conPropio && e.id === self.workflow_id);
-                if (m.length >= K) disparos.push({ nombre: `etapa ${e.nombre}`, m });
-              }
+              const flota = await racha(etapas.flatMap(e => e.runs).sort(porFecha), conPropio, 'la flota');
+              dispara('toda la flota (etapas mezcladas, en orden temporal)', flota);
+              for (const e of etapas) dispara(`etapa ${e.nombre}`, await racha(e.runs, conPropio && e.id === self.workflow_id, `la etapa ${e.nombre}`));
               core.info(`Flota LLM: racha global ${flota.length} · ${etapas.map(e => e.nombre).join(', ')} · umbral K=${K} · ${llamadas} runs inspeccionados.`);
               core.setOutput('fleet_down', String(disparos.length > 0));
               if (!disparos.length) return;
@@ -1843,7 +1869,7 @@ jobs:
                 ``, lista, ``,
                 `Firma típica de credencial/cuota de Claude caída (\`CLAUDE_CODE_OAUTH_TOKEN\` caducado o revocado, límite del plan agotado; el resolver usa otro modelo y otra cuota que Creator y Reviewer, AP-088). El detector determinista sigue verde, así que ningún otro belt lo ve; architect-resolve —el resolutor de todo \`stalled\`— puede ser una de las etapas muertas. Precedente: finplan PR #2085, ~61 h parado sin escalada (central#212).`,
                 ``,
-                `**Qué comprobar.** El log del step \`Run …\` de cualquiera de los runs citados (error de auth / quota), el estado del plan y el secret \`CLAUDE_CODE_OAUTH_TOKEN\`. La racha se resetea sola con la primera sesión VIVA; cerrar este issue no la resetea.`,
+                `**Qué comprobar.** El log del step \`Run …\` de cualquiera de los runs citados (error de auth / quota), el estado del plan y el secret \`CLAUDE_CODE_OAUTH_TOKEN\`. La racha se resetea sola con la primera sesión VIVA; cerrar este issue no la resetea, pero solo reabre con una muerte NUEVA (la más reciente de la racha debe tener ≤ ${FRESH_MIN} min): cerrarlo tras arreglar la causa es seguro.`,
               ].join('\n');
               let abiertas = [];
               try {

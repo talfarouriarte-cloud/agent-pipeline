@@ -578,8 +578,10 @@ jobs:
             // siguientes, que el `detect` del Watchdog lee por API (`listJobsForWorkflowRun`,
             // `actions: read`, sin permiso nuevo) para computar la firma de FLOTA CAÍDA.
             // Firma COMPLETA exigida (anti falso positivo): `num_turns ≤ 1` · coste 0 ·
-            // `modelUsage` objeto vacío. Execution file ilegible, o `num_turns ≤ 1` y coste 0
-            // SIN campo `modelUsage` (firma no juzgable), ⇒ ni uno ni otro (neutro).
+            // `modelUsage` objeto vacío. `alive` exige EVIDENCIA de vida (turnos > 1, coste
+            // > 0 o `modelUsage` con uso). Lo demás —execution file ilegible, o un campo de
+            // la firma ausente (`total_cost_usd`, `modelUsage`)— es firma no juzgable ⇒ ni
+            // uno ni otro (neutro): ni suma a la racha ni la resetea (review de #280).
             const fs = require('fs');
             const f = process.env.EXEC_FILE || `${process.env.RUNNER_TEMP || '/tmp'}/claude-execution-output.json`;
             let d = null;
@@ -589,9 +591,11 @@ jobs:
             if (!r) { core.setOutput('kind', 'ilegible'); return; }
             const turns = Number(r.num_turns), cost = Number(r.total_cost_usd);
             const mu = r.modelUsage;
-            const muVacio = !!mu && typeof mu === 'object' && Object.keys(mu).length === 0;
-            const corta = Number.isFinite(turns) && turns <= 1 && cost === 0;
-            const kind = corta && muVacio ? 'instant' : (corta && mu === undefined ? 'ilegible' : 'alive');
+            const muObj = !!mu && typeof mu === 'object';
+            const muVacio = muObj && Object.keys(mu).length === 0;
+            const viva = (Number.isFinite(turns) && turns > 1) || (Number.isFinite(cost) && cost > 0) || (muObj && !muVacio);
+            const kind = viva ? 'alive'
+              : (Number.isFinite(turns) && turns <= 1 && cost === 0 && muVacio ? 'instant' : 'ilegible');
             core.info(`ejecución LLM: num_turns=${r.num_turns} · total_cost_usd=${r.total_cost_usd} · modelUsage=${mu === undefined ? '(ausente)' : muVacio ? '{}' : 'con uso'} ⇒ ${kind}`);
             core.setOutput('kind', kind);
       - name: 'llm-flota: muerte instantánea'
