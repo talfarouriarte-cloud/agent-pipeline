@@ -1293,6 +1293,19 @@ jobs:
               : (Number.isFinite(turns) && turns <= 1 && cost === 0 && muVacio ? 'instant' : 'ilegible');
             core.info(`ejecución LLM: num_turns=${r.num_turns} · total_cost_usd=${r.total_cost_usd} · modelUsage=${mu === undefined ? '(ausente)' : muVacio ? '{}' : 'con uso'} ⇒ ${kind}`);
             core.setOutput('kind', kind);
+            // Ledger de coste del Auditor (AP-099, central#281): el execution file vive en el
+            // runner y muere con el job, así que el `modelUsage` se materializa como UNA
+            // anotación `model-usage:` de este step — legible después por la API de
+            // annotations (`check-runs/<jobId>/annotations`, el canal de AP-070), sin
+            // artifact ni permiso nuevo. Solo tokens por modelo: el peso lo pone
+            // `templates/model-costs.json` en el Auditor, no aquí (una tabla, una casa).
+            // Sin `modelUsage` legible no se anota nada: «sin dato», jamás 0.
+            if (muObj && !muVacio) {
+              const tok = Object.fromEntries(Object.entries(mu).map(([m, u]) => [m, {
+                in: Number(u && u.inputTokens) || 0, out: Number(u && u.outputTokens) || 0,
+                cr: Number(u && u.cacheReadInputTokens) || 0, cw: Number(u && u.cacheCreationInputTokens) || 0 }]));
+              core.notice(`model-usage: ${JSON.stringify({ num_turns: r.num_turns, models: tok })}`);
+            }
       - name: 'llm-flota: muerte instantánea'
         if: always() && steps.llm_exec.outputs.kind == 'instant'
         run: echo "::warning::Sesión LLM muerta al nacer (num_turns ≤ 1, coste 0, modelUsage vacío) — cuenta para la firma de FLOTA CAÍDA del Watchdog (AP-091)."
