@@ -279,6 +279,9 @@ jobs:
       # cadena alcanzable via launch-next termina en epic-audit. Una cadena
       # sin auditoría al final es defecto de horneado: se marca stalled y NO
       # se quema una sesión de agente. Solo aplica al arm de issues (no PRs).
+      # AP-096 (central#260): el guard de horneado de invariantes (AP-021 +
+      # AP-029) corre también en el arm de un issue `correctivo` SUELTO (sin
+      # `epica`), sobre el body del propio issue. Banco: check-bake-guard.mjs.
       - name: Check epic chain integrity (issues only)
         id: check_chain
         if: |
@@ -296,14 +299,132 @@ jobs:
             const issue = context.payload.issue;
             if (!process.env.IN_EPIC_LABEL) { core.setFailed('guard de cadena: epic_label vacío — el guard no puede operar (wmcb#20: nunca bypass silencioso)'); return; }
             const labels = (issue.labels || []).map(l => l.name);
-            if (!labels.includes(process.env.IN_EPIC_LABEL)) { core.setOutput('broken', 'false'); return; }
+            const isEpic = labels.includes(process.env.IN_EPIC_LABEL);
+            // AP-096 (central#260): el guard de horneado (AP-021 + AP-029) se
+            // extiende a TODO arm desde issue con label `correctivo`, no solo al
+            // primer eslabón de una `epica`. Motivo medido: 6 sueltos
+            // `correctivo` de asesoramiento-financiero (#2287, #2292, #2316,
+            // #2340, #2347, #2352) llegaron al Creator sin bloque de invariantes
+            // ni `invariantes-na`; la costura era memoria de sesión del
+            // Architect y se perdió incluso tras su compromiso explícito (#2294).
+            // Label fija (como el panel de auditoría de este mismo workflow),
+            // provisionada en templates/labels.json.
+            const isCorrectivo = labels.includes('correctivo');
+            if (!isEpic && !isCorrectivo) { core.setOutput('broken', 'false'); return; }
+            const armBody = context.payload.comment?.body || '';
+            // Un eslabón NO-raíz se (re)arma por DOS vías (central#59 review):
+            // (1) epic-merge encadena con `epic-auto-launch`; (2) el watchdog
+            // re-arma con `watchdog-rearm` cuando el Creator muere sin PR. En
+            // ambas el eslabón ya superó el guard una vez (con bloque, con
+            // `invariantes-na`, o por ser aguas abajo) — el arm inicial sin
+            // bloque aborta ANTES de armar Creator, así que nunca hay un Creator
+            // que muera y dispare un `watchdog-rearm` inicial: eximirlo no oculta
+            // ninguna omisión real. En una cadena, además, la casa canónica del
+            // bloque (el issue de épica) queda AGUAS ARRIBA, invisible al
+            // traversal forward desde el eslabón intermedio.
+            const isChainRearm = armBody.includes('epic-auto-launch') || armBody.includes('watchdog-rearm');
+            // Guard de horneado (AP-021 + AP-029), compartido por los dos
+            // perímetros: `scope` = 'epica' (primer eslabón; el bloque se busca en
+            // la cadena) | 'suelto' (arm de un `correctivo` fuera de cadena; el
+            // bloque vive en el propio issue). Devuelve true si el arm NO
+            // continúa (stall materializado).
+            const bakeGuard = async (hasInvariants, invariantsBody, scope) => {
+              if (isChainRearm) return false;
+              // AP-018 §1+§2 (central#55): estado materializado, no inferido.
+              // Se LEE por-issue (listComments = fuertemente consistente, NO el
+              // search index); reusada para el dedup del stall y el force
+              // pegajoso `invariantes-na`.
+              const { data: existing } = await github.rest.issues.listComments({ owner, repo, issue_number: issue.number, per_page: 100 });
+              const TRUSTED = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+              // Force PEGAJOSO doc-only (AP-021, mismo criterio que `panel-ok`
+              // AP-018 §3): vale en CUALQUIER comentario de confianza del issue —
+              // un re-arm posterior no lo pierde. Pasa en SILENCIO, cero re-avisos
+              // y cero re-stalls (converge con el dedup de AP-018 §2).
+              const naDeclared = existing.some(c => /<!--\s*invariantes-na\s*-->/.test(c.body || '') && TRUSTED.has(c.author_association));
+              if (naDeclared) return false;
+              const where = scope === 'suelto'
+                ? 'este issue `correctivo` (suelto, fuera de cadena) no declara el bloque `## Invariantes funcionales` en su body (AP-096, central#260: el guard cubre también los correctivos sueltos)'
+                : 'ningún issue de la cadena declara el bloque `## Invariantes funcionales de la épica` (casa canónica: el issue de épica)';
+              const editTarget = scope === 'suelto' ? 'edita ESTE issue' : 'edita el issue de épica';
+              if (!hasInvariants) {
+                // AP-021 (central#59): el aviso `sin-invariantes` era INFORMATIVO
+                // SIN CONSUMIDOR — disparaba, el arm CONTINUABA y nadie tenía en
+                // su mandato responderlo (finplan#1378, #1394). Un aviso que el
+                // sistema puede ignorar indefinidamente es ruido, no una costura
+                // (protocol.md §1-2): se MATERIALIZA como transición con dueño.
+                // `stalled` (⇒ architect-resolve POR EVENTO — el step usa el PAT
+                // REVIEWER_GITHUB_TOKEN, así el `labeled=stalled` dispara el
+                // watchdog; patrón `creator-blocked`/finplan#1350) + diagnóstico
+                // dedupeado por marcador. El arm NO continúa (broken='true'): los
+                // steps de abajo lo gatean, así que check_serial NO corre y NO
+                // cuelga `serial-activo` (el orden check_chain→check_serial ya lo
+                // garantiza).
+                await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['stalled'] });
+                const alreadyStalled = existing.some(c => /<!--\s*sin-invariantes-stall\s*-->/.test(c.body || ''));
+                if (!alreadyStalled) {
+                  await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
+                    body: `**claude-code · guard de horneado**: ${where}. Sin él, la verificación funcional de la auditoría degrada a la DoD del Creator como sustituto — coste que el Auditor paga época tras época (finplan#1378, #1394; sueltos asesoramiento-financiero#2287/#2292/#2316). El arm NO continúa: se materializa como transición con dueño (\`stalled\` ⇒ architect-resolve por evento). Resolución en un run de architect-resolve: (a) TIENE superficie funcional ⇒ ${editTarget} añadiendo 2-4 invariantes ejecutables derivados del ADR citado bajo el bloque, cada uno con su línea \`pre-épica: rojo|verde — <por qué>\` (AP-029), y des-stallea/re-arma; o (b) es doc-only ⇒ declara \`<!-- invariantes-na -->\` (force pegajoso) y des-stallea/re-arma.\n\n<!-- sin-invariantes-stall -->` });
+                }
+                return true;
+              }
+              // AP-029 (central#89 — recurrencia POST-fix de central#77 en
+              // finplan#1476): la PRESENCIA del bloque NO basta. Se MATERIALIZA la
+              // declaración del resultado esperado pre-épica (dry-run) como
+              // PRECONDICIÓN del arm: el bloque debe llevar ≥1 línea ANCLADA
+              // `pre-épica: rojo|verde — <por qué>` (anclada a inicio de línea,
+              // jamás substring — clase 6 del pipeline-map). Límite honesto: el
+              // guard fuerza la DECLARACIÓN (≥1), no la ejecución ni la
+              // completitud per-invariante; la red per-invariante y la
+              // reconciliación declarado-vs-observado es el Auditor. Mismo
+              // desenlace que `sin-invariantes-stall`, marcador propio
+              // `dry-run-ausente-stall`, mismas exenciones y dedup (AP-018 §1).
+              // Riesgo 2 (falsos stalls sobre cadenas horneadas con formato viejo,
+              // sin el token): gate «solo issues nuevos» por fecha de creación del
+              // issue armado — el token se definió el 2026-07-18.
+              const DRYRUN_CUTOVER = Date.parse('2026-07-18T00:00:00Z');
+              const issueCreated = Date.parse(issue.created_at || '');
+              const preexisting = Number.isFinite(issueCreated) && issueCreated < DRYRUN_CUTOVER;
+              // Token tolerante a la tilde (pre-épica / pre-epica); anclado a
+              // inicio de línea con `m`, tolera sangría de lista, jamás substring.
+              const hasDryRun = /^[ \t]*pre-[eé]pica:\s*(rojo|verde)\b/im.test(invariantsBody);
+              if (preexisting || hasDryRun) return false;
+              await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['stalled'] });
+              const alreadyDryRunStalled = existing.some(c => /<!--\s*dry-run-ausente-stall\s*-->/.test(c.body || ''));
+              if (!alreadyDryRunStalled) {
+                // AP-096 (central#255 punto 3): diagnóstico auto-legible — lista
+                // las líneas CANDIDATAS `pre-<algo>:` que el guard NO reconoce
+                // (p. ej. `pre-correctivo:` ×3, asesoramiento-financiero#2305),
+                // para que architect-resolve y el 5-whys vean el desajuste de
+                // vocabulario sin releer el body. NO cambia el veredicto: no hay
+                // alias — un vocabulario, una fila (protocol.md).
+                const cand = {};
+                for (const mm of invariantsBody.matchAll(/^[ \t]*[-*]?[ \t]*(pre-[^\s:`]+):/gim)) {
+                  const tok = mm[1].toLowerCase();
+                  if (/^pre-[eé]pica$/.test(tok)) continue;
+                  cand[tok] = (cand[tok] || 0) + 1;
+                }
+                const candList = Object.entries(cand).map(([t, n]) => `\`${t}:\` ×${n}`).join(', ');
+                const candNote = candList
+                  ? ` Líneas candidatas NO reconocidas en el bloque: ${candList} — el token es \`pre-épica:\` VERBATIM también en correctivos (vocabulario del guard, no descripción del momento); basta renombrarlas si el dry-run ya está ejecutado.`
+                  : ' No se encontró ninguna línea candidata `pre-<algo>:` en el bloque.';
+                const blockName = scope === 'suelto' ? '`## Invariantes funcionales`' : '`## Invariantes funcionales de la épica`';
+                await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
+                  body: `**claude-code · guard de horneado**: el bloque ${blockName} está presente pero NINGÚN invariante declara su estado esperado pre-épica (línea anclada \`pre-épica: rojo|verde — <por qué>\`).${candNote} Sin esa declaración el dry-run de invariantes queda como disciplina de sesión sin consumidor mecánico y un invariante insatisfacible de origen llega intacto al Auditor (recurrencia POST-fix de central#77: épica finplan#1471 → finplan#1476, Invariante #3). El arm NO continúa: se materializa como transición con dueño (\`stalled\` ⇒ architect-resolve por evento). Resolución en un run de architect-resolve: EJECUTA el dry-run de cada invariante contra el árbol actual, ${editTarget} añadiendo bajo cada uno la línea \`pre-épica: rojo|verde — <por qué>\` y la cita de la cláusula ADR que protege (\`⇐ <cláusula>\`), y des-stallea/re-arma; o si es doc-only declara \`<!-- invariantes-na -->\` (force pegajoso) y des-stallea/re-arma.\n\n<!-- dry-run-ausente-stall -->` });
+              }
+              return true;
+            };
+            const runSueltoGuard = async () => {
+              const b = issue.body || '';
+              const broken = await bakeGuard(/invariantes funcionales/i.test(b), b, 'suelto');
+              core.setOutput('broken', broken ? 'true' : 'false');
+            };
+            // Correctivo SUELTO (sin label de épica): el bloque vive en el propio
+            // issue; no hay cadena que recorrer.
+            if (!isEpic) { await runSueltoGuard(); return; }
             // Traversal launch-next con cap 20. De paso (wmcb#21): ¿algún body
             // de la cadena declara «Invariantes funcionales»? La casa canónica
             // es el issue de épica (#14 fijó el lado lector; esto cubre el
             // horneado: la omisión se ve AL ARMAR, cuando aún es editable).
-            // AP-021 (central#59): la omisión ya no solo se AVISA — se
-            // MATERIALIZA como stall con dueño (architect-resolve); ver el
-            // bloque `if (!hasInvariants)` bajo el sentinel epic-audit.
             let body = issue.body || '';
             let hops = 0;
             let hasInvariants = false;
@@ -311,113 +432,9 @@ jobs:
             while (hops++ < 20) {
               if (/invariantes funcionales/i.test(body)) { hasInvariants = true; if (!invariantsBody) invariantsBody = body; }
               if (/<!--\s*epic-audit:/.test(body)) {
-                if (!hasInvariants) {
-                  // AP-021 (central#59): el aviso `sin-invariantes` era
-                  // INFORMATIVO SIN CONSUMIDOR — disparaba, el arm CONTINUABA y
-                  // nadie tenía en su mandato responderlo. En las DOS únicas
-                  // épicas con superficie funcional desde que existe el aviso
-                  // (finplan#1378, #1394) recurrió ignorado y la verificación
-                  // funcional del Auditor degradó a la DoD del Creator como
-                  // sustituto, época tras época. Un aviso que el sistema puede
-                  // ignorar indefinidamente es ruido, no una costura
-                  // (protocol.md §1-2): se MATERIALIZA como transición con dueño.
-                  // AP-018 §1+§2 (central#55): estado materializado, no inferido.
-                  // Se LEE por-issue (listComments = fuertemente consistente, NO
-                  // el search index); reusada para el dedup del stall y el force
-                  // pegajoso `invariantes-na`.
-                  const armBody = context.payload.comment?.body || '';
-                  // El stall es SOLO para el arm inicial GENUINO de la raíz — el
-                  // `@claude` del Auditor/humano (ARM_TOKEN) que NO trae marcador
-                  // de encadenado ni de re-arm. Un eslabón NO-raíz se (re)arma por
-                  // DOS vías, no una (central#59 review): (1) epic-merge encadena
-                  // con `epic-auto-launch`; (2) el watchdog re-arma con
-                  // `watchdog-rearm` cuando el Creator de un eslabón intermedio
-                  // muere sin PR — el caso para el que existe el watchdog, y el
-                  // camino de muerte-y-relanzamiento más común. En AMBAS la casa
-                  // canónica del bloque (el issue de épica) queda AGUAS ARRIBA,
-                  // invisible al traversal forward desde el eslabón intermedio; sin
-                  // eximirlas se re-stallearía la cadena a mitad de vuelo (falso
-                  // stall de un eslabón legítimo en vuelo). Un `watchdog-rearm`
-                  // SIEMPRE implica que el eslabón ya superó el guard una vez (con
-                  // bloque, con `invariantes-na`, o por ser aguas abajo) — el arm
-                  // inicial sin bloque aborta ANTES de armar Creator, así que nunca
-                  // hay un Creator que muera y dispare un `watchdog-rearm` inicial:
-                  // eximirlo no oculta ninguna omisión real. La premisa
-                  // «downstream ⟺ epic-auto-launch» era incompleta; el proxy
-                  // correcto es «trae CUALQUIER marcador de re-arm de cadena».
-                  const isChainRearm = armBody.includes('epic-auto-launch') || armBody.includes('watchdog-rearm');
-                  const { data: existing } = await github.rest.issues.listComments({ owner, repo, issue_number: issue.number, per_page: 100 });
-                  const TRUSTED = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
-                  // Force PEGAJOSO doc-only (AP-021, mismo criterio que `panel-ok`
-                  // AP-018 §3): architect-resolve declaró que la épica no tiene
-                  // superficie funcional. Vale en CUALQUIER comentario de
-                  // confianza del issue — un re-arm posterior no lo pierde.
-                  const naDeclared = existing.some(c => /<!--\s*invariantes-na\s*-->/.test(c.body || '') && TRUSTED.has(c.author_association));
-                  if (naDeclared || isChainRearm) {
-                    // Doc-only declarado (pegajoso) o (re)arm de un eslabón NO-raíz
-                    // (`epic-auto-launch` de epic-merge / `watchdog-rearm` del
-                    // watchdog): pasa en SILENCIO, cero re-avisos y cero re-stalls
-                    // (converge con el dedup de AP-018 §2).
-                    core.setOutput('broken', 'false'); return;
-                  }
-                  // MATERIALIZA el despacho: `stalled` (⇒ architect-resolve POR
-                  // EVENTO — el step usa el PAT REVIEWER_GITHUB_TOKEN, así el
-                  // `labeled=stalled` dispara el watchdog; patrón `creator-blocked`
-                  // /finplan#1350) + diagnóstico dedupeado por marcador. El arm NO
-                  // continúa (broken='true'): los steps de abajo lo gatean, así
-                  // que check_serial NO corre y NO cuelga `serial-activo` (riesgo 2
-                  // del issue — el orden check_chain→check_serial ya lo garantiza).
-                  await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['stalled'] });
-                  const alreadyStalled = existing.some(c => /<!--\s*sin-invariantes-stall\s*-->/.test(c.body || ''));
-                  if (!alreadyStalled) {
-                    await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
-                      body: '**claude-code · guard de horneado**: ningún issue de la cadena declara el bloque `## Invariantes funcionales de la épica` (casa canónica: el issue de épica). Sin él, la verificación funcional de la auditoría degrada a la DoD del Creator como sustituto — coste que el Auditor paga época tras época (finplan#1378, #1394). El arm NO continúa: se materializa como transición con dueño (`stalled` ⇒ architect-resolve por evento). Resolución en un run de architect-resolve: (a) la épica TIENE superficie funcional ⇒ edita el issue de épica añadiendo 2-4 invariantes ejecutables derivados del ADR citado bajo `## Invariantes funcionales de la épica`, y des-stallea/re-arma; o (b) es doc-only ⇒ declara `<!-- invariantes-na -->` (force pegajoso para toda la cadena) y des-stallea/re-arma.\n\n<!-- sin-invariantes-stall -->' });
-                  }
-                  core.setOutput('broken', 'true'); return;
-                }
-                // AP-029 (central#89 — recurrencia POST-fix de central#77 en
-                // finplan#1476): la PRESENCIA del bloque NO basta. El fix de
-                // central#77 dejó la declaración del resultado esperado pre-épica
-                // (dry-run de invariantes) como DISCIPLINA DE SESIÓN sin
-                // consumidor mecánico; su primer uso tras el fix (épica
-                // finplan#1471) horneó el bloque SIN ninguna declaración y el
-                // Invariante #3 —insatisfacible de origen— llegó intacto al
-                // Auditor. Se MATERIALIZA la declaración como PRECONDICIÓN del
-                // arm: el bloque debe llevar ≥1 línea ANCLADA
-                // `pre-épica: rojo|verde — <por qué>` (anclada a inicio de línea,
-                // jamás substring — clase 6 del pipeline-map). Límite honesto: el
-                // guard fuerza la DECLARACIÓN (≥1), no la ejecución ni la
-                // completitud per-invariante; la red per-invariante y la
-                // reconciliación declarado-vs-observado es el Auditor. Mismo
-                // desenlace materializado que `sin-invariantes-stall` (stall con
-                // dueño ⇒ architect-resolve por evento), marcador propio
-                // `dry-run-ausente-stall`, mismas exenciones (re-arm de cadena,
-                // `invariantes-na`) y dedup (AP-018 §1).
-                // Riesgo 2 (falsos stalls sobre cadenas horneadas con formato
-                // viejo, sin el token): gate «solo cadenas nuevas» por fecha de
-                // creación del issue raíz — el token se DEFINE en ESTA misma PR
-                // (skill proceso-diseño §Fase 3), así que ninguna cadena anterior
-                // al corte podía llevarlo.
-                const DRYRUN_CUTOVER = Date.parse('2026-07-18T00:00:00Z');
-                const issueCreated = Date.parse(issue.created_at || '');
-                const preexisting = Number.isFinite(issueCreated) && issueCreated < DRYRUN_CUTOVER;
-                // Token tolerante a la tilde (pre-épica / pre-epica); anclado a
-                // inicio de línea con `m`, tolera sangría de lista, jamás substring.
-                const hasDryRun = /^[ \t]*pre-[eé]pica:\s*(rojo|verde)\b/im.test(invariantsBody);
-                if (preexisting || hasDryRun) { core.setOutput('broken', 'false'); return; }
-                const armBody2 = context.payload.comment?.body || '';
-                const isChainRearm2 = armBody2.includes('epic-auto-launch') || armBody2.includes('watchdog-rearm');
-                const { data: existing2 } = await github.rest.issues.listComments({ owner, repo, issue_number: issue.number, per_page: 100 });
-                const TRUSTED2 = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
-                const naDeclared2 = existing2.some(c => /<!--\s*invariantes-na\s*-->/.test(c.body || '') && TRUSTED2.has(c.author_association));
-                if (naDeclared2 || isChainRearm2) { core.setOutput('broken', 'false'); return; }
-                await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['stalled'] });
-                const alreadyDryRunStalled = existing2.some(c => /<!--\s*dry-run-ausente-stall\s*-->/.test(c.body || ''));
-                if (!alreadyDryRunStalled) {
-                  await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
-                    body: '**claude-code · guard de horneado**: el bloque `## Invariantes funcionales de la épica` está presente pero NINGÚN invariante declara su estado esperado pre-épica (línea anclada `pre-épica: rojo|verde — <por qué>`). Sin esa declaración el dry-run de invariantes queda como disciplina de sesión sin consumidor mecánico y un invariante insatisfacible de origen llega intacto al Auditor (recurrencia POST-fix de central#77: épica finplan#1471 → finplan#1476, Invariante #3). El arm NO continúa: se materializa como transición con dueño (`stalled` ⇒ architect-resolve por evento). Resolución en un run de architect-resolve: EJECUTA el dry-run de cada invariante contra el árbol PRE-épica, añade bajo cada uno la línea `pre-épica: rojo|verde — <por qué>` y la cita de la cláusula ADR que protege (`⇐ <cláusula>`), y des-stallea/re-arma; o si la épica es doc-only declara `<!-- invariantes-na -->` (force pegajoso) y des-stallea/re-arma.\n\n<!-- dry-run-ausente-stall -->' });
-                }
-                core.setOutput('broken', 'true'); return;
+                const broken = await bakeGuard(hasInvariants, invariantsBody, 'epica');
+                core.setOutput('broken', broken ? 'true' : 'false');
+                return;
               }
               const m = body.match(/<!--\s*launch-next:\s*#?(\d+)\s*-->/);
               if (!m) break; // sin sentinel y sin epic-audit: cadena rota aquí
@@ -436,6 +453,9 @@ jobs:
               await github.rest.issues.removeLabel({ owner, repo, issue_number: issue.number, name: process.env.IN_EPIC_LABEL }).catch(() => {});
               await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
                 body: `**claude-code · guard de cadena**: este issue lleva la label \`${process.env.IN_EPIC_LABEL}\` pero no forma cadena (sin \`launch-next\` ni \`epic-audit\`): «épica de un eslabón» = issue SUELTO. Degradado al régimen de sueltos (label retirada) — el arm CONTINÚA; el pipeline hará PR → review → merge → auditoría automática al cierre.\n\n<!-- cadena-degradada-a-suelto -->` });
+              // AP-096: degradado a suelto, un `correctivo` pasa además el guard
+              // de horneado de sueltos (mismo perímetro que el arm directo).
+              if (isCorrectivo) { await runSueltoGuard(); return; }
               core.setOutput('broken', 'false');
               return;
             }
