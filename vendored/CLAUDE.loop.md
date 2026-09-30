@@ -112,6 +112,12 @@ El objetivo es que las cadenas corran solas de spec a valor completo. Cada agent
 
 ## Loop protocol with Reviewer
 
+**Round order: fix → typecheck → commit → push → tests.** Never
+verify before pushing: an unpushed tree dies with the session (finplan
+PR #1974, #2299, #2301 — work lost, AP-089). The `test-discipline`
+hook blocks test/bench runs on a published branch while there is
+unpushed work; CI is the gate for the suite, not your session.
+
 **A turn that pushed commits has ALREADY transitioned** (doctrina
 push-primario 2026-07-14 wmcb#38, elevada a camino ÚNICO por AP-079:
 medidos 15..29-07, 141 turnos absorbidos por `turn-close-failsafe` —

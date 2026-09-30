@@ -57,3 +57,38 @@ for (const f of files) {
 
 if (errors.length) { console.error('CHECK-HOOKS ROJO:'); errors.forEach(e => console.error('  - ' + e)); process.exit(1); }
 console.log(`check-hooks verde: ${commands} hooks declarados en settings.json, ${files.length} scripts presentes, todos referenciados y con sintaxis válida.`);
+
+// ── 4. Banco de comportamiento de test-discipline (AP-089): el hook decide
+// sobre estado git real, así que se ejercita en un repo temporal con remoto.
+import { mkdtempSync, writeFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join, resolve } from 'path';
+import { spawnSync } from 'child_process';
+
+const HOOK = resolve(`${HOOKS}/test-discipline.sh`);
+const tmp = mkdtempSync(join(tmpdir(), 'td-'));
+const sh = (cmd, cwd) => execFileSync('bash', ['-lc', cmd], { cwd, stdio: 'pipe', env: { ...process.env, GIT_AUTHOR_NAME: 'x', GIT_AUTHOR_EMAIL: 'x@x', GIT_COMMITTER_NAME: 'x', GIT_COMMITTER_EMAIL: 'x@x' } });
+const run = (cmd, cwd) => spawnSync('bash', [HOOK], { cwd, input: JSON.stringify({ tool_input: { command: cmd } }), env: { ...process.env, CLAUDE_PROJECT_DIR: cwd }, encoding: 'utf8' }).status;
+const bank = [];
+try {
+  sh('git init -q --bare remote.git && git init -q -b main wt && cd wt && git remote add origin ../remote.git && echo a > a.ts && git add . && git commit -qm init', tmp);
+  const wt = join(tmp, 'wt');
+  bank.push(['sin upstream, dirty, tests scoped ⇒ permite (pre-hito 1)', run('npx vitest run a.ts', wt), 0]);
+  sh('git push -q -u origin main', wt);
+  bank.push(['upstream, limpio, tests scoped ⇒ permite', run('npx vitest run a.ts', wt), 0]);
+  writeFileSync(join(wt, 'a.ts'), 'b');
+  bank.push(['upstream, dirty, tests scoped ⇒ BLOQUEA', run('npx vitest run a.ts', wt), 2]);
+  bank.push(['upstream, dirty, bench ⇒ BLOQUEA', run('pnpm --filter app bench', wt), 2]);
+  bank.push(['upstream, dirty, typecheck ⇒ permite (exento)', run('pnpm typecheck', wt), 0]);
+  bank.push(['upstream, dirty, git push ⇒ permite (salida siempre disponible)', run('git push origin HEAD', wt), 0]);
+  sh('git commit -qam edit', wt);
+  bank.push(['upstream, ahead sin push, tests ⇒ BLOQUEA', run('npx vitest run a.ts', wt), 2]);
+  sh('git push -q', wt);
+  bank.push(['upstream, pusheado, tests ⇒ permite', run('npx vitest run a.ts', wt), 0]);
+  bank.push(['pusheado, suite completa ⇒ BLOQUEA (check original intacto)', run('pnpm test', wt), 2]);
+  writeFileSync(join(wt, 'a.ts'), 'c');
+  bank.push(['override PIPELINE_VERIFY_AFTER_PUSH=0 ⇒ permite', spawnSync('bash', [HOOK], { cwd: wt, input: JSON.stringify({ tool_input: { command: 'npx vitest run a.ts' } }), env: { ...process.env, CLAUDE_PROJECT_DIR: wt, PIPELINE_VERIFY_AFTER_PUSH: '0' }, encoding: 'utf8' }).status, 0]);
+} finally { rmSync(tmp, { recursive: true, force: true }); }
+const bad = bank.filter(([, got, want]) => got !== want);
+if (bad.length) { console.error('CHECK-HOOKS ROJO (banco test-discipline):'); bad.forEach(([n, g, w]) => console.error(`  - ${n}: exit ${g}, esperado ${w}`)); process.exit(1); }
+console.log(`check-hooks verde: banco test-discipline ${bank.length}/${bank.length}.`);
