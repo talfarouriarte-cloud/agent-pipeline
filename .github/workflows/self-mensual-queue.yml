@@ -38,9 +38,9 @@ jobs:
             const { data: open } = await github.rest.issues.listForRepo({ owner, repo, state: 'open', labels: 'mensual:aprobada', per_page: 100 });
             let issues = open.filter(i => !i.pull_request);
             for (const n of closedByPr) {
-              const veh = issues.find(i => i.number === n);
-              if (!veh) continue;
-              // Cierra el vehículo si sigue abierto y toda fundida cuyo ruling diga «FUNDIDA en #n».
+              // Cierra el vehículo si sigue abierto (GitHub puede haberlo cerrado ya) y
+              // SIEMPRE toda fundida cuyo ruling diga «FUNDIDA en #n» (2026-09-30: #264,
+              // #255, #227 quedaron abiertas porque el vehículo ya estaba cerrado).
               try { await github.rest.issues.update({ owner, repo, issue_number: n, state: 'closed', state_reason: 'completed' }); } catch (e) {}
               const { data: fused } = await github.rest.issues.listForRepo({ owner, repo, state: 'open', labels: 'mensual:fundida', per_page: 100 });
               for (const f of fused) {
