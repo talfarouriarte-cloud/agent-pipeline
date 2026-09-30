@@ -363,7 +363,7 @@ jobs:
                 const alreadyStalled = existing.some(c => /<!--\s*sin-invariantes-stall\s*-->/.test(c.body || ''));
                 if (!alreadyStalled) {
                   await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
-                    body: `**claude-code · guard de horneado**: ${where}. Sin él, la verificación funcional de la auditoría degrada a la DoD del Creator como sustituto — coste que el Auditor paga época tras época (finplan#1378, #1394; sueltos asesoramiento-financiero#2287/#2292/#2316). El arm NO continúa: se materializa como transición con dueño (\`stalled\` ⇒ architect-resolve por evento). Resolución en un run de architect-resolve: (a) TIENE superficie funcional ⇒ ${editTarget} añadiendo 2-4 invariantes ejecutables derivados del ADR citado bajo el bloque, cada uno con su línea \`pre-épica: rojo|verde — <por qué>\` (AP-029), y des-stallea/re-arma; o (b) es doc-only ⇒ declara \`<!-- invariantes-na -->\` (force pegajoso) y des-stallea/re-arma.\n\n<!-- sin-invariantes-stall -->` });
+                    body: `**claude-code · guard de horneado**: ${where}. Sin él, la verificación funcional de la auditoría degrada a la DoD del Creator como sustituto — coste que el Auditor paga época tras época (finplan#1378, #1394; sueltos asesoramiento-financiero#2287/#2292/#2316). El arm NO continúa: se materializa como transición con dueño (\`stalled\` ⇒ architect-resolve por evento). Resolución en un run de architect-resolve: (a) TIENE superficie funcional ⇒ ${editTarget} añadiendo ${scope === 'suelto' ? '1-4' : '2-4'} invariantes ejecutables derivados del ADR citado bajo el bloque, cada uno con su línea \`pre-épica: rojo|verde — <por qué>\` (AP-029), y des-stallea/re-arma; o (b) es doc-only ⇒ declara \`<!-- invariantes-na -->\` (force pegajoso) y des-stallea/re-arma.\n\n<!-- sin-invariantes-stall -->` });
                 }
                 return true;
               }
@@ -396,17 +396,28 @@ jobs:
                 // (p. ej. `pre-correctivo:` ×3, asesoramiento-financiero#2305),
                 // para que architect-resolve y el 5-whys vean el desajuste de
                 // vocabulario sin releer el body. NO cambia el veredicto: no hay
-                // alias — un vocabulario, una fila (protocol.md).
+                // alias — un vocabulario, una fila (protocol.md). Las líneas con
+                // el token `pre-épica:` correcto pero en FORMA no reconocida
+                // (viñeta, valor en negrita, valor fuera de rojo|verde) se listan
+                // aparte: desajuste de forma, no de vocabulario.
                 const cand = {};
-                for (const mm of invariantsBody.matchAll(/^[ \t]*[-*]?[ \t]*(pre-[^\s:`]+):/gim)) {
+                const malformed = [];
+                for (const mm of invariantsBody.matchAll(/^[ \t]*[-*]?[ \t]*(pre-[^\s:`]+):.*$/gim)) {
                   const tok = mm[1].toLowerCase();
-                  if (/^pre-[eé]pica$/.test(tok)) continue;
+                  if (/^pre-[eé]pica$/.test(tok)) {
+                    const line = mm[0].trim();
+                    malformed.push(line.length > 80 ? line.slice(0, 80) + '…' : line);
+                    continue;
+                  }
                   cand[tok] = (cand[tok] || 0) + 1;
                 }
                 const candList = Object.entries(cand).map(([t, n]) => `\`${t}:\` ×${n}`).join(', ');
-                const candNote = candList
+                const malformedNote = malformed.length
+                  ? ` Líneas con el token \`pre-épica:\` pero en forma NO reconocida (el guard exige \`pre-épica: rojo|verde\` a inicio de línea, sin viñeta ni negrita): ${malformed.map(l => `\`${l.replace(/`/g, "'")}\``).join(', ')} ×${malformed.length}.`
+                  : '';
+                const candNote = (candList
                   ? ` Líneas candidatas NO reconocidas en el bloque: ${candList} — el token es \`pre-épica:\` VERBATIM también en correctivos (vocabulario del guard, no descripción del momento); basta renombrarlas si el dry-run ya está ejecutado.`
-                  : ' No se encontró ninguna línea candidata `pre-<algo>:` en el bloque.';
+                  : (malformed.length ? '' : ' No se encontró ninguna línea candidata `pre-<algo>:` en el bloque.')) + malformedNote;
                 const blockName = scope === 'suelto' ? '`## Invariantes funcionales`' : '`## Invariantes funcionales de la épica`';
                 await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
                   body: `**claude-code · guard de horneado**: el bloque ${blockName} está presente pero NINGÚN invariante declara su estado esperado pre-épica (línea anclada \`pre-épica: rojo|verde — <por qué>\`).${candNote} Sin esa declaración el dry-run de invariantes queda como disciplina de sesión sin consumidor mecánico y un invariante insatisfacible de origen llega intacto al Auditor (recurrencia POST-fix de central#77: épica finplan#1471 → finplan#1476, Invariante #3). El arm NO continúa: se materializa como transición con dueño (\`stalled\` ⇒ architect-resolve por evento). Resolución en un run de architect-resolve: EJECUTA el dry-run de cada invariante contra el árbol actual, ${editTarget} añadiendo bajo cada uno la línea \`pre-épica: rojo|verde — <por qué>\` y la cita de la cláusula ADR que protege (\`⇐ <cláusula>\`), y des-stallea/re-arma; o si es doc-only declara \`<!-- invariantes-na -->\` (force pegajoso) y des-stallea/re-arma.\n\n<!-- dry-run-ausente-stall -->` });
