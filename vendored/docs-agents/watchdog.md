@@ -573,6 +573,23 @@ solo retira el supresor de dedupe. El único reset es una corrida `success`
 del Watchdog — si se cierra con el detector aún en rojo, el siguiente tick
 reabre la escalada.
 
+**Tres modos más en el mismo canal (AP-091, central#259/#212).**
+`<!-- pipeline-credential-401 -->`: el preflight de credencial (primer step del
+Creator y de `detect`) ve el PAT en 401 dos veces y escala en el PRIMER tick,
+abortando el job antes de gastar setup — el PAT es punto único de fallo del
+primario y del rescate, y antes solo se veía a los K=3 ticks.
+`<!-- pipeline-fleet-down -->`: `detect` ve K=3 sesiones LLM consecutivas
+muertas al nacer (execution file: `num_turns ≤ 1`, coste 0, `modelUsage`
+vacío) en cualquier etapa, architect-resolve incluida — el detector sigue
+verde y ningún otro belt lo ve. `<!-- watchdog-stage-red-streak -->`: el
+heartbeat cuenta la racha de la etapa `architect` por JOB, con los ticks sin
+anomalías (etapa `skipped`) como neutros; la racha por conclusión del run se
+reseteaba con ellos (178 rojos sin escalada, finplan PR #2085). Los tres
+emisores y los belts previos buscan los marcadores **anclados a línea
+propia**: un issue que CITE `watchdog-heartbeat-escalation` en prosa ya no
+silencia el canal. Si la escalada es de credencial, el runbook es
+`docs/runbook-rotacion-pat.md` del central.
+
 Quedan fuera de la autonomía (gates humanos permanentes): commits de
 `.github/workflows/*` (el PAT no modifica su propia supervisión),
 promoción de la rama por defecto a producción, y el cortacircuito anterior.
