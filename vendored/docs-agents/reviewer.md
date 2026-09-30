@@ -130,8 +130,9 @@ Estructura:
 
 1. **Cabecera de control de loop** (primeras líneas del comentario, ANTES de cualquier otro contenido):
 - Línea 1: veredicto en una palabra: `LGTM` / `NITS` / `REVIEW`.
-- Línea 2 (si veredicto es `REVIEW`; o `NITS` en cualquier ronda; o `LGTM` **en PR con label `epica`** — ADR-193): `@claude` seguido de una frase corta describiendo qué tiene que hacer el Creator + el sentinel `<!-- ping-creator -->` al final de la misma línea. NO aparece para `LGTM` en PR sin `epica` (el humano mergea). **Cambio ADR-193 (épicas autoencadenadas):** antes el ping NITS era solo en la primera ronda y el LGTM nunca pingaba; ahora NITS pinga en cada ronda y el LGTM de un PR `epica` despierta al Creator a mergear y encadenar. El tope de rondas lo impone el `CAP` del workflow (escala a humano al agotarse). El sentinel es marca de máquina, invisible en el render, requerida para que el filtro del workflow dispare incluso si el action inyecta un zero-width joiner entre `@` y `claude`.
-- Última línea de la cabecera (AP-092): `<!-- reviewer-presupuesto: N turnos -->`, con el N que te pasa el prompt (`PRESUPUESTO APLICADO`, escalón por tamaño del diff). Es HTML invisible y va DESPUÉS del veredicto (línea 1) y del `@claude` si lo hay (línea 2): nunca los desplaza.
+- Línea 2 (si el veredicto es `REVIEW`, o `NITS` en cualquier ronda — ADR-193): `@claude` seguido de una frase corta describiendo qué tiene que hacer el Creator + el sentinel `<!-- ping-creator -->` al final de la misma línea. NO aparece NUNCA en un `LGTM`, ni en épica ni en suelto: el merge lo hace `epic-merge` en ambos casos (derogación 2026-07-10 y AP-095, § «Cabecera de control de loop»).
+- Línea 3, solo si reservas el merge al propietario (AP-095, § «Cabecera de control de loop»): `[NEEDS-HUMAN]: <la decisión que solo el propietario puede tomar>`, abriendo su línea, con veredicto `REVIEW` en la línea 1. **Cambio ADR-193 (épicas autoencadenadas):** antes el ping NITS era solo en la primera ronda y el LGTM nunca pingaba; ahora NITS pinga en cada ronda y el LGTM de un PR `epica` despierta al Creator a mergear y encadenar. El tope de rondas lo impone el `CAP` del workflow (escala a humano al agotarse). El sentinel es marca de máquina, invisible en el render, requerida para que el filtro del workflow dispare incluso si el action inyecta un zero-width joiner entre `@` y `claude`.
+- Última línea de la cabecera (AP-092): `<!-- reviewer-presupuesto: N turnos -->`, con el N que te pasa el prompt (`PRESUPUESTO APLICADO`, escalón por tamaño del diff). Es HTML invisible y va DESPUÉS del veredicto (línea 1), del `@claude` si lo hay (línea 2) y de la línea `[NEEDS-HUMAN]` si la hay (línea 3): nunca los desplaza.
 - Línea en blanco separando la cabecera del resumen.
 1. **Resumen del PR** (2-3 líneas). Qué hace, en tus propias palabras.
 1. **Comentarios** (si los hay). Cada uno con:
@@ -200,13 +201,31 @@ Reglas:
 - `NITS` → **en CUALQUIER ronda (ADR-193)** la segunda línea es `@claude aplica los nits` + el sentinel `<!-- ping-creator -->` al final de la misma línea. El Creator aplica los nits (todos: 🟡 y 🔵), cierra con `@reviewer`, y el workflow `claude-code.yml` re-añade `needs-review` para que tú reaudites. (Antes el ping era solo en la primera ronda NITS y el resto iba a humano; ADR-193 lo cambia para que la cadena converja sin intervención humana — el `CAP` del workflow escala si no converge.)
 - `LGTM` → **veredicto SOLO, en cualquier PR — jamás `@claude` en un LGTM** *(derogación 2026-07-10 del mecanismo de ADR-193, incidente PR #1204)*:
   - **PR con label `epica`:** `epic-merge.yml` consume tu LGTM vía `workflow_run` y hace TODO mecánicamente — merge (gate CI verde + LGTM + `epica`), borrado de rama y procesamiento del `launch-next` — en segundos y sin sesión de agente. La antigua segunda línea `@claude mergea…` (mecanismo original de ADR-193, anterior a epic-merge) despertaba una sesión de Creator de ~9 min y ~$2-3 por PR para hacer de mayordomo de lo que epic-merge ya mecaniza: fósil retirado. El humano NO mergea en épica.
-  - **PR sin `epica` (issue suelto):** NO ping. El humano mergea directamente, como antes.
+  - **PR sin `epica` (issue suelto):** NO ping. **`epic-merge` también mergea los sueltos** con el gate `ci-verde` + `lgtm` y reclama su auditoría (`MERGEADO (suelto)`). Es el régimen desde `cadena-degradada-a-suelto` (central#36, 2026-07-15). El humano NO mergea, salvo en un repo con `automerge: false` en su stub de `epic-merge` (AP-012/AP-058: hoy solo el central), donde el merge es humano en ambos regímenes. *(Corregido por AP-095, central#262: hasta entonces aquí decía «el humano mergea directamente, como antes». En asesoramiento PR #2325, un LGTM que decía «el propietario tiene que decidir antes de mergear» se mergeó a los 6 min, antes de esa decisión.)*
 
 El `@claude` se emite cuando:
 - Veredicto `REVIEW` (siempre).
 - Veredicto `NITS` (cualquier ronda, ADR-193).
 
-Para `LGTM` — en CUALQUIER PR — la cabecera es sólo el veredicto en línea 1: JAMÁS `@claude` en un LGTM (en épica mergea epic-merge mecánicamente; en issue suelto, el humano).
+Para `LGTM` — en CUALQUIER PR — la cabecera es sólo el veredicto en línea 1: JAMÁS `@claude` en un LGTM (mergea `epic-merge` mecánicamente, en épica y en suelto).
+
+### Reservar el merge al propietario: `[NEEDS-HUMAN]`, nunca un LGTM condicionado (AP-095, central#262)
+
+**Tu `LGTM` se convierte en merge.** El post-step escribe `lgtm` (ADR-218) y `epic-merge` mergea con CI verde. Cualquier «antes de mergear…» en la prosa de un LGTM no lo impide. Así que, si tu veredicto depende de una decisión que solo el propietario puede tomar (rectificar un ADR, aceptar un copy que diverge de lo que él fijó, un cambio de contrato), **no es LGTM**. La única forma de reservar el merge es un `[NEEDS-HUMAN]` explícito:
+
+```markdown
+REVIEW
+@claude reserva el merge al propietario: no cambies nada y cierra con el tag NEEDS-HUMAN citando la decisión de abajo <!-- ping-creator -->
+[NEEDS-HUMAN]: <la decisión exacta que el propietario tiene que tomar>
+<!-- reviewer-presupuesto: N turnos -->
+```
+
+Qué hace cada pieza, según la mecánica vigente:
+- **`REVIEW` en la línea 1** es lo que frena el merge. El post-step retira `lgtm` en cualquier veredicto que no sea `LGTM`, y el gate de `epic-merge` lo exige.
+- **El ping** hace que el Creator cierre su turno con `[NEEDS-HUMAN]` en su primera línea. Su Auto-label aplica entonces `human-needed`, que es el kill-switch de `epic-merge` y del Watchdog. Tu sesión no puede aplicar labels (`--allowedTools` del Reviewer), así que la label llega por esa vía.
+- **Tu línea `[NEEDS-HUMAN]`** deja la decisión en el hilo para el propietario y el Auditor.
+
+Sin el ping, el Watchdog vería un `REVIEW` sin sesión del Creator y lo relanzaría igualmente, pero con un tick de retraso.
 
 ### Sentinel `<!-- ping-creator -->` (ADR-086)
 

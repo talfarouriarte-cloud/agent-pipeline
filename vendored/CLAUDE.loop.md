@@ -13,10 +13,17 @@ comandos de typecheck/tests, zonas de rigor, ficheros congelados. -->
 - Si una decisión afecta arquitectura o el motor, propón un ADR antes
   de codear.
 - No introduzcas dependencias runtime nuevas sin ADR explícito.
-- Merge: a la rama de PRODUCCIÓN, NUNCA (promoción humana). A la rama BASE (la declara la sección Dominio de este fichero): en régimen
-  de épica (label `epica`) el merge es automático con CI verde +
-  LGTM del Reviewer, según el protocolo de cadena (ADR-193); fuera
-  de épica, solo abre el PR y deja el merge al humano.
+- Merge: a la rama de PRODUCCIÓN, NUNCA (promoción humana). A la rama BASE (la declara la sección Dominio de este fichero):
+  el merge es mecánico (`epic-merge`, gate `ci-verde` + `lgtm`) en
+  épica (label `epica`, protocolo de cadena ADR-193) Y fuera de
+  épica: los sueltos también los mergea `epic-merge` (AP-095,
+  central#262). Tú nunca mergeas: solo abres el PR. Lo que sigue
+  siendo humano es la promoción a producción y el merge en los
+  repos con `automerge: false` (lo declara su Dominio). La única
+  forma de reservar un merge al humano es un `[NEEDS-HUMAN]`
+  explícito (del Reviewer vía `REVIEW`, o tuyo como cierre de
+  turno); un `LGTM` con «antes de mergear…» en la prosa mergea
+  igual.
 - Tests pasando son condición necesaria pero no suficiente para
   considerar un PR completo: la coherencia con `spec.md` y los
   filtros transversales también lo es.
@@ -154,8 +161,24 @@ cannot:
   and the gate waits forever). READY-TO-MERGE remains valid on epic
   PRs only BEFORE any verdict exists, and on non-epic (classic) PRs.
 - `[NEEDS-HUMAN]: <reason>` — you have doubt for stability reasons
-  (see criteria below). The workflow adds label `human-needed` and
-  stops the loop.
+  (see criteria below), or the Reviewer asked you to reserve the
+  merge for the owner (a `REVIEW` whose header carries its own
+  `[NEEDS-HUMAN]:` line — change nothing, quote its decision). The
+  workflow adds label `human-needed` (the kill-switch of
+  `epic-merge`) and stops the loop.
+
+**Token-first on turns that close WITHOUT a push** (AP-095,
+central#236). If your turn closes with no push (prose answer,
+escalation, a body-only `gh pr edit`), publish the token as the
+FIRST line of your FIRST closing comment BEFORE writing the long
+analysis: a session that dies mid-analysis has then already
+declared its terminal. A turn whose only change is `gh pr edit`
+is a no-push turn ⇒ `@reviewer`. The vocabulary depends on the
+context: on a PR, `@reviewer` / `[CREATOR-ESCALATED]` /
+`[NEEDS-HUMAN]` / `[READY-TO-MERGE]`; on an ISSUE without a PR, only
+`[CREATOR-BLOCKED]` / `[ALCANCE-COMPLETO]` (a PR token there is an
+undeclared terminal ⇒ `stalled`). Table: `docs/agents/creator.md`
+§ «Token-first en turnos que cierran SIN push».
 
 **When you DO emit a closing tag, it is the HEADER, not a footnote**
 (2026-07-16, measured: 11/36 agent PRs closed without the tag; the
@@ -187,8 +210,9 @@ triggers the Reviewer via the `opened` event (condition on
 opening from state), not your normal flow.
 
 **If the Reviewer issues verdict `LGTM` or `NITS` (no `@claude` ping):**
-do not respond. The loop ends silently and the human decides the
-merge. Do not consume a turn closing with `[READY-TO-MERGE]` — it
+do not respond. The loop ends silently: `epic-merge` merges on
+`lgtm` + `ci-verde`, epic or loose (AP-095; human merge only where
+the Domain section declares `automerge: false`). Do not consume a turn closing with `[READY-TO-MERGE]` — it
 adds nothing and burns one slot of the cap=8. The closing tags are
 only useful when the Reviewer pinged you (verdict `REVIEW`). The
 verdict and `@claude` ping live at the START of the Reviewer’s
@@ -259,9 +283,19 @@ Flujo de los tres momentos:
    ARTEFACTO DE FIDELIDAD: si mueres a mitad, el draft queda con el
    estado de tu último hito (parcial fiel por construcción) y el
    post-step lo materializa `ready` por estado.
-3. **Cierre → `gh pr ready`** tras editar el body a su polaridad
-   DEFINITIVA y actualizar el título y la huella
-   `pre-reviewer: ejecutado · N hallazgos · M aplicados`.
+3. **Cierre, barato e irreversible primero (AP-095).** Tras tu
+   ÚLTIMO commit pusheado y ANTES de cualquier verificación larga:
+   (a) body DEFINITIVO (polaridad real, `Closes`/`Refs` coherente,
+   título) con `gh pr edit --body-file` **y** el mismo body en el
+   ISSUE como bloque `pr-body-declarado` con la línea `ready: sí`
+   (si mueres, el post-step lo aplica y marca `ready` por estado);
+   (b) pre-reviewer: RECOMENDADO si el harness lo permite, NO
+   obligatorio (`pre-reviewer: no ejecutado — <motivo>` es huella
+   válida; si aplicas hallazgos, push + `gh pr edit` + bloque
+   nuevo); (c) `gh pr ready`. La verificación cara, si el issue
+   la exige en sesión, va DESPUÉS, con su salida como comentario.
+   La suite completa nunca: los criterios `verificador: CI|Auditor`
+   de la DoD los verifica el gate o el Auditor, no tu sesión.
 
 **Polaridad obligatoria en el body de TODO PR** (el hook
 `pr-polarity` bloquea `gh pr create` sin ella): `<!-- full-pr -->` +
