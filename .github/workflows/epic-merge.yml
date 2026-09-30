@@ -148,15 +148,24 @@ jobs:
               return EMD.seleccionarSticky(cs, await loginPAT());
             }
 
+            // AP-093: true desde que ESTE job entra a procesar un merge
+            // (`postMerge`); con él, un pop de cola es «de este merge» y el
+            // sticky fija `epic-merge-merged`. Declarado ANTES de `diag()`,
+            // que lo lee (nada de zona muerta temporal del `let`).
+            let mergeEnEsteJob = false;
+
             // Helper: deja/actualiza un comentario diagnóstico legible por API.
             // El cuerpo arrastra el ESTADO de la versión anterior (merge
             // procesado, pop de cola de este merge): el mensaje es volátil.
+            // `merged` lo fija el HECHO (`mergeEnEsteJob`), no el texto: hay
+            // caminos post-merge sin ningún mensaje «mergeado…» (crear la
+            // auditoría falla y devuelve null).
             async function diag(prNumber, msg, opts) {
               try {
                 core.info('[epic-merge] ' + msg);
                 if (!prNumber) return;
                 const mine = await stickyDe(prNumber);
-                const body = EMD.construirCuerpo(mine && mine.body, msg, new Date().toISOString(), opts);
+                const body = EMD.construirCuerpo(mine && mine.body, msg, new Date().toISOString(), { ...(opts || {}), merged: mergeEnEsteJob });
                 if (mine) {
                   await github.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body });
                 } else {
@@ -187,9 +196,6 @@ jobs:
             // El step espejo de `claude-code.yml` ya se apaga por su `if`; sin
             // esta variable la simetría no existiría de este lado.
             let pausado = false;
-            // AP-093: true desde que ESTE job entra a procesar un merge
-            // (`postMerge`); con él, un pop de cola es «de este merge».
-            let mergeEnEsteJob = false;
             async function armQueue(prNumber, why) {
               try {
                 const { data: queued } = await github.rest.issues.listForRepo({
