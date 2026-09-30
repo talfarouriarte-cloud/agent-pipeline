@@ -91,9 +91,12 @@ Perder esto es la causa raíz de trabajo repetido y ramas huérfanas.
   `git add .` ni `git commit -a`: subirías la reversión a la rama del
   PR). Si el turno tiene que editar ese fichero, recupera antes la
   versión del PR con `git checkout HEAD -- <ruta>`; si no, déjalo
-  como está. La versión del PR antes de la restauración está en
-  `.claude-pr/`, que no se trackea. Cualquier otra suciedad sigue
-  la regla de arriba: repórtala y para.
+  como está. La action deja una copia (solo lectura, no se ejecuta)
+  de la versión del PR de esas rutas en `.claude-pr/<ruta>`
+  (`restore-config.ts` del pin), excluida por `.git/info/exclude`:
+  no sale en `git status` y no hay que commitearla. Si por lo que
+  sea aparece como `?? .claude-pr/`, entra en esta misma excepción.
+  Cualquier otra suciedad sigue la regla de arriba: repórtala y para.
   
   Esta realineación NO es ceremonial. Saltársela es la causa raíz de
   fallos del tipo “imports a módulos inexistentes”, “tests se rompen

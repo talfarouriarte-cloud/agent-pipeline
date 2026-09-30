@@ -22,6 +22,7 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const run = new AsyncFunction('github', 'context', 'core', script);
 
 const WF = 'Claude Code';
+const GUARD_STEP = 'Guard serial — un solo Creator en vuelo (solo issues)';
 const T0 = Date.now() - 30 * 1000;
 const at = s => new Date(T0 + s * 1000).toISOString();
 const iss = (number, title, labels = [], extra = {}) => ({ number, title, labels: labels.map(name => ({ name })), ...extra });
@@ -30,8 +31,12 @@ const armRun = (id, title, s = 0, extra = {}) => ({ id, name: WF, event: 'issue_
 // Ejecuta el guard para UN run contra la foto compartida `world`.
 async function guard(world, runId, issue) {
   const w = { added: [], removed: [], comments: [], outputs: {}, warnings: [] };
+  let flagReads = 0;
   const listForRepo = async p => {
-    if (p.labels === 'serial-activo') return { data: world.flagged || [] };
+    if (p.labels === 'serial-activo') {
+      if (flagReads++ > 0 && world.flaggedFresh) return { data: world.flaggedFresh };
+      return { data: world.flagged || [] };
+    }
     if (world.issuesDown) throw new Error('API caída (issues)');
     return { data: world.issues || [] };
   };
@@ -47,6 +52,13 @@ async function guard(world, runId, issue) {
         createComment: async p => { w.comments.push({ n: p.issue_number, body: p.body }); },
       },
       actions: {
+        // Por defecto el guard de cada run está EN CURSO (arranque simultáneo);
+        // `world.guardDone` lista los runs que ya lo pasaron.
+        listJobsForWorkflowRun: async p => {
+          if ((world.jobsDown || []).includes(p.run_id)) throw new Error('API caída (jobs)');
+          const status = (world.guardDone || []).includes(p.run_id) ? 'completed' : 'in_progress';
+          return { data: { jobs: [{ steps: [{ name: GUARD_STEP, status }] }] } };
+        },
         listWorkflowRunsForRepo: async p => {
           if (world.runsDown) throw new Error('API caída (runs)');
           return { data: { workflow_runs: (world.runs || []).filter(r => (r.status || 'in_progress') === p.status) } };
@@ -125,6 +137,24 @@ const BANCO = [
       const world = { runs: [armRun(100, A.title, -15 * 60), armRun(101, B.title, 2)], issues: [A, B] };
       const w = await guard(world, 101, B);
       return w.added.includes('11:serial-activo');
+    }],
+  ['POP DE COLA: holder A creado hace 3 min, serie ya liberada, run aún in_progress con su guard pasado ⇒ B toma serial-activo',
+    async () => {
+      const world = { runs: [armRun(100, A.title, -180), armRun(101, B.title, 2)], issues: [A, B], guardDone: [100] };
+      const w = await guard(world, 101, B);
+      return w.added.includes('11:serial-activo') && !w.added.includes('11:stalled') && w.outputs.blocked === 'false';
+    }],
+  ['guard del cruzado pasado y su flag escrito tras la lectura ⇒ cuenta: B cede (stalled)',
+    async () => {
+      const world = { runs: [armRun(100, A.title, 0), armRun(101, B.title, 2)], issues: [A, B], guardDone: [100], flaggedFresh: [A] };
+      const w = await guard(world, 101, B);
+      return w.added.includes('11:stalled') && !w.added.includes('11:serial-activo');
+    }],
+  ['jobs del cruzado ilegibles ⇒ fail-closed: cuenta como contendiente',
+    async () => {
+      const world = { runs: [armRun(100, A.title, -180), armRun(101, B.title, 2)], issues: [A, B], guardDone: [100], jobsDown: [100] };
+      const w = await guard(world, 101, B);
+      return w.added.includes('11:stalled') && !w.added.includes('11:serial-activo');
     }],
   ['lista de issues caída ⇒ sin cinturón cruzado (statu quo) y aviso',
     async () => {

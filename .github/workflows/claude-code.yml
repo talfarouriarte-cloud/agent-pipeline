@@ -883,15 +883,30 @@ jobs:
               // run lleva el título del PR), ni un issue exento del régimen serial
               // (`auditoria`/`auditoria-completa`/`serial-ok`: nunca toman el
               // mutex, cederles perdería el arm — p.ej. auditor + pop de cola al
-              // cerrar una épica), y creado dentro de la ventana TOCTOU
-              // (`CROSS_WINDOW_MS` antes de este run): un arm cruzado MÁS antiguo
-              // que ya pasó el guard habría escrito su flag y este run estaría en
-              // la rama de cola, no aquí. Degradación: sin lista de runs o sin
-              // lista de issues ⇒ sin cinturón cruzado (statu quo, nunca peor).
+              // cerrar una épica), creado dentro de `CROSS_WINDOW_MS` antes de
+              // este run (cota de llamadas, NO el discriminador), y que AÚN NO ha
+              // pasado su guard. Esto último es el discriminador exacto de la
+              // TOCTOU: un arm cruzado más antiguo que ya pasó el guard NO es un
+              // contendiente — o tomó la serie (y su flag está) o no la tomó (o ya
+              // la soltó). El caso que lo exige es el POP DE COLA: el holder A
+              // termina sin PR en minutos (muerte instantánea AP-091, bloqueo,
+              // alcance completo), su post-step retira `serial-activo` y
+              // `popQueue` arma B MIENTRAS el run de A sigue `in_progress` con sus
+              // steps finales; sin este filtro B cedía ante un A que ya no va a
+              // tomar la serie ⇒ nadie la ocupa y el pop se degradaba a `stalled`
+              // (lo que AP-039 sacó de la cola). Por eso, para un candidato con el
+              // step del guard `completed` se RE-LEE `serial-activo` (el flag pudo
+              // escribirse después de la lectura de arriba): cuenta sólo si su
+              // issue lo lleva ahora. Fail-closed: sin jobs legibles del candidato
+              // o sin relectura ⇒ sigue contando (el comportamiento conservador).
+              // Degradación: sin lista de runs o sin lista de issues ⇒ sin
+              // cinturón cruzado (statu quo, nunca peor).
               // Convergencia: todos los contendientes que se ven calculan el mismo
               // ganador; si sólo el perdedor ve al ganador, el ganador toma y el
               // perdedor cede; si sólo el ganador ve al perdedor, es el statu quo.
               const CROSS_WINDOW_MS = 10 * 60 * 1000;
+              // Nombre literal de ESTE step (la API de jobs expone `name`, no `id`).
+              const GUARD_STEP = 'Guard serial — un solo Creator en vuelo (solo issues)';
               const CROSS_EXEMPT = ['auditoria', 'auditoria-completa', 'serial-ok'];
               let crossWinner = null;
               if (runsListed && winner === context.runId) {
@@ -909,7 +924,7 @@ jobs:
                     .map(i => i.title));
                   const selfRun = runs.find(r => r.id === context.runId);
                   const selfMs = selfRun ? new Date(selfRun.created_at).getTime() : nowMs;
-                  const cross = runs.filter(r => r.name === context.workflow
+                  const candidates = runs.filter(r => r.name === context.workflow
                     && r.id < context.runId
                     && (r.event === 'issue_comment' || r.event === 'issues')
                     && r.display_title !== issue.title
@@ -917,6 +932,31 @@ jobs:
                     && !prTitles.has(r.display_title)
                     && !nonArmTitles.has(r.display_title)
                     && (selfMs - new Date(r.created_at).getTime()) <= CROSS_WINDOW_MS);
+                  const cross = [];
+                  let fresh;   // undefined = sin releer; null = relectura fallida
+                  for (const r of candidates) {
+                    let pastGuard = false;
+                    try {
+                      const { data: jl } = await github.rest.actions.listJobsForWorkflowRun({ owner, repo, run_id: r.id, per_page: 50 });
+                      pastGuard = (jl.jobs || []).flatMap(j => j.steps || [])
+                        .some(st => st.name === GUARD_STEP && st.status === 'completed');
+                    } catch (e) {
+                      core.warning(`Guard serial · cinturón cruzado: jobs del run ${r.id} ilegibles (${e.message}); cuenta como contendiente.`);
+                    }
+                    if (pastGuard) {
+                      if (fresh === undefined) {
+                        try {
+                          ({ data: fresh } = await github.rest.issues.listForRepo({
+                            owner, repo, state: 'open', labels: 'serial-activo', per_page: 20 }));
+                        } catch (e) {
+                          fresh = null;
+                          core.warning(`Guard serial · cinturón cruzado: relectura de serial-activo fallida (${e.message}); los candidatos con guard pasado cuentan.`);
+                        }
+                      }
+                      if (fresh && !fresh.some(i => i.title === r.display_title)) continue;
+                    }
+                    cross.push(r);
+                  }
                   if (cross.length > 0) crossWinner = cross.reduce((a, b) => (b.id < a.id ? b : a));
                 }
               }
