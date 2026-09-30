@@ -49,6 +49,7 @@ Everything else — stalls, red CI, broken handoffs, oversized issues, mid-epic 
 
 - **Watchdog**: universal stall signature (armed work + no runs + silence), deterministic-signature interventions act immediately (a missing mechanical trace needs no aging), retry caps everywhere, flaky-test harvesting (retried flakies are RECORDED, not just self-resolved; recurrence triggers a corrective).
 - **Heartbeat**: a zero-LLM cron on infrastructure deliberately independent from the main runners — it watches the watcher and revives it by dispatch. Rationale: managed-runner billing failures are silent (jobs queue forever, indistinguishable from a universal stall).
+- **Credential and fleet liveness (AP-091)**: the Creator job and the Watchdog's `detect` open with a credential preflight (`GET /rate_limit` with the PAT, 2 tries): a revoked or rotated-but-not-updated PAT escalates `human-needed` on the first tick and aborts before any setup minutes burn. `detect` also escalates a **fleet-down** signature (3 consecutive LLM sessions dead at birth — `num_turns ≤ 1`, zero cost, empty `modelUsage`, read from each stage's execution file — in any stage, architect-resolve included). Rotating the PAT has an operator runbook: [`docs/runbook-rotacion-pat.md`](docs/runbook-rotacion-pat.md).
 - **Hooks** (vendored, deterministic, fail-open): commit discipline (blocks edits when too much work is unpushed), test discipline (blocks full-suite runs inside agent sessions), PR polarity (blocks PR creation without a scope marker).
 
 ## 6. The improvement loop
@@ -132,7 +133,7 @@ A repo can run the pipeline iff it provides:
 2. **ADRs** in the format `adr-lint.mjs` enforces (unique numbering, mandatory sections, owner-verbatim decision blocks in rectifications, attributed quotes that grep-exist outside their own block).
 3. **`CLAUDE.domain.md`** (domain layer only — the loop half is grafted and `CLAUDE.md` composed at runtime, AP-009), **role annexes**, **`docs/conventions.md`**.
 4. **Own CI** with the job name the merge gate expects, materializing `ci-verde` on green.
-5. **Labels** from the template; **secrets**: Anthropic OAuth, `ARM_TOKEN`, fine-grained PAT.
+5. **Labels** from the template; **secrets**: Anthropic OAuth, `ARM_TOKEN`, fine-grained PAT (rotation: [`docs/runbook-rotacion-pat.md`](docs/runbook-rotacion-pat.md) — every repo that declares it, in one go).
 6. **Stubs** pinned per §13 (single-operator mode: `@main`; multi-operator: a release tag).
 
 ## 12. Security model
