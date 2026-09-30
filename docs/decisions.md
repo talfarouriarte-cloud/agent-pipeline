@@ -351,6 +351,8 @@ no se persiguió por no justificar el coste frente a la molestia.
 
 **Reversibilidad.** Alta: un post-step, un input con default y un permiso de lectura; se revierte quitando el step.
 
+> **Nota (2026-09-30, AP-094).** Con `ready_for_review` como trigger del Reviewer, `open-review-failsafe` deja de ser el camino ordinario de facto bajo draft-first (AP-047) y vuelve a ser lo que este AP describe: un failsafe RESIDUAL, cuyo dedupe por runs lo apaga cuando el evento convocó. Sigue disparando en los consumidores cuyo stub no cablee el trigger nuevo.
+
 **Fecha.** 2026-07-15.
 
 ---
@@ -1173,6 +1175,8 @@ Adopción de **drafts** sobre la «Alternativa menor» (hacer del bloque AP-042 
 **Falsable.** Con el draft-en-primer-hito ya vivo, la 3ª muerte-en-`success` sin PR de esta clase debe caer a 0 (un hito pusheado deja SIEMPRE un PR draft abierto, verificable por estado). Si recurre con el draft ya vivo, el gap está en otra costura (p.ej. el propio primer push no llega), no en el canal — y el siguiente escalón NO es otro belt declarativo.
 
 **Reversibilidad.** Alta: revertir el PR restaura el flujo previo (abrir el PR no-draft al final + post-step AP-023 abriendo desde estado). El guard de draft y el mark-ready-por-estado son aditivos y no destruyen estado; el belt residual `pr-abierto-por-estado` sigue intacto para el caso pre-draft.
+
+> **Enmienda (2026-09-30, AP-094).** Queda REVERTIDA la cláusula «el disparo de review-en-`ready` NO usa el evento nuevo `ready_for_review`» (pata 3 de la Decisión, «Consumer-safety por construcción», Riesgos *Clase 5* y «Contrato `workflow_call`»): por ruling mensual (central#224, opción (b)) `ready_for_review` pasa a trigger del Reviewer y `open-review-failsafe` a residual. Los dos motivos que daba este AP ya no aplican: (1) *Clase 5 actor-guard drift* — el gate de `reviewer.yml` aplica a `ready_for_review` el MISMO guard de autor/rama que a `opened`; (2) *trigger por-stub en cada consumidor* — se asume como residual (a) de AP-094 con action item en `MIGRATION.md`, y mientras un stub no lo cablee el failsafe sigue convocando como aquí se describe. También cambia el token del `markPullRequestReadyForReview` del post-step de muerte: pasa del PAT al GITHUB_TOKEN (su evento no dispara nada), para que la convocatoria siga siendo UNA (el `labeled` por PAT). Ver AP-094.
 
 **Fecha.** 2026-07-22.
 ---
@@ -2567,7 +2571,7 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 
 ## AP-094 — Convocatoria del Reviewer por `ready_for_review` (failsafe de apertura a residual), hechos de la base materializados en el prompt y retirada del bloque «Casos para Visual» (2026-09-30)
 
-**Contexto.** Ruling mensual 2026-09-29/30 (cola, posición 5) sobre central#224, que funde central#252 y, por ampliación, central#263. (1) Bajo draft-first (AP-047/AP-057) el PR nace draft —el gate de `reviewer.yml` salta su `opened`— y la transición a ready emitía `ready_for_review`, que no estaba en los `types` del stub: por construcción el evento no convocaba nunca y `open-review-failsafe` (AP-016) disparaba en el 100% de los PRs ordinarios (aud. asesoramiento #2122→#2137; ledger #2137: «REDUNDANTE (candidato)»). (2) `reviewer.md` mandaba a la sesión un `git fetch` + log/diff de `*decisions*.md` para anclar el contraste al HEAD de la base; la sesión no tiene `git` y dos LGTM consecutivos lo declararon no ejecutado (aud. asesoramiento #2291/#2294) — clase 5, mandate/toolbox drift. (3) El bloque «Casos para Visual» del Reviewer no tenía consumidor: 100/100 runs de `visual.yml` `skipped`, último `success` 2026-06-04 (aud. asesoramiento #2323/#2324/#2326).
+**Contexto.** Ruling mensual 2026-09-29/30 (cola, posición 5) sobre central#224, que funde central#252 y, por ampliación, central#263. (1) Bajo draft-first (AP-047/AP-057) el PR nace draft —el gate de `reviewer.yml` salta su `opened`— y la transición a ready emitía `ready_for_review`, que no estaba en los `types` del stub: por construcción el evento no convocaba nunca y `open-review-failsafe` (AP-016) disparaba en el 100% de los PRs ordinarios (aud. asesoramiento #2122→#2137; ledger #2137: «REDUNDANTE (candidato)»). Esto REVIERTE la cláusula de AP-047 que decidió expresamente no introducir `ready_for_review` (Clase 5 actor-guard drift + trigger por-stub); la enmienda fechada está en el bloque de AP-047. (2) `reviewer.md` mandaba a la sesión un `git fetch` + log/diff de `*decisions*.md` para anclar el contraste al HEAD de la base; la sesión no tiene `git` y dos LGTM consecutivos lo declararon no ejecutado (aud. asesoramiento #2291/#2294) — clase 5, mandate/toolbox drift. (3) El bloque «Casos para Visual» del Reviewer no tenía consumidor: 100/100 runs de `visual.yml` `skipped`, último `success` 2026-06-04 (aud. asesoramiento #2323/#2324/#2326).
 
 **Decisión (ruling mensual, opción (b) de #224; NO la (a)).**
 
