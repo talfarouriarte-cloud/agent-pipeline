@@ -152,8 +152,8 @@ jobs:
       #  - pendiente := auditoría ABIERTA con `audit-verdict` y SIN
       #    `process-review-done` (y sin `pause-agents`). Las cerradas están
       #    consumidas (auto-archivo o cierre humano).
-      #  - P0 := panel con `<!-- audit-p0: <causa> -->` (lo publica el Auditor
-      #    por `gh api`; el post-step de `claude-code.yml` lo materializa por
+      #  - P0 := panel con `<!-- audit-p0 -->` (admite `: <causa>`; lo publica el
+      #    Auditor por `gh api` junto a su veredicto; el post-step de `claude-code.yml` lo materializa por
       #    estado si el panel lleva `human-needed`/`needs-human`) o, como
       #    cinturón, con esas labels vigentes.
       #  - `labeled`: panel ya revisado ⇒ nada; P0 ⇒ SOLO ese panel, en el acto;

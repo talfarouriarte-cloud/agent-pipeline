@@ -33,7 +33,9 @@ const panel = (number, { verdict = 1, done = null, p0 = false, labels = [], stat
   labels: ['auditoria', 'auditoria-completa', ...labels].map(name => ({ name })),
   comments: [
     ...(verdict !== null ? [{ body: VERDICT, created_at: hace(verdict) }] : []),
-    ...(p0 ? [{ body: '<!-- audit-p0: trabajo-perdido -->', created_at: hace(verdict ?? 0) }] : []),
+    // P0 con el literal del ruling, en el MISMO comentario que el veredicto;
+    // `p0: 'causa'` ejercita la forma extendida `<!-- audit-p0: <causa> -->`.
+    ...(p0 ? [{ body: `${VERDICT}\n${p0 === true ? '<!-- audit-p0 -->' : `<!-- audit-p0: ${p0} -->`}`, created_at: hace(verdict ?? 0) }] : []),
     ...(done !== null ? [{ body: DONE, created_at: hace(done) }] : []),
   ],
 });
@@ -93,6 +95,12 @@ const BANCO = [
       const p0 = panel(200, { p0: true });
       const w = await lote({ panels: [REVISADO, ...nPend(8), p0] }, { evento: 'issues', issue: p0 });
       return w.outputs.modo === 'p0' && paneles(w).join() === '200';
+    }],
+  ['P0 con la forma extendida `audit-p0: <causa>` ⇒ corre SOLO esa',
+    async () => {
+      const p0 = panel(202, { p0: 'pipeline-parado' });
+      const w = await lote({ panels: [REVISADO, ...nPend(3), p0] }, { evento: 'issues', issue: p0 });
+      return w.outputs.modo === 'p0' && paneles(w).join() === '202';
     }],
   ['P0 por label human-needed del panel (cinturón) ⇒ corre SOLO esa',
     async () => {

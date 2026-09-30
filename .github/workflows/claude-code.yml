@@ -1401,8 +1401,9 @@ jobs:
             // AP-098 (central#279): marcador P0 POR ESTADO, ANTES de la label (el
             // `labeled` de `auditoria-completa` es el trigger de process-review, y
             // su selector decide P0 ⇒ revisión inmediata vs. esperar lote). El
-            // camino primario es el Auditor por `gh api` (`<!-- audit-p0: <causa>
-            // -->`, epic-auditor.md §7: trabajo perdido, sesión NULO por
+            // camino primario es el Auditor por `gh api` (`<!-- audit-p0 -->` en el
+            // mismo comentario que su `audit-verdict`, epic-auditor.md §7:
+            // trabajo perdido, sesión NULO por
             // credencial, pipeline parado); este step solo materializa la causa
             // que el estado declara: `human-needed`/`needs-human` sobre el panel.
             // Fail-open: sin marcador, el panel entra en el siguiente lote
@@ -1416,7 +1417,7 @@ jobs:
                 const causa = lblP0.find(n => n === 'human-needed' || n === 'needs-human');
                 if (causa) {
                   await github.rest.issues.createComment({ owner, repo, issue_number,
-                    body: `**claude-code · post-step de auditoría**: panel con \`${causa}\` vigente ⇒ **P0** materializado por estado (AP-098): la revisión de proceso de ESTE panel es inmediata, sin esperar lote.\n\n<!-- audit-p0: ${causa} -->` });
+                    body: `**claude-code · post-step de auditoría**: panel con \`${causa}\` vigente ⇒ **P0** materializado por estado (AP-098; causa: \`${causa}\`): la revisión de proceso de ESTE panel es inmediata, sin esperar lote.\n\n<!-- audit-p0 -->` });
                   core.notice(`auditoría #${issue_number}: audit-p0 materializado por estado (${causa}).`);
                 }
               }
