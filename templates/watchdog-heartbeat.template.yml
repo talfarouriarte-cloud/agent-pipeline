@@ -136,11 +136,19 @@ jobs:
             // corrió es NEUTRO (no suma ni resetea); solo un `success` DE LA
             // ETAPA resetea. Nombre de job por sufijo: bajo el stub del
             // consumidor el job se llama `<job-del-stub> / architect`.
+            //
+            // Devuelve también la EDAD del eslabón más reciente (review de
+            // #280): la etapa solo corre con anomalías, así que tras arreglar
+            // la causa puede pasar días sin correr y sin producir el `success`
+            // que resetea. Sin cota, cerrar la escalada la reabría en cada
+            // tick sobre rojos ya viejos. `age <= STALE_MIN` mide la frescura
+            // del último run del Watchdog, no la del rojo: aquí se exige la
+            // del rojo.
             async function stageRedStreak(stage) {
               const { data } = await github.rest.actions.listWorkflowRuns({
                 owner, repo, workflow_id: WF, status: 'completed', per_page: 30 });
               const esEtapa = n => n === stage || String(n || '').endsWith(` / ${stage}`);
-              let n = 0;
+              let n = 0, lastAge = Infinity;
               for (const r of (data.workflow_runs || [])) {
                 const { data: jl } = await github.rest.actions.listJobsForWorkflowRun({
                   owner, repo, run_id: r.id, per_page: 50 });
@@ -148,10 +156,11 @@ jobs:
                 if (!j) continue;                          // la etapa no existió en ese run: neutro
                 if (j.conclusion === 'success') break;     // único reset
                 if (!HARD.has(j.conclusion)) continue;     // skipped/cancelled: neutro
+                if (!n) lastAge = (now - new Date(r.created_at).getTime()) / 60000;
                 n++;
                 if (n >= STREAK_K) break;
               }
-              return n;
+              return { n, lastAge };
             }
 
             // Dedupe por MARCADOR y con listForRepo, no por título ni con la
@@ -270,11 +279,12 @@ jobs:
             // Belt POR ETAPA (AP-091): mismo gate de frescura, misma escalada
             // terminal-humano. Fail-soft: un fallo de la API aquí no puede
             // tumbar el revival de abajo.
-            let stageStreak = 0;
-            try { stageStreak = await stageRedStreak('architect'); }
+            let stageStreak = 0, stageAge = Infinity;
+            try { ({ n: stageStreak, lastAge: stageAge } = await stageRedStreak('architect')); }
             catch (e) { core.warning(`racha por etapa no computable (${e.message}): sigo.`); }
-            core.info(`Corridas consecutivas de la etapa architect en rojo: ${stageStreak} · umbral K=${STREAK_K}`);
-            if (stageStreak >= STREAK_K && age <= STALE_MIN) {
+            core.info(`Corridas consecutivas de la etapa architect en rojo: ${stageStreak} (la más reciente hace ${Math.round(stageAge)} min) · umbral K=${STREAK_K}`);
+            if (stageStreak >= STREAK_K && stageAge > STALE_MIN) core.info(`racha de la etapa architect NO fresca (último rojo hace >${STALE_MIN} min): no escalo.`);
+            if (stageStreak >= STREAK_K && stageAge <= STALE_MIN && age <= STALE_MIN) {
               core.warning(`La etapa architect del Watchdog corre pero FALLA (${stageStreak} corridas en rojo). Escalo.`);
               await escalate('Watchdog roto: la etapa architect-resolve corre y FALLA — intervención humana', [
                 `La etapa **architect** (architect-resolve) del Watchdog ha concluido en rojo en sus últimas **${stageStreak} corridas** (umbral K=${STREAK_K}); los ticks intermedios sin anomalías (etapa \`skipped\`) no cuentan ni resetean.`,
@@ -285,7 +295,7 @@ jobs:
                 ``,
                 `**Qué comprobar.** Actions → Watchdog → el último run en rojo → job \`architect\`: credencial/cuota de Claude (\`CLAUDE_CODE_OAUTH_TOKEN\`, sesión muerta al nacer — ver también la firma \`pipeline-fleet-down\`), instalador de Claude Code (AP-085), o el PAT (\`pipeline-credential-401\`).`,
                 ``,
-                `**Cerrar este issue NO resetea la racha.** El único reset es una corrida \`success\` de la etapa architect.`,
+                `**Cerrar este issue NO resetea la racha.** El único reset es una corrida \`success\` de la etapa architect. Solo reabre si el rojo más reciente de la etapa tiene menos de ${STALE_MIN} min: cerrarlo tras arreglar la causa no lo reabre sobre rojos viejos.`,
               ].join('\n'), MODE_STAGE,
                 `**Transición de modo.** La etapa architect del Watchdog ha pasado al modo «corre y FALLA» (${stageStreak} corridas en rojo, umbral K=${STREAK_K}) mientras esta escalada seguía abierta por otro modo. Un solo issue a propósito.`);
               return;

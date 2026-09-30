@@ -158,10 +158,29 @@ const FLEET = leer('.github/workflows/watchdog.yml', 'detect', 'Firma de flota c
 const FLEET_ARCH = leer('.github/workflows/watchdog.yml', 'architect', 'Firma de flota caída (AP-091)');
 if (FLEET !== FLEET_ARCH) fallos.push('flota: las copias de detect y de la etapa architect DIVERGEN');
 const MODE_FLEET = '<!-- pipeline-fleet-down -->';
+// Costura productor↔consumidor (review de #280): la firma de flota lee los
+// steps-marcador POR NOMBRE, y el doble de la API no puede fabricarlos por su
+// cuenta — un renombrado o un typo en UN workflow dejaría esa etapa en `none`
+// (neutra) para siempre con todo en verde. Los nombres se extraen del script
+// real de la firma y se exigen, con su `if:`, en los tres jobs productores.
+const constante = n => { const m = FLEET.match(new RegExp(`const ${n} = '([^']+)';`)); if (!m) throw new Error(`flota: constante ${n} no encontrada en el script`); return m[1]; };
+const STEP_DEAD = constante('STEP_DEAD'), STEP_ALIVE = constante('STEP_ALIVE');
+for (const [f, job] of [['.github/workflows/claude-code.yml', 'claude'], ['.github/workflows/reviewer.yml', 'review'], ['.github/workflows/watchdog.yml', 'architect']]) {
+  casos++;
+  const steps = (yaml.load(readFileSync(f, 'utf8')).jobs[job] || {}).steps || [];
+  const cls = steps.find(s => s.name === CLS);
+  if (!cls || cls.id !== 'llm_exec') fallos.push(`flota: ${f} job ${job} — el clasificador no existe o su id no es \`llm_exec\``);
+  for (const [nombre, kind] of [[STEP_DEAD, 'instant'], [STEP_ALIVE, 'alive']]) {
+    const st = steps.filter(s => s.name === nombre);
+    const gate = new RegExp(`steps\\.llm_exec\\.outputs\\.kind\\s*==\\s*'${kind}'`);
+    if (st.length !== 1) fallos.push(`flota: ${f} job ${job} — ${st.length} steps «${nombre}» (se exige exactamente 1 con el nombre que lee la firma de flota)`);
+    else if (!gate.test(String(st[0].if || ''))) fallos.push(`flota: ${f} job ${job} — el step «${nombre}» no está gateado por \`steps.llm_exec.outputs.kind == '${kind}'\` (if: ${st[0].if})`);
+  }
+}
 const WFS = [{ id: 1, name: 'Claude Code' }, { id: 2, name: 'Opus Reviewer' }, { id: 3, name: 'Watchdog' }];
 const envFleet = { IN_CREATOR_WF: 'Claude Code', IN_REVIEWER_WF: 'Opus Reviewer' };
-const marcador = k => [{ name: 'llm-flota: muerte instantánea', conclusion: k === 'instant' ? 'success' : 'skipped' },
-  { name: 'llm-flota: sesión viva', conclusion: k === 'alive' ? 'success' : 'skipped' }];
+const marcador = k => [{ name: STEP_DEAD, conclusion: k === 'instant' ? 'success' : 'skipped' },
+  { name: STEP_ALIVE, conclusion: k === 'alive' ? 'success' : 'skipped' }];
 // Secuencia, más reciente primero: [workflow_id, instant|alive|none].
 function flota(seq) {
   const runs = {}, jobs = {};
@@ -247,6 +266,11 @@ await caso('heartbeat · marcador CITADO en otro human-needed NO silencia', asyn
 await caso('heartbeat · detect rojo K=3 a nivel de run ⇒ sigue escalando (regresión AP-059)', async () => {
   const l = await correr(HB, {}, doble(hist([['failure', null], ['failure', null], ['failure', null], ['success', 'skipped']])));
   return (l.created.length === 1 && anclado(l.created[0].body, MODE_RED)) || j(l);
+});
+await caso('heartbeat · architect rojo K=3 hace >3 h y solo ticks sin anomalía después ⇒ NO escala (frescura del rojo)', async () => {
+  const forma = [...Array.from({ length: 20 }, () => ['success', 'skipped']), ['failure', 'failure'], ['failure', 'failure'], ['failure', 'failure']];
+  const l = await correr(HB, {}, doble(hist(forma)));
+  return (!l.created.length && !l.commented.length && !l.dispatch) || j(l);
 });
 await caso('heartbeat · sano (architect success reciente) ⇒ no escala', async () => {
   const l = await correr(HB, {}, doble(hist([['success', 'success'], ['failure', 'failure'], ['failure', 'failure'], ['success', 'skipped']])));
