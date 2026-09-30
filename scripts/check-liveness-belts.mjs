@@ -197,6 +197,18 @@ await caso('flota · la misma historia vista desde detect (sin run propio) ⇒ a
   const l = await correr(FLEET, envFleet, doble(flota([[3, 'instant'], [2, 'instant'], [1, 'alive']])));
   return !l.created.length || j(l);
 });
+await caso('flota · solo el resolver cae (Creator vivo intercalado) ⇒ escala POR ETAPA', async () => {
+  const l = await correr(FLEET, envFleet, doble(flota([[3, 'instant'], [1, 'alive'], [3, 'none'], [3, 'instant'], [2, 'alive'], [3, 'instant']])));
+  return (l.created.length === 1 && /etapa Watchdog · architect/.test(l.created[0].body)) || j(l);
+});
+await caso('flota · resolver: 3.ª muerte en ESTE run con Creator vivo intercalado ⇒ escala en el mismo tick', async () => {
+  const l = await correr(FLEET_ARCH, { ...envFleet, FLEET_SELF_KIND: 'instant' }, doble(flota([[3, 'instant'], [1, 'alive'], [3, 'instant']])));
+  return l.created.length === 1 || j(l);
+});
+await caso('flota · resolver con una sesión viva propia entre medias ⇒ no escala', async () => {
+  const l = await correr(FLEET, envFleet, doble(flota([[3, 'instant'], [3, 'instant'], [3, 'alive'], [3, 'instant']])));
+  return !l.created.length || j(l);
+});
 await caso('flota · API caída ⇒ fail-soft (no lanza, avisa)', async () => {
   const l = await correr(FLEET, envFleet, doble({ throwOn: 'getWorkflowRun' }));
   return (!l.created.length && l.warnings.length === 1) || j(l);

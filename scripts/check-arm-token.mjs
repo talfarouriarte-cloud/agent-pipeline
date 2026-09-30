@@ -17,7 +17,8 @@
 // step (`github.rest.issues.createComment|create|update|updateComment`,
 // `github.rest.pulls.createReview|createReviewComment`) cuyo argumento lleve
 // la mención de arm A INICIO DE LÍNEA del cuerpo (`@claude` tras `\n`, tras
-// el backtick/comilla que abre el literal, o tras un salto real) exige que el
+// el backtick/comilla que abre el literal, o tras un salto real) o el
+// centinela `<!-- ping-creator -->` (que arma por sí solo) exige que el
 // step declare `github-token:` con un secret (PAT). La forma sana con el
 // token por defecto del step es `patCall(...)` con el PAT, que este check no
 // mira porque ya sale con el PAT.
@@ -37,6 +38,9 @@ import yaml from 'js-yaml';
 const DIRS = ['.github/workflows', 'templates'];
 const WRITE = /github\.rest\.(?:issues\.(?:createComment|create|update|updateComment)|pulls\.(?:createReview|createReviewComment))\s*\(/g;
 const ARM = /(?:\\n|\n|(?<!\\)[`'"])[ \t]*@claude\b/;
+// El centinela `<!-- ping-creator -->` arma por sí solo (filtro de claude-code.yml,
+// ADR-086: existe porque el render puede corromper el `@claude`): mismo rigor.
+const PING = /<!--\s*ping-creator\s*-->/;
 
 // Argumento balanceado de la llamada cuyo `(` está en `open`.
 function argumento(src, open) {
@@ -59,7 +63,7 @@ function hallazgos(step) {
   const out = [];
   for (const m of script.matchAll(WRITE)) {
     const arg = argumento(script, m.index + m[0].length - 1);
-    if (ARM.test(arg)) out.push({ llamada: m[0].replace(/\s*\($/, ''), linea: script.slice(0, m.index).split('\n').length });
+    if (ARM.test(arg) || PING.test(arg)) out.push({ llamada: m[0].replace(/\s*\($/, ''), linea: script.slice(0, m.index).split('\n').length });
   }
   return out;
 }
@@ -74,6 +78,8 @@ const BANCO = [
   ['mención a mitad de frase ⇒ verde', "await github.rest.issues.createComment({ body: `diagnóstico SIN @claude` });", '', 0],
   ['patCall con mención ⇒ verde (sale con el PAT)', "await patCall('POST', `/issues/1/comments`, { body: `@claude x` });", '', 0],
   ['issues.create con mención anclada ⇒ rojo', "await github.rest.issues.create({ title: 't', body: `a\\n@claude arma` });", '', 1],
+  ['GITHUB_TOKEN + solo el centinela ping-creator ⇒ rojo', "await github.rest.issues.createComment({ body: `diagnóstico <!-- ping-creator -->` });", '', 1],
+  ['centinela materializado (otro marcador) ⇒ verde', "await github.rest.issues.createComment({ body: `x <!-- ping-creator-materializado -->` });", '', 0],
 ];
 const fallosBanco = BANCO
   .filter(([, script, tok, n]) => hallazgos({ with: { script, ...(tok ? { 'github-token': tok } : {}) } }).length !== n)
