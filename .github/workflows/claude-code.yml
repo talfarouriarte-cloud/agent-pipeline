@@ -645,6 +645,9 @@ jobs:
         # humano). El cinturón para dos ARRANQUES simultáneos (Change B) cierra la
         # ventana TOCTOU con un ganador único determinista (menor `run_id` sobre el
         # mismo issue; solo el ganador escribe el flag) — ver AP-033.
+        # AP-097 (central#267): el cinturón se extiende a arranques simultáneos de
+        # issues DISTINTOS (cinturón cruzado); el perdedor sale `stalled` +
+        # `serial-toctou-cruzado`. Banco: scripts/check-serial-guard.mjs.
         id: check_serial
         if: |
           steps.check_pause.outputs.paused != 'true'
@@ -867,7 +870,112 @@ jobs:
               // watchdog/cola). Si la API de runs no respondió (`!runsListed`),
               // `contenders` = [este run] ⇒ `winner` = este run: degradación segura
               // pre-Change-B (toma el mutex sin cinturón).
-              if (winner !== context.runId) {
+              // ── CINTURÓN CRUZADO (AP-097, central#267) ──
+              // El árbitro de arriba sólo ve runs del MISMO issue: dos issues
+              // DISTINTOS armados con segundos de diferencia leían ambos la serie
+              // libre, cada uno se veía único contendiente y AMBOS escribían
+              // `serial-activo` (asesoramiento#2324 y #2333, mismo día, sin
+              // marcador). Contendientes cruzados = runs de arm de OTRO issue del
+              // mismo workflow caller con `run_id` MENOR (sólo un id menor puede
+              // ganar). Discriminadores de «run de arm», todos ya disponibles:
+              // evento de issue (`issue_comment`/`issues`), `display_title` que NO
+              // es un PR abierto (el loop Creator↔Reviewer comenta en el PR y su
+              // run lleva el título del PR), ni un issue exento del régimen serial
+              // (`auditoria`/`auditoria-completa`/`serial-ok`: nunca toman el
+              // mutex, cederles perdería el arm — p.ej. auditor + pop de cola al
+              // cerrar una épica), creado dentro de `CROSS_WINDOW_MS` antes de
+              // este run (cota de llamadas, NO el discriminador), y que AÚN NO ha
+              // pasado su guard. Esto último es el discriminador exacto de la
+              // TOCTOU: un arm cruzado más antiguo que ya pasó el guard NO es un
+              // contendiente — o tomó la serie (y su flag está) o no la tomó (o ya
+              // la soltó). El caso que lo exige es el POP DE COLA: el holder A
+              // termina sin PR en minutos (muerte instantánea AP-091, bloqueo,
+              // alcance completo), su post-step retira `serial-activo` y
+              // `popQueue` arma B MIENTRAS el run de A sigue `in_progress` con sus
+              // steps finales; sin este filtro B cedía ante un A que ya no va a
+              // tomar la serie ⇒ nadie la ocupa y el pop se degradaba a `stalled`
+              // (lo que AP-039 sacó de la cola). Por eso, para un candidato con el
+              // step del guard `completed` se RE-LEE `serial-activo` (el flag pudo
+              // escribirse después de la lectura de arriba): cuenta sólo si su
+              // issue lo lleva ahora. Fail-closed: sin jobs legibles del candidato
+              // o sin relectura ⇒ sigue contando (el comportamiento conservador).
+              // Degradación: sin lista de runs o sin lista de issues ⇒ sin
+              // cinturón cruzado (statu quo, nunca peor).
+              // Convergencia: todos los contendientes que se ven calculan el mismo
+              // ganador; si sólo el perdedor ve al ganador, el ganador toma y el
+              // perdedor cede; si sólo el ganador ve al perdedor, es el statu quo.
+              const CROSS_WINDOW_MS = 10 * 60 * 1000;
+              // Nombre literal de ESTE step (la API de jobs expone `name`, no `id`).
+              const GUARD_STEP = 'Guard serial — un solo Creator en vuelo (solo issues)';
+              const CROSS_EXEMPT = ['auditoria', 'auditoria-completa', 'serial-ok'];
+              let crossWinner = null;
+              if (runsListed && winner === context.runId) {
+                let recent = null;
+                try {
+                  ({ data: recent } = await github.rest.issues.listForRepo({
+                    owner, repo, state: 'open', sort: 'updated', direction: 'desc', per_page: 100 }));
+                } catch (e) {
+                  core.warning(`Guard serial · cinturón cruzado: no se pudo listar issues (${e.message}); sin cinturón cruzado.`);
+                }
+                if (recent) {
+                  const prTitles = new Set(prs.map(p => p.title));
+                  const nonArmTitles = new Set(recent
+                    .filter(i => i.pull_request || (i.labels || []).some(l => CROSS_EXEMPT.includes(l.name)))
+                    .map(i => i.title));
+                  const selfRun = runs.find(r => r.id === context.runId);
+                  const selfMs = selfRun ? new Date(selfRun.created_at).getTime() : nowMs;
+                  const candidates = runs.filter(r => r.name === context.workflow
+                    && r.id < context.runId
+                    && (r.event === 'issue_comment' || r.event === 'issues')
+                    && r.display_title !== issue.title
+                    && !(r.head_branch || '').startsWith('claude/')
+                    && !prTitles.has(r.display_title)
+                    && !nonArmTitles.has(r.display_title)
+                    && (selfMs - new Date(r.created_at).getTime()) <= CROSS_WINDOW_MS);
+                  const cross = [];
+                  let fresh;   // undefined = sin releer; null = relectura fallida
+                  for (const r of candidates) {
+                    let pastGuard = false;
+                    try {
+                      const { data: jl } = await github.rest.actions.listJobsForWorkflowRun({ owner, repo, run_id: r.id, per_page: 50 });
+                      pastGuard = (jl.jobs || []).flatMap(j => j.steps || [])
+                        .some(st => st.name === GUARD_STEP && st.status === 'completed');
+                    } catch (e) {
+                      core.warning(`Guard serial · cinturón cruzado: jobs del run ${r.id} ilegibles (${e.message}); cuenta como contendiente.`);
+                    }
+                    if (pastGuard) {
+                      if (fresh === undefined) {
+                        try {
+                          ({ data: fresh } = await github.rest.issues.listForRepo({
+                            owner, repo, state: 'open', labels: 'serial-activo', per_page: 20 }));
+                        } catch (e) {
+                          fresh = null;
+                          core.warning(`Guard serial · cinturón cruzado: relectura de serial-activo fallida (${e.message}); los candidatos con guard pasado cuentan.`);
+                        }
+                      }
+                      if (fresh && !fresh.some(i => i.title === r.display_title)) continue;
+                    }
+                    cross.push(r);
+                  }
+                  if (cross.length > 0) crossWinner = cross.reduce((a, b) => (b.id < a.id ? b : a));
+                }
+              }
+              if (crossWinner) {
+                // Perdedor cruzado: el ganador arma OTRO issue ⇒ este issue NO se
+                // arma ahora. Ruling mensual 2026-09-30: sale con `stalled` +
+                // marcador (dedup AP-018 §1) y architect-resolve lo re-arma cuando
+                // la serie quede libre. NO escribe `serial-activo` (lo escribe el
+                // ganador ⇒ nunca se orfana el mutex).
+                const cmts = await github.paginate(github.rest.issues.listComments,
+                  { owner, repo, issue_number: issue.number, per_page: 100 });
+                if (!cmts.some(c => (c.body || '').includes('<!-- serial-toctou-cruzado -->'))) {
+                  await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
+                    body: `**claude-code · guard serial · cinturón cruzado (AP-097)**: arranque simultáneo con el arm de OTRO issue («${crossWinner.display_title}», run \`${crossWinner.id}\`, creado ${crossWinner.created_at}). Ambos leyeron la serie libre; el ganador determinista es el run más antiguo (menor \`run_id\`) de CUALQUIER issue, y ese no es este (\`${context.runId}\`). Este issue NO se arma y queda \`stalled\`: architect-resolve lo re-arma cuando la serie quede libre. No se escribe \`serial-activo\` (lo escribe el ganador). Para forzar YA: \`serial-ok\`.\n\n<!-- serial-toctou-cruzado -->` });
+                }
+                await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['stalled'] });
+                core.setOutput('blocked', 'true');
+                core.warning(`Guard serial · cinturón cruzado: run ${context.runId} (#${issue.number}) cede ante ${crossWinner.id} («${crossWinner.display_title}»).`);
+              } else if (winner !== context.runId) {
                 // Arranque simultáneo con `run_id` MENOR: es el ganador
                 // determinista. Este run cede SIN escribir el flag (lo escribe el
                 // ganador) ⇒ nunca se orfana. Auto-aborto SIN re-etiquetar: el
