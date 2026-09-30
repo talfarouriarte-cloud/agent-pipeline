@@ -33,6 +33,8 @@ Toda auditoría o propuesta de proceso se clasifica por un solo eje: **¿toca la
 
 > **Régimen vigente (AP-082, 2026-09-02).** Las propuestas del process-reviewer nacen **desarmadas** y van **todas** al central (`Origen:`/`Destino:` en el body); el reviewer no edita ningún árbol. La cola se revisa **una vez al mes** con el propietario: ahí se decide qué se ejecuta. Fuera de esa revisión, este proyecto no ejecuta mejoras salvo P0 con OK explícito. El párrafo siguiente describe el routing por eje anterior y sigue valiendo para el TRIAJE (qué es mecánica y qué es local), no para el destino del issue.
 
+> **Cadencia por lotes (AP-098, central#279, 2026-09-30).** El process-reviewer ya no corre por auditoría: corre cuando se cumple lo primero de «10 auditorías con `audit-verdict` sin revisar» o «14 días desde la última revisión de lote», sobre TODAS las pendientes de cada consumidor, con cap 3 de mecánica + 2 de skill-edit por lote. Un P0 del Auditor (`audit-p0`) se revisa en el acto y solo él. La recurrencia y el dedupe por eje salen del lote en contexto, no de líneas de vigilancia serializadas.
+
 Las señales nacen en los consumidores, pero desde 2026-07-14 el process-reviewer **enruta por eje al publicar**: las propuestas de mecánica de agentes llegan como issue `process-proposal` **directamente a este repo central** (con `Origen: <repo>#<auditoría>` al inicio del body); las locales se quedan en su consumidor y las cierra su proyecto. **Tu cola primaria es la del central** (`gh issue list --label process-proposal` aquí); en los consumidores solo revisas: (a) propuestas con prefijo `[PARA-CENTRAL]` (fallback de un create cross-repo fallido — re-enrútalas), y (b) las `auditoria`, que se **minan** en busca de pegas de proceso, no de fixes de producto.
 
 Cuando una mejora de mecánica aterriza en el central, **cierras/enlazas la issue originadora** en el consumidor (si no, se acumula y el panel guard bloquea las épicas locales).
@@ -92,6 +94,18 @@ La revisión mensual **decide TODO de una vez** y deja la cola montada; no hay �
 - **Cerrada `not_planned`** con ruling de una línea (coste bajo, ya cubierta, o sin vehículo que compense).
 
 Al arrancar la siguiente mensual: primero el estado de la cola anterior (qué se mergeó, qué criterio falsable venció y con qué resultado), después las nuevas. Una propuesta nueva del mismo eje que una `mensual:aprobada` pendiente se funde en ella, no abre otra.
+
+### Función objetivo de la revisión mensual (AP-099, central#281, 2026-09-30)
+
+Criterio con el que se decide cada propuesta de la cola. Tres términos, y no pesan igual:
+
+- **(a) Autonomía** — intervención humana y trabajo perdido **por punto entregado**. Objetivo.
+- **(b) Puntos entregados por token ponderado** — puntos = Σ tallas post del Auditor (skill `talla-issue`, S/M/L/XL = 1/2/4/8); tokens ponderados = `modelUsage` de cada sesión × precio relativo de `templates/model-costs.json` (unidad: output de `claude-opus-5-5` = 1). Lo mide el Auditor en su ledger, por actor y total. Objetivo.
+- **(c) Calidad de puertas** — fuga y rework de la «Matriz de calidad» del Auditor. **Restricción, no objetivo**: no se optimiza, se protege.
+
+**Lo que no mueve (a) ni (b) sin empeorar (c) no se ejecuta.** Una propuesta se aprueba citando qué término mueve y con qué serie se verá en la mensual siguiente; «mejora la calidad» sola no es criterio (es restricción), y «baja el coste» sin el par fuga/rework del mismo ciclo tampoco (guardián anti-Goodhart: el precedente es AP-080, que midió $/PR, un denominador gameable, sin par de calidad, y fracasó). La serie de control del ledger (tokens por 100 líneas netas) no decide nada por sí sola. Mientras un actor figure «sin dato» (runs anteriores a AP-099: cobertura parcial), (b) se lee sin él y se dice.
+
+**Revisión del instrumento (mensual de octubre):** si la talla pre = talla post en > 90 % de los issues auditados, la talla pre dentro de la sesión del Auditor no está siendo independiente del diff; se separa en un rol barato previo (decisión de esa mensual, no automática).
 
 ## Flujo de una mejora (resumen)
 

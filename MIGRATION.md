@@ -81,7 +81,7 @@ All inputs have defaults; stubs override per repo. Secret names are fixed by con
 | reviewer | runner (ubuntu-latest), reviewer_model (claude-opus-5), **reviewer_max_turns (80 — lesson-bearing, AP-025)**, **timeout_minutes (22 — lesson-bearing, AP-025)**, budget_pin_forzado (false — valve for the AP-061 clamp), agent_branch_prefix (claude/), review_context ("") | both |
 | epic-merge | runner, default_branch, ci_workflow_name (CI), epic_label (epica), partial_round_cap (3), partial_lifetime_cap (6), automerge (true), loose_audit (true) | PAT |
 | watchdog | runner, default_branch, ci_workflow_name (CI), creator_workflow_name (Claude Code), reviewer_workflow_name (Opus Reviewer), epic_merge_workflow_name (Epic Merge), extra_pipeline_workflows (""), epic_label (epica), resolve_model (claude-fable-5-1), **resolve_max_turns (80 — lesson-bearing, AP-092)**, budget_pin_forzado (false — valve for the AP-061 clamp), lookback_min (45), skip_labels (pause-agents,human-needed,auditoria,process-proposal,registro-decisiones) | both |
-| process-review | runner, default_branch, process_model (claude-fable-5), process_fallback_model (claude-opus-5), **process_max_turns (80 — lesson-bearing, AP-060)**, **timeout_minutes (35 — lesson-bearing, AP-060)**, budget_pin_forzado (false — valve for the AP-061 clamp) | both |
+| process-review | runner, default_branch, process_model (claude-fable-5), process_fallback_model (claude-opus-5), **process_max_turns (120 — lesson-bearing, AP-060 → AP-098)**, **timeout_minutes (60 — lesson-bearing, AP-060 → AP-098)**, budget_pin_forzado (false — valve for the AP-061 clamp) | both |
 
 **Lesson-bearing inputs (AP-052) and the budget clamp (AP-061).** Some defaults are not instance preferences but *lessons learned*, each with an AP behind it. The machine-readable list is `lesson_bearing` in `templates/workflow-contracts.json`; `check-contracts` keeps it faithful to the real defaults.
 
@@ -108,6 +108,19 @@ Why prevention and not just visibility: the notice worked exactly as designed on
 **Action item — AP-092 (2026-09-30): remove the `resolve_max_turns: 40` override from your watchdog stub.** `resolve_max_turns` became lesson-bearing at 80 (central#247: 2 of 2 resolver deaths in 4 audit cycles were `error_max_turns` at 41/40, one *after* publishing its delta). Both consumer stubs pin 40 (finplan's `.github/workflows/watchdog.yml` line 36; wmcb's line 37, read from the live stub on 2026-09-30). Since the merge the clamp lifts it to 80 on every run, so nothing breaks — but the line is now inert and lies about your configuration. Delete it (workflows are frozen: this is a human edit, ADR-020). If you really want the resolver capped at 40, keep it and add `budget_pin_forzado: true` with an annotation. Same hygiene, still pending from AP-061: wmcb's `reviewer_max_turns: 50` / `timeout_minutes: 15`.
 
 **Action item — AP-094 (2026-09-30): add `ready_for_review` to your Reviewer stub triggers.** `types: [opened, labeled]` → `types: [opened, ready_for_review, labeled]` in the stub that calls `reviewer.yml` (template: `templates/stubs/stub-reviewer.yml`; human edit, ADR-020). Under draft-first the `opened` of a draft is skipped by construction, so today every ordinary PR reaches the Reviewer only through `open-review-failsafe` (100% firing rate measured in asesoramiento#2137). With the trigger, the Creator's `gh pr ready` summons the Reviewer directly and the failsafe dedupes itself out. Without it nothing breaks — the state path keeps working as before, and the failsafe comment now says the stub may be missing the trigger.
+
+**Action item — AP-098 (2026-09-30): add `schedule` + `workflow_dispatch` to your process-review stub.** The process-reviewer now runs in **batches** (central#279): one session over ALL pending audits (`audit-verdict` present, no `process-review-done`) once there are 10 of them or 14 days have passed since the last batch review; a P0 audit (`<!-- audit-p0 -->` in the Auditor's verdict) is still reviewed immediately on its `auditoria-completa` label. The `labeled` event alone only fires the batch when an audit lands on a full batch, so a repo with few audits would never reach the 14-day threshold. Add to the stub that calls `process-review.yml` (template: `templates/stubs/stub-process-review.yml`; human edit, ADR-020):
+
+```yaml
+on:
+  issues:
+    types: [labeled]
+  schedule:
+    - cron: '23 6 * * *'
+  workflow_dispatch:
+```
+
+Keep `concurrency: { group: process-reviewer, cancel-in-progress: false }`. Until then, non-P0 audits wait for the tenth one. `workflow_dispatch` forces a batch over whatever is pending. Budgets moved with the mandate: `process_max_turns` 80 → 120 and `timeout_minutes` 35 → 60 (lesson-bearing; a lower pin is clamped up, as usual).
 
 **Default rule: still do not pin them.** The clamp is a belt, not a licence — a pinned line that no longer does anything is a lie about your own configuration, and it is the exact artefact that produced both incidents. Leave the line out and the central default rules, so future lessons arrive on their own. If a repo genuinely needs a different value, the pin ships **with an annotation** stating *why this repo overrides a lesson-bearing input* (not merely why the value is what it is), plus the AP reference and a date — and, if the value is lower and meant to govern, `budget_pin_forzado: true`. A pin without annotation is a defect by doctrine; nothing in CI will tell you.
 

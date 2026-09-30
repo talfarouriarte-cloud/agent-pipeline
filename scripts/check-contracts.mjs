@@ -392,6 +392,75 @@ for (const f of Object.keys(onDisk)) {
   }
 }
 
+// ── Tabla de precios relativos por modelo (AP-099, central#281) ─────────────
+// El Auditor pesa el `modelUsage` de cada sesión con `templates/model-costs.json`
+// (función objetivo: puntos entregados por token ponderado). Un modelo que un
+// reusable puede ejecutar y que falta en la tabla deja esas sesiones «sin
+// precio» — la serie nace con un agujero invisible justo el día que alguien
+// bumpea un modelo (AP-087/AP-088 lo hicieron dos veces en una semana). Fuentes
+// de «modelo que se puede ejecutar», las tres que existen en el central:
+//   (1) el default de todo input de `workflow_call` cuyo nombre contiene `model`;
+//   (2) el valor de `--model` / `--fallback-model` en cada `claude_args` — si es
+//       `${{ inputs.X }}` se resuelve a su default (sin default: lo pone el
+//       caller, fuera de alcance aquí); si es literal, se exige tal cual;
+//   (3) todo pin `*_model` en el `with:` de un stub del central (self-*.yml) o
+//       de las plantillas de stub (templates/stubs/).
+// Un id con sufijo de fecha (`-YYYYMMDD`) se resuelve contra la entrada sin él.
+const COSTS = 'templates/model-costs.json';
+let costModels = null;
+try {
+  const t = JSON.parse(readFileSync(COSTS, 'utf8'));
+  costModels = (t && t.models && typeof t.models === 'object') ? t.models : null;
+  if (!costModels) errors.push(`${COSTS}: falta el objeto \`models\``);
+} catch (e) { errors.push(`${COSTS}: ilegible o JSON inválido (${e.message}) — el ledger de coste del Auditor no puede pesar ninguna sesión (AP-099)`); }
+if (costModels) {
+  for (const [m, p] of Object.entries(costModels)) {
+    for (const k of ['input', 'output', 'cache_read', 'cache_write']) {
+      if (!(p && Number.isFinite(p[k]) && p[k] >= 0)) errors.push(`${COSTS}: \`${m}.${k}\` ausente o no numérico ≥ 0 — un precio ausente se leería como 0 y abarataría en silencio ese modelo (AP-099)`);
+    }
+  }
+  const usados = new Map();   // modelo → primera procedencia
+  const usa = (m, where) => { const v = String(m).trim(); if (v && !usados.has(v)) usados.set(v, where); };
+  const exprInput = /^\$\{\{\s*inputs\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}$/;
+  for (const [f, doc] of Object.entries(docs)) {
+    const wc = onDisk[f] ? ((doc.on ?? doc[true]).workflow_call || {}) : null;
+    const ins = (wc && wc.inputs) || {};
+    for (const [k, v] of Object.entries(ins)) {
+      if (/model/i.test(k) && v && v.default !== undefined && v.default !== '') usa(v.default, `${f} (default de \`inputs.${k}\`)`);
+    }
+    for (const [jobName, jb] of Object.entries((doc && doc.jobs) || {})) {
+      if (!jb || typeof jb !== 'object') continue;
+      for (const [k, v] of Object.entries((jb.with && typeof jb.with === 'object') ? jb.with : {})) {
+        if (/_model$/.test(k) && typeof v === 'string' && !v.includes('${{')) usa(v, `${f} (job \`${jobName}\`, pin \`${k}\`)`);
+      }
+      for (const s of jb.steps || []) {
+        const args = s && s.with && s.with.claude_args;
+        if (typeof args !== 'string') continue;
+        for (const mm of args.matchAll(/--(?:fallback-)?model[ =]+(\$\{\{[^}]*\}\}|\S+)/g)) {
+          const val = mm[1];
+          const ref = val.match(exprInput);
+          if (!ref) { usa(val, `${f} (literal en \`claude_args\`)`); continue; }
+          const inp = ins[ref[1]];
+          if (!inp) errors.push(`${f}: \`claude_args\` pasa \`inputs.${ref[1]}\` como modelo y ese input no existe — no hay modelo que precificar (AP-099)`);
+          else if (inp.default !== undefined && inp.default !== '') usa(inp.default, `${f} (\`claude_args\` ← default de \`inputs.${ref[1]}\`)`);
+        }
+      }
+    }
+  }
+  for (const f of readdirSync('templates/stubs').filter(f => /\.ya?ml$/.test(f))) {
+    let doc; try { doc = yaml.load(readFileSync(`templates/stubs/${f}`, 'utf8')); } catch { continue; }
+    for (const [jobName, jb] of Object.entries((doc && doc.jobs) || {})) {
+      for (const [k, v] of Object.entries((jb && jb.with && typeof jb.with === 'object') ? jb.with : {})) {
+        if (/_model$/.test(k) && typeof v === 'string' && !v.includes('${{')) usa(v, `templates/stubs/${f} (job \`${jobName}\`, pin \`${k}\`)`);
+      }
+    }
+  }
+  for (const [m, where] of usados) {
+    const base = m.replace(/-\d{8}$/, '');
+    if (!(m in costModels) && !(base in costModels)) errors.push(`${where}: el modelo \`${m}\` no tiene precio en ${COSTS} — sus sesiones saldrían «sin precio» en el ledger de coste del Auditor. Añádelo con su precio relativo (unidad: output de claude-opus-5-5 = 1) citando la fuente (AP-099)`);
+  }
+}
+
 if (errors.length) {
   console.error('CHECK-CONTRACTS ROJO (rotura de contrato de reusable — desplegaría a los dos consumidores):');
   errors.forEach(e => console.error('  - ' + e));

@@ -3,6 +3,14 @@ name: Process Reviewer
 on:
   issues:
     types: [labeled]
+  # AP-098 (central#279): revisión de proceso POR LOTES. El cron diario es el
+  # tick que dispara el lote (10 auditorías pendientes o 14 días) y recoge los
+  # P0 rezagados; el `labeled` de `auditoria-completa` cubre el P0 inmediato.
+  # Sin estas dos líneas, un repo con pocas auditorías no alcanzaría nunca el
+  # umbral de tiempo. `workflow_dispatch` = lote forzado con lo pendiente.
+  schedule:
+    - cron: '23 6 * * *'
+  workflow_dispatch:
 permissions:
   contents: read
   issues: write
@@ -16,7 +24,7 @@ jobs:
       runner: ubuntu-latest
       default_branch: main
       # `process_max_turns` y `timeout_minutes` NO se pinean (AP-052), y desde
-      # AP-060 son LESSON-BEARING declarados (80/35): presupuestos de sesión
+      # AP-060 son LESSON-BEARING declarados (120/60 desde AP-098): presupuestos de sesión
       # calibrados por incidente, no verdad de instancia. Un template que copia
       # el default lo congela en el consumidor el día que el central lo mueve —
       # la máquina que produjo el pin 50 de finplan, y otra vez el pin 20 de su

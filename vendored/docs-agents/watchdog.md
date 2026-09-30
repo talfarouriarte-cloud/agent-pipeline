@@ -162,7 +162,12 @@ doc-only** (sin superficie funcional observable) ⇒ publica el marcador
 con el racional `<!-- autonomous-decision -->`. En ambos casos quita `stalled` y
 RE-ARMA (`@claude` + `<!-- watchdog-rearm -->`). Si añadir el bloque exige una
 decisión de DISEÑO no tomada en el ADR (no derivable), NO lo inventes: escala al
-Architect dejando el `stalled` puesto.
+Architect dejando el `stalled` puesto. **Correctivo suelto (AP-096, central#260):** si
+el issue stalleado lleva `correctivo` y NO `epica`, la casa del bloque es el PROPIO
+issue: edítalo añadiendo `## Invariantes funcionales` con 1-4 invariantes derivados
+verbatim del ADR que cite (o de su DoD si no cita ninguno), cada uno con su línea
+`pre-épica: rojo|verde — <por qué>` (el guard AP-029 la exigirá al re-armar), o
+declara `invariantes-na` si es limpieza sin superficie funcional.
 
 **Épica con invariantes sin dry-run declarado (`dry-run-ausente-stall`, AP-029).**
 Si el `stalled` viene del guard de horneado con el marcador
@@ -178,6 +183,12 @@ proteger (clase de la recurrencia finplan#1476), NO lo hornees: corrige el invar
 para alinearlo con la cláusula o —si exige rediseño no tomado— escala al Architect con
 el `stalled` puesto. Si la épica es doc-only, publica `<!-- invariantes-na -->`. En
 los casos resolubles quita `stalled` y RE-ARMA (`@claude` + `<!-- watchdog-rearm -->`).
+Mismo mandato en un correctivo suelto (AP-096): edita el PROPIO issue. Si el comentario
+del guard lista líneas candidatas no reconocidas (`pre-correctivo:` ×N) y el dry-run ya
+está ejecutado en ellas, basta renombrar el token a `pre-épica:`. Cuando el Architect
+diseñó en chat, este stall es la transición ESPERADA (central#227 opción a): tú eres
+quien ejecuta el dry-run; si el sandbox no permite ejecutar un invariante, decláralo
+en su línea (`pre-épica: rojo|verde — por inspección estática: <por qué>`).
 
 **Herramientas de re-dimensionado:** la etapa architect dispone de
 `gh issue create` en su allowedTools (añadido 2026-07-08 tras el
@@ -206,6 +217,14 @@ actor o de otro instante. Contradicción que obliga a re-leer, no a cerrar:
 por construcción. Incidente: 3 paneles válidos cerrados como «HUECOS» con
 sus informes publicados 5–8 h antes, sobre una afirmación heredada (clase
 fabricated-citation drift operando sobre el estado de los paneles).
+**Desde AP-098 (central#279):** la revisión de proceso va POR LOTES (10
+auditorías o 14 días; P0 inmediato). Una auditoría con `audit-verdict` y
+SIN `process-review-done` está ESPERANDO SU LOTE, no es hueco: está
+consumida a efectos de arm (el guard de panel ya no la cuenta), así que no
+hace falta cerrarla para armar. Si se cierra (limpieza de cola), sigue
+pendiente: el selector de lote recoge también los paneles CERRADOS sin
+`process-review-done` durante 30 días. Cerrarla como `not_planned` la
+excluye del lote: úsalo solo para duplicados.
 
 **Cap acumulado de parciales (`<!-- rounds-cap-reached -->`):** si el
 stall viene con este marcador (6 relanzamientos parciales en la VIDA del
