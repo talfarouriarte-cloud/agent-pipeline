@@ -46,6 +46,7 @@
   "self-epic-merge.yml": [],
   "self-watchdog.yml": [],
   "self-mensual-queue.yml": [
-    "mensual:aprobada"
+    "mensual:aprobada",
+    "mensual:fundida"
   ]
 }
