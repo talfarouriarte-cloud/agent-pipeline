@@ -1,0 +1,33 @@
+# STUB finplan (Fase B). cancel-in-progress: false OBLIGATORIO (PR #1109).
+name: Opus Reviewer
+on:
+  pull_request:
+    types: [opened, labeled, ready_for_review]
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+concurrency:
+  group: reviewer-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  call:
+    uses: talfarouriarte-cloud/agent-pipeline/.github/workflows/reviewer.yml@main
+    with:
+      runner: ubicloud-standard-2
+      # 80 = default central AP-025 (la lección nació en finplan#1450; el pin 50
+      # de este stub la pisaba). Motivo del bump: 3 muertes por presupuesto del
+      # Reviewer sobre el MISMO head en #1674 (~7-8 min de 15 de wall-clock,
+      # cero veredicto) — diff de motor pequeño, ci-verde; el mandato
+      # cláusula-a-cláusula no cabe en 50 turnos con la carga de contexto de
+      # las épicas de motor. Sólo se paga si se usa.
+      reviewer_max_turns: 80
+      timeout_minutes: 15
+      agent_branch_prefix: claude/
+      review_context: |
+        - `docs/design/personal-balance.md` si el PR toca `packages/engine/src/shared/lifecycle*.ts` o relacionado.
+        - `docs/design/optimizer.md` si toca el optimizador.
+        - `.claude/skills/motor-modelo/SKILL.md`: skill de estado sincronizada — si el PR implementa un ADR de motor, verifica fidelidad y cabecera de sync (mandato completo en docs/agents/reviewer-annex.md).
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      REVIEWER_GITHUB_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
