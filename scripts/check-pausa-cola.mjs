@@ -49,7 +49,8 @@ const caso = (nombre, ok) => { if (!ok) fallos.push(nombre); };
 
 // ── API de GitHub en memoria ────────────────────────────────────────────────
 // `pausaRota`: la consulta `labels=pausa-cola` lanza (5xx). `prs`: PRs abiertos.
-function repoFalso(issues, { prs = [], pausaRota = false } = {}) {
+// `prsRotos`: `pulls.list` lanza (5xx).
+function repoFalso(issues, { prs = [], pausaRota = false, prsRotos = false } = {}) {
   const st = new Map();
   for (const i of issues) st.set(i.number, { state: 'open', comments: [], ...i, labels: [...(i.labels || [])] });
   const vista = (i) => ({ number: i.number, state: i.state, created_at: i.created_at, title: `Issue ${i.number}`, labels: i.labels.map((name) => ({ name })) });
@@ -59,7 +60,7 @@ function repoFalso(issues, { prs = [], pausaRota = false } = {}) {
   R.github = {
     paginate: async (fn, p) => (await fn(p)).data,
     rest: {
-      pulls: { async list() { return { data: R.prs.map((p) => ({ ...p })) }; } },
+      pulls: { async list() { if (prsRotos) throw new Error('502 Bad Gateway'); return { data: R.prs.map((p) => ({ ...p })) }; } },
       actions: {
         async listWorkflowRunsForRepo() { return { data: { workflow_runs: [] } }; },
         async listJobsForWorkflowRun() { return { data: { jobs: [] } }; },
@@ -240,6 +241,11 @@ if (guardScript) {
   const R2 = repoFalso([PAUSA_ISSUE, { number: 32, created_at: T(2), labels: ['serial-activo'] }]);
   await guard(R2, 32, '@claude');
   caso('(d) issue con `serial-activo` (en vuelo) ⇒ la pausa NO lo re-etiqueta `en-cola`', !lbl(32, R2).includes('en-cola') && !/pausa-cola-retenido/.test(coment(32, R2)));
+  // `pulls.list` fallida ⇒ en vuelo desconocido: no se retiene, decide el guard serial (review #316 🔵 3).
+  const R3 = repoFalso([PAUSA_ISSUE, { number: 34, created_at: T(2), labels: [] }], { prsRotos: true });
+  const w3 = await guard(R3, 34, '@claude continúa').catch(() => ({ outputs: {}, warnings: [] }));
+  caso('(d) `pulls.list` fallida ⇒ la pausa NO retiene (en vuelo desconocido, pasa al guard serial)',
+    !/pausa-cola-retenido/.test(coment(34, R3)) && !w3.warnings.some((w) => /retenido en cola/.test(w)));
 }
 
 // ── (e) retirada de pausa ⇒ un solo arm de la cabeza

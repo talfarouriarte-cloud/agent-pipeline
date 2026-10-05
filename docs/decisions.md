@@ -2793,6 +2793,7 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
    - Si el arm era un re-arm de cadena (`epic-auto-launch`/`watchdog-rearm` de un issue de épica), el comentario lleva además `<!-- eslabon-suspendido -->`. Sin él, al salir por la cola, el guard de horneado lo pararía con `sin-invariantes-stall`.
    - Va ANTES de `serial-ok`: el override serial no salta la orden del propietario.
    - Pasan, por ser trabajo en vuelo: el issue con `serial-activo` (lo resuelve el auto-aborto de siempre, sin re-etiquetar) y el issue con PR `claude/issue-N-*` abierto (continuación, fast-path AP-048).
+   - Si la lectura de PRs falla, el issue cuenta como en vuelo desconocido y pasa al guard serial, que hace su propia lectura y bloquea si procede (review #316). Retenerlo dejaría una continuación mismo-issue `en-cola` con su PR abierto, que solo sacaría `cola-huerfana` (AP-048). Coste asumido: con ese fallo, un `serial-ok` pasa la pausa.
    - Las rondas sobre un PR no pasan por este step.
    - `epic-partial-relaunch` no es continuación sobre PR abierto (el parcial ya se mergeó), así que se retiene como cualquier arm desde issue.
 5. **Watchdog** (scan de `watchdog.yml`, con checkout sparse `.cola-central` del módulo).
@@ -2814,7 +2815,7 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
      - (a) pausa + merge de eslabón ⇒ eslabón `en-cola` con los dos marcadores, nada armado, segundo consumidor idempotente;
      - (b) pausa + merge de suelto ⇒ nada armado, cero escrituras;
      - (c) pausa + arm manual ⇒ `en-cola` + marcador, `blocked`, sin `serial-activo`, dedup, `serial-ok` no salta, re-arm de cadena con `eslabon-suspendido`;
-     - (d) contexto PR fuera del guard por su `if`, y PR propio abierto o `serial-activo` ⇒ no se retiene;
+     - (d) contexto PR fuera del guard por su `if`, y PR propio abierto o `serial-activo`, o lectura de PRs fallida ⇒ no se retiene;
      - (e) retirada de pausa ⇒ un solo arm, de la cabeza (eslabón retenido antes que una normal más antigua); un segundo barrido ve el arm reciente; serie ocupada ⇒ no arma;
      - (f) consulta fallida ⇒ cadena, pop y guard como hoy, y el Watchdog no barre.
    - Además, la costura con los workflows.
