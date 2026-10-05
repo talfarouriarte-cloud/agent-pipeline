@@ -590,6 +590,11 @@ jobs:
       # epic-merge (epic-auto-launch), correctivos de una auditoría viva (el
       # body cita el nº de una auditoría abierta) y override explícito
       # `<!-- panel-ok -->` en el comentario de arm. Solo issues, no PRs.
+      # central#320: se evalúa AL ENCOLAR — este step va ANTES del guard serial
+      # y lo gatea (`check_serial` exige `check_panel.blocked != 'true'`), así
+      # que un arm bloqueado aquí nunca entra en `en-cola`; la salida de cola
+      # (`arm-de-cola`) está exenta. NO reordenar estos dos steps.
+      # Banco: scripts/check-panel-al-encolar.mjs.
       - name: Check panel consumed (issues only)
         id: check_panel
         if: |
@@ -659,6 +664,34 @@ jobs:
               && (/<!--\s*epic-auto-launch\s*-->/.test(c.body || '')
                 || /^[ \t]*<!--\s*eslabon-suspendido(?::\s*#?\d+)?\s*-->[ \t]*$/m.test(String(c.body || '').replace(/```[\s\S]*?```/g, ' ').replace(/`[^`\n]*`/g, ' '))));
             if (isResumption) { core.setOutput('blocked', 'false'); return; }
+            // Exención 5 (central#320, ruling mensual 2026-10-05): SALIDA DE COLA.
+            // El guard protege la DECISIÓN de lanzar y se evalúa cuando se toma
+            // (el arm), no cuando la cola la ejecuta. Este step corre ANTES del
+            // guard serial (`check_serial` se gatea con `check_panel.blocked`):
+            // un arm con panel sin consumir NO llega a encolarse, así que todo
+            // ítem `en-cola` pasó ya este guard al encolar. Sin la exención, el
+            // pop lo re-evaluaba contra paneles nacidos DURANTE la espera — y
+            // epic-merge abre la auditoría del ítem mergeado justo antes del pop,
+            // así que toda épica que salía de la cola tras un merge quedaba
+            // bloqueada (asesoramiento-financiero#2706 por la auditoría #2732).
+            // Exento: (i) el arm de la cola (`<!-- arm-de-cola -->` en el
+            // armBody); (ii) un issue con comentario de confianza `arm-de-cola`
+            // POSTERIOR a su encolado (marcador de confianza `serial-guard` o
+            // `pausa-cola-retenido`, escritos tras pasar este guard) — cubre el
+            // `watchdog-rearm` y los re-arms de architect-resolve de un issue
+            // que ya salió de la cola. Mismo patrón de lectura TRUSTED que
+            // `isResumption`, sobre la misma lectura `issueComments`. Hueco
+            // transitorio ACEPTADO: los encolados previos a este despliegue
+            // entraron en cola sin el orden garantizado y salen exentos igual.
+            const RE_ARM_COLA = /<!--\s*arm-de-cola\s*-->/;
+            const RE_ENCOLADO = /<!--\s*(?:serial-guard|pausa-cola-retenido(?::\s*#?\d+)?)\s*-->/;
+            const trusted = issueComments.filter(c => TRUSTED.has(c.author_association));
+            const encolados = trusted.filter(c => RE_ENCOLADO.test(c.body || '')).map(c => Date.parse(c.created_at || ''));
+            const primerEncolado = encolados.length ? Math.min(...encolados) : NaN;
+            const salioDeCola = RE_ARM_COLA.test(armBody)
+              || (Number.isFinite(primerEncolado)
+                && trusted.some(c => RE_ARM_COLA.test(c.body || '') && Date.parse(c.created_at || '') >= primerEncolado));
+            if (salioDeCola) { core.notice(`guard de panel: #${issue.number} sale de la cola — panel evaluado al encolar (central#320).`); core.setOutput('blocked', 'false'); return; }
             const panelOk = /<!--\s*panel-ok\s*-->/.test(armBody)
               || issueComments.some(c => /<!--\s*panel-ok\s*-->/.test(c.body || '') && TRUSTED.has(c.author_association));
             if (panelOk) { core.setOutput('blocked', 'false'); return; }
@@ -1068,7 +1101,7 @@ jobs:
               }
             } else if (inFlightOther.length > 0) {
               await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
-                body: `**claude-code · guard serial**: ya hay un Creator en vuelo (${inFlightOther.join(', ')}). La serialidad es regla dura — no se arma un segundo Creator en paralelo. Este issue NO se arma; queda **EN COLA** (label \`en-cola\`): al liberarse la serie por un merge, epic-merge armará automáticamente el más antiguo de la cola (2026-07-14). Para forzar YA: \`serial-ok\`.\n\n<!-- serial-guard -->` });
+                body: `**claude-code · guard serial**: ya hay un Creator en vuelo (${inFlightOther.join(', ')}). La serialidad es regla dura — no se arma un segundo Creator en paralelo. Este issue NO se arma; queda **EN COLA** (label \`en-cola\`): al liberarse la serie, la cola se arma sola por su orden (AP-102: urgente → eslabón suspendido → alta → normal; dentro de cada nivel, el más antiguo). El guard de panel ya se evaluó en este arm: la salida de cola está exenta (central#320). Para forzar YA: \`serial-ok\`.\n\n<!-- serial-guard -->` });
               // AP-039: el encolado deja SOLO `en-cola` (+ marcador `serial-guard`
               // del comentario de arriba). NO se aplica `stalled`: `stalled`
               // significa «necesita ruling del resolutor» y aquí convocaba por
