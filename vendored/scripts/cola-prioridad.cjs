@@ -9,8 +9,10 @@
 // `claude-code.yml`). Una sola función de orden en vez de cuatro copias.
 //
 // ORDEN (ruling, punto 2): (1) `prioridad:urgente`, (2) eslabón suspendido
-// (comentario de confianza con `<!-- eslabon-suspendido -->` en línea propia),
-// (3) `prioridad:alta`, (4) resto. Desempate por antigüedad (`created_at`,
+// (comentario de confianza con el marcador `eslabon-suspendido` en línea propia),
+// (3) `prioridad:alta`, (4) resto. Marcador del ruling, con el número del PR
+// mergeado que liberó el turno (en un cierre por estado, el del issue cerrado):
+// `<!-- eslabon-suspendido: #<PR> -->`. Desempate por antigüedad (`created_at`,
 // luego número). Sin etiquetas ni marcador, todo cae en (4) y el orden es el
 // FIFO de siempre (caso (d) del banco).
 //
@@ -29,10 +31,14 @@ const { despojarCodigo } = require('./resolve-cross-issue-failsafe.cjs');
 const URGENTE = 'prioridad:urgente';
 const ALTA = 'prioridad:alta';
 const EN_COLA = 'en-cola';
-const MARCA_SUSPENDIDO = '<!-- eslabon-suspendido -->';
+const marcaSuspendido = (origen) => (Number.isInteger(Number(origen)) && Number(origen) > 0
+  ? `<!-- eslabon-suspendido: #${Number(origen)} -->`
+  : '<!-- eslabon-suspendido -->');
 // Línea propia del cuerpo despojado de código: citar el marcador entre
-// backticks o en un bloque cercado no suspende nada (clase AP-063).
-const SUSPENDIDO_RE = /^[ \t]*<!--\s*eslabon-suspendido\s*-->[ \t]*$/m;
+// backticks o en un bloque cercado no suspende nada (clase AP-063). El número
+// es opcional al LEER (un marcador sin él sigue siendo una suspensión); al
+// escribir va siempre.
+const SUSPENDIDO_RE = /^[ \t]*<!--\s*eslabon-suspendido(?::\s*#?\d+)?\s*-->[ \t]*$/m;
 // Mismo gate de actor que `panel-ok`/`epic-auto-launch` en los guards de
 // `claude-code.yml`: el marcador lo postea el PAT del propietario.
 const TRUSTED = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
@@ -106,23 +112,24 @@ function urgenteParaCeder(items, siguiente) {
   return ordenarCola(urg)[0] || null;
 }
 
-function cuerpoSuspension({ siguiente, urgente, origen }) {
-  return `**cola · eslabón suspendido** (central#313): al llegar el turno de este eslabón (${origen}) había un \`${URGENTE}\` en cola, #${urgente}. La urgente se cuela en el límite entre eslabones —nunca en paralelo—: este issue NO se arma ahora; queda \`${EN_COLA}\` con nivel 2 (sale el primero en cuanto la serie quede libre, solo detrás de otra urgente). El sentinel \`launch-next: #${siguiente}\` cuenta como CONSUMIDO: el arranque llega por la cola (\`arm-de-cola\`), no por un re-arm de cadena.\n\n${MARCA_SUSPENDIDO}`;
+function cuerpoSuspension({ siguiente, urgente, origen, origenNum }) {
+  return `**cola · eslabón suspendido** (central#313): al llegar el turno de este eslabón (${origen}) había un \`${URGENTE}\` en cola, #${urgente}. La urgente se cuela en el límite entre eslabones —nunca en paralelo—: este issue NO se arma ahora; queda \`${EN_COLA}\` con nivel 2 (sale el primero en cuanto la serie quede libre, solo detrás de otra urgente). El sentinel \`launch-next: #${siguiente}\` cuenta como CONSUMIDO: el arranque llega por la cola (\`arm-de-cola\`), no por un re-arm de cadena.\n\n${marcaSuspendido(origenNum)}`;
 }
 
 // La cesión con I/O, compartida por los consumidores de `launch-next`
 // (`cederAUrgente` de epic-merge — merge y cierre por estado — y el step
 // `launch_next` de claude-code). Devuelve el número de la urgente a la que se
-// cede, o null si no hay (⇒ el llamante arma #N como siempre). Etiqueta ANTES
+// cede, o null si no hay (⇒ el llamante arma #N como siempre). `origenNum`:
+// el PR mergeado (o el issue cerrado por estado) que va en el marcador. Etiqueta ANTES
 // que comentario: si el comentario falla, #N queda en cola como normal (vivo,
 // solo peor ordenado), nunca perdido. Los errores se propagan: el llamante
 // decide (hoy: aviso y arm por la cadena, el comportamiento de antes).
-async function cederEslabon({ github, owner, repo, siguiente, origen }) {
+async function cederEslabon({ github, owner, repo, siguiente, origen, origenNum }) {
   const urg = urgenteParaCeder(await leerCola({ github, owner, repo }), siguiente);
   if (!urg) return null;
   await github.rest.issues.addLabels({ owner, repo, issue_number: Number(siguiente), labels: [EN_COLA] });
   await github.rest.issues.createComment({ owner, repo, issue_number: Number(siguiente),
-    body: cuerpoSuspension({ siguiente, urgente: urg.number, origen }) });
+    body: cuerpoSuspension({ siguiente, urgente: urg.number, origen, origenNum }) });
   return urg.number;
 }
 
@@ -133,7 +140,7 @@ function describir(issue) {
 }
 
 module.exports = {
-  URGENTE, ALTA, EN_COLA, MARCA_SUSPENDIDO, NIVELES,
+  URGENTE, ALTA, EN_COLA, NIVELES, SUSPENDIDO_RE, marcaSuspendido,
   esSuspendido, nivel, ordenarCola, ordenarConSuspension, leerCola,
   urgenteParaCeder, cuerpoSuspension, cederEslabon, describir,
 };

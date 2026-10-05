@@ -420,13 +420,13 @@ jobs:
             // `prioridad:urgente`) llega por la cola (`arm-de-cola`) y no por
             // `epic-auto-launch`, pero es exactamente el eslabón que esa vía
             // habría armado: lleva en su historial el marcador de confianza
-            // `eslabon-suspendido` que epic-merge escribe al suspenderlo.
+            // `<!-- eslabon-suspendido: #<PR> -->` que se escribe al suspenderlo.
             let isChainRearm = armBody.includes('epic-auto-launch') || armBody.includes('watchdog-rearm');
             if (!isChainRearm && armBody.includes('arm-de-cola')) {
               const TRUSTED_SUSP = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
               const { data: hist } = await github.rest.issues.listComments({ owner, repo, issue_number: issue.number, per_page: 100 });
               isChainRearm = hist.some(c => TRUSTED_SUSP.has(c.author_association)
-                && /^[ \t]*<!--\s*eslabon-suspendido\s*-->[ \t]*$/m.test(String(c.body || '').replace(/```[\s\S]*?```/g, ' ').replace(/`[^`\n]*`/g, ' ')));
+                && /^[ \t]*<!--\s*eslabon-suspendido(?::\s*#?\d+)?\s*-->[ \t]*$/m.test(String(c.body || '').replace(/```[\s\S]*?```/g, ' ').replace(/`[^`\n]*`/g, ' ')));
             }
             // Guard de horneado (AP-021 + AP-029), compartido por los dos
             // perímetros: `scope` = 'epica' (primer eslabón; el bloque se busca en
@@ -657,7 +657,7 @@ jobs:
             // cede el turno a una urgente; el eslabón sale después por la cola.
             const isResumption = issueComments.some(c => TRUSTED.has(c.author_association)
               && (/<!--\s*epic-auto-launch\s*-->/.test(c.body || '')
-                || /^[ \t]*<!--\s*eslabon-suspendido\s*-->[ \t]*$/m.test(String(c.body || '').replace(/```[\s\S]*?```/g, ' ').replace(/`[^`\n]*`/g, ' '))));
+                || /^[ \t]*<!--\s*eslabon-suspendido(?::\s*#?\d+)?\s*-->[ \t]*$/m.test(String(c.body || '').replace(/```[\s\S]*?```/g, ' ').replace(/`[^`\n]*`/g, ' '))));
             if (isResumption) { core.setOutput('blocked', 'false'); return; }
             const panelOk = /<!--\s*panel-ok\s*-->/.test(armBody)
               || issueComments.some(c => /<!--\s*panel-ok\s*-->/.test(c.body || '') && TRUSTED.has(c.author_association));
@@ -3334,7 +3334,7 @@ jobs:
             if (COLA) {
               try {
                 const urgente = await COLA.cederEslabon({ github, owner: context.repo.owner, repo: context.repo.repo,
-                  siguiente: nextIssue, origen: `sentinel de cierre del Creator en #${prNumber}` });
+                  siguiente: nextIssue, origen: `sentinel de cierre del Creator en #${prNumber}`, origenNum: prNumber });
                 if (urgente) {
                   core.notice(`Épica: #${nextIssue} SUSPENDIDO (cesión a la prioridad:urgente #${urgente}); la cola lo arma después.`);
                   return;

@@ -707,7 +707,7 @@ jobs:
               // central#313: cesión a una `prioridad:urgente` en el límite
               // entre eslabones. La serie la deja libre ESTE merge, así que la
               // urgente se arma ya, por `armQueue` (cabeza de la cola: nivel 1).
-              const urgente = await cederAUrgente(next, `merge de #${prNumber}`);
+              const urgente = await cederAUrgente(next, `merge de #${prNumber}`, prNumber);
               if (urgente) {
                 await diag(prNumber, `MERGEADO; #${next} SUSPENDIDO (cesión a la prioridad:urgente #${urgente}) — su arranque llega por la cola.`);
                 await armQueue(prNumber, `cesión entre eslabones: #${next} suspendido a favor de la urgente #${urgente}`);
@@ -772,16 +772,16 @@ jobs:
             // ── Cesión entre eslabones (central#313, ruling punto 4). Antes de
             // armar el eslabón siguiente `#N` de un `launch-next`: si hay un
             // `en-cola` + `prioridad:urgente` (que no sea el propio #N), #N NO
-            // se arma — queda `en-cola` con el marcador `eslabon-suspendido`
+            // se arma — queda `en-cola` con `<!-- eslabon-suspendido: #<PR> -->`
             // (nivel 2 de la cola) y la serie es para la urgente, que sale por
             // la vía de cola normal (`arm-de-cola`). Nunca en paralelo: la
             // urgente ocupa el hueco que habría ocupado #N. Sin urgente en
             // cola (o sin módulo): null y el camino sigue idéntico al de hoy.
             // La secuencia (etiqueta, marcador) vive en `COLA.cederEslabon`.
-            async function cederAUrgente(next, origen) {
+            async function cederAUrgente(next, origen, origenNum) {
               if (!COLA) return null;
               try {
-                return await COLA.cederEslabon({ github, owner, repo, siguiente: next, origen });
+                return await COLA.cederEslabon({ github, owner, repo, siguiente: next, origen, origenNum });
               } catch (e) {
                 core.warning(`[epic-merge] cesión a urgente falló (${e.message}) — #${next} se arma por su cadena, como siempre.`);
                 return null;
@@ -891,7 +891,7 @@ jobs:
               // (ver NOTA arriba: doble-pop). Si la serie sigue libre, la arma
               // el barrido `sweepQueueAtExit` del `finally` (`serieTomada` queda
               // a false), fail-closed como siempre.
-              const urgente = await cederAUrgente(next, `cierre por estado de #${issueNumber}`);
+              const urgente = await cederAUrgente(next, `cierre por estado de #${issueNumber}`, issueNumber);
               if (urgente) {
                 await stateCloseMark(issueNumber, `\`launch-next: #${next}\` consumido por SUSPENSIÓN: cesión a la prioridad:urgente #${urgente} (central#313); #${next} queda en cola con nivel 2.`);
                 return;
