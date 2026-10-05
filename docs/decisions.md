@@ -930,6 +930,8 @@ Resultado: **CERO Creators + `serial-activo` orfanado** hasta que lo sanee el wa
 **Reversibilidad.** Alta: un bloque `if (en-cola)` en el detect del watchdog, un `labels` del guard serial y dos filas de doc; se revierte restaurando `['stalled', 'en-cola']` y quitando el bloque de premisa.
 
 **Fecha.** 2026-07-20.
+
+**Enmienda (2026-10-05, AP-103).** La rama de anomalía del punto 1 ya no se alcanza para el pop muerto. Con la serie libre, un ítem `en-cola` y sin `pausa-cola`, el barrido determinista `liberarCola` del Watchdog, que corre antes del detector `issue-armed-no-pr`, arma la cabeza de la cola en ese mismo primer tick con un `arm-de-cola` normal, sin marcador de sospecha, sin ventana de asentamiento y sin architect-resolve. El «Falsable» de arriba («escalar a la etapa architect al 2º tick efectivo») deja de ser observable para ese caso: léase «se arma la cabeza en el 1er tick». `cola-huerfana` queda para el interbloqueo mismo-issue de AP-048 (serie ocupada solo por el PR propio del ítem), donde el barrido no actúa. En pausa, el ítem `en-cola` se salta antes del chequeo de premisa (AP-103 §5). Detalle en AP-103 «Riesgos declarados».
 ---
 
 ## AP-040 — La rama sin-veredicto del post-step (AP-025) MATERIALIZA la causa terminal de la sesión muerta y hace fast-path de la muerte-por-presupuesto POSITIVA: 2ª pata de AP-025, cierra la inatribuibilidad presupuesto/crash (repesca finplan#1575)
@@ -2769,6 +2771,8 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 **Criterio falsable.** Primera `prioridad:urgente` real en finplan: se arma en el primer merge de eslabón posterior a ponerla, y la cadena reanuda justo después sin intervención manual.
 
 **Fecha.** 2026-10-05.
+
+**Enmienda (2026-10-05, AP-103).** El parche `docs/patches/AP-102-launch-next-suspension-previa.patch` del punto 4 ya no está PENDIENTE de aplicación humana: AP-103 lo aplicó tal cual (`yaSuspendido` en `postMerge` y en el step `launch_next`) y lo retiró de `docs/patches/`. Ver «Anotación sobre AP-102» en AP-103.
 
 ## AP-103 — Interruptor global `pausa-cola`: la serie no arma nada nuevo y lo en vuelo termina; liberación sin intervención (2026-10-05)
 
