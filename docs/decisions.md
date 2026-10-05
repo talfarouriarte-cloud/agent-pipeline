@@ -2833,3 +2833,25 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 **Criterio falsable.** Primera pausa real en finplan: tras ponerla, cero arms nuevos hasta retirarla; al retirarla, un arm de la cabeza de la cola en ≤ 1 tick del Watchdog (al cerrar el issue, en el mismo evento).
 
 **Fecha.** 2026-10-05.
+
+## AP-104 — Guard de panel evaluado al encolar: la salida de cola está exenta (2026-10-05)
+
+**Contexto.** Ruling de la revisión mensual 2026-10-05 (P0 fuera de ciclo, OK del propietario, posición 1) sobre central#320. Incidente en asesoramiento-financiero#2706 (`prioridad:alta`): armado a las 20:59 con la serie ocupada, el guard de panel pasó limpio y el guard serial lo encoló. A las 22:34 el merge del suelto #2729 abrió su auditoría #2732 y la cola sacó #2706; a las 22:35 el guard de panel lo bloqueó por #2732 (`panel-sin-consumir` → `stalled`). Lo desbloqueó architect-resolve a las 22:51 con `panel-consumido: #2732`. Como epic-merge abre la auditoría del ítem mergeado justo antes del pop, toda épica que salía de la cola tras un merge quedaba bloqueada: un resolve LLM y ~20 min por épica encolada, y AP-102 anulado en la práctica para épicas.
+
+**Principio.** El guard de panel protege la DECISIÓN de lanzar; se evalúa cuando se toma (el arm), no cuando la cola la ejecuta.
+
+**Decisión (ruling; prevalece sobre la propuesta).**
+
+1. **Orden de guards.** El step `check_panel` ya corría ANTES de `check_serial` y lo gatea (`check_serial` exige `check_panel.blocked != 'true'`): un arm bloqueado por panel no entra en `en-cola` y deja el comentario `panel-sin-consumir` de siempre (opciones a/b/c); si pasa, sigue al guard serial como hoy; con la serie libre, igual. La propuesta suponía el orden inverso. El cambio fija ese orden como contrato: comentario en el workflow («NO reordenar») y aserción en el banco (orden de steps y `if:` del serial).
+2. **Exención por salida de cola** (Exención 5 de `check_panel`, tras `isResumption`). Exento: (i) un arm con `<!-- arm-de-cola -->` en el armBody; (ii) un issue con comentario de confianza `<!-- arm-de-cola -->` POSTERIOR a su encolado. «Encolado» = el primer comentario de confianza con `<!-- serial-guard -->` o `<!-- pausa-cola-retenido -->`, que solo se escriben después de pasar el guard de panel. Mismo patrón TRUSTED que `isResumption`, sobre la misma lectura `issueComments` (sin API extra). Los eslabones suspendidos/retenidos ya estaban exentos por `eslabon-suspendido`.
+3. **Encolados previos al despliegue.** Salen exentos igualmente; se acepta el hueco transitorio (documentado en el comentario del código).
+4. **Re-arms.** `watchdog-rearm` y los re-arms de architect-resolve sobre un issue que salió de la cola heredan la exención por el `arm-de-cola` de su historial (vía ii).
+5. **Protocolo.** Anotación append-only en la fila `panel-sin-consumir` de `vendored/docs-agents/protocol.md`: «se evalúa al encolar; la salida de cola está exenta».
+6. **Banco:** `scripts/check-panel-al-encolar.mjs`, en el piggyback de `check-embedded-js.mjs`. Ejecuta los steps EMBEBIDOS reales `check_panel` → `check_serial` (con el gate del workflow) contra una API en memoria con estado. Casos: (a) serie ocupada + panel abierto al armar ⇒ no se encola, `panel-sin-consumir`; (b) serie ocupada + sin panel al armar + panel nacido en la espera ⇒ al salir de la cola arma; (c) serie libre + panel abierto ⇒ bloquea como hoy; (d) `watchdog-rearm` y re-arm de architect-resolve sobre un issue salido de cola ⇒ exentos. Bordes: `watchdog-rearm` sin salida de cola, `arm-de-cola` de autor no confiable y `arm-de-cola` sin encolado previo ⇒ bloquean; encolado por `pausa-cola-retenido` ⇒ exento. Mutación comprobada: con la exención apagada, (b), (d) y el borde de pausa se ponen rojos.
+7. **Texto del guard serial.** El comentario de encolado ya no dice «epic-merge armará el más antiguo de la cola»: cita el orden de AP-102 (urgente → eslabón suspendido → alta → normal) y que la salida de cola está exenta del guard de panel.
+
+**Qué NO.** No cambia qué cuenta como panel (`auditoria` + `process-proposal` abiertos) ni las salidas `panel-consumido` / `panel-ok`. Superficie `workflow_call` sin cambios. Consumidores: nada que aplicar.
+
+**Criterio falsable.** Banco verde con los cuatro casos. Próxima épica que salga de la cola de finplan tras un merge: arma sin `panel-sin-consumir` ni `stalled`.
+
+**Fecha.** 2026-10-05.
