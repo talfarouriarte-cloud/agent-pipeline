@@ -26,8 +26,15 @@ fi
 # ¿Invoca un runner de tests?
 # Patrón de runners detectados: sobreescribible por repo en
 # .claude/hooks/test-discipline.pattern (una línea, ERE). Default: stack JS del origen.
+# AP-101 (central#300): también `node_modules/.bin/vitest` (con `node` delante
+# o sin él, con o sin `./`), `pnpm exec vitest`, y `pnpm -F <pkg>` /
+# `pnpm --filter <pkg>` / `pnpm run test`. Antes un `/` delante de `vitest`
+# o un flag con valor dejaban el comando fuera del hook.
 PATTERN_FILE="$CLAUDE_PROJECT_DIR/.claude/hooks/test-discipline.pattern"
-if [ -f "$PATTERN_FILE" ]; then RUNNER_ERE=$(head -1 "$PATTERN_FILE"); else RUNNER_ERE='(^|[;&|[:space:]])(npx[[:space:]]+)?vitest([[:space:]]|$)|pnpm([[:space:]]+-r)?([[:space:]]+--[^[:space:]]+)*[[:space:]]+test([[:space:]]|$|:)|npm[[:space:]]+(run[[:space:]]+)?test([[:space:]]|$)'; fi
+PNPM_FLAGS='([[:space:]]+(-r|--recursive|-F[[:space:]]*[^-[:space:]][^[:space:]]*|--filter([[:space:]]+|=)[^[:space:]]+|--[^[:space:]]+))*'
+VITEST='((npx|pnpm[[:space:]]+exec)[[:space:]]+)?(node[[:space:]]+)?([^[:space:];&|]*node_modules/\.bin/)?vitest'
+PNPM_TEST='pnpm'"$PNPM_FLAGS"'[[:space:]]+(run[[:space:]]+)?test'
+if [ -f "$PATTERN_FILE" ]; then RUNNER_ERE=$(head -1 "$PATTERN_FILE"); else RUNNER_ERE='(^|[;&|[:space:]])'"$VITEST"'([[:space:]]|$)|'"$PNPM_TEST"'([[:space:]]|$|:)|npm[[:space:]]+(run[[:space:]]+)?test([[:space:]]|$)'; fi
 BENCH_ERE='(^|[;&|[:space:]])(pnpm([[:space:]]+--filter[[:space:]]+[^[:space:]]+)?[[:space:]]+(run[[:space:]]+)?bench|npm[[:space:]]+run[[:space:]]+bench)([[:space:]:]|$)'
 if ! printf '%s' "$cmd" | grep -Eq "$RUNNER_ERE" && ! printf '%s' "$cmd" | grep -Eq "$BENCH_ERE"; then
   exit 0
@@ -60,7 +67,7 @@ fi
 
 # Permitido si trae rutas de fichero (test scoped) DESPUÉS del runner:
 # extensión de fuente o ruta con «/» en la cola del comando.
-tail=$(printf '%s' "$cmd" | sed -E 's/.*((npx[[:space:]]+)?vitest|pnpm([[:space:]]+-r)?([[:space:]]+--[^[:space:]]+)*[[:space:]]+test[^[:space:]]*|npm[[:space:]]+(run[[:space:]]+)?test)//')
+tail=$(printf '%s' "$cmd" | sed -E 's#.*(vitest|'"$PNPM_TEST"'[^[:space:]]*|npm[[:space:]]+(run[[:space:]]+)?test)##')
 if printf '%s' "$tail" | grep -Eq '\.[cm]?[jt]sx?([[:space:]]|$|"|'"'"')|[[:space:]][^-][^[:space:]]*/[^[:space:]]+'; then
   exit 0
 fi

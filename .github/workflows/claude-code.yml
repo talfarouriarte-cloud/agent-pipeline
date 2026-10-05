@@ -1215,6 +1215,37 @@ jobs:
           && steps.check_flight.outputs.blocked != 'true'
         run: mkdir -p "$HOME/.local/bin"
 
+      # AP-101 (review de #312): línea base del árbol ANTES de la sesión, tras el
+      # graft. El step `rescate` resta las rutas que siguen idénticas a esta foto
+      # (residuo del graft, suciedad heredada del checkout): no son trabajo del
+      # Creator y no deben abrir un re-arm. Ruta + hash del contenido (`-` si no
+      # existe): si la sesión toca una ruta ya sucia, el hash cambia y entra en
+      # el WIP. Sin foto (step fallido) el rescate se comporta como sin resta.
+      - name: Foto del árbol pre-sesión (línea base del rescate, AP-101)
+        id: arbol_pre
+        if: |
+          steps.check_pause.outputs.paused != 'true'
+          && steps.check_iterations.outputs.cap_reached != 'true'
+          && steps.check_chain.outputs.broken != 'true'
+          && steps.check_panel.outputs.blocked != 'true'
+          && steps.check_serial.outputs.blocked != 'true'
+          && steps.check_flight.outputs.blocked != 'true'
+        continue-on-error: true
+        env:
+          PRE_SNAPSHOT: ${{ runner.temp }}/arbol-pre-sesion.z
+        run: |
+          set -euo pipefail
+          : > "$PRE_SNAPSHOT"
+          while IFS= read -r -d '' e; do
+            xy=${e:0:2}; set -- "${e:3}"
+            case "$xy" in R*|C*) IFS= read -r -d '' orig || true; set -- "$1" "$orig";; esac
+            for q in "$@"; do
+              h=-; if [ -f "$q" ] || [ -L "$q" ]; then h=$(git hash-object --no-filters -- "$q" 2>/dev/null || echo '?'); fi
+              printf '%s\0%s\0' "$q" "$h" >> "$PRE_SNAPSHOT"
+            done
+          done < <(git status --porcelain=v1 -z --untracked-files=all)
+          echo "foto pre-sesión: $(tr -cd '\0' < "$PRE_SNAPSHOT" | wc -c | awk '{print $1/2}') ruta(s) sucias"
+
       - name: Run Claude Code
         if: |
           steps.check_pause.outputs.paused != 'true'
@@ -1313,6 +1344,7 @@ jobs:
       # nuevo (14 rondas observadas en PR #180). El check de freshness
       # rompe el bucle estructuralmente.
       - name: Push residual con token de workflows (post-sesión)
+        id: rescate
         # 2026-07-15, central#46 (3 sesiones quemadas): claude-code-action
         # re-inicializa `origin` con su credencial de App al preparar el
         # entorno — el token del checkout queda pisado y el push de
@@ -1322,39 +1354,172 @@ jobs:
         # local claude/* tiene commits que no están en el remoto, empuja con
         # la URL credencializada (inmune al credential helper de la action)
         # y abre el PR si falta. Guard duro: SOLO ramas claude/*, jamás main.
-        # Sin el secret (consumidores): env vacío ⇒ step skipped.
-        if: always() && env.WF_PUSH != '' && steps.preflight.outputs.dead != 'true'
+        # AP-101 (central#300, ruling mensual 2026-10-05; asesoramiento#2457,
+        # PR #2450: sesión `success` con el árbol sucio y sin push, 447 345
+        # tokens ponderados rehechos). Una sola casa para el rescate:
+        #  - corre también en consumidores: token = WORKFLOWS_PUSH_TOKEN si
+        #    existe, si no REVIEWER_GITHUB_TOKEN;
+        #  - cubre el ÁRBOL SUCIO: cambios fuera del conjunto de restauración
+        #    AP-097 (misma lista que `restoreConfigFromBase`) se commitean como
+        #    WIP con `git add` SOLO de esas rutas (jamás -A: subiría la
+        #    reversión de config de la base) y se pushean con los residuales;
+        #    se restan las rutas idénticas a la foto pre-sesión (`arbol_pre`);
+        #  - con WIP NO se abre PR (el `opened` convocaría al Reviewer sobre un
+        #    WIP): rama virgen ⇒ una línea en el issue; PR abierto ⇒ comentario
+        #    con marcador `arbol-rescatado-por-estado` + `estado:esperando-architect`
+        #    + `stalled` (turno del Creator, re-arma architect-resolve por evento,
+        #    como `escalada-materializada-con-pr`, AP-046). Auto-label,
+        #    open-review-failsafe y «Materializar muerte sin PR» ceden (output `wip`);
+        #  - fail-loud: commit o push fallidos ⇒ comentario con el error y step rojo.
+        # El gate de AP-089 (hook test-discipline) solo actúa si la sesión lanza
+        # un runner; este step lee el estado, no depende de lo que hizo la sesión.
+        # Corre ANTES de todos los post-steps de materialización.
+        if: always() && env.PUSH_TOKEN != '' && steps.preflight.outputs.dead != 'true' && steps.creator.outcome != 'skipped'
         env:
-          WF_PUSH: ${{ secrets.WORKFLOWS_PUSH_TOKEN }}
+          PUSH_TOKEN: ${{ secrets.WORKFLOWS_PUSH_TOKEN || secrets.REVIEWER_GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          IN_DEFAULT_BRANCH: ${{ inputs.default_branch }}
+          EVENT_ISSUE: ${{ github.event.issue.number }}
+          EVENT_IS_PR: ${{ github.event.issue.pull_request && 'true' || 'false' }}
+          # PR del evento (contexto PR): respaldo si `gh pr list` falla, para que
+          # un fallo puntual de la API no mande el rescate por la rama virgen.
+          EVENT_PR: ${{ github.event.pull_request.number || (github.event.issue.pull_request && github.event.issue.number) || '' }}
+          # Foto pre-sesión (step `arbol_pre`): lo que sigue idéntico no se rescata.
+          PRE_SNAPSHOT: ${{ runner.temp }}/arbol-pre-sesion.z
         run: |
           set -euo pipefail
+          echo "wip=false" >> "$GITHUB_OUTPUT"
           BRANCH=$(git branch --show-current || true)
+          BASE="$IN_DEFAULT_BRANCH"
           case "$BRANCH" in claude/*) ;; *) echo "rama '$BRANCH' fuera del patrón claude/*: nada que rescatar"; exit 0;; esac
-          git fetch -q origin "$BRANCH" 2>/dev/null || true
-          BASE="${{ inputs.default_branch }}"
-          git fetch -q origin "$BASE" 2>/dev/null || true
+          [ "$BRANCH" != "$BASE" ] || { echo "rama '$BRANCH' es la base: jamás se rescata sobre ella"; exit 0; }
+          REPO_URL="https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          git fetch -q "$REPO_URL" "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" 2>/dev/null || true
+          git fetch -q "$REPO_URL" "+refs/heads/$BASE:refs/remotes/origin/$BASE" 2>/dev/null || true
+          # Árbol sucio FUERA del conjunto de restauración AP-097 (central#271):
+          # esas rutas las reescribe la action con la versión de la base y no
+          # son trabajo del Creator. `-z` para rutas con espacios y renombrados
+          # (R/C traen la ruta de origen como entrada siguiente).
+          # Se resta además la foto pre-sesión (`arbol_pre`): una ruta que sigue
+          # con el mismo hash que antes de la sesión no la produjo el Creator.
+          hashof() { if [ -f "$1" ] || [ -L "$1" ]; then git hash-object --no-filters -- "$1" 2>/dev/null || echo '?'; else echo -; fi; }
+          declare -A PRE=()
+          if [ -n "${PRE_SNAPSHOT:-}" ] && [ -s "$PRE_SNAPSHOT" ]; then
+            while IFS= read -r -d '' p && IFS= read -r -d '' h; do PRE["$p"]=$h; done < "$PRE_SNAPSHOT"
+          fi
+          FILES=(); PRESKIP=0
+          while IFS= read -r -d '' e; do
+            xy=${e:0:2}; set -- "${e:3}"
+            case "$xy" in R*|C*) IFS= read -r -d '' orig || true; set -- "$1" "$orig";; esac
+            for q in "$@"; do
+              case "$q" in
+                .claude|.claude/*|.claude-pr|.claude-pr/*|CLAUDE.md|CLAUDE.local.md|.mcp.json|.claude.json|.gitmodules|.ripgreprc|.husky|.husky/*) continue;;
+              esac
+              if [ -n "${PRE[$q]+x}" ] && [ "${PRE[$q]}" = "$(hashof "$q")" ]; then PRESKIP=$((PRESKIP + 1)); continue; fi
+              FILES+=("$q")
+            done
+          done < <(git status --porcelain=v1 -z --untracked-files=all)
+          [ "$PRESKIP" = "0" ] || echo "$PRESKIP ruta(s) sucias idénticas a la foto pre-sesión: fuera del rescate"
           # Referencia contra la que medir residuales: la rama remota si existe;
           # si la rama es VIRGEN (nunca pusheada), la base. Incidente central#59:
           # el fallback `|| echo "1"` inventaba AHEAD=1 sobre rama virgen SIN
           # commits (rev-list contra un origin/BRANCH inexistente falla),
-          # empujaba una rama vacía y `gh pr create` moría («No commits
+          # empujaba una rama vacía y la apertura del PR moría («No commits
           # between…») — job rojo por un no-op.
+          REF=""
           if git rev-parse -q --verify "origin/$BRANCH" >/dev/null 2>&1; then REF="origin/$BRANCH"
-          elif git rev-parse -q --verify "origin/$BASE" >/dev/null 2>&1; then REF="origin/$BASE"
-          else echo "sin referencia remota verificable (ni $BRANCH ni $BASE): no puedo medir residuales"; exit 0; fi
-          AHEAD=$(git rev-list --count "$REF..HEAD")
-          [ "$AHEAD" = "0" ] && { echo "sin commits residuales contra $REF: nada que rescatar"; exit 0; }
-          echo "rescatando commits locales de $BRANCH con el token de workflows"
-          git push "https://x-access-token:${WF_PUSH}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/$BRANCH"
+          elif git rev-parse -q --verify "origin/$BASE" >/dev/null 2>&1; then REF="origin/$BASE"; fi
+          AHEAD=0
+          [ -z "$REF" ] || AHEAD=$(git rev-list --count "$REF..HEAD")
+          if [ "${#FILES[@]}" = "0" ]; then
+            [ -n "$REF" ] || { echo "sin referencia remota verificable (ni $BRANCH ni $BASE): no puedo medir residuales"; exit 0; }
+            [ "$AHEAD" != "0" ] || { echo "árbol limpio (fuera de AP-097) y sin commits residuales contra $REF: nada que rescatar"; exit 0; }
+          fi
+          PR=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json number --jq '.[0].number // empty' 2>/dev/null || true)
+          [ -n "$PR" ] || PR="$EVENT_PR"
+          ISSUE=$(printf '%s' "$BRANCH" | sed -nE 's#^claude/issue-([0-9]+)-.*#\1#p')
+          [ -n "$ISSUE" ] || { [ "$EVENT_IS_PR" = "true" ] || ISSUE="$EVENT_ISSUE"; }
+          # Fail-loud (ruling punto 5): commit o push fallidos dejan comentario con
+          # el error (token tachado) en el PR, o en el issue sin PR, y el step rojo.
+          # Tras un push correcto (PUSHED=true: falló el comentario o el
+          # etiquetado) el WIP SÍ está en el remoto: el texto lo dice y, con PR,
+          # se reintentan los labels del turno del Creator (best-effort) para que
+          # architect-resolve re-arme por evento aunque el comentario no saliera.
+          PUSHED=false; SHA=""
+          fail() {
+            local what="$1" detail="${2//"$PUSH_TOKEN"/***}"
+            detail=$(printf '%s\n' "$detail" | tail -n 20)
+            local body
+            if [ "$PUSHED" = "true" ]; then
+              if [ -n "$PR" ]; then
+                gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/labels" -f 'labels[]=estado:esperando-architect' >/dev/null 2>&1 || true
+                gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/labels" -f 'labels[]=stalled' >/dev/null 2>&1 || echo "::error::no se pudo aplicar stalled al PR #$PR"
+              fi
+              body=$(printf '**claude-code · rescate del árbol FALLIDO tras el push** (AP-101): el WIP `%s` **SÍ está en la rama** `%s`; falló el %s al cierre de la sesión ([run](%s)). **Para el re-arm: continúa desde la rama, no rehagas.**\n\n```\n%s\n```\n\n<!-- arbol-rescate-fallido -->' "$SHA" "$BRANCH" "$what" "$RUN_URL" "$detail")
+            else
+              body=$(printf '**claude-code · rescate del árbol FALLIDO** (AP-101): el %s de `%s` falló al cierre de la sesión ([run](%s)). El trabajo sin pushear de esa sesión muere con el runner; el re-arm debe partir del último push visible.\n\n```\n%s\n```\n\n<!-- arbol-rescate-fallido -->' "$what" "$BRANCH" "$RUN_URL" "$detail")
+            fi
+            if [ -n "$PR" ]; then gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "$body" || echo "::error::no se pudo comentar el fallo en el PR #$PR"
+            elif [ -n "$ISSUE" ]; then gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$body" || echo "::error::no se pudo comentar el fallo en el issue #$ISSUE"
+            else echo "::error::sin PR ni issue donde comentar el fallo"; fi
+            echo "::error::rescate del árbol de $BRANCH: falló el $what"
+            exit 1
+          }
+          WIP=false
+          if [ "${#FILES[@]}" != "0" ]; then
+            echo "árbol sucio en $BRANCH (${#FILES[@]} rutas fuera de AP-097): commit WIP"
+            git config user.email >/dev/null 2>&1 || git config user.email "209825114+claude[bot]@users.noreply.github.com"
+            git config user.name >/dev/null 2>&1 || git config user.name "claude[bot]"
+            MSG="wip(creator): árbol sin pushear al cierre de la sesión — rescatado por estado (run ${GITHUB_RUN_ID})"
+            # Rutas que ya no existen (borrado, origen de un `git mv`): `git add`
+            # fallaría con «pathspec did not match» y tumbaría el rescate entero;
+            # su borrado se prepara con `rm --cached` (no-op si ya estaba staged).
+            # `commit -- <rutas>` (modo --only): ni siquiera algo que la sesión
+            # dejara staged en el conjunto AP-097 entra en el commit.
+            out=""
+            for q in "${FILES[@]}"; do
+              if [ -e "$q" ] || [ -L "$q" ]; then out=$(git add -- "$q" 2>&1) || fail "commit" "$out"
+              else out=$(git rm -q --cached --ignore-unmatch -- "$q" 2>&1) || fail "commit" "$out"; fi
+            done
+            out=$(git commit --no-verify -q -m "$MSG" -- "${FILES[@]}" 2>&1) || fail "commit" "$out"
+            WIP=true
+          fi
+          echo "rescatando $BRANCH (WIP=$WIP, commits residuales previos=$AHEAD)"
+          out=$(git push "$REPO_URL" "HEAD:refs/heads/$BRANCH" 2>&1) || fail "push" "$out"
+          PUSHED=true; SHA=$(git rev-parse --short HEAD)
+          if [ "$WIP" = "true" ]; then
+            echo "wip=true" >> "$GITHUB_OUTPUT"
+            echo "pr=$PR" >> "$GITHUB_OUTPUT"
+            LIST=$(printf -- '- `%s`\n' "${FILES[@]}" | head -n 50)
+            [ "${#FILES[@]}" -le 50 ] || LIST=$(printf '%s\n- … y %s más' "$LIST" "$(( ${#FILES[@]} - 50 ))")
+            if [ -n "$PR" ]; then
+              body=$(printf '**claude-code · arbol-rescatado-por-estado** (AP-101): la sesión del Creator ([run](%s)) terminó con trabajo SIN pushear en `%s`. El post-step lo commiteó como WIP (`%s`, sin typecheck ni tests) y lo pusheó junto con %s commit(s) residual(es) previos:\n\n%s\n\nEl turno sigue siendo del **Creator**, no del Reviewer: `estado:esperando-architect` + `stalled` ⇒ architect-resolve re-arma por evento. **Para el re-arm: continúa desde el árbol rescatado, no rehagas** — verifica el WIP (typecheck y tests de los ficheros afectados), corrige y cierra el turno como siempre.\n\n<!-- arbol-rescatado-por-estado -->' "$RUN_URL" "$BRANCH" "$SHA" "$AHEAD" "$LIST")
+              gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "$body" || fail "comentario del rescate" "gh pr comment falló"
+              # Estado visible primero, `stalled` después (mismo orden que AP-046).
+              gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/labels" -f 'labels[]=estado:esperando-architect' >/dev/null || fail "etiquetado" "estado:esperando-architect"
+              gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/labels" -f 'labels[]=stalled' >/dev/null || fail "etiquetado" "stalled"
+              echo "::warning::PR #$PR: árbol sin pushear rescatado como WIP $SHA — stalled + estado:esperando-architect (AP-101)."
+            else
+              # Rama virgen: push SIN PR (el `opened` convocaría al Reviewer sobre
+              # un WIP). El `stalled` lo cuelga «Materializar muerte sin PR».
+              FLAT=$(printf '`%s` ' "${FILES[@]:0:50}")
+              body=$(printf 'claude-code · árbol rescatado por estado (AP-101): WIP `%s` pusheado a la rama `%s` sin abrir PR — %s([run](%s))\n\n<!-- arbol-rescatado-por-estado -->' "$SHA" "$BRANCH" "$FLAT" "$RUN_URL")
+              if [ -n "$ISSUE" ]; then gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$body" || fail "comentario del rescate" "gh issue comment falló"; fi
+              echo "::warning::$BRANCH: árbol sin pushear rescatado como WIP $SHA, sin PR (AP-101)."
+            fi
+            exit 0
+          fi
+          # Solo commits residuales hechos por la sesión (caso central#46): se
+          # mantiene la apertura del PR si falta.
           # Guard anti-PR-vacío: PR solo si hay diff real contra la base.
           if git rev-parse -q --verify "origin/$BASE" >/dev/null 2>&1 && [ "$(git rev-list --count "origin/$BASE..HEAD")" = "0" ]; then
             echo "rama sin diff contra $BASE tras el push: sin PR que abrir"; exit 0; fi
-          if ! gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json number --jq '.[0].number' | grep -q .; then
+          if [ -z "$PR" ]; then
             TITLE=$(git log -1 --pretty=%s)
             BODY=$(git log -1 --pretty=%b)
-            FULLBODY=$(printf '%s\n\n---\n_PR abierto por el post-step de rescate (push residual con token de workflows, central#46): la action no puede pushear workflows; el trabajo estaba commiteado en local._' "$BODY")
-            gh pr create --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base "${{ inputs.default_branch }}" --title "$TITLE" --body "$FULLBODY"
+            FULLBODY=$(printf '%s\n\n---\n_PR abierto por el post-step de rescate (push residual, central#46): el trabajo estaba commiteado en local y la sesión no lo pusheó._' "$BODY")
+            gh pr create --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base "$BASE" --title "$TITLE" --body "$FULLBODY"
           fi
 
       # Firma de FLOTA CAÍDA (AP-091, central#212): materializa la clase de la
@@ -1605,12 +1770,15 @@ jobs:
           && steps.preflight.outputs.dead != 'true'
           && steps.check_serial.outputs.blocked != 'true'
           && steps.check_flight.outputs.blocked != 'true'
+          && steps.rescate.outputs.wip != 'true'
           && (
             (github.event_name == 'issue_comment' && !github.event.issue.pull_request)
             || github.event_name == 'issues'
           )
         uses: actions/github-script@v7
         env:
+          # AP-101: con árbol rescatado como WIP el turno es del Creator (lo
+          # materializa el step `rescate`): no se convoca al Reviewer sobre él.
           # Lectura Y escritura con el PAT. La lectura con el GITHUB_TOKEN default
           # exigía `actions: read` en el job del reusable, y el callee no puede
           # pedir más permisos que su caller: todo stub con bloque `permissions`
@@ -1744,6 +1912,9 @@ jobs:
           # epic-merge (Fase C): inputs y outputs de steps via env.
           STEP_CREATOR_OUTCOME: ${{ steps.creator.outcome }}
           IN_DEFAULT_BRANCH: ${{ inputs.default_branch }}
+          # AP-101: el step `rescate` commiteó y pusheó un WIP del árbol sucio.
+          RESCUE_WIP: ${{ steps.rescate.outputs.wip }}
+          RESCUE_PR: ${{ steps.rescate.outputs.pr }}
           # central#309: firma de «la sesión existió» (ver ramal al inicio del script).
           EXEC_FILE: ${{ steps.creator.outputs.execution_file }}
           # AP-094: token por defecto SOLO para el `markReady` del draft huérfano.
@@ -1810,6 +1981,22 @@ jobs:
             const { data: prs } = await github.rest.pulls.list({ owner, repo, state: 'open', per_page: 100 });
             const openPr = prs.find(p => p.head.ref.startsWith(`claude/issue-${n}-`));
             if (openPr) {
+              // AP-101 (central#300): el step `rescate` pusheó un WIP del árbol sucio
+              // a este PR y ya dejó el turno al Creator (`stalled` +
+              // `estado:esperando-architect`). Marcarlo ready + `needs-review`
+              // mandaría un WIP sin verificar al Reviewer.
+              if (process.env.RESCUE_WIP === 'true') {
+                // Si el rescate no vio este PR (lectura de `gh pr list` fallida), el
+                // turno del Creator se materializa aquí con los mismos labels.
+                if (process.env.RESCUE_PR !== String(openPr.number)) {
+                  await github.rest.issues.addLabels({ owner, repo, issue_number: openPr.number, labels: ['estado:esperando-architect'] });
+                  await github.rest.issues.addLabels({ owner, repo, issue_number: openPr.number, labels: ['stalled'] });
+                  await github.rest.issues.createComment({ owner, repo, issue_number: openPr.number,
+                    body: `**claude-code · arbol-rescatado-por-estado** (AP-101): el post-step de rescate pusheó un WIP del árbol sin pushear de la sesión del Creator de #${n} sin ver este PR. El turno sigue siendo del **Creator**: \`estado:esperando-architect\` + \`stalled\` ⇒ architect-resolve re-arma por evento. **Para el re-arm: continúa desde el árbol rescatado, no rehagas.**\n\n<!-- arbol-rescatado-por-estado -->` });
+                }
+                core.notice(`Creator de #${n}: árbol rescatado como WIP en PR #${openPr.number} (arbol-rescatado-por-estado) — turno del Creator; sin ready ni needs-review.`);
+                return;
+              }
               if (!openPr.draft) {
                 core.notice(`Creator de #${n} concluyó con PR #${openPr.number} ya ready — flujo PR-driven gobierna; nada que materializar aquí.`);
                 return;
@@ -2370,7 +2557,10 @@ jobs:
             // epic-merge re-arma el parcial (cap 3/6) o un alcance realmente
             // completo termina en `creator-alcance-completo` (AP-020) o cierre
             // humano.
-            if (hasCommits && branchRef) {
+            // AP-101: si lo empujado es un WIP rescatado del árbol sucio, NO se abre
+            // PR (el `opened` convocaría al Reviewer sobre un WIP sin verificar):
+            // cae al residual (`stalled` + re-arm «continúa desde la rama, no rehagas»).
+            if (hasCommits && branchRef && process.env.RESCUE_WIP !== 'true') {
               // AP-030 (2026-07-18, repesca finplan#1478) + AP-042 (2026-07-21,
               // repesca finplan#1547): antes de FORZAR `partial-pr`, respeta la
               // declaración de polaridad + body que el Creator dejó FRESCA. AP-030
@@ -2506,6 +2696,7 @@ jobs:
         env:
           WAS_DRAFT: ${{ steps.pr_head_before.outputs.draft }}
           IN_REVIEWER_WF: ${{ inputs.reviewer_workflow_name }}
+          RESCUE_WIP: ${{ steps.rescate.outputs.wip }}
         with:
           # IMPORTANTE: usar el PAT (REVIEWER_GITHUB_TOKEN), NO el GITHUB_TOKEN
           # default. Razón: este step aplica la label `needs-review` que DEBE
@@ -2606,6 +2797,21 @@ jobs:
               label = 'ready-to-merge';
             } else if (/^\s*@reviewer\b/im.test(body)) {
               label = 'needs-review';
+            }
+
+            // AP-101 (central#300): el step `rescate` pusheó un WIP del árbol que la
+            // sesión dejó sin pushear y ya materializó el turno del Creator
+            // (`stalled` + `estado:esperando-architect`). Ni el turn-close-failsafe
+            // (vería commits posteriores al veredicto) ni un `@reviewer`/
+            // `[READY-TO-MERGE]` del cierre mandan ese WIP al Reviewer. Solo
+            // `[NEEDS-HUMAN]` sigue mandando. Señal: el output del step o, por
+            // estado, el marcador en la ventana fresca.
+            const rescFresh = (triggerCreatedAtRaw
+              ? comments.filter(c => new Date(c.created_at) > new Date(triggerCreatedAtRaw))
+              : comments).some(c => /<!--\s*arbol-rescatado-por-estado\s*-->/.test(c.body || ''));
+            if ((process.env.RESCUE_WIP === 'true' || rescFresh) && label !== 'human-needed') {
+              core.notice(`PR #${prNumber}: árbol rescatado por estado (arbol-rescatado-por-estado) — turno del Creator; Auto-label y turn-close-failsafe ceden.`);
+              return;
             }
 
             if (!label) {
