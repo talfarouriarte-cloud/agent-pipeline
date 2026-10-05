@@ -416,7 +416,18 @@ jobs:
             // ninguna omisión real. En una cadena, además, la casa canónica del
             // bloque (el issue de épica) queda AGUAS ARRIBA, invisible al
             // traversal forward desde el eslabón intermedio.
-            const isChainRearm = armBody.includes('epic-auto-launch') || armBody.includes('watchdog-rearm');
+            // (3) central#313: un eslabón SUSPENDIDO (cedido a una
+            // `prioridad:urgente`) llega por la cola (`arm-de-cola`) y no por
+            // `epic-auto-launch`, pero es exactamente el eslabón que esa vía
+            // habría armado: lleva en su historial el marcador de confianza
+            // `eslabon-suspendido` que epic-merge escribe al suspenderlo.
+            let isChainRearm = armBody.includes('epic-auto-launch') || armBody.includes('watchdog-rearm');
+            if (!isChainRearm && armBody.includes('arm-de-cola')) {
+              const TRUSTED_SUSP = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+              const { data: hist } = await github.rest.issues.listComments({ owner, repo, issue_number: issue.number, per_page: 100 });
+              isChainRearm = hist.some(c => TRUSTED_SUSP.has(c.author_association)
+                && /^[ \t]*<!--\s*eslabon-suspendido\s*-->[ \t]*$/m.test(String(c.body || '').replace(/```[\s\S]*?```/g, ' ').replace(/`[^`\n]*`/g, ' ')));
+            }
             // Guard de horneado (AP-021 + AP-029), compartido por los dos
             // perímetros: `scope` = 'epica' (primer eslabón; el bloque se busca en
             // la cadena) | 'suelto' (arm de un `correctivo` fuera de cadena; el
@@ -640,8 +651,13 @@ jobs:
             // una omisión solo PIERDE la exención (cae al force `panel-ok` de
             // hoy), nunca la concede de más — el bloqueo por panel del PRIMER
             // eslabón queda intacto.
-            const isResumption = issueComments.some(c =>
-              /<!--\s*epic-auto-launch\s*-->/.test(c.body || '') && TRUSTED.has(c.author_association));
+            // central#313: el marcador `eslabon-suspendido` equivale a
+            // `epic-auto-launch` a estos efectos — epic-merge lo escribe en el
+            // MISMO punto (sucesor de un `launch-next` cerrado-completo) cuando
+            // cede el turno a una urgente; el eslabón sale después por la cola.
+            const isResumption = issueComments.some(c => TRUSTED.has(c.author_association)
+              && (/<!--\s*epic-auto-launch\s*-->/.test(c.body || '')
+                || /^[ \t]*<!--\s*eslabon-suspendido\s*-->[ \t]*$/m.test(String(c.body || '').replace(/```[\s\S]*?```/g, ' ').replace(/`[^`\n]*`/g, ' '))));
             if (isResumption) { core.setOutput('blocked', 'false'); return; }
             const panelOk = /<!--\s*panel-ok\s*-->/.test(armBody)
               || issueComments.some(c => /<!--\s*panel-ok\s*-->/.test(c.body || '') && TRUSTED.has(c.author_association));
@@ -732,6 +748,38 @@ jobs:
           # empujar workflows A SU RAMA. La API (PR, comentarios) sigue vía la
           # App. Vacío ⇒ token por defecto (comportamiento previo).
           token: ${{ secrets.WORKFLOWS_PUSH_TOKEN != '' && secrets.WORKFLOWS_PUSH_TOKEN || github.token }}
+
+      # central#313: módulo compartido del orden de la cola serial
+      # (`vendored/scripts/cola-prioridad.cjs`), mismo patrón que el
+      # `epic-merge-diag.cjs` de `epic-merge.yml`. Va DESPUÉS del checkout del
+      # repo (que vacía el workspace) y antes de todo consumidor de cola —
+      # `popQueue`, `launch_next` y el barrido `always()` del cierre—, así que
+      # corre con `always()`. Fuera del árbol del Creator vía
+      # `.git/info/exclude`. Sin él, los consumidores degradan a FIFO.
+      - name: Módulos vendored del central (cola-prioridad)
+        if: |
+          always()
+          && steps.preflight.outputs.dead != 'true'
+          && steps.check_pause.outputs.paused != 'true'
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: talfarouriarte-cloud/agent-pipeline
+          ref: main
+          path: .cola-central
+          sparse-checkout: vendored/scripts
+          sparse-checkout-cone-mode: true
+
+      - name: Excluir los módulos de cola del árbol del Creator
+        if: |
+          always()
+          && steps.preflight.outputs.dead != 'true'
+          && steps.check_pause.outputs.paused != 'true'
+        continue-on-error: true
+        run: |
+          if [ -d .git ]; then
+            grep -qxF '.cola-central/' .git/info/exclude 2>/dev/null || echo '.cola-central/' >> .git/info/exclude
+          fi
 
       # ───────────────────────────────────────────────────────────────────
       # Sync FORZADO a la rama base ACTUAL antes de que la acción ramifique.
@@ -2072,17 +2120,29 @@ jobs:
               return (li.labels || []).map(l => (typeof l === 'string' ? l : l.name));
             }
             // Pop de la cola serial (espejo del armQueue de epic-merge — si
-            // tocas uno, toca el otro): arma el en-cola más antiguo (FIFO).
+            // tocas uno, toca el otro): arma la cabeza de `en-cola` (orden por
+            // prioridad de central#313; sin etiquetas, el más antiguo — FIFO).
             // AP-062: el `armed` que publica al armar es lo que apaga el
             // barrido de cola del cierre del job (step «Barrido de cola al
             // cierre») — un arm de este step ES el nuevo titular de la serie
             // desde que se postea el comentario, aunque su run tarde segundos
             // en nacer y todavía no tenga `serial-activo` ni PR que lo delaten.
+            // central#313: orden de la cola por prioridad (`cola-prioridad.cjs`,
+            // checkout sparse `.cola-central`; respaldo: la copia injertada en
+            // `scripts/`). Sin módulo, FIFO (statu quo) — degradación, nunca peor.
+            let COLA = null;
+            for (const p of [`${process.env.GITHUB_WORKSPACE}/.cola-central/vendored/scripts/cola-prioridad.cjs`, `${process.env.GITHUB_WORKSPACE}/scripts/cola-prioridad.cjs`]) {
+              try { COLA = require(p); break; } catch (e) { /* siguiente ubicación */ }
+            }
+            if (!COLA) core.warning('cola-prioridad no disponible — la cola sale FIFO (statu quo).');
             async function popQueue(fromIssue, why) {
               try {
                 const { data: queued } = await github.rest.issues.listForRepo({
-                  owner, repo, state: 'open', labels: 'en-cola', sort: 'created', direction: 'asc', per_page: 5 });
-                const next = queued.filter(i => !i.pull_request)[0];
+                  owner, repo, state: 'open', labels: 'en-cola', sort: 'created', direction: 'asc', per_page: 100 });
+                // central#313: urgente → eslabón suspendido → alta → normal.
+                const next = (COLA
+                  ? await COLA.ordenarConSuspension({ github, owner, repo, items: queued, warn: (m) => core.warning(m) })
+                  : queued.filter(i => !i.pull_request))[0];
                 // Diagnóstico de la lectura (AP-062, espejo del de armQueue):
                 // sin él, un pop que no arma no distingue «la lista volvió
                 // VACÍA» (ventana de escritura de la label) de «volvió con el
@@ -2096,7 +2156,7 @@ jobs:
                 await github.rest.issues.removeLabel({ owner, repo, issue_number: next.number, name: 'en-cola' }).catch(() => {});
                 await github.rest.issues.removeLabel({ owner, repo, issue_number: next.number, name: 'stalled' }).catch(() => {});
                 await github.rest.issues.createComment({ owner, repo, issue_number: next.number,
-                  body: `@claude arranca — turno de cola: la serie quedó libre (${why}). Eras el más antiguo en \`en-cola\`.\n\n<!-- arm-de-cola -->` });
+                  body: `@claude arranca — turno de cola: la serie quedó libre (${why}). ${COLA ? COLA.describir(next) : 'Eras el más antiguo en \`en-cola\`.'}\n\n<!-- arm-de-cola -->` });
                 core.setOutput('armed', 'true');
                 core.notice(`cola: #${next.number} armado (${why}).`);
               } catch (e) { core.warning(`pop de cola falló: ${e.message}`); }
@@ -3257,6 +3317,31 @@ jobs:
             if (!m) return;
             const nextIssue = Number(m[1]);
 
+            // central#313: cesión entre eslabones a una `prioridad:urgente`
+            // (espejo de `cederAUrgente` de epic-merge). #N queda `en-cola` +
+            // `eslabon-suspendido` y NO se arma; `armed` queda sin escribir, de
+            // modo que el barrido de cola del cierre de este job (step
+            // siguiente, fail-closed) arma la cabeza —la urgente— si la serie
+            // está libre. Sin urgente o sin módulo: idéntico a antes.
+            // central#313: orden de la cola por prioridad (`cola-prioridad.cjs`,
+            // checkout sparse `.cola-central`; respaldo: la copia injertada en
+            // `scripts/`). Sin módulo, FIFO (statu quo) — degradación, nunca peor.
+            let COLA = null;
+            for (const p of [`${process.env.GITHUB_WORKSPACE}/.cola-central/vendored/scripts/cola-prioridad.cjs`, `${process.env.GITHUB_WORKSPACE}/scripts/cola-prioridad.cjs`]) {
+              try { COLA = require(p); break; } catch (e) { /* siguiente ubicación */ }
+            }
+            if (!COLA) core.warning('cola-prioridad no disponible — la cola sale FIFO (statu quo).');
+            if (COLA) {
+              try {
+                const urgente = await COLA.cederEslabon({ github, owner: context.repo.owner, repo: context.repo.repo,
+                  siguiente: nextIssue, origen: `sentinel de cierre del Creator en #${prNumber}` });
+                if (urgente) {
+                  core.notice(`Épica: #${nextIssue} SUSPENDIDO (cesión a la prioridad:urgente #${urgente}); la cola lo arma después.`);
+                  return;
+                }
+              } catch (e) { core.warning(`cesión a urgente falló (${e.message}) — #${nextIssue} se lanza por su cadena, como siempre.`); }
+            }
+
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -3318,10 +3403,22 @@ jobs:
           github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
           script: |
             const { owner, repo } = context.repo;
+            // central#313: orden de la cola por prioridad (`cola-prioridad.cjs`,
+            // checkout sparse `.cola-central`; respaldo: la copia injertada en
+            // `scripts/`). Sin módulo, FIFO (statu quo) — degradación, nunca peor.
+            let COLA = null;
+            for (const p of [`${process.env.GITHUB_WORKSPACE}/.cola-central/vendored/scripts/cola-prioridad.cjs`, `${process.env.GITHUB_WORKSPACE}/scripts/cola-prioridad.cjs`]) {
+              try { COLA = require(p); break; } catch (e) { /* siguiente ubicación */ }
+            }
+            if (!COLA) core.warning('cola-prioridad no disponible — la cola sale FIFO (statu quo).');
             try {
               const { data: queued } = await github.rest.issues.listForRepo({
-                owner, repo, state: 'open', labels: 'en-cola', sort: 'created', direction: 'asc', per_page: 5 });
-              const next = queued.filter(i => !i.pull_request)[0];
+                owner, repo, state: 'open', labels: 'en-cola', sort: 'created', direction: 'asc', per_page: 100 });
+              if (!queued.some(i => !i.pull_request)) return;
+              // central#313: la cabeza por prioridad (espejo de popQueue/armQueue).
+              const next = (COLA
+                ? await COLA.ordenarConSuspension({ github, owner, repo, items: queued, warn: (m) => core.warning(m) })
+                : queued.filter(i => !i.pull_request))[0];
               if (!next) return;
               const { data: prs } = await github.rest.pulls.list({ owner, repo, state: 'open', per_page: 100 });
               const held = prs.filter(p => p.head.ref.startsWith('claude/')).map(p => `#${p.number}`);
@@ -3357,7 +3454,7 @@ jobs:
               await github.rest.issues.removeLabel({ owner, repo, issue_number: next.number, name: 'en-cola' }).catch(() => {});
               await github.rest.issues.removeLabel({ owner, repo, issue_number: next.number, name: 'stalled' }).catch(() => {});
               await github.rest.issues.createComment({ owner, repo, issue_number: next.number,
-                body: `@claude arranca — turno de cola: la serie quedó libre (barrido de cola al cierre del job: el encolado no era visible en la lectura primaria — AP-062). Eras el más antiguo en \`en-cola\`.\n\n<!-- arm-de-cola -->` });
+                body: `@claude arranca — turno de cola: la serie quedó libre (barrido de cola al cierre del job: el encolado no era visible en la lectura primaria — AP-062). ${COLA ? COLA.describir(next) : 'Eras el más antiguo en \`en-cola\`.'}\n\n<!-- arm-de-cola -->` });
               core.warning(`barrido de cola al cierre: serie LIBRE con cola NO vacía — armado #${next.number} (la lectura primaria de este job no vio el encolado).`);
             } catch (e) {
               core.warning(`barrido de cola al cierre falló: ${e.message}`);
