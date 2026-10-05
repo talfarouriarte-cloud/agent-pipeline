@@ -205,6 +205,100 @@ jobs:
             }
             core.setOutput('paused', paused);
 
+      # Vuelo único del Creator en contexto PR (central#309, ruling mensual
+      # 2026-10-05). El árbitro de AP-033 (ganador = menor `run_id`) sólo corría
+      # en contexto issue (Guard serial): dos disparos sobre un PR ya abierto
+      # (`issue_comment` sobre PR, `pull_request_review_comment`,
+      # `pull_request_review`) con un minuto de diferencia producían dos
+      # sesiones del Creator sobre la MISMA rama (finplan#2677 y #2689, dos
+      # cancelaciones manuales en un día). Contendientes = runs de este workflow
+      # caller `in_progress`/`queued`, con `run_id` MENOR, sobre el MISMO item
+      # (título del PR, título del issue de su rama `claude/issue-N-*`, o misma
+      # `head_branch`) y cuyo job del Creator NO está `skipped`: un comentario
+      # sin trigger lanza un run que muere en el `if` del job y no puede tumbar
+      # a un disparo legítimo. Sin reintento temporizado: el más nuevo siempre
+      # ve al más viejo y la decisión por id es determinista. El perdedor sale
+      # SIN sesión y deja UNA línea sin marcador ni mención (token del job: su
+      # comentario no dispara nada). Ninguna rama de este step cuelga
+      # `stalled`, `human-needed` ni `serial-activo`. Fail-closed sólo en lo
+      # ilegible (jobs de un contendiente sin leer ⇒ cuenta): perder un ping
+      # es visible y se repite; un doble Creator no. API de runs caída ⇒ pasa
+      # (statu quo previo). Banco: scripts/check-flight-guard.mjs.
+      - name: Guard de vuelo único — un Creator por PR (contexto PR)
+        id: check_flight
+        if: |
+          steps.check_pause.outputs.paused != 'true'
+          && (
+            (github.event_name == 'issue_comment' && github.event.issue.pull_request)
+            || github.event_name == 'pull_request_review'
+            || github.event_name == 'pull_request_review_comment'
+          )
+        uses: actions/github-script@v7
+        env:
+          DEFAULT_GH_TOKEN: ${{ github.token }}
+        with:
+          github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const number = context.payload.pull_request?.number || context.payload.issue?.number;
+            let pr = context.payload.pull_request || null;
+            if (!pr || !pr.head) {
+              try { ({ data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: number })); }
+              catch (e) { pr = null; core.warning(`vuelo único: PR #${number} ilegible (${e.message}); se identifica sólo por título.`); }
+            }
+            const titles = new Set([pr?.title || context.payload.issue?.title].filter(Boolean));
+            const branch = pr?.head?.ref || '';
+            const m = branch.match(/^claude\/issue-(\d+)-/);
+            if (m) {
+              try {
+                const { data: src } = await github.rest.issues.get({ owner, repo, issue_number: Number(m[1]) });
+                if (src.title) titles.add(src.title);
+              } catch (e) { core.info(`vuelo único: issue #${m[1]} de la rama ilegible (${e.message}).`); }
+            }
+            // Mismo filtro de edad que el Guard serial (runs fantasma en `queued`).
+            const MAX_RUN_AGE_MS = 6 * 60 * 60 * 1000;
+            const nowMs = Date.now();
+            const runs = [];
+            try {
+              for (const status of ['in_progress', 'queued']) {
+                const { data } = await github.rest.actions.listWorkflowRunsForRepo({ owner, repo, status, per_page: 100 });
+                runs.push(...(data.workflow_runs || []).filter(r =>
+                  (nowMs - new Date(r.created_at).getTime()) < MAX_RUN_AGE_MS));
+              }
+            } catch (e) {
+              core.warning(`vuelo único: no se pudo listar runs (${e.message}); se deja pasar (statu quo previo).`);
+              core.setOutput('blocked', 'false');
+              return;
+            }
+            const older = runs.filter(r => r.name === context.workflow
+              && r.id < context.runId
+              && (titles.has(r.display_title) || (branch && r.head_branch === branch)));
+            const contenders = [];
+            for (const r of older) {
+              let live = true;
+              try {
+                const { data: jl } = await github.rest.actions.listJobsForWorkflowRun({ owner, repo, run_id: r.id, per_page: 50 });
+                const jobs = jl.jobs || [];
+                const creatorJobs = jobs.filter(j => j.name === 'claude' || / \/ claude$/.test(j.name || ''));
+                const pool = creatorJobs.length ? creatorJobs : jobs;
+                if (pool.length && pool.every(j => j.conclusion === 'skipped')) live = false;
+              } catch (e) {
+                core.warning(`vuelo único: jobs del run ${r.id} ilegibles (${e.message}); cuenta como contendiente.`);
+              }
+              if (live) contenders.push(r.id);
+            }
+            if (contenders.length === 0) {
+              core.setOutput('blocked', 'false');
+              return;
+            }
+            const winner = Math.min(...contenders);
+            const gh = getOctokit(process.env.DEFAULT_GH_TOKEN);
+            await gh.rest.issues.createComment({ owner, repo, issue_number: number,
+              body: `ya hay un Creator en vuelo (run ${winner}); este disparo se descarta — repítelo cuando termine.` })
+              .catch(e => core.warning(`vuelo único: comentario de descarte falló (${e.message}).`));
+            core.setOutput('blocked', 'true');
+            core.warning(`vuelo único: run ${context.runId} cede ante ${winner} sobre #${number}.`);
+
       # Cap de iteraciones: si en este PR ya hay 3+ comentarios de
       # claude[bot] y el disparo viene de un bot (Reviewer), asume
       # loop runaway, añade label `human-needed` y para. Si el
@@ -216,7 +310,7 @@ jobs:
       # efectivas Reviewer↔Creator).
       - name: Check iteration cap (PR contexts only)
         id: check_iterations
-        if: steps.check_pause.outputs.paused != 'true'
+        if: steps.check_pause.outputs.paused != 'true' && steps.check_flight.outputs.blocked != 'true'
         uses: actions/github-script@v7
         with:
           script: |
@@ -627,6 +721,7 @@ jobs:
           && steps.check_chain.outputs.broken != 'true'
           && steps.check_panel.outputs.blocked != 'true'
           && steps.check_serial.outputs.blocked != 'true'
+          && steps.check_flight.outputs.blocked != 'true'
         uses: actions/checkout@v4
         with:
           # fetch-depth: 0 trae todo el historial. Necesario para que Claude
@@ -674,6 +769,7 @@ jobs:
           && steps.check_chain.outputs.broken != 'true'
           && steps.check_panel.outputs.blocked != 'true'
           && steps.check_serial.outputs.blocked != 'true'
+          && steps.check_flight.outputs.blocked != 'true'
           && (
             (github.event_name == 'issue_comment' && !github.event.issue.pull_request)
             || github.event_name == 'issues'
@@ -1018,6 +1114,7 @@ jobs:
           && steps.check_chain.outputs.broken != 'true'
           && steps.check_panel.outputs.blocked != 'true'
           && steps.check_serial.outputs.blocked != 'true'
+          && steps.check_flight.outputs.blocked != 'true'
           && (
             (github.event_name == 'issue_comment' && !github.event.issue.pull_request)
             || github.event_name == 'issues'
@@ -1042,9 +1139,10 @@ jobs:
         # post-step de re-review sigue acotado por su propio `if`.
         id: pr_head_before
         if: |
+          steps.check_flight.outputs.blocked != 'true' && (
           (github.event_name == 'issue_comment' && github.event.issue.pull_request)
           || github.event_name == 'pull_request_review'
-          || github.event_name == 'pull_request_review_comment'
+          || github.event_name == 'pull_request_review_comment')
         uses: actions/github-script@v7
         with:
           script: |
@@ -1083,6 +1181,7 @@ jobs:
           && steps.check_chain.outputs.broken != 'true'
           && steps.check_panel.outputs.blocked != 'true'
           && steps.check_serial.outputs.blocked != 'true'
+          && steps.check_flight.outputs.blocked != 'true'
           && steps.pr_head_before.outputs.ref != ''
           && steps.pr_head_before.outputs.same_repo == 'true'
         env:
@@ -1099,6 +1198,7 @@ jobs:
           && steps.check_chain.outputs.broken != 'true'
           && steps.check_panel.outputs.blocked != 'true'
           && steps.check_serial.outputs.blocked != 'true'
+          && steps.check_flight.outputs.blocked != 'true'
         uses: talfarouriarte-cloud/agent-pipeline/.github/actions/graft-vendored@main
 
       # AP-085 (2026-09-08): hedge INERTE ante el fallo del instalador nativo de
@@ -1112,6 +1212,7 @@ jobs:
           && steps.check_chain.outputs.broken != 'true'
           && steps.check_panel.outputs.blocked != 'true'
           && steps.check_serial.outputs.blocked != 'true'
+          && steps.check_flight.outputs.blocked != 'true'
         run: mkdir -p "$HOME/.local/bin"
 
       - name: Run Claude Code
@@ -1121,6 +1222,7 @@ jobs:
           && steps.check_chain.outputs.broken != 'true'
           && steps.check_panel.outputs.blocked != 'true'
           && steps.check_serial.outputs.blocked != 'true'
+          && steps.check_flight.outputs.blocked != 'true'
         # Blindaje de auth: forzamos OAuth Max como única vía de auth para el
         # Creator. Razón: la action `anthropics/claude-code-action@v1` usa
         # internamente la SDK estándar de Anthropic, que lee
@@ -1450,6 +1552,7 @@ jobs:
           always()
           && steps.preflight.outputs.dead != 'true'
           && steps.check_serial.outputs.blocked != 'true'
+          && steps.check_flight.outputs.blocked != 'true'
           && (
             (github.event_name == 'issue_comment' && !github.event.issue.pull_request)
             || github.event_name == 'issues'
@@ -1501,6 +1604,7 @@ jobs:
           always()
           && steps.preflight.outputs.dead != 'true'
           && steps.check_serial.outputs.blocked != 'true'
+          && steps.check_flight.outputs.blocked != 'true'
           && (
             (github.event_name == 'issue_comment' && !github.event.issue.pull_request)
             || github.event_name == 'issues'
@@ -1640,6 +1744,8 @@ jobs:
           # epic-merge (Fase C): inputs y outputs de steps via env.
           STEP_CREATOR_OUTCOME: ${{ steps.creator.outcome }}
           IN_DEFAULT_BRANCH: ${{ inputs.default_branch }}
+          # central#309: firma de «la sesión existió» (ver ramal al inicio del script).
+          EXEC_FILE: ${{ steps.creator.outputs.execution_file }}
           # AP-094: token por defecto SOLO para el `markReady` del draft huérfano.
           # Con el PAT, el `ready_for_review` que emite convocaría al Reviewer
           # (trigger nuevo del stub) Y el `needs-review` por PAT de a continuación
@@ -1660,6 +1766,32 @@ jobs:
             const { owner, repo } = context.repo;
             const issue = context.payload.issue;
             const n = issue.number;
+            // central#309 (ruling mensual 2026-10-05; falso `stalled` en la propia
+            // #309, run 37278082763): la firma de AP-036 exige que la sesión
+            // EXISTIÓ. Si `claude-code-action` no llegó a lanzarla (su detector de
+            // trigger no reconoció el disparo: «No trigger found, skipping
+            // remaining steps») el step termina `success` SIN execution file
+            // (ENOENT) — no hubo Creator que muriera ni prosa de cierre que rular.
+            // Ramal: se libera `serial-activo` si lo colgó este arm (y la cola
+            // recibe su turno, como en todo fin de turno que suelta la serie) y NO
+            // se cuelga `stalled` ni marcador. Exige `success`: un fallo de la
+            // action sin execution file sigue el camino de siempre (fail-closed:
+            // puede haber trabajo empujado que diagnosticar).
+            {
+              const fs = require('fs');
+              const f = process.env.EXEC_FILE || `${process.env.RUNNER_TEMP || '/tmp'}/claude-execution-output.json`;
+              let sessionExisted = true;
+              try { fs.accessSync(f, fs.constants.R_OK); } catch (e) { sessionExisted = false; core.info(`execution file ausente (${e.message}).`); }
+              if (!sessionExisted && process.env.STEP_CREATOR_OUTCOME === 'success') {
+                const held = (await liveLabels()).includes('serial-activo');
+                if (held) {
+                  await github.rest.issues.removeLabel({ owner, repo, issue_number: n, name: 'serial-activo' }).catch(() => {});
+                  await popQueue(n, `arm sin sesión de #${n}`);
+                }
+                core.notice(`#${n}: la action no lanzó sesión (sin execution file) — sin stalled ni marcador; serie ${held ? 'liberada + cola' : 'no ocupada'}.`);
+                return;
+              }
+            }
             // ¿Murió/terminó DESPUÉS de abrir su PR? Entonces gobierna el flujo
             // PR-driven — SALVO que el PR siga en DRAFT (AP-047, aterrizaje del
             // draft-en-primer-hito). El Creator abre el PR en DRAFT en su PRIMER push
@@ -2363,6 +2495,7 @@ jobs:
           && steps.check_chain.outputs.broken != 'true'
           && steps.check_panel.outputs.blocked != 'true'
           && steps.check_serial.outputs.blocked != 'true'
+          && steps.check_flight.outputs.blocked != 'true'
           && (
             github.event_name == 'pull_request_review'
             || github.event_name == 'pull_request_review_comment'
@@ -2709,6 +2842,7 @@ jobs:
           && steps.check_chain.outputs.broken != 'true'
           && steps.check_panel.outputs.blocked != 'true'
           && steps.check_serial.outputs.blocked != 'true'
+          && steps.check_flight.outputs.blocked != 'true'
           && (
             github.event_name == 'pull_request_review'
             || github.event_name == 'pull_request_review_comment'
@@ -2875,6 +3009,7 @@ jobs:
           && steps.check_chain.outputs.broken != 'true'
           && steps.check_panel.outputs.blocked != 'true'
           && steps.check_serial.outputs.blocked != 'true'
+          && steps.check_flight.outputs.blocked != 'true'
         uses: actions/github-script@v7
         with:
           # PAT, NO GITHUB_TOKEN: el @claude posteado debe disparar la
@@ -2968,6 +3103,7 @@ jobs:
           && steps.check_pause.outputs.paused != 'true'
           && steps.post_muerte_sin_pr.outputs.armed != 'true'
           && steps.launch_next.outputs.armed != 'true'
+          && steps.check_flight.outputs.blocked != 'true'
         uses: actions/github-script@v7
         with:
           # PAT, NO GITHUB_TOKEN: el `@claude` posteado debe disparar la

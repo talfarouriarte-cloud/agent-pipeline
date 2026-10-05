@@ -873,6 +873,8 @@ Resultado: **CERO Creators + `serial-activo` orfanado** hasta que lo sanee el wa
 **Falsable.** Paradas de cadena con humano de primera línea por esta clase: deben caer a 0 (el humano solo por doble rebote o veredicto (c)). Si architect-resolve rula mal ≥2 veces sobre prosa clara, el siguiente escalón es estructurar el cierre del Creator por template inyectado en el arm, no volver a `human-needed`.
 
 **Fecha.** 2026-07-20.
+
+**Enmienda (2026-10-05, AP-100).** El ramal no-declarado exige que **la sesión existió**. Con el step de la action en `success` y sin execution file (`claude-code-action` no reconoció el trigger: «No trigger found», sin sesión), el post-step «Materializar muerte del Creator sin PR» no aplica el default del punto 1: no cuelga `stalled` ni marcador; libera `serial-activo` si este arm la tenía, con pop de cola. Un fallo de la action sin execution file sigue el default de AP-036. Incidente que lo motiva: `stalled` falso sobre central#309 (run 37278082763). Detalle en AP-100 §Decisión 2.
 ---
 
 ## AP-037 — Cierre AUTÓNOMO de las completitudes por-estado: architect-resolve verifica el veredicto contra HEAD con verificación materializada y cierra `completed` (rectificación de AP-019 «opción A sin necesidad»; enmienda de AP-020/AP-026)
@@ -2695,3 +2697,21 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 **Riesgos y residuales.** (a) **Process-reviewer «sin dato».** `process-review.yml` no tiene clasificador de ejecución, así que no emite `model-usage`. La dependencia del ruling se documenta y el hueco se abre como residual para el Architect en la sección «Alcance restante» del PR: añadir a `process-review.yml` el step clasificador AP-091 con la anotación `model-usage`. **Cerrado** (2026-09-30, segundo PR de #281): `process-review.yml` gana el step «Anotar el consumo LLM (model-usage, AP-099)», con el mismo materializador que el clasificador AP-091 pero sin los marcadores `llm-flota:`: la firma de flota del Watchdog no lee ese workflow, así que no tendrían consumidor. En el ledger, `process-review` = process-reviewer. `check-liveness-belts.mjs` exige que su anotación sea idéntica a la del clasificador con la misma entrada. (b) **Sin retroactividad.** Las sesiones anteriores al merge no tienen anotación, así que la primera auditoría de octubre tendrá cobertura parcial y la tendencia de 3 auditorías nace vacía («sin serie», no se reconstruye). (c) **TTL de caché.** El `modelUsage` no separa el TTL de los writes; un write a 1 h (2× input) queda infraponderado al precio de 5 min (1,25×). Límite declarado en la tabla. (d) **Precios que caducan.** La tabla la mantiene el humano; `check-contracts` solo caza los modelos AUSENTES, no los precios desactualizados. (e) **Goodhart.** Mitigado por el par obligatorio fuga/rework, por la serie de control que no decide y por la prohibición de recortar presupuesto sin cruzarlo con las muertes por presupuesto.
 
 **Fecha.** 2026-09-30.
+
+## AP-100 — Vuelo único del Creator en contexto PR, firma de «la sesión existió» en el post-step de muerte sin PR y `pause-agents` como hold de intervención en vuelo (2026-10-05)
+
+**Contexto.** Ruling de la revisión mensual 2026-10-05 (P0 fuera de ciclo, OK del propietario) sobre central#309. Dos Creators en vuelo sobre la misma rama de PR en un día (finplan#2677 y #2689), cancelados a mano: el árbitro de AP-033 (ganador = menor `run_id`) solo corría en contexto issue. Además, el propio #309 recibió un `stalled` falso (run 37278082763): `claude-code-action` no reconoció el trigger, no lanzó sesión y terminó `success` sin execution file, y el post-step «Materializar muerte del Creator sin PR» lo leyó como terminal no-declarado (AP-036).
+
+**Decisión (ruling; prevalece sobre la propuesta).**
+
+1. **Vuelo único en contexto PR** (`claude-code.yml`, step `check_flight`, justo tras el kill-switch `pause-agents`). En `issue_comment` sobre PR, `pull_request_review_comment` y `pull_request_review`, son contendientes los runs del mismo workflow caller `in_progress`/`queued` (filtro de edad de 6 h, como el Guard serial), con `run_id` menor, sobre el mismo item (título del PR, título del issue de su rama `claude/issue-N-*`, o misma `head_branch`) y cuyo job del Creator NO está `skipped`. Si hay alguno, el run sale sin sesión y deja una línea sin marcador ni mención, con el token del job: «ya hay un Creator en vuelo (run N); este disparo se descarta — repítelo cuando termine». Sin reintento temporizado. Ninguna rama cuelga `stalled`, `human-needed` ni `serial-activo`. Jobs ilegibles de un contendiente ⇒ cuenta (perder un ping es visible y se repite; un doble Creator no). API de runs caída ⇒ pasa (statu quo).
+2. **Firma de AP-036 enmendada:** exige que la sesión existió (`success` sin execution file ⇒ sin `stalled` ni marcador, libera `serial-activo` con pop de cola; fallo sin execution file ⇒ default de AP-036). La enmienda vive en el bloque de AP-036 («Enmienda (2026-10-05, AP-100)»).
+3. **`protocol.md`:** `pause-agents` la pone «Humano o Architect» y sirve de hold de intervención en vuelo: poner → esperar a que acaben los runs del ítem → escribir → quitar + un único disparo explícito.
+
+**Qué NO.** No se crea `architect-hold` (`pause-agents` ya corta Creator, Reviewer, Watchdog y epic-merge, y quitarla no relanza nada). No se tocan `reviewer.yml` (serializado por PR en el stub), `watchdog.yml`, `epic-merge.yml` ni `templates/labels*.json`. Superficie `workflow_call` sin cambios. La línea de `docs/agents/architect.md` de cada consumidor es eje local.
+
+**Banco.** `scripts/check-flight-guard.mjs` (piggyback de `check-embedded-js.mjs`): ejecuta los scripts embebidos reales contra un doble de la API y cubre los tres criterios del ruling.
+
+**Criterio falsable.** En el siguiente ciclo de finplan: cero cancelaciones manuales de Creators duplicados y cero `stalled` por job sin sesión.
+
+**Fecha.** 2026-10-05.
