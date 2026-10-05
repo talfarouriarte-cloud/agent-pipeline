@@ -87,7 +87,7 @@ async function pop(R) {
 // cierre por estado) y el step `launch_next`: ceder si hay urgente; si no,
 // armar #N por su cadena (`epic-auto-launch`).
 async function consumirLaunchNext(R, siguiente) {
-  const urgente = await m.cederEslabon({ ...R, siguiente, origen: 'merge de #PR' });
+  const urgente = await m.cederEslabon({ ...R, siguiente, origen: 'merge de #10', origenNum: 10 });
   if (urgente) return { cedido: true, armado: await pop(R) };
   await R.github.rest.issues.createComment({ owner: R.owner, repo: R.repo, issue_number: siguiente,
     body: '@claude\n\nArranque automático de épica.\n\n<!-- epic-auto-launch -->' });
@@ -111,7 +111,8 @@ const coment = (i, R) => R.st.get(i).comments.map((c) => c.body).join('\n');
   const r = await consumirLaunchNext(R, 11);
   caso('(a) urgente en cola + merge de eslabón ⇒ hay cesión', r.cedido === true);
   caso('(a) …y se arma la urgente #8 (arm-de-cola), no el eslabón', r.armado === 8 && /<!-- arm-de-cola -->/.test(coment(8, R)) && !lbl(8, R).includes('en-cola'));
-  caso('(a) …el eslabón #11 queda `en-cola` con el marcador `eslabon-suspendido`', lbl(11, R).includes('en-cola') && /^<!-- eslabon-suspendido -->$/m.test(coment(11, R)));
+  // Literal del ruling: `<!-- eslabon-suspendido: #<PR mergeado> -->` (aquí el PR #10).
+  caso('(a) …el eslabón #11 queda `en-cola` con el marcador del ruling `<!-- eslabon-suspendido: #10 -->`', lbl(11, R).includes('en-cola') && /^<!-- eslabon-suspendido: #10 -->$/m.test(coment(11, R)));
   caso('(a) …y #11 NO recibe arm de cadena (`epic-auto-launch`) — nunca dos a la vez', !/epic-auto-launch|@claude/.test(coment(11, R)));
   caso('(a) …el arm de la urgente declara su nivel', /nivel 1: urgente/.test(coment(8, R)));
 
@@ -159,10 +160,13 @@ const coment = (i, R) => R.st.get(i).comments.map((c) => c.body).join('\n');
 // ── Bordes ────────────────────────────────────────────────────────────────
 {
   const sus = (body, aa = 'OWNER') => m.esSuspendido([{ body, author_association: aa }]);
-  caso('marcador en línea propia de autor de confianza ⇒ suspendido', sus('texto\n\n<!-- eslabon-suspendido -->'));
-  caso('marcador CITADO entre backticks ⇒ NO suspende (AP-063)', !sus('el marcador `<!-- eslabon-suspendido -->` significa…'));
-  caso('marcador dentro de un bloque cercado ⇒ NO suspende', !sus('```\n<!-- eslabon-suspendido -->\n```'));
-  caso('marcador de autor sin confianza ⇒ NO suspende', !sus('<!-- eslabon-suspendido -->', 'NONE'));
+  caso('marcador del ruling en línea propia de autor de confianza ⇒ suspendido', sus('texto\n\n<!-- eslabon-suspendido: #1234 -->'));
+  caso('marcador sin número (lectura tolerante) ⇒ suspendido', sus('<!-- eslabon-suspendido -->'));
+  caso('`marcaSuspendido(1234)` emite el literal del ruling', m.marcaSuspendido(1234) === '<!-- eslabon-suspendido: #1234 -->');
+  caso('los guards en línea de claude-code aceptan el literal que emite el módulo', m.SUSPENDIDO_RE.test(m.marcaSuspendido(7)));
+  caso('marcador CITADO entre backticks ⇒ NO suspende (AP-063)', !sus('el marcador `<!-- eslabon-suspendido: #5 -->` significa…'));
+  caso('marcador dentro de un bloque cercado ⇒ NO suspende', !sus('```\n<!-- eslabon-suspendido: #5 -->\n```'));
+  caso('marcador de autor sin confianza ⇒ NO suspende', !sus('<!-- eslabon-suspendido: #5 -->', 'NONE'));
   const urgSelf = [{ number: 11, created_at: T(1), labels: [{ name: 'prioridad:urgente' }, { name: 'en-cola' }] }];
   caso('el eslabón siguiente no se cede a sí mismo aunque lleve urgente', m.urgenteParaCeder(urgSelf, 11) === null);
   const dosUrg = [
@@ -208,6 +212,10 @@ if (existsSync(EM) && existsSync(CC)) {
   caso('claude-code step `launch_next`: cede ANTES de postear el `@claude`', ln.indexOf('COLA.cederEslabon(') !== -1 && ln.indexOf('COLA.cederEslabon(') < ln.lastIndexOf('body: \'@claude\''));
   caso('claude-code guard de cadena: `arm-de-cola` + `eslabon-suspendido` cuenta como re-arm de cadena',
     /armBody\.includes\('arm-de-cola'\)[^]*?eslabon-suspendido/.test(cuerpo(cc, '- name: Check epic chain integrity', '- name: Check panel consumed')));
+  // Las dos copias en línea de la regex (los guards corren antes del checkout
+  // del módulo) aceptan el literal que el módulo emite.
+  const inl = [...cc.matchAll(/\/(\^\[ \\t\]\*<!--\\s\*eslabon-suspendido[^/]*)\/m\.test\(/g)].map((x) => new RegExp(x[1], 'm'));
+  caso('claude-code: las DOS regex en línea de los guards aceptan `<!-- eslabon-suspendido: #N -->`', inl.length === 2 && inl.every((re) => re.test(m.marcaSuspendido(42))));
   caso('claude-code guard de panel: `eslabon-suspendido` cuenta como reanudación',
     /const isResumption[^;]*eslabon-suspendido/.test(cuerpo(cc, '- name: Check panel consumed', '- name: Checkout repository')));
   // Ningún punto de cola conserva la lectura FIFO de 5 ítems (con prioridades,
