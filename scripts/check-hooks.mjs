@@ -79,6 +79,11 @@ try {
   writeFileSync(join(wt, 'a.ts'), 'b');
   bank.push(['upstream, dirty, tests scoped ⇒ BLOQUEA', run('npx vitest run a.ts', wt), 2]);
   bank.push(['upstream, dirty, bench ⇒ BLOQUEA', run('pnpm --filter app bench', wt), 2]);
+  // AP-101 (central#300): formas de runner que el ERE no reconocía.
+  bank.push(['upstream, dirty, node node_modules/.bin/vitest scoped ⇒ BLOQUEA', run('node node_modules/.bin/vitest run a.ts', wt), 2]);
+  bank.push(['upstream, dirty, ./node_modules/.bin/vitest scoped ⇒ BLOQUEA', run('./node_modules/.bin/vitest run a.ts', wt), 2]);
+  bank.push(['upstream, dirty, pnpm exec vitest scoped ⇒ BLOQUEA', run('pnpm exec vitest run a.ts', wt), 2]);
+  bank.push(['upstream, dirty, pnpm -F app test scoped ⇒ BLOQUEA', run('pnpm -F app test a.ts', wt), 2]);
   bank.push(['upstream, dirty, typecheck ⇒ permite (exento)', run('pnpm typecheck', wt), 0]);
   bank.push(['upstream, dirty, git push ⇒ permite (salida siempre disponible)', run('git push origin HEAD', wt), 0]);
   sh('git commit -qam edit', wt);
@@ -89,6 +94,12 @@ try {
   bank.push(['upstream, solo .claude/ sucio (graft), tests ⇒ permite (central#271)', run('npx vitest run a.ts', wt), 0]);
   sh('rm -rf .claude', wt);
   bank.push(['pusheado, suite completa ⇒ BLOQUEA (check original intacto)', run('pnpm test', wt), 2]);
+  bank.push(['pusheado, pnpm -F @scope/app test sin rutas ⇒ BLOQUEA (suite del paquete)', run('pnpm -F @scope/app test', wt), 2]);
+  bank.push(['pusheado, pnpm --filter app test sin rutas ⇒ BLOQUEA', run('pnpm --filter app test', wt), 2]);
+  bank.push(['pusheado, node node_modules/.bin/vitest sin rutas ⇒ BLOQUEA', run('node node_modules/.bin/vitest run', wt), 2]);
+  bank.push(['pusheado, node node_modules/.bin/vitest scoped ⇒ permite', run('node node_modules/.bin/vitest run src/a.test.ts', wt), 0]);
+  bank.push(['pusheado, pnpm -F app test scoped ⇒ permite', run('pnpm -F app test src/a.test.ts', wt), 0]);
+  bank.push(['pusheado, pnpm -F app typecheck ⇒ permite (no es runner)', run('pnpm -F app typecheck', wt), 0]);
   writeFileSync(join(wt, 'a.ts'), 'c');
   bank.push(['override PIPELINE_VERIFY_AFTER_PUSH=0 ⇒ permite', spawnSync('bash', [HOOK], { cwd: wt, input: JSON.stringify({ tool_input: { command: 'npx vitest run a.ts' } }), env: { ...process.env, CLAUDE_PROJECT_DIR: wt, PIPELINE_VERIFY_AFTER_PUSH: '0' }, encoding: 'utf8' }).status, 0]);
 } finally { rmSync(tmp, { recursive: true, force: true }); }
