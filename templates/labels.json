@@ -115,6 +115,11 @@
     "description": "Cola serial: sale antes que lo normal, pero espera al fin de la épica en marcha. La pone el humano o el Architect a petición suya"
   },
   {
+    "name": "pausa-cola",
+    "color": "5319e7",
+    "description": "Interruptor global: con un issue abierto con esta label la serie no arma nada nuevo (lo en vuelo termina). La pone y la retira el humano"
+  },
+  {
     "name": "auto-archivada",
     "color": "c5def5",
     "description": "Panel de auditoría cerrado mecánicamente al completar su ciclo (audit-verdict + process-proposals)"

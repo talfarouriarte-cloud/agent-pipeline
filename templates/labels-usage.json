@@ -11,7 +11,8 @@
     "stalled",
     "en-cola",
     "prioridad:urgente",
-    "prioridad:alta"
+    "prioridad:alta",
+    "pausa-cola"
   ],
   "epic-merge.yml": [
     "auditoria",
@@ -21,7 +22,8 @@
     "stalled",
     "en-cola",
     "prioridad:urgente",
-    "prioridad:alta"
+    "prioridad:alta",
+    "pausa-cola"
   ],
   "process-review.yml": [
     "auditoria",
@@ -39,7 +41,9 @@
     "lgtm",
     "needs-review",
     "serial-activo",
-    "stalled"
+    "stalled",
+    "en-cola",
+    "pausa-cola"
   ],
   "ci.yml": [
     "ci-verde",

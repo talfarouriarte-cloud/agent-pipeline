@@ -930,6 +930,8 @@ Resultado: **CERO Creators + `serial-activo` orfanado** hasta que lo sanee el wa
 **Reversibilidad.** Alta: un bloque `if (en-cola)` en el detect del watchdog, un `labels` del guard serial y dos filas de doc; se revierte restaurando `['stalled', 'en-cola']` y quitando el bloque de premisa.
 
 **Fecha.** 2026-07-20.
+
+**Enmienda (2026-10-05, AP-103).** La rama de anomalía del punto 1 ya no se alcanza para el pop muerto. Con la serie libre, un ítem `en-cola` y sin `pausa-cola`, el barrido determinista `liberarCola` del Watchdog, que corre antes del detector `issue-armed-no-pr`, arma la cabeza de la cola en ese mismo primer tick con un `arm-de-cola` normal, sin marcador de sospecha, sin ventana de asentamiento y sin architect-resolve. El «Falsable» de arriba («escalar a la etapa architect al 2º tick efectivo») deja de ser observable para ese caso: léase «se arma la cabeza en el 1er tick». `cola-huerfana` queda para el interbloqueo mismo-issue de AP-048 (serie ocupada solo por el PR propio del ítem), donde el barrido no actúa. En pausa, el ítem `en-cola` se salta antes del chequeo de premisa (AP-103 §5). Detalle en AP-103 «Riesgos declarados».
 ---
 
 ## AP-040 — La rama sin-veredicto del post-step (AP-025) MATERIALIZA la causa terminal de la sesión muerta y hace fast-path de la muerte-por-presupuesto POSITIVA: 2ª pata de AP-025, cierra la inatribuibilidad presupuesto/crash (repesca finplan#1575)
@@ -2767,5 +2769,67 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 **Riesgos declarados.** Coste de API: el pop lee los comentarios de cada ítem no urgente en cola (colas cortas en la práctica). Ventana de consistencia de la label (AP-062): si la lectura de `armQueue` tras la cesión no ve aún a la urgente, arma la cabeza visible, que puede ser el propio eslabón suspendido (la cadena sigue, la urgente espera al siguiente límite) o nada, y entonces el barrido del `finally` re-lee. Una suspensión en el cierre por estado con la serie ya ocupada por el pop del post-step espera al siguiente terminal, como cualquier ítem en cola.
 
 **Criterio falsable.** Primera `prioridad:urgente` real en finplan: se arma en el primer merge de eslabón posterior a ponerla, y la cadena reanuda justo después sin intervención manual.
+
+**Fecha.** 2026-10-05.
+
+**Enmienda (2026-10-05, AP-103).** El parche `docs/patches/AP-102-launch-next-suspension-previa.patch` del punto 4 ya no está PENDIENTE de aplicación humana: AP-103 lo aplicó tal cual (`yaSuspendido` en `postMerge` y en el step `launch_next`) y lo retiró de `docs/patches/`. Ver «Anotación sobre AP-102» en AP-103.
+
+## AP-103 — Interruptor global `pausa-cola`: la serie no arma nada nuevo y lo en vuelo termina; liberación sin intervención (2026-10-05)
+
+**Contexto.** Ruling de la revisión mensual 2026-10-05 (fuera de ciclo por decisión expresa del propietario, posición 2, sobre AP-102) sobre central#314. Incidente en asesoramiento-financiero ese mismo día: se intentó parar la cadena con `pause-agents` en #2703 y luego en #2704, y la serie siguió (pop de cola de #2704 a las 16:52:20 tras el merge del suelto #2699; la sesión del Creator ya había arrancado cuando llegó la etiqueta). `pause-agents` es por ítem y solo actúa al arrancar. No había forma de decir «terminad lo que está en vuelo, pero no arméis nada más» a nivel de repo.
+
+**Decisión (ruling; prevalece sobre la propuesta).**
+
+1. **Interruptor.** Label `pausa-cola` (la pone y la retira el humano). El repo está EN PAUSA si hay al menos un ISSUE abierto con ella. Una sola función de lectura, `leerPausa` de `vendored/scripts/cola-prioridad.cjs`: una consulta `issues?labels=pausa-cola&state=open`. FAIL-OPEN: si la consulta falla, `core.warning` y comportamiento de antes. Sin el módulo, sin pausa (statu quo). El banco comprueba que ningún workflow consulta la label por su cuenta.
+2. **Puntos de cola**, los cuatro en espejo: `armQueue` y `sweepQueueAtExit` (`epic-merge.yml`), `popQueue` y «Barrido de cola al cierre» (`claude-code.yml`). En pausa no arman nada. El diag de epic-merge (o el log, en claude-code) registra que el pop quedó retenido por `pausa-cola`. En epic-merge, `retenidoPorPausa` evita que el barrido del `finally` lo repita.
+3. **Consumidores de `launch-next`:** `postMerge` y `postStateClose` de `epic-merge.yml` (helper `retenerSiPausa`) y el step `launch_next` de `claude-code.yml`.
+   - En pausa, el eslabón siguiente `#N` NO se arma. Pasa a `en-cola` con un comentario de `retenerEslabon` que lleva `<!-- pausa-cola-retenido: #<origen> -->` Y `<!-- eslabon-suspendido: #<origen> -->`. Es el mismo mecanismo que la cesión a urgente: el eslabón sale de la cola en nivel 2. Los guards de cadena y de panel lo reconocen como reanudación. `targetAlreadyArmed` y `yaSuspendido` cuentan el `launch-next` como CONSUMIDO.
+   - `retenerEslabon` es idempotente: los dos consumidores del mismo `launch-next` (ADR-193 opción A) comentan una sola vez.
+   - La pausa va antes de la cesión de AP-102.
+   - Si la retención falla con la pausa LEÍDA, tampoco se arma: la pausa manda. El sentinel queda para el Watchdog §3, y su arm lo retendría el guard.
+4. **Guard del Creator** (`claude-code.yml`, al principio del guard serial, que ya corre solo en contexto issue y tras el checkout del módulo).
+   - En pausa, un arm desde ISSUE no arranca sesión. Cubre el arm manual, el de cola, el re-arm del Watchdog o de architect-resolve y también las auditorías: «nada nuevo».
+   - El issue queda `en-cola` con un comentario `<!-- pausa-cola-retenido -->` (`retenerArm`). Dedup por marcador dentro del episodio: no se comenta si ya hay un retenido posterior al último `arm-de-cola`.
+   - Si el arm era un re-arm de cadena (`epic-auto-launch`/`watchdog-rearm` de un issue de épica), el comentario lleva además `<!-- eslabon-suspendido -->`. Sin él, al salir por la cola, el guard de horneado lo pararía con `sin-invariantes-stall`.
+   - Va ANTES de `serial-ok`: el override serial no salta la orden del propietario.
+   - Pasan, por ser trabajo en vuelo: el issue con `serial-activo` (lo resuelve el auto-aborto de siempre, sin re-etiquetar) y el issue con PR `claude/issue-N-*` abierto (continuación, fast-path AP-048).
+   - Si la lectura de PRs falla, el issue cuenta como en vuelo desconocido y pasa al guard serial, que hace su propia lectura y bloquea si procede (review #316). Retenerlo dejaría una continuación mismo-issue `en-cola` con su PR abierto, que solo sacaría `cola-huerfana` (AP-048). Coste asumido: con ese fallo, un `serial-ok` pasa la pausa.
+   - Las rondas sobre un PR no pasan por este step.
+   - `epic-partial-relaunch` no es continuación sobre PR abierto (el parcial ya se mergeó), así que se retiene como cualquier arm desde issue.
+5. **Watchdog** (scan de `watchdog.yml`, con checkout sparse `.cola-central` del módulo).
+   - En pausa, un ítem `en-cola` se salta antes del chequeo de premisa: ni marcador de sospecha, ni `cola-huerfana`, ni anomalía `issue-armed-no-pr` que lleve a un `watchdog-rearm`. La cola retenida es legítima.
+   - `watchdog.md` §3 añade la excepción: en pausa no se consume ningún `launch-next`.
+6. **Liberación sin intervención.** Al cerrar el último issue con `pausa-cola`, su `closed` dispara `epic-merge`: `issues: [closed]` ya está en todos los stubs. El barrido `sweepQueueAtExit` del `finally` lee la pausa ausente y, con la serie libre, arma la cabeza. Es el disparo por evento alcanzable sin tocar stubs.
+   - Para el resto de casos, el primer tick del Watchdog que encuentra serie libre + `en-cola` + sin pausa hace el barrido determinista `liberarCola`.
+     - No usa LLM.
+     - Llegados a ese punto no hay ningún run vivo (gate 0).
+     - Es fail-closed como AP-062: cero PRs `claude/*`, cero `serial-activo` y ningún arm reciente de otro emisor en 5 min.
+     - Arma la cabeza en el orden de AP-102 con el `arm-de-cola` normal, posteado con el PAT (un comentario del `GITHUB_TOKEN` no dispararía al Creator).
+     - Casos que cubre: retirar la label sin cerrar el issue (el `unlabeled` no llega a ningún stub) o una serie aún ocupada al cerrar.
+   - Con la consulta de pausa fallida, `liberarCola` no barre y sigue el detector de siempre.
+   - **`eje:local`:** que también el `unlabeled` dispare la liberación exigiría añadir `issues: [unlabeled]` a un stub de consumidor. No se toca; el Watchdog lo cubre en ≤ 1 tick.
+7. **Labels y protocolo.** `pausa-cola` en `templates/labels.json` y `labels-usage.json`. Filas append-only en `protocol.md` para `pausa-cola` (labels) y `pausa-cola-retenido` (marcadores).
+8. **Banco:** `scripts/check-pausa-cola.mjs`, en el piggyback de `check-embedded-js.mjs`.
+   - Corre el módulo real contra una API en memoria y el guard serial EMBEBIDO real con el módulo inyectado.
+   - Casos del ruling:
+     - (a) pausa + merge de eslabón ⇒ eslabón `en-cola` con los dos marcadores, nada armado, segundo consumidor idempotente;
+     - (b) pausa + merge de suelto ⇒ nada armado, cero escrituras;
+     - (c) pausa + arm manual ⇒ `en-cola` + marcador, `blocked`, sin `serial-activo`, dedup, `serial-ok` no salta, re-arm de cadena con `eslabon-suspendido`;
+     - (d) contexto PR fuera del guard por su `if`, y PR propio abierto o `serial-activo`, o lectura de PRs fallida ⇒ no se retiene;
+     - (e) retirada de pausa ⇒ un solo arm, de la cabeza (eslabón retenido antes que una normal más antigua); un segundo barrido ve el arm reciente; serie ocupada ⇒ no arma;
+     - (f) consulta fallida ⇒ cadena, pop y guard como hoy, y el Watchdog no barre.
+   - Además, la costura con los workflows.
+   - Mutaciones comprobadas: con `leerPausa` siempre a `false`, sin el dedup del guard o sin la excepción de `serial-activo`, el banco se pone rojo.
+
+**Anotación sobre AP-102.** Este PR toca los mismos hunks que el parche pendiente `docs/patches/AP-102-launch-next-suspension-previa.patch` (suspensión previa por el otro consumidor de `launch-next`, review #315). Lo aplica tal cual y lo retira de `docs/patches/`. Los workflows de este cambio los publica el post-step, como pide el arm, así que el parche deja de estar pendiente de un humano.
+
+**Qué NO.** No cancela runs en vuelo ni bloquea merges de PRs ya abiertos. No sustituye a `pause-agents`, que sigue siendo el kill-switch por ítem. Superficie `workflow_call` sin cambios (`check-contracts` verde). Consumidores: nada que aplicar, salvo el `eje:local` opcional del punto 6.
+
+**Riesgos declarados.**
+- **Coste de API:** una consulta más por punto de cola que llega a decidir, y una por tick del Watchdog (las de cola solo cuando hay algo que armar o la cola no está vacía).
+- **Generalización del barrido de liberación:** el ruling lo pide para «serie libre + `en-cola` + sin pausa», así que `liberarCola` también arma en un pop muerto sin pausa previa (finplan#1702), con las mismas señales fail-closed que AP-062. Antes ese caso era `cola-huerfana` con ventana de asentamiento y architect-resolve. `cola-huerfana` queda para el interbloqueo mismo-issue (AP-048), donde hay PR abierto y el barrido no actúa.
+- **Ventana del arm del guard:** un Creator que ya pasó el guard cuando llega la pausa termina su turno. Es lo pedido: «lo en vuelo termina».
+
+**Criterio falsable.** Primera pausa real en finplan: tras ponerla, cero arms nuevos hasta retirarla; al retirarla, un arm de la cabeza de la cola en ≤ 1 tick del Watchdog (al cerrar el issue, en el mismo evento).
 
 **Fecha.** 2026-10-05.

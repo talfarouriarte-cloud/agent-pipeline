@@ -142,6 +142,15 @@ jobs:
             let COLA = null;
             try { COLA = require(`${process.env.GITHUB_WORKSPACE}/.epic-merge-central/vendored/scripts/cola-prioridad.cjs`); }
             catch (e) { core.warning(`[epic-merge] cola-prioridad no disponible (${e.message}) — cola FIFO, sin cesión a urgentes.`); }
+            // central#314: interruptor global `pausa-cola` — lectura ÚNICA del
+            // módulo (`COLA.leerPausa`), fail-open: si la consulta falla, aviso
+            // y comportamiento de antes. Sin módulo, sin pausa (statu quo).
+            // Devuelve el objeto de pausa si el repo está EN PAUSA, o null.
+            async function enPausa() {
+              if (!COLA || !COLA.leerPausa) return null;
+              const p = await COLA.leerPausa({ github, owner, repo, warn: (m) => core.warning(m) });
+              return p.pausado ? p : null;
+            }
             async function ordenCola(queued) {
               if (!COLA) return queued.filter(i => !i.pull_request);
               return COLA.ordenarConSuspension({ github, owner, repo, items: queued, warn: (m) => core.warning(m) });
@@ -211,8 +220,21 @@ jobs:
             // El step espejo de `claude-code.yml` ya se apaga por su `if`; sin
             // esta variable la simetría no existiría de este lado.
             let pausado = false;
+            // central#314: true cuando un pop de este job quedó RETENIDO por
+            // `pausa-cola` (ya registrado en el diag): el barrido del `finally`
+            // no lo repite.
+            let retenidoPorPausa = false;
             async function armQueue(prNumber, why) {
               try {
+                // central#314 (ruling, punto 2): en pausa, el pop no arma nada;
+                // queda registrado en el diag. La cola se arma sola al retirar
+                // la pausa (barrido de cierre de cualquier job o Watchdog).
+                const pausa = await enPausa();
+                if (pausa) {
+                  retenidoPorPausa = true;
+                  await diag(prNumber, `serie libre (${why}), pero el pop de cola queda RETENIDO por \`pausa-cola\` (${COLA.describirPausa(pausa)}): nada nuevo se arma hasta retirarla.`);
+                  return;
+                }
                 const { data: queued } = await github.rest.issues.listForRepo({
                   owner, repo, state: 'open', labels: 'en-cola', sort: 'created', direction: 'asc', per_page: 100 });
                 const next = (await ordenCola(queued))[0];
@@ -309,6 +331,10 @@ jobs:
                   core.info('[epic-merge] barrido de cola: el job salió por kill-switch (pause-agents/human-needed); no armo.');
                   return;
                 }
+                if (retenidoPorPausa) {
+                  core.info('[epic-merge] barrido de cola: el pop de este job ya quedó retenido por pausa-cola; no armo.');
+                  return;
+                }
                 // La lectura de cola de aquí NO es redundante con la de
                 // `armQueue` (nit 6): es el filtro BARATO que mantiene el
                 // coste del caso común —cola vacía, la abrumadora mayoría de
@@ -320,6 +346,16 @@ jobs:
                 const { data: queued } = await github.rest.issues.listForRepo({
                   owner, repo, state: 'open', labels: 'en-cola', sort: 'created', direction: 'asc', per_page: 5 });
                 if (!queued.some(i => !i.pull_request)) return;
+                // central#314: en pausa, el barrido tampoco arma. Va tras el
+                // filtro barato de existencia (cola vacía ⇒ ni se consulta).
+                // Sin pausa, este mismo barrido es la LIBERACIÓN por evento: el
+                // `closed` del último issue con `pausa-cola` dispara este job
+                // (`issues: [closed]`, ya en los stubs) y arma la cabeza.
+                const pausaSweep = await enPausa();
+                if (pausaSweep) {
+                  core.info(`[epic-merge] barrido de cola: cola NO vacía pero RETENIDA por pausa-cola (${COLA.describirPausa(pausaSweep)}); no armo.`);
+                  return;
+                }
                 const { data: prs } = await github.rest.pulls.list({ owner, repo, state: 'open', per_page: 100 });
                 const held = prs.filter(p => p.head.ref.startsWith('claude/')).map(p => `#${p.number}`);
                 if (held.length) {
@@ -704,6 +740,10 @@ jobs:
                 try { await github.rest.issues.removeLabel({ owner, repo, issue_number: next, name: stale }); }
                 catch (e) { /* 404 = no la tenía; ok */ }
               }
+              // central#314 (ruling, punto 3): en pausa, el eslabón siguiente NO
+              // se arma — queda `en-cola` retenido (nivel 2, mismo mecanismo que
+              // la cesión a urgente) y sale por la cola al retirar la pausa.
+              if (await retenerSiPausa(next, `merge de #${prNumber}`, prNumber, (m) => diag(prNumber, `MERGEADO; ${m}`))) return;
               // central#313: cesión a una `prioridad:urgente` en el límite
               // entre eslabones. La serie la deja libre ESTE merge, así que la
               // urgente se arma ya, por `armQueue` (cabeza de la cola: nivel 1).
@@ -712,6 +752,18 @@ jobs:
                 await diag(prNumber, `MERGEADO; #${next} SUSPENDIDO (cesión a la prioridad:urgente #${urgente}) — su arranque llega por la cola.`);
                 await armQueue(prNumber, `cesión entre eslabones: #${next} suspendido a favor de la urgente #${urgente}`);
                 return;
+              }
+              // Review #315 (🟡 1): si el OTRO consumidor de este `launch-next`
+              // (step `launch_next` de claude-code, ADR-193 opción A) ya
+              // suspendió #N y su urgente ya salió de la cola, la cesión de
+              // arriba no ve urgente: #N NO se arma (sale por la cola).
+              if (COLA) {
+                try {
+                  if (await COLA.yaSuspendido({ github, owner, repo, siguiente: next })) {
+                    await diag(prNumber, `MERGEADO; launch-next #${next} consumido por suspensión previa (eslabón cedido a una prioridad:urgente) — su arranque llega por la cola.`);
+                    return;
+                  }
+                } catch (e) { core.warning(`[epic-merge] lectura de suspensión de #${next} falló (${e.message}) — se arma por su cadena, como siempre.`); }
               }
               try {
                 await github.rest.issues.createComment({ owner, repo, issue_number: next,
@@ -786,6 +838,26 @@ jobs:
                 core.warning(`[epic-merge] cesión a urgente falló (${e.message}) — #${next} se arma por su cadena, como siempre.`);
                 return null;
               }
+            }
+            // ── Retención por `pausa-cola` (central#314, ruling punto 3) en los
+            // consumidores de `launch-next`. Devuelve true si el repo está EN
+            // PAUSA (el llamante NO arma #N): #N queda `en-cola` + marcadores
+            // `pausa-cola-retenido` y `eslabon-suspendido` (`COLA.retenerEslabon`).
+            // Si la retención falla con la pausa LEÍDA, tampoco se arma: la
+            // pausa manda; el sentinel queda para el Watchdog §3, cuyo arm
+            // retendría a su vez el guard del Creator. `rastro(msg)`: diag o
+            // stateCloseMark, según el camino.
+            async function retenerSiPausa(next, origen, origenNum, rastro) {
+              const pausa = await enPausa();
+              if (!pausa) return false;
+              retenidoPorPausa = true;
+              try {
+                await COLA.retenerEslabon({ github, owner, repo, siguiente: next, origen, origenNum, pausa });
+                await rastro(`\`launch-next: #${next}\` RETENIDO por \`pausa-cola\` (${COLA.describirPausa(pausa)}): #${next} queda en cola con nivel 2; sale por la cola al retirar la pausa.`);
+              } catch (e) {
+                await rastro(`\`launch-next: #${next}\` con el repo en pausa (${COLA.describirPausa(pausa)}), pero la retención falló (${e.message}); NO se arma (la pausa manda).`);
+              }
+              return true;
             }
             async function postStateClose(issue) {
               const issueNumber = issue.number;
@@ -885,6 +957,8 @@ jobs:
                 try { await github.rest.issues.removeLabel({ owner, repo, issue_number: next, name: stale }); }
                 catch (e) { /* 404 = no la tenía; ok */ }
               }
+              // central#314: en pausa, #N queda retenido en la cola (ruling, punto 3).
+              if (await retenerSiPausa(next, `cierre por estado de #${issueNumber}`, issueNumber, (m) => stateCloseMark(issueNumber, m))) return;
               // central#313: cesión a una `prioridad:urgente`. Aquí NO se
               // arma la urgente directamente: el post-step de `claude-code.yml`
               // ya hizo el pop de cola al materializar el terminal por estado

@@ -146,6 +146,125 @@ async function yaSuspendido({ github, owner, repo, siguiente }) {
   return esSuspendido(cs);
 }
 
+// ── Interruptor global `pausa-cola` (central#314, ruling mensual 2026-10-05,
+// posición 2). El repo está EN PAUSA mientras exista al menos un ISSUE abierto
+// con la label `pausa-cola` (la pone el humano). En pausa nada nuevo se arma:
+// los cuatro puntos de cola no hacen pop, los consumidores de `launch-next`
+// RETIENEN el eslabón siguiente en la cola (mismo mecanismo que la cesión a
+// una urgente) y el guard del Creator deja `en-cola` todo arm desde issue.
+// Lo que está en vuelo termina su turno (las rondas sobre un PR abierto pasan).
+// Al no quedar issues abiertos con la label, la cola se arma sola: barrido de
+// cierre de cualquier job (el `closed` del issue de pausa ya dispara
+// epic-merge) o, en su defecto, el primer tick del Watchdog (`liberarCola`).
+//
+// UNA sola función de lectura (`leerPausa`), compartida por todos los puntos.
+// FAIL-OPEN (ruling, punto 1): si la consulta falla, aviso y comportamiento
+// de antes — un 5xx no congela la serie.
+const PAUSA = 'pausa-cola';
+// Marcador del ítem retenido por la pausa. Con número (`#<PR mergeado>` o el
+// issue cerrado por estado) lo escribe el consumidor de `launch-next`; sin
+// número, el guard del Creator. Mismas reglas de lectura que el de
+// suspensión: línea propia, fuera de código, autor de confianza.
+const marcaRetenido = (origen) => (Number.isInteger(Number(origen)) && Number(origen) > 0
+  ? `<!-- pausa-cola-retenido: #${Number(origen)} -->`
+  : '<!-- pausa-cola-retenido -->');
+const RETENIDO_RE = /^[ \t]*<!--\s*pausa-cola-retenido(?::\s*#?\d+)?\s*-->[ \t]*$/m;
+const ARM_DE_COLA_RE = /<!--\s*arm-de-cola\s*-->/;
+
+async function leerPausa({ github, owner, repo, warn }) {
+  try {
+    const { data } = await github.rest.issues.listForRepo({ owner, repo, state: 'open', labels: PAUSA, per_page: 100 });
+    const issues = (data || []).filter((i) => i && !i.pull_request).map((i) => i.number);
+    return { pausado: issues.length > 0, issues, error: null };
+  } catch (e) {
+    if (warn) warn(`pausa-cola: la consulta \`issues?labels=${PAUSA}&state=open\` falló (${e.message}) — fail-open: la serie sigue como siempre.`);
+    return { pausado: false, issues: [], error: e.message };
+  }
+}
+
+const describirPausa = (p) => `\`${PAUSA}\` abierta en ${(p && p.issues && p.issues.length) ? p.issues.map((n) => `#${n}`).join(', ') : '(?)'}`;
+
+function esRetenido(comentarios) {
+  return (comentarios || []).some((c) => c && TRUSTED.has(c.author_association)
+    && RETENIDO_RE.test(despojarCodigo(c.body)));
+}
+
+// Consumidor de `launch-next` en pausa (ruling, punto 3): el eslabón siguiente
+// NO se arma; pasa a `en-cola` con el marcador de retención Y el de
+// suspensión (mismo mecanismo que la cesión a urgente): así sale de la cola
+// en nivel 2, los guards de cadena y de panel lo reconocen como reanudación y
+// `targetAlreadyArmed`/`yaSuspendido` cuentan el `launch-next` como CONSUMIDO.
+// Etiqueta antes que comentario (si el comentario falla, #N sigue en cola).
+// Idempotente: con el merge del Creator (ADR-193 opción A) consumen el MISMO
+// `launch-next` dos workflows; si el otro ya lo retuvo o suspendió, solo se
+// re-asegura la etiqueta. Devuelve true si comentó. Los errores se propagan:
+// el llamante decide.
+async function retenerEslabon({ github, owner, repo, siguiente, origen, origenNum, pausa }) {
+  await github.rest.issues.addLabels({ owner, repo, issue_number: Number(siguiente), labels: [EN_COLA] });
+  if (await yaSuspendido({ github, owner, repo, siguiente })) return false;
+  await github.rest.issues.createComment({ owner, repo, issue_number: Number(siguiente),
+    body: `**cola · eslabón retenido por \`${PAUSA}\`** (central#314): al llegar el turno de este eslabón (${origen}) el repo estaba EN PAUSA (${describirPausa(pausa)}). Este issue NO se arma ahora; queda \`${EN_COLA}\` con nivel 2 (eslabón suspendido). El sentinel \`launch-next: #${siguiente}\` cuenta como CONSUMIDO: el arranque llega por la cola (\`arm-de-cola\`) cuando no quede ningún issue abierto con \`${PAUSA}\`.\n\n${marcaRetenido(origenNum)}\n${marcaSuspendido(origenNum)}` });
+  return true;
+}
+
+// Guard del Creator en pausa (ruling, punto 4): un arm desde ISSUE no arranca
+// sesión; el issue queda `en-cola` con un comentario `pausa-cola-retenido`,
+// deduplicado por marcador DENTRO del episodio (un retenido posterior al
+// último `arm-de-cola`: la doble entrada `issues`+`issue_comment` de un mismo
+// arm, o varios arms durante la misma pausa, comentan una sola vez).
+// `cadena`: el arm era un re-arm de cadena (el guard de cadena lo eximió); se
+// añade el marcador de suspensión para que la salida por la cola conserve esa
+// exención. Devuelve true si comentó.
+async function retenerArm({ github, owner, repo, issue, cadena, pausa, comentarios }) {
+  await github.rest.issues.addLabels({ owner, repo, issue_number: Number(issue), labels: [EN_COLA] });
+  const cs = comentarios || [];
+  let ultimoArmCola = -1;
+  let ultimoRetenido = -1;
+  cs.forEach((c, i) => {
+    if (!c) return;
+    if (ARM_DE_COLA_RE.test(c.body || '')) ultimoArmCola = i;
+    if (TRUSTED.has(c.author_association) && RETENIDO_RE.test(despojarCodigo(c.body))) ultimoRetenido = i;
+  });
+  if (ultimoRetenido > ultimoArmCola) return false;
+  await github.rest.issues.createComment({ owner, repo, issue_number: Number(issue),
+    body: `**claude-code · pausa de cola** (central#314): el repo está EN PAUSA (${describirPausa(pausa)}). Mientras quede un issue abierto con \`${PAUSA}\` nada nuevo se arma: este arm NO arranca sesión y el issue queda \`${EN_COLA}\`. Al retirar la pausa, la cola se arma sola por su orden (urgente → eslabón suspendido → alta → normal), sin intervención. Lo que está en vuelo (rondas sobre un PR ya abierto) sigue.\n\n${marcaRetenido()}${cadena ? `\n${marcaSuspendido()}` : ''}` });
+  return true;
+}
+
+// Barrido de LIBERACIÓN del Watchdog (ruling, punto 6): determinista, sin LLM.
+// Arma la cabeza de la cola (orden de central#313) con el `arm-de-cola` normal
+// SOLO con identificación positiva de: pausa LEÍDA y ausente (consulta
+// fallida ⇒ no barre: el Watchdog sigue con su detector de siempre, caso (f)),
+// cola no vacía, cero PRs `claude/*` abiertos, cero `serial-activo` y ningún
+// arm reciente de otro emisor (misma ventana de 5 min que los barridos de
+// cierre, AP-062). `armar(next)` escribe el arm (en el Watchdog, con el PAT:
+// un comentario del GITHUB_TOKEN no dispararía al Creator). Devuelve
+// { accion, numero?, motivo }.
+const ARM_MARKERS = ['arm-de-cola', 'epic-auto-launch', 'epic-partial-relaunch', 'watchdog-rearm'];
+async function liberarCola({ github, owner, repo, armar, warn, ahora }) {
+  const pausa = await leerPausa({ github, owner, repo, warn });
+  if (pausa.error) return { accion: 'no-op', motivo: 'consulta de pausa fallida (fail-open: detector de siempre)' };
+  if (pausa.pausado) return { accion: 'retenido', motivo: describirPausa(pausa) };
+  const queued = await leerCola({ github, owner, repo });
+  if (!(queued || []).some((i) => i && !i.pull_request)) return { accion: 'no-op', motivo: 'cola vacía' };
+  const { data: prs } = await github.rest.pulls.list({ owner, repo, state: 'open', per_page: 100 });
+  const held = (prs || []).filter((p) => (p.head && p.head.ref || '').startsWith('claude/'));
+  if (held.length) return { accion: 'no-op', motivo: `serie ocupada por ${held.map((p) => `#${p.number}`).join(', ')}` };
+  const { data: flagged } = await github.rest.issues.listForRepo({ owner, repo, state: 'open', labels: 'serial-activo', per_page: 20 });
+  if ((flagged || []).length) return { accion: 'no-op', motivo: `serie ocupada por serial-activo en ${flagged.map((i) => `#${i.number}`).join(', ')}` };
+  const corte = (ahora || Date.now()) - 5 * 60000;
+  const { data: recientes } = await github.rest.issues.listCommentsForRepo({
+    owner, repo, sort: 'created', direction: 'desc', since: new Date(corte).toISOString(), per_page: 100 });
+  const reciente = (recientes || []).find((c) => /\/issues\/\d+/.test(c.html_url || '')
+    && new Date(c.created_at).getTime() >= corte
+    && ARM_MARKERS.some((mk) => (c.body || '').includes(`<!-- ${mk} -->`)));
+  if (reciente) return { accion: 'no-op', motivo: `arm reciente de otro emisor (${reciente.html_url})` };
+  const next = (await ordenarConSuspension({ github, owner, repo, items: queued, warn }))[0];
+  if (!next) return { accion: 'no-op', motivo: 'cola sin issues' };
+  await armar(next);
+  return { accion: 'armado', numero: next.number, motivo: describir(next) };
+}
+
 // Texto de la razón de un arm de cola según el nivel del elegido.
 function describir(issue) {
   if (!issue || !issue.nivelCola) return 'Eras el más antiguo en `en-cola`.';
@@ -156,4 +275,6 @@ module.exports = {
   URGENTE, ALTA, EN_COLA, NIVELES, SUSPENDIDO_RE, marcaSuspendido,
   esSuspendido, nivel, ordenarCola, ordenarConSuspension, leerCola,
   urgenteParaCeder, cuerpoSuspension, cederEslabon, yaSuspendido, describir,
+  PAUSA, RETENIDO_RE, marcaRetenido, leerPausa, describirPausa, esRetenido,
+  retenerEslabon, retenerArm, liberarCola,
 };
