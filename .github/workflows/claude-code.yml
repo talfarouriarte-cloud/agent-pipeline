@@ -823,11 +823,62 @@ jobs:
             || github.event_name == 'issues'
           )
         uses: actions/github-script@v7
+        env:
+          IN_EPIC_LABEL: ${{ inputs.epic_label }}
         with:
           github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
           script: |
             const { owner, repo } = context.repo;
             const issue = context.payload.issue;
+            // ── Pausa de cola (central#314, ruling mensual 2026-10-05, punto 4).
+            // Mientras exista un issue ABIERTO con `pausa-cola`, un arm desde
+            // ISSUE (manual, de cola, re-arm del Watchdog o de architect-resolve,
+            // auditoría) NO arranca sesión: el issue queda `en-cola` con un
+            // comentario `<!-- pausa-cola-retenido -->` (dedup por marcador) y la
+            // cola lo arma sola al retirar la pausa. Va ANTES de `serial-ok`: la
+            // pausa es la orden explícita del propietario, el override serial no
+            // la salta. Pasan, por ser trabajo EN VUELO: el issue con
+            // `serial-activo` (re-arm concurrente: lo resuelve el auto-aborto de
+            // abajo, sin re-etiquetar) y el issue con PR `claude/issue-N-*`
+            // abierto (continuación sobre su rama, fast-path AP-048). Las rondas
+            // sobre un PR (contexto PR) ni siquiera pasan por este step.
+            // Lectura única del módulo (`leerPausa`), FAIL-OPEN: consulta fallida
+            // o módulo ausente ⇒ guard de siempre.
+            {
+              let COLA = null;
+              for (const p of [`${process.env.GITHUB_WORKSPACE}/.cola-central/vendored/scripts/cola-prioridad.cjs`, `${process.env.GITHUB_WORKSPACE}/scripts/cola-prioridad.cjs`]) {
+                try { COLA = require(p); break; } catch (e) { /* siguiente ubicación */ }
+              }
+              const pausa = (COLA && COLA.leerPausa) ? await COLA.leerPausa({ github, owner, repo, warn: (m) => core.warning(m) }) : null;
+              if (pausa && pausa.pausado) {
+                const ls = (issue.labels || []).map(l => l.name);
+                let enVuelo = ls.includes('serial-activo') ? 'serial-activo' : null;
+                if (!enVuelo) {
+                  try {
+                    const { data: prsP } = await github.rest.pulls.list({ owner, repo, state: 'open', per_page: 100 });
+                    const propio = prsP.find(p => (p.head.ref || '').startsWith(`claude/issue-${issue.number}-`));
+                    if (propio) enVuelo = `PR #${propio.number} abierto`;
+                  } catch (e) { core.warning(`pausa-cola: pulls.list falló (${e.message}); el arm se retiene.`); }
+                }
+                if (enVuelo) {
+                  core.notice(`pausa-cola (${COLA.describirPausa(pausa)}): #${issue.number} es trabajo en vuelo (${enVuelo}); pasa al guard serial.`);
+                } else {
+                  const armBody = context.payload.comment?.body || '';
+                  // Re-arm de cadena (el guard de cadena lo eximió del horneado):
+                  // el comentario lleva además `eslabon-suspendido` para que la
+                  // salida por la cola conserve esa exención.
+                  const cadena = !!process.env.IN_EPIC_LABEL && ls.includes(process.env.IN_EPIC_LABEL)
+                    && (armBody.includes('epic-auto-launch') || armBody.includes('watchdog-rearm'));
+                  let cs = [];
+                  try { cs = (await github.rest.issues.listComments({ owner, repo, issue_number: issue.number, per_page: 100 })).data; }
+                  catch (e) { core.warning(`pausa-cola: comentarios de #${issue.number} ilegibles (${e.message}); sin dedup.`); }
+                  await COLA.retenerArm({ github, owner, repo, issue: issue.number, cadena, pausa, comentarios: cs });
+                  core.setOutput('blocked', 'true');
+                  core.warning(`pausa-cola (${COLA.describirPausa(pausa)}): arm de #${issue.number} retenido en cola, sin sesión.`);
+                  return;
+                }
+              }
+            }
             if ((issue.labels || []).some(l => l.name === 'serial-ok')) {
               core.notice('serial-ok presente: guard serial omitido.');
               core.setOutput('blocked', 'false');
@@ -2137,6 +2188,13 @@ jobs:
             if (!COLA) core.warning('cola-prioridad no disponible — la cola sale FIFO (statu quo).');
             async function popQueue(fromIssue, why) {
               try {
+                // central#314 (ruling, punto 2): en pausa, el pop no arma nada.
+                // Sin `armed`: el barrido del cierre lee la pausa y tampoco arma.
+                const pausa = (COLA && COLA.leerPausa) ? await COLA.leerPausa({ github, owner, repo, warn: (m) => core.warning(m) }) : null;
+                if (pausa && pausa.pausado) {
+                  core.notice(`pop de cola (${why}): RETENIDO por pausa-cola (${COLA.describirPausa(pausa)}) — nada nuevo se arma hasta retirarla.`);
+                  return;
+                }
                 const { data: queued } = await github.rest.issues.listForRepo({
                   owner, repo, state: 'open', labels: 'en-cola', sort: 'created', direction: 'asc', per_page: 100 });
                 // central#313: urgente → eslabón suspendido → alta → normal.
@@ -3331,6 +3389,22 @@ jobs:
               try { COLA = require(p); break; } catch (e) { /* siguiente ubicación */ }
             }
             if (!COLA) core.warning('cola-prioridad no disponible — la cola sale FIFO (statu quo).');
+            // central#314 (ruling, punto 3): en pausa, #N NO se lanza — queda
+            // `en-cola` retenido (nivel 2, `COLA.retenerEslabon`, idempotente
+            // con el otro consumidor del mismo `launch-next`). Sin `armed`: el
+            // barrido del cierre lee la pausa y tampoco arma. Si la retención
+            // falla con la pausa leída, tampoco se lanza (la pausa manda).
+            if (COLA && COLA.leerPausa) {
+              const pausa = await COLA.leerPausa({ github, owner: context.repo.owner, repo: context.repo.repo, warn: (m) => core.warning(m) });
+              if (pausa.pausado) {
+                try {
+                  await COLA.retenerEslabon({ github, owner: context.repo.owner, repo: context.repo.repo,
+                    siguiente: nextIssue, origen: `sentinel de cierre del Creator en #${prNumber}`, origenNum: prNumber, pausa });
+                  core.notice(`Épica: #${nextIssue} RETENIDO en cola por pausa-cola (${COLA.describirPausa(pausa)}); sale por la cola al retirarla.`);
+                } catch (e) { core.warning(`Épica: repo en pausa (${COLA.describirPausa(pausa)}) pero la retención de #${nextIssue} falló (${e.message}); NO se lanza.`); }
+                return;
+              }
+            }
             if (COLA) {
               try {
                 const urgente = await COLA.cederEslabon({ github, owner: context.repo.owner, repo: context.repo.repo,
@@ -3340,6 +3414,15 @@ jobs:
                   return;
                 }
               } catch (e) { core.warning(`cesión a urgente falló (${e.message}) — #${nextIssue} se lanza por su cadena, como siempre.`); }
+              // Review #315 (🟡 1): espejo de `postMerge`. Si epic-merge ya
+              // suspendió #N y armó la urgente, la cesión de arriba no la ve:
+              // #N NO se lanza (sale por la cola, `arm-de-cola`).
+              try {
+                if (await COLA.yaSuspendido({ github, owner: context.repo.owner, repo: context.repo.repo, siguiente: nextIssue })) {
+                  core.notice(`Épica: launch-next #${nextIssue} consumido por suspensión previa (eslabón cedido a una prioridad:urgente); la cola lo arma después.`);
+                  return;
+                }
+              } catch (e) { core.warning(`lectura de suspensión de #${nextIssue} falló (${e.message}) — se lanza por su cadena, como siempre.`); }
             }
 
             await github.rest.issues.createComment({
@@ -3415,6 +3498,13 @@ jobs:
               const { data: queued } = await github.rest.issues.listForRepo({
                 owner, repo, state: 'open', labels: 'en-cola', sort: 'created', direction: 'asc', per_page: 100 });
               if (!queued.some(i => !i.pull_request)) return;
+              // central#314 (ruling, punto 2): en pausa, el barrido no arma
+              // (espejo de `sweepQueueAtExit`); tras el filtro de existencia.
+              const pausa = (COLA && COLA.leerPausa) ? await COLA.leerPausa({ github, owner, repo, warn: (m) => core.warning(m) }) : null;
+              if (pausa && pausa.pausado) {
+                core.info(`barrido de cola: cola NO vacía pero RETENIDA por pausa-cola (${COLA.describirPausa(pausa)}); no armo.`);
+                return;
+              }
               // central#313: la cabeza por prioridad (espejo de popQueue/armQueue).
               const next = (COLA
                 ? await COLA.ordenarConSuspension({ github, owner, repo, items: queued, warn: (m) => core.warning(m) })

@@ -402,6 +402,22 @@ jobs:
         if: github.event_name == 'workflow_run'
         run: sleep 330
 
+      # central#314: módulo compartido de la cola serial
+      # (`vendored/scripts/cola-prioridad.cjs`) para la lectura única de
+      # `pausa-cola` y el barrido de liberación del scan. Mismo patrón que el
+      # checkout sparse de epic-merge. `continue-on-error`: sin módulo, el scan
+      # se comporta como antes (sin pausa, sin barrido).
+      - name: Módulos vendored del central (cola-prioridad)
+        if: steps.preflight.outputs.dead != 'true'
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: talfarouriarte-cloud/agent-pipeline
+          ref: main
+          path: .cola-central
+          sparse-checkout: vendored/scripts
+          sparse-checkout-cone-mode: true
+
       - name: Scan for stalled work
         id: scan
         uses: actions/github-script@v7
@@ -1348,9 +1364,52 @@ jobs:
               serialActiveOpen = (await github.rest.issues.listForRepo({
                 ...O, state: 'open', labels: 'serial-activo', per_page: 20 })).data;
             } catch (e) { core.warning('premisa de serie (serial-activo): ' + e.message); }
+            // ── Pausa de cola y barrido de LIBERACIÓN (central#314, ruling
+            // mensual 2026-10-05, puntos 5 y 6). Lectura única del módulo
+            // (`leerPausa`), fail-open. EN PAUSA (issue abierto con
+            // `pausa-cola`): la cola retenida es LEGÍTIMA — ni sospecha ni
+            // `cola-huerfana` ni re-arm sobre ítems `en-cola` (abajo). SIN
+            // PAUSA: barrido determinista (sin LLM) de serie libre + `en-cola`
+            // — llegados aquí no hay ningún run del pipeline vivo (gate 0) —,
+            // que arma la cabeza por el orden de central#313 con el
+            // `arm-de-cola` normal, fail-closed (`COLA.liberarCola`: cero PRs
+            // `claude/*`, cero `serial-activo`, ningún arm reciente). El arm sale
+            // con el PAT: un comentario del GITHUB_TOKEN no dispararía al
+            // Creator. Consulta de pausa fallida ⇒ sin barrido: detector de
+            // siempre (`cola-huerfana`), caso (f) del banco.
+            let COLA = null;
+            for (const p of [`${process.env.GITHUB_WORKSPACE}/.cola-central/vendored/scripts/cola-prioridad.cjs`, `${process.env.GITHUB_WORKSPACE}/scripts/cola-prioridad.cjs`]) {
+              try { COLA = require(p); break; } catch (e) { /* siguiente ubicación */ }
+            }
+            let pausaCola = null;     // objeto de pausa si el repo está EN PAUSA
+            let colaLiberada = null;  // nº armado por el barrido de este tick
+            if (COLA && COLA.liberarCola) {
+              try {
+                const r = await COLA.liberarCola({ github, owner: O.owner, repo: O.repo,
+                  warn: (m) => core.warning(m),
+                  armar: async (next) => {
+                    try { await patCall('DELETE', `/issues/${next.number}/labels/en-cola`); } catch (e) { /* ya sin label */ }
+                    try { await patCall('DELETE', `/issues/${next.number}/labels/stalled`); } catch (e) { /* ya sin label */ }
+                    await patCall('POST', `/issues/${next.number}/comments`, {
+                      body: `@claude arranca — turno de cola: la serie quedó libre (barrido de liberación del Watchdog: sin \`pausa-cola\` abierta, serie libre y cola no vacía — central#314). ${COLA.describir(next)}\n\n<!-- arm-de-cola -->\n${CAPA}` });
+                  } });
+                if (r.accion === 'retenido') {
+                  pausaCola = r;
+                  core.notice(`pausa-cola: ${r.motivo} — cola retenida, espera legítima (sin sospecha ni cola-huerfana ni re-arm sobre en-cola).`);
+                } else if (r.accion === 'armado') {
+                  colaLiberada = r.numero;
+                  core.notice(`barrido de liberación: serie libre + en-cola + sin pausa ⇒ armado #${r.numero} (arm-de-cola). ${r.motivo}`);
+                } else {
+                  core.info(`barrido de liberación: no-op (${r.motivo}).`);
+                }
+              } catch (e) { core.warning(`barrido de liberación falló (${e.message}); sigue el detector de siempre.`); }
+            }
             for (const issue of issues) {
               if (issue.pull_request) continue;        // solo issues puros
               if (skip(issue.labels)) continue;
+              // central#314: en pausa, o con la cola recién armada por el
+              // barrido de este tick, un ítem `en-cola` no es anomalía.
+              if ((pausaCola || colaLiberada) && issue.labels.some(l => l.name === 'en-cola')) continue;
               if (ageMin(issue.updated_at) < STALL_MIN) continue;
 
               // ¿Rama de PR abierta para este issue? Entonces el trabajo vive en
