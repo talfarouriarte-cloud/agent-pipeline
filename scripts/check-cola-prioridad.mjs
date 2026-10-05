@@ -89,6 +89,8 @@ async function pop(R) {
 async function consumirLaunchNext(R, siguiente) {
   const urgente = await m.cederEslabon({ ...R, siguiente, origen: 'merge de #10', origenNum: 10 });
   if (urgente) return { cedido: true, armado: await pop(R) };
+  // Suspensión previa por el OTRO consumidor del mismo `launch-next`: no arma.
+  if (await m.yaSuspendido({ ...R, siguiente })) return { cedido: false, armado: null };
   await R.github.rest.issues.createComment({ owner: R.owner, repo: R.repo, issue_number: siguiente,
     body: '@claude\n\nArranque automático de épica.\n\n<!-- epic-auto-launch -->' });
   return { cedido: false, armado: siguiente };
@@ -122,6 +124,20 @@ const coment = (i, R) => R.st.get(i).comments.map((c) => c.body).join('\n');
   caso('(b) cierre de la urgente ⇒ sale el eslabón suspendido #11, antes que la alta #7 (más antigua)', b === 11);
   caso('(b) …el arm del eslabón es por la cola (`arm-de-cola`) y declara nivel 2', /<!-- arm-de-cola -->/.test(coment(11, R)) && /nivel 2: eslabón suspendido/.test(coment(11, R)));
   caso('(b) …y después, la alta #7 antes que la normal #5 (más antigua)', (await pop(R)) === 7 && (await pop(R)) === 5);
+}
+
+// ── Doble consumidor del mismo `launch-next` (review #315, 🟡 1): uno cede y la
+// urgente sale de la cola; el otro llega después ⇒ NO arma #N (nunca dos a la vez)
+{
+  const R = repoFalso([
+    { number: 8, created_at: T(3), labels: ['en-cola', 'prioridad:urgente'] },
+    { number: 11, created_at: T(4), labels: ['epica'] },
+  ]);
+  const primero = await consumirLaunchNext(R, 11);
+  const segundo = await consumirLaunchNext(R, 11);
+  caso('doble consumidor: el primero cede y arma la urgente #8', primero.cedido && primero.armado === 8);
+  caso('doble consumidor: el segundo (suspensión previa + cola sin urgente) NO arma #11', segundo.armado === null
+    && !/epic-auto-launch|@claude/.test(coment(11, R)) && lbl(11, R).includes('en-cola'));
 }
 
 // ── (c) alta en cola + merge de eslabón ⇒ sigue la cadena; la alta espera a epic-audit/epic-done
@@ -204,12 +220,24 @@ if (existsSync(EM) && existsSync(CC)) {
   caso('epic-merge, camino de merge: cede ANTES del arm `epic-auto-launch`', merge.indexOf('cederAUrgente(') !== -1 && merge.indexOf('cederAUrgente(') < merge.indexOf('<!-- epic-auto-launch -->'));
   const estado = cuerpo(em, 'const already = await targetAlreadyArmed(next);', 'let prNumber = null;');
   caso('epic-merge, cierre por estado (AP-031): cede ANTES del arm `epic-auto-launch`', estado.indexOf('cederAUrgente(') !== -1 && estado.indexOf('cederAUrgente(') < estado.indexOf('<!-- epic-auto-launch -->'));
+  // Suspensión previa (review #315, 🟡 1): o el workflow ya lee `yaSuspendido`
+  // antes del arm, o el parche pendiente que lo trae sigue en `docs/patches/`
+  // (la App no puede pushear workflows, ADR-020; `check-patches` vigila que
+  // aplique).
+  const PARCHE_SUS = 'docs/patches/AP-102-launch-next-suspension-previa.patch';
+  const parcheSus = existsSync(PARCHE_SUS) ? readFileSync(PARCHE_SUS, 'utf8') : '';
+  caso('epic-merge, camino de merge: respeta una suspensión previa ANTES del arm `epic-auto-launch` (o el parche pendiente lo trae)',
+    (merge.indexOf('COLA.yaSuspendido(') !== -1 && merge.indexOf('COLA.yaSuspendido(') < merge.indexOf('<!-- epic-auto-launch -->'))
+    || /^\+.*COLA\.yaSuspendido\(\{ github, owner, repo, siguiente: next \}\)/m.test(parcheSus));
   caso('epic-merge `targetAlreadyArmed`: la suspensión cuenta como `launch-next` CONSUMIDO', /COLA\.esSuspendido\(cs\)/.test(cuerpo(em, 'async function targetAlreadyArmed(', 'async function cederAUrgente(')));
   caso('claude-code: checkout sparse `.cola-central` del módulo', /path: \.cola-central/.test(cc));
   caso('claude-code `popQueue`: orden del módulo', /COLA\.ordenarConSuspension\(/.test(cuerpo(cc, 'async function popQueue(', 'core.setOutput(\'armed\'')));
   caso('claude-code «Barrido de cola al cierre»: orden del módulo', /COLA\.ordenarConSuspension\(/.test(cuerpo(cc, '- name: Barrido de cola al cierre del job', 'barrido de cola al cierre falló')));
   const ln = cuerpo(cc, '- name: Launch next epic issue', '- name: Barrido de cola al cierre del job');
   caso('claude-code step `launch_next`: cede ANTES de postear el `@claude`', ln.indexOf('COLA.cederEslabon(') !== -1 && ln.indexOf('COLA.cederEslabon(') < ln.lastIndexOf('body: \'@claude\''));
+  caso('claude-code step `launch_next`: respeta una suspensión previa ANTES de postear el `@claude` (o el parche pendiente lo trae)',
+    (ln.indexOf('COLA.yaSuspendido(') !== -1 && ln.indexOf('COLA.yaSuspendido(') < ln.lastIndexOf('body: \'@claude\''))
+    || /^\+.*COLA\.yaSuspendido\(\{ github, owner: context\.repo\.owner, repo: context\.repo\.repo, siguiente: nextIssue \}\)/m.test(parcheSus));
   caso('claude-code guard de cadena: `arm-de-cola` + `eslabon-suspendido` cuenta como re-arm de cadena',
     /armBody\.includes\('arm-de-cola'\)[^]*?eslabon-suspendido/.test(cuerpo(cc, '- name: Check epic chain integrity', '- name: Check panel consumed')));
   // Las dos copias en línea de la regex (los guards corren antes del checkout

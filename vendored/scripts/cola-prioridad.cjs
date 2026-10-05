@@ -133,6 +133,19 @@ async function cederEslabon({ github, owner, repo, siguiente, origen, origenNum 
   return urg.number;
 }
 
+// ¿El eslabón siguiente ya está SUSPENDIDO por el OTRO consumidor del mismo
+// `launch-next`? (review #315, 🟡 1). Con el merge del Creator (ADR-193 opción
+// A) consumen el sentinel DOS workflows —`postMerge` de epic-merge y el step
+// `launch_next` de claude-code—: si uno cedió y la urgente ya salió de la cola,
+// `cederEslabon` del otro devuelve null y, sin esta lectura, armaría #N por su
+// cadena EN PARALELO con la urgente. La suspensión cuenta como `launch-next`
+// CONSUMIDO (igual que en `targetAlreadyArmed`): el llamante no arma. Los
+// errores se propagan (el llamante avisa y sigue como antes).
+async function yaSuspendido({ github, owner, repo, siguiente }) {
+  const { data: cs } = await github.rest.issues.listComments({ owner, repo, issue_number: Number(siguiente), per_page: 100 });
+  return esSuspendido(cs);
+}
+
 // Texto de la razón de un arm de cola según el nivel del elegido.
 function describir(issue) {
   if (!issue || !issue.nivelCola) return 'Eras el más antiguo en `en-cola`.';
@@ -142,5 +155,5 @@ function describir(issue) {
 module.exports = {
   URGENTE, ALTA, EN_COLA, NIVELES, SUSPENDIDO_RE, marcaSuspendido,
   esSuspendido, nivel, ordenarCola, ordenarConSuspension, leerCola,
-  urgenteParaCeder, cuerpoSuspension, cederEslabon, describir,
+  urgenteParaCeder, cuerpoSuspension, cederEslabon, yaSuspendido, describir,
 };
