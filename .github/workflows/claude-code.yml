@@ -1215,6 +1215,37 @@ jobs:
           && steps.check_flight.outputs.blocked != 'true'
         run: mkdir -p "$HOME/.local/bin"
 
+      # AP-101 (review de #312): línea base del árbol ANTES de la sesión, tras el
+      # graft. El step `rescate` resta las rutas que siguen idénticas a esta foto
+      # (residuo del graft, suciedad heredada del checkout): no son trabajo del
+      # Creator y no deben abrir un re-arm. Ruta + hash del contenido (`-` si no
+      # existe): si la sesión toca una ruta ya sucia, el hash cambia y entra en
+      # el WIP. Sin foto (step fallido) el rescate se comporta como sin resta.
+      - name: Foto del árbol pre-sesión (línea base del rescate, AP-101)
+        id: arbol_pre
+        if: |
+          steps.check_pause.outputs.paused != 'true'
+          && steps.check_iterations.outputs.cap_reached != 'true'
+          && steps.check_chain.outputs.broken != 'true'
+          && steps.check_panel.outputs.blocked != 'true'
+          && steps.check_serial.outputs.blocked != 'true'
+          && steps.check_flight.outputs.blocked != 'true'
+        continue-on-error: true
+        env:
+          PRE_SNAPSHOT: ${{ runner.temp }}/arbol-pre-sesion.z
+        run: |
+          set -euo pipefail
+          : > "$PRE_SNAPSHOT"
+          while IFS= read -r -d '' e; do
+            xy=${e:0:2}; set -- "${e:3}"
+            case "$xy" in R*|C*) IFS= read -r -d '' orig || true; set -- "$1" "$orig";; esac
+            for q in "$@"; do
+              h=-; if [ -f "$q" ] || [ -L "$q" ]; then h=$(git hash-object --no-filters -- "$q" 2>/dev/null || echo '?'); fi
+              printf '%s\0%s\0' "$q" "$h" >> "$PRE_SNAPSHOT"
+            done
+          done < <(git status --porcelain=v1 -z --untracked-files=all)
+          echo "foto pre-sesión: $(tr -cd '\0' < "$PRE_SNAPSHOT" | wc -c | awk '{print $1/2}') ruta(s) sucias"
+
       - name: Run Claude Code
         if: |
           steps.check_pause.outputs.paused != 'true'
@@ -1332,6 +1363,7 @@ jobs:
         #    AP-097 (misma lista que `restoreConfigFromBase`) se commitean como
         #    WIP con `git add` SOLO de esas rutas (jamás -A: subiría la
         #    reversión de config de la base) y se pushean con los residuales;
+        #    se restan las rutas idénticas a la foto pre-sesión (`arbol_pre`);
         #  - con WIP NO se abre PR (el `opened` convocaría al Reviewer sobre un
         #    WIP): rama virgen ⇒ una línea en el issue; PR abierto ⇒ comentario
         #    con marcador `arbol-rescatado-por-estado` + `estado:esperando-architect`
@@ -1352,6 +1384,8 @@ jobs:
           # PR del evento (contexto PR): respaldo si `gh pr list` falla, para que
           # un fallo puntual de la API no mande el rescate por la rama virgen.
           EVENT_PR: ${{ github.event.pull_request.number || (github.event.issue.pull_request && github.event.issue.number) || '' }}
+          # Foto pre-sesión (step `arbol_pre`): lo que sigue idéntico no se rescata.
+          PRE_SNAPSHOT: ${{ runner.temp }}/arbol-pre-sesion.z
         run: |
           set -euo pipefail
           echo "wip=false" >> "$GITHUB_OUTPUT"
@@ -1367,7 +1401,14 @@ jobs:
           # esas rutas las reescribe la action con la versión de la base y no
           # son trabajo del Creator. `-z` para rutas con espacios y renombrados
           # (R/C traen la ruta de origen como entrada siguiente).
-          FILES=()
+          # Se resta además la foto pre-sesión (`arbol_pre`): una ruta que sigue
+          # con el mismo hash que antes de la sesión no la produjo el Creator.
+          hashof() { if [ -f "$1" ] || [ -L "$1" ]; then git hash-object --no-filters -- "$1" 2>/dev/null || echo '?'; else echo -; fi; }
+          declare -A PRE=()
+          if [ -n "${PRE_SNAPSHOT:-}" ] && [ -s "$PRE_SNAPSHOT" ]; then
+            while IFS= read -r -d '' p && IFS= read -r -d '' h; do PRE["$p"]=$h; done < "$PRE_SNAPSHOT"
+          fi
+          FILES=(); PRESKIP=0
           while IFS= read -r -d '' e; do
             xy=${e:0:2}; set -- "${e:3}"
             case "$xy" in R*|C*) IFS= read -r -d '' orig || true; set -- "$1" "$orig";; esac
@@ -1375,9 +1416,11 @@ jobs:
               case "$q" in
                 .claude|.claude/*|.claude-pr|.claude-pr/*|CLAUDE.md|CLAUDE.local.md|.mcp.json|.claude.json|.gitmodules|.ripgreprc|.husky|.husky/*) continue;;
               esac
+              if [ -n "${PRE[$q]+x}" ] && [ "${PRE[$q]}" = "$(hashof "$q")" ]; then PRESKIP=$((PRESKIP + 1)); continue; fi
               FILES+=("$q")
             done
           done < <(git status --porcelain=v1 -z --untracked-files=all)
+          [ "$PRESKIP" = "0" ] || echo "$PRESKIP ruta(s) sucias idénticas a la foto pre-sesión: fuera del rescate"
           # Referencia contra la que medir residuales: la rama remota si existe;
           # si la rama es VIRGEN (nunca pusheada), la base. Incidente central#59:
           # el fallback `|| echo "1"` inventaba AHEAD=1 sobre rama virgen SIN
@@ -1399,11 +1442,24 @@ jobs:
           [ -n "$ISSUE" ] || { [ "$EVENT_IS_PR" = "true" ] || ISSUE="$EVENT_ISSUE"; }
           # Fail-loud (ruling punto 5): commit o push fallidos dejan comentario con
           # el error (token tachado) en el PR, o en el issue sin PR, y el step rojo.
+          # Tras un push correcto (PUSHED=true: falló el comentario o el
+          # etiquetado) el WIP SÍ está en el remoto: el texto lo dice y, con PR,
+          # se reintentan los labels del turno del Creator (best-effort) para que
+          # architect-resolve re-arme por evento aunque el comentario no saliera.
+          PUSHED=false; SHA=""
           fail() {
             local what="$1" detail="${2//"$PUSH_TOKEN"/***}"
             detail=$(printf '%s\n' "$detail" | tail -n 20)
             local body
-            body=$(printf '**claude-code · rescate del árbol FALLIDO** (AP-101): el %s de `%s` falló al cierre de la sesión ([run](%s)). El trabajo sin pushear de esa sesión muere con el runner; el re-arm debe partir del último push visible.\n\n```\n%s\n```\n\n<!-- arbol-rescate-fallido -->' "$what" "$BRANCH" "$RUN_URL" "$detail")
+            if [ "$PUSHED" = "true" ]; then
+              if [ -n "$PR" ]; then
+                gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/labels" -f 'labels[]=estado:esperando-architect' >/dev/null 2>&1 || true
+                gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/labels" -f 'labels[]=stalled' >/dev/null 2>&1 || echo "::error::no se pudo aplicar stalled al PR #$PR"
+              fi
+              body=$(printf '**claude-code · rescate del árbol FALLIDO tras el push** (AP-101): el WIP `%s` **SÍ está en la rama** `%s`; falló el %s al cierre de la sesión ([run](%s)). **Para el re-arm: continúa desde la rama, no rehagas.**\n\n```\n%s\n```\n\n<!-- arbol-rescate-fallido -->' "$SHA" "$BRANCH" "$what" "$RUN_URL" "$detail")
+            else
+              body=$(printf '**claude-code · rescate del árbol FALLIDO** (AP-101): el %s de `%s` falló al cierre de la sesión ([run](%s)). El trabajo sin pushear de esa sesión muere con el runner; el re-arm debe partir del último push visible.\n\n```\n%s\n```\n\n<!-- arbol-rescate-fallido -->' "$what" "$BRANCH" "$RUN_URL" "$detail")
+            fi
             if [ -n "$PR" ]; then gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "$body" || echo "::error::no se pudo comentar el fallo en el PR #$PR"
             elif [ -n "$ISSUE" ]; then gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$body" || echo "::error::no se pudo comentar el fallo en el issue #$ISSUE"
             else echo "::error::sin PR ni issue donde comentar el fallo"; fi
@@ -1431,10 +1487,10 @@ jobs:
           fi
           echo "rescatando $BRANCH (WIP=$WIP, commits residuales previos=$AHEAD)"
           out=$(git push "$REPO_URL" "HEAD:refs/heads/$BRANCH" 2>&1) || fail "push" "$out"
+          PUSHED=true; SHA=$(git rev-parse --short HEAD)
           if [ "$WIP" = "true" ]; then
             echo "wip=true" >> "$GITHUB_OUTPUT"
             echo "pr=$PR" >> "$GITHUB_OUTPUT"
-            SHA=$(git rev-parse --short HEAD)
             LIST=$(printf -- '- `%s`\n' "${FILES[@]}" | head -n 50)
             [ "${#FILES[@]}" -le 50 ] || LIST=$(printf '%s\n- … y %s más' "$LIST" "$(( ${#FILES[@]} - 50 ))")
             if [ -n "$PR" ]; then

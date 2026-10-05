@@ -11,7 +11,9 @@
 //  3. rama virgen con árbol sucio ⇒ push SIN PR;
 //  4. fallo de push ⇒ comentario de error (sin el token) y step rojo.
 // Más: residual de solo commits sigue abriendo PR (central#46), rama fuera de
-// claude/* intacta, y las cesiones de Auto-label/turn-close-failsafe y de
+// claude/* intacta, fallo tras el push (comentario/etiquetado) que dice «SÍ
+// está en la rama» y reintenta los labels, la foto pre-sesión (`arbol_pre`)
+// que resta la suciedad heredada, y las cesiones de Auto-label/turn-close-failsafe y de
 // «Materializar muerte del Creator sin PR».
 //
 // Ejecuta el `run:` y los scripts EMBEBIDOS reales (no copias): el bash sobre
@@ -32,9 +34,10 @@ const all = Object.values(wf.jobs || {}).flatMap(j => j.steps || []);
 const byId = id => all.find(s => s.id === id);
 const byName = n => all.find(s => s.name === n);
 const rescate = byId('rescate');
+const arbolPre = byId('arbol_pre');
 const muerteStep = byId('post_muerte_sin_pr');
 const autoLabel = byName("Auto-label based on Creator's closing tag");
-for (const [k, v] of Object.entries({ rescate, post_muerte_sin_pr: muerteStep, 'Auto-label': autoLabel })) {
+for (const [k, v] of Object.entries({ rescate, arbol_pre: arbolPre, post_muerte_sin_pr: muerteStep, 'Auto-label': autoLabel })) {
   if (!v) { console.error(`CHECK-ARBOL-RESCATE ROJO: step \`${k}\` no encontrado en claude-code.yml`); process.exit(1); }
 }
 
@@ -47,6 +50,9 @@ const check = (ok, msg) => { console.log(`${ok ? '  ok ' : '  ROJO'} ${msg}`); i
   const later = ['Materializar muerte del Creator sin PR (post-step determinista)', "Auto-label based on Creator's closing tag",
     'Materializar review en la apertura del PR (open-review-failsafe)', 'Re-review por estado de rama (post-step determinista)'];
   check(later.every(n => byName(n) && idx(byName(n)) > idx(rescate)), 'el step `rescate` precede a muerte-sin-PR, Auto-label, open-review-failsafe y re-review');
+  const graft = all.findIndex(s => /graft-vendored/.test(s.uses || ''));
+  check(graft >= 0 && idx(arbolPre) > graft && idx(arbolPre) < idx(byId('creator')) && arbolPre.env.PRE_SNAPSHOT === rescate.env.PRE_SNAPSHOT,
+    'la foto pre-sesión (`arbol_pre`) va tras el graft y antes de la sesión, al mismo fichero que lee `rescate`');
   check(/steps\.rescate\.outputs\.wip != 'true'/.test(byName('Materializar review en la apertura del PR (open-review-failsafe)').if), 'open-review-failsafe cede con WIP rescatado');
   check(/secrets\.WORKFLOWS_PUSH_TOKEN \|\| secrets\.REVIEWER_GITHUB_TOKEN/.test(rescate.env.PUSH_TOKEN), 'token de push = WORKFLOWS_PUSH_TOKEN, si no REVIEWER_GITHUB_TOKEN (corre en consumidores)');
   check(!/git add (-A|\.|--all)/.test(rescate.run) && !/commit -a/.test(rescate.run), 'el rescate jamás usa `git add -A`/`.`/`commit -a`');
@@ -62,6 +68,8 @@ mkdirSync(join(tmp, 'bin'));
 writeFileSync(join(tmp, 'bin', 'gh'), `#!/usr/bin/env bash
 { printf '%s\\x1f' "$@"; printf '\\x1e'; } >> "$GH_LOG"
 if [ "$1 $2" = "pr list" ]; then [ -z "\${FAKE_PR_FAIL:-}" ] || exit 1; [ -n "\${FAKE_PR:-}" ] && echo "$FAKE_PR"; exit 0; fi
+if [ "$1" = "api" ] && [ -n "\${FAKE_API_FAIL:-}" ]; then exit 1; fi
+if [ "$1 $2" = "pr comment" ] && [ -n "\${FAKE_RESC_COMMENT_FAIL:-}" ] && printf '%s' "$*" | grep -q 'arbol-rescatado-por-estado'; then exit 1; fi
 exit 0
 `);
 chmodSync(join(tmp, 'bin', 'gh'), 0o755);
@@ -75,12 +83,13 @@ function clone(branch, { published = true, remote = 'remote.git' } = {}) {
   if (published) sh(`cd ${wt} && git commit -q --allow-empty -m hito && git push -q origin ${branch}`);
   return join(tmp, wt);
 }
-function runRescate(wt, { pr = '', remote = 'remote.git', eventIssue = '', eventIsPr = 'false', eventPr = '', prFail = '' } = {}) {
+function runRescate(wt, { pr = '', remote = 'remote.git', eventIssue = '', eventIsPr = 'false', eventPr = '', prFail = '', apiFail = '', commentFail = '', snapshot = '' } = {}) {
   const log = join(tmp, `gh-${k}.log`), out = join(tmp, `out-${k}`);
   writeFileSync(log, ''); writeFileSync(out, '');
   const env = { ...process.env, PATH: `${join(tmp, 'bin')}:${process.env.PATH}`, GH_LOG: log, FAKE_PR: pr,
     GITHUB_OUTPUT: out, GITHUB_REPOSITORY: 'o/r', GITHUB_RUN_ID: '777', GITHUB_SERVER_URL: 'https://github.com',
     PUSH_TOKEN: TOKEN, GH_TOKEN: 'pat', IN_DEFAULT_BRANCH: 'main', EVENT_ISSUE: eventIssue, EVENT_IS_PR: eventIsPr, EVENT_PR: eventPr, FAKE_PR_FAIL: prFail,
+    FAKE_API_FAIL: apiFail, FAKE_RESC_COMMENT_FAIL: commentFail, PRE_SNAPSHOT: snapshot,
     GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: `url.${join(tmp, remote)}.insteadOf`, GIT_CONFIG_VALUE_0: URL,
     GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
   for (const v of Object.keys(gitEnv)) delete env[v];
@@ -88,6 +97,13 @@ function runRescate(wt, { pr = '', remote = 'remote.git', eventIssue = '', event
   const calls = readFileSync(log, 'utf8').split('\x1e').filter(Boolean).map(c => c.split('\x1f').filter((x, i, a) => i < a.length - 1 || x));
   const outputs = Object.fromEntries(readFileSync(out, 'utf8').split('\n').filter(Boolean).map(l => l.split('=')));
   return { status: r.status, stdout: r.stdout, stderr: r.stderr, calls, outputs };
+}
+// Ejecuta el `run:` real de la foto pre-sesión en `wt`; devuelve la ruta de la foto.
+function foto(wt) {
+  const f = join(tmp, `foto-${k}.z`);
+  const r = spawnSync('bash', ['-c', arbolPre.run], { cwd: wt, env: { ...process.env, PRE_SNAPSHOT: f }, encoding: 'utf8' });
+  if (r.status !== 0) throw new Error(`foto pre-sesión falló: ${r.stderr}`);
+  return f;
 }
 const remoteHead = (branch, remote = 'remote.git') => { try { return sh(`git --git-dir=${remote} log -1 --format=%s ${branch}`); } catch { return null; } };
 const remoteFiles = (branch, remote = 'remote.git') => sh(`git --git-dir=${remote} show --name-only --format= ${branch}`).split('\n').filter(Boolean).sort();
@@ -171,6 +187,41 @@ try {
     sh('echo q > a.ts', wt);
     const r = runRescate(wt, { prFail: '1', eventPr: '56', eventIsPr: 'true', eventIssue: '56' });
     check(r.status === 0 && has(r.calls, 'pr', 'comment', '56').length === 1 && r.calls.filter(c => c[0] === 'api' && /issues\/56\/labels/.test(c.join(' '))).length === 2 && r.outputs.pr === '56', '(8) lectura de PR fallida en contexto PR ⇒ marcador + labels en el PR del evento');
+  }
+  // 9. Falla el comentario del rescate DESPUÉS del push ⇒ el fallo dice que el WIP
+  //    SÍ está en la rama y se aplican igualmente los labels del turno del Creator.
+  {
+    const br = 'claude/issue-47-9';
+    const wt = clone(br);
+    sh('echo w > a.ts', wt);
+    const r = runRescate(wt, { pr: '57', commentFail: '1' });
+    const sha = sh('git rev-parse --short HEAD', wt);
+    const err = has(r.calls, 'pr', 'comment', '57').map(c => c.join(' ')).filter(c => /arbol-rescate-fallido/.test(c));
+    check(r.status !== 0 && /^wip\(creator\)/.test(remoteHead(br) || ''), '(9) comentario del rescate fallido tras el push ⇒ step rojo con el WIP en el remoto');
+    check(err.length === 1 && /SÍ está en la rama/.test(err[0]) && err[0].includes(sha) && /no rehagas/.test(err[0]) && !/muere con el runner/.test(err[0]), '(9) el comentario de fallo dice que el WIP SÍ está (con su sha) y «no rehagas»');
+    check(r.calls.some(c => c[0] === 'api' && /labels\[\]=stalled/.test(c.join(' '))) && r.calls.some(c => c[0] === 'api' && /estado:esperando-architect/.test(c.join(' '))), '(9) aun así se aplican `estado:esperando-architect` y `stalled`');
+  }
+  // 10. Falla el etiquetado tras el push ⇒ mismo texto «SÍ está», no «muere».
+  {
+    const br = 'claude/issue-48-10';
+    const wt = clone(br);
+    sh('echo e > a.ts', wt);
+    const r = runRescate(wt, { pr: '58', apiFail: '1' });
+    const err = has(r.calls, 'pr', 'comment', '58').map(c => c.join(' ')).filter(c => /arbol-rescate-fallido/.test(c));
+    check(r.status !== 0 && err.length === 1 && /SÍ está en la rama/.test(err[0]) && /etiquetado/.test(err[0]) && !/muere con el runner/.test(err[0]), '(10) etiquetado fallido tras el push ⇒ comentario «SÍ está en la rama», no «muere»');
+  }
+  // 11. Foto pre-sesión: la suciedad heredada que la sesión no toca no se rescata;
+  //     una ruta ya sucia que la sesión modifica, sí.
+  {
+    const br = 'claude/issue-49-11';
+    const wt = clone(br);
+    sh('echo g > residuo-graft.txt && echo pre > a.ts', wt);
+    const f = foto(wt);
+    const quieto = runRescate(wt, { pr: '59', snapshot: f });
+    check(quieto.status === 0 && quieto.calls.length === 0 && quieto.outputs.wip === 'false', '(11) solo suciedad idéntica a la foto pre-sesión ⇒ nada (sin WIP, sin re-arm)');
+    sh('echo sesion > a.ts && echo n > nuevo.ts', wt);
+    const r = runRescate(wt, { pr: '59', snapshot: f });
+    check(r.status === 0 && JSON.stringify(remoteFiles(br)) === JSON.stringify(['a.ts', 'nuevo.ts']), `(11) con foto: el WIP lleva lo que tocó la sesión y no el residuo heredado (got ${remoteFiles(br)})`);
   }
   // 6. Rama fuera de claude/* ⇒ nada.
   {
