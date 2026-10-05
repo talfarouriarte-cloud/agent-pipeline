@@ -135,6 +135,17 @@ jobs:
             // `includes` del marcador casaba una review que lo CITABA y la
             // sobrescribía (asesoramiento#2286; antes, review de AP-064).
             const EMD = require(`${process.env.GITHUB_WORKSPACE}/.epic-merge-central/vendored/scripts/epic-merge-diag.cjs`);
+            // central#313: orden de la cola por prioridad y cesión entre
+            // eslabones a una `prioridad:urgente` (`cola-prioridad.cjs`, mismo
+            // checkout sparse). Sin módulo, la cola sale FIFO (statu quo) y no
+            // hay cesión: degradación al comportamiento de antes, nunca peor.
+            let COLA = null;
+            try { COLA = require(`${process.env.GITHUB_WORKSPACE}/.epic-merge-central/vendored/scripts/cola-prioridad.cjs`); }
+            catch (e) { core.warning(`[epic-merge] cola-prioridad no disponible (${e.message}) — cola FIFO, sin cesión a urgentes.`); }
+            async function ordenCola(queued) {
+              if (!COLA) return queued.filter(i => !i.pull_request);
+              return COLA.ordenarConSuspension({ github, owner, repo, items: queued, warn: (m) => core.warning(m) });
+            }
             let patLogin = null;
             async function loginPAT() {
               if (patLogin) return patLogin;
@@ -178,6 +189,10 @@ jobs:
             // merge deja la serie LIBRE (sin sucesor de cadena ni re-arm
             // parcial), se arma el issue EN COLA más antiguo — el que el
             // guard serial bloqueó y etiquetó `en-cola`. FIFO por created_at.
+            // central#313: el orden ya no es FIFO puro — `ordenCola` (módulo
+            // `cola-prioridad.cjs`, compartido por los cuatro puntos de cola):
+            // urgente → eslabón suspendido → alta → normal; antigüedad dentro
+            // de cada nivel. Sin etiquetas, idéntico al FIFO de antes.
             //
             // `serieTomada` (AP-062): lo pone a true TODO camino de este job
             // que deja la serie CON DUEÑO — el arm de cola, el re-arm de un
@@ -199,8 +214,8 @@ jobs:
             async function armQueue(prNumber, why) {
               try {
                 const { data: queued } = await github.rest.issues.listForRepo({
-                  owner, repo, state: 'open', labels: 'en-cola', sort: 'created', direction: 'asc', per_page: 5 });
-                const next = queued.filter(i => !i.pull_request)[0];
+                  owner, repo, state: 'open', labels: 'en-cola', sort: 'created', direction: 'asc', per_page: 100 });
+                const next = (await ordenCola(queued))[0];
                 // Diagnóstico de la lectura (AP-062): sin él, un pop que no
                 // arma no distingue «la lista volvió VACÍA» (ventana de
                 // escritura de la label) de «volvió con el ítem y lo filtró
@@ -229,7 +244,7 @@ jobs:
                 await github.rest.issues.removeLabel({ owner, repo, issue_number: next.number, name: 'en-cola' }).catch(() => {});
                 await github.rest.issues.removeLabel({ owner, repo, issue_number: next.number, name: 'stalled' }).catch(() => {});
                 await github.rest.issues.createComment({ owner, repo, issue_number: next.number,
-                  body: `@claude arranca — turno de cola: la serie quedó libre (${why}). Eras el más antiguo en \`en-cola\`.\n\n<!-- arm-de-cola -->\n${EMD.marcadoresPop(next.number, origen)}` });
+                  body: `@claude arranca — turno de cola: la serie quedó libre (${why}). ${COLA ? COLA.describir(next) : 'Eras el más antiguo en \`en-cola\`.'}\n\n<!-- arm-de-cola -->\n${EMD.marcadoresPop(next.number, origen)}` });
                 serieTomada = true;
                 await diag(prNumber, `serie libre (${why}): armado el siguiente de la cola, #${next.number}.`, { pop: origen ? next.number : null });
               } catch (e) { await diag(prNumber, `arm de cola falló: ${e.message}`); }
@@ -300,7 +315,8 @@ jobs:
                 // cierres— en UNA sola llamada REST, en vez de pagar además
                 // `pulls.list` + `serial-activo` en cada cierre de job. La
                 // segunda lectura, dentro de `armQueue`, es además la más
-                // fresca, que es la que elige el ítem.
+                // fresca, que es la que elige el ítem — y la que aplica el
+                // orden por prioridad (central#313): aquí basta la existencia.
                 const { data: queued } = await github.rest.issues.listForRepo({
                   owner, repo, state: 'open', labels: 'en-cola', sort: 'created', direction: 'asc', per_page: 5 });
                 if (!queued.some(i => !i.pull_request)) return;
@@ -688,6 +704,15 @@ jobs:
                 try { await github.rest.issues.removeLabel({ owner, repo, issue_number: next, name: stale }); }
                 catch (e) { /* 404 = no la tenía; ok */ }
               }
+              // central#313: cesión a una `prioridad:urgente` en el límite
+              // entre eslabones. La serie la deja libre ESTE merge, así que la
+              // urgente se arma ya, por `armQueue` (cabeza de la cola: nivel 1).
+              const urgente = await cederAUrgente(next, `merge de #${prNumber}`, prNumber);
+              if (urgente) {
+                await diag(prNumber, `MERGEADO; #${next} SUSPENDIDO (cesión a la prioridad:urgente #${urgente}) — su arranque llega por la cola.`);
+                await armQueue(prNumber, `cesión entre eslabones: #${next} suspendido a favor de la urgente #${urgente}`);
+                return;
+              }
               try {
                 await github.rest.issues.createComment({ owner, repo, issue_number: next,
                   body: `@claude\n\nArranque automático de épica tras merge de #${prNumber}.\n\n<!-- epic-auto-launch -->` });
@@ -737,8 +762,30 @@ jobs:
               try {
                 const { data: cs } = await github.rest.issues.listComments({ owner, repo, issue_number: n, per_page: 100 });
                 if (cs.some(c => /<!--\s*epic-auto-launch\s*-->/.test(c.body || ''))) return 'epic-auto-launch (ya armado)';
+                // central#313: un eslabón SUSPENDIDO (cedido a una urgente) tiene
+                // el `launch-next` CONSUMIDO — sale por la cola (`arm-de-cola`),
+                // no por un re-arm de cadena.
+                if (COLA && COLA.esSuspendido(cs)) return 'eslabón suspendido (cedido a una prioridad:urgente; sale por la cola)';
               } catch (e) { core.info('targetAlreadyArmed listComments: ' + e.message); }
               return null;
+            }
+            // ── Cesión entre eslabones (central#313, ruling punto 4). Antes de
+            // armar el eslabón siguiente `#N` de un `launch-next`: si hay un
+            // `en-cola` + `prioridad:urgente` (que no sea el propio #N), #N NO
+            // se arma — queda `en-cola` con `<!-- eslabon-suspendido: #<PR> -->`
+            // (nivel 2 de la cola) y la serie es para la urgente, que sale por
+            // la vía de cola normal (`arm-de-cola`). Nunca en paralelo: la
+            // urgente ocupa el hueco que habría ocupado #N. Sin urgente en
+            // cola (o sin módulo): null y el camino sigue idéntico al de hoy.
+            // La secuencia (etiqueta, marcador) vive en `COLA.cederEslabon`.
+            async function cederAUrgente(next, origen, origenNum) {
+              if (!COLA) return null;
+              try {
+                return await COLA.cederEslabon({ github, owner, repo, siguiente: next, origen, origenNum });
+              } catch (e) {
+                core.warning(`[epic-merge] cesión a urgente falló (${e.message}) — #${next} se arma por su cadena, como siempre.`);
+                return null;
+              }
             }
             async function postStateClose(issue) {
               const issueNumber = issue.number;
@@ -837,6 +884,17 @@ jobs:
               for (const stale of ['stalled', 'human-needed']) {
                 try { await github.rest.issues.removeLabel({ owner, repo, issue_number: next, name: stale }); }
                 catch (e) { /* 404 = no la tenía; ok */ }
+              }
+              // central#313: cesión a una `prioridad:urgente`. Aquí NO se
+              // arma la urgente directamente: el post-step de `claude-code.yml`
+              // ya hizo el pop de cola al materializar el terminal por estado
+              // (ver NOTA arriba: doble-pop). Si la serie sigue libre, la arma
+              // el barrido `sweepQueueAtExit` del `finally` (`serieTomada` queda
+              // a false), fail-closed como siempre.
+              const urgente = await cederAUrgente(next, `cierre por estado de #${issueNumber}`, issueNumber);
+              if (urgente) {
+                await stateCloseMark(issueNumber, `\`launch-next: #${next}\` consumido por SUSPENSIÓN: cesión a la prioridad:urgente #${urgente} (central#313); #${next} queda en cola con nivel 2.`);
+                return;
               }
               try {
                 await github.rest.issues.createComment({ owner, repo, issue_number: next,

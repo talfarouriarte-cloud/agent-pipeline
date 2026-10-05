@@ -1,0 +1,64 @@
+# AP-102 (review #315, 🟡 1) — los dos consumidores del MISMO `launch-next`
+# (`postMerge` de `epic-merge.yml` y el step `launch_next` de
+# `claude-code.yml`, ADR-193 opción A) no arman #N si el OTRO ya lo suspendió.
+#
+# QUÉ CIERRA. Si uno cede (#N queda `en-cola` + `eslabon-suspendido`) y la
+# urgente ya salió de la cola, la cesión del otro (`cederEslabon`) no ve
+# urgente y devuelve null: sin esta lectura armaría #N por su cadena EN
+# PARALELO con la urgente (el guard serial deja pasar todo `epic-auto-launch`),
+# contra el «Qué NO» del ruling. Tras `cederEslabon` = null, los dos leen
+# `COLA.yaSuspendido` (módulo `cola-prioridad.cjs`, ya en el PR): si #N está
+# suspendido, el `launch-next` cuenta como CONSUMIDO y no se arma (sale por la
+# cola). Fallo de lectura ⇒ aviso y arm por la cadena, como antes.
+#
+# POR QUÉ PARCHE. La App de claude-code-action no tiene permiso `workflows`
+# (ADR-020): el push con estos dos hunks fue rechazado. Lo aplica un humano:
+#   git apply docs/patches/AP-102-launch-next-suspension-previa.patch
+# y, aplicado, se borra el parche. El banco `check-cola-prioridad` acepta las
+# dos formas (workflow con `COLA.yaSuspendido(` antes del arm, o este parche
+# pendiente).
+#
+# verificado-contra: 838c4507392c0643395e72d55a4f8008eb389389
+diff --git a/.github/workflows/claude-code.yml b/.github/workflows/claude-code.yml
+index ae486e6..47ef20a 100644
+--- a/.github/workflows/claude-code.yml
++++ b/.github/workflows/claude-code.yml
+@@ -3340,6 +3340,15 @@ jobs:
+                   return;
+                 }
+               } catch (e) { core.warning(`cesión a urgente falló (${e.message}) — #${nextIssue} se lanza por su cadena, como siempre.`); }
++              // Review #315 (🟡 1): espejo de `postMerge`. Si epic-merge ya
++              // suspendió #N y armó la urgente, la cesión de arriba no la ve:
++              // #N NO se lanza (sale por la cola, `arm-de-cola`).
++              try {
++                if (await COLA.yaSuspendido({ github, owner: context.repo.owner, repo: context.repo.repo, siguiente: nextIssue })) {
++                  core.notice(`Épica: launch-next #${nextIssue} consumido por suspensión previa (eslabón cedido a una prioridad:urgente); la cola lo arma después.`);
++                  return;
++                }
++              } catch (e) { core.warning(`lectura de suspensión de #${nextIssue} falló (${e.message}) — se lanza por su cadena, como siempre.`); }
+             }
+ 
+             await github.rest.issues.createComment({
+diff --git a/.github/workflows/epic-merge.yml b/.github/workflows/epic-merge.yml
+index 0e06953..4d05d1a 100644
+--- a/.github/workflows/epic-merge.yml
++++ b/.github/workflows/epic-merge.yml
+@@ -713,6 +713,18 @@ jobs:
+                 await armQueue(prNumber, `cesión entre eslabones: #${next} suspendido a favor de la urgente #${urgente}`);
+                 return;
+               }
++              // Review #315 (🟡 1): si el OTRO consumidor de este `launch-next`
++              // (step `launch_next` de claude-code, ADR-193 opción A) ya
++              // suspendió #N y su urgente ya salió de la cola, la cesión de
++              // arriba no ve urgente: #N NO se arma (sale por la cola).
++              if (COLA) {
++                try {
++                  if (await COLA.yaSuspendido({ github, owner, repo, siguiente: next })) {
++                    await diag(prNumber, `MERGEADO; launch-next #${next} consumido por suspensión previa (eslabón cedido a una prioridad:urgente) — su arranque llega por la cola.`);
++                    return;
++                  }
++                } catch (e) { core.warning(`[epic-merge] lectura de suspensión de #${next} falló (${e.message}) — se arma por su cadena, como siempre.`); }
++              }
+               try {
+                 await github.rest.issues.createComment({ owner, repo, issue_number: next,
+                   body: `@claude\n\nArranque automático de épica tras merge de #${prNumber}.\n\n<!-- epic-auto-launch -->` });

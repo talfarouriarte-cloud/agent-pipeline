@@ -9,7 +9,9 @@
     "serial-activo",
     "serial-ok",
     "stalled",
-    "en-cola"
+    "en-cola",
+    "prioridad:urgente",
+    "prioridad:alta"
   ],
   "epic-merge.yml": [
     "auditoria",
@@ -17,7 +19,9 @@
     "lgtm",
     "needs-review",
     "stalled",
-    "en-cola"
+    "en-cola",
+    "prioridad:urgente",
+    "prioridad:alta"
   ],
   "process-review.yml": [
     "auditoria",
