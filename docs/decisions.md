@@ -873,6 +873,8 @@ Resultado: **CERO Creators + `serial-activo` orfanado** hasta que lo sanee el wa
 **Falsable.** Paradas de cadena con humano de primera línea por esta clase: deben caer a 0 (el humano solo por doble rebote o veredicto (c)). Si architect-resolve rula mal ≥2 veces sobre prosa clara, el siguiente escalón es estructurar el cierre del Creator por template inyectado en el arm, no volver a `human-needed`.
 
 **Fecha.** 2026-07-20.
+
+**Enmienda (2026-10-05, AP-100).** El ramal no-declarado exige que **la sesión existió**. Con el step de la action en `success` y sin execution file (`claude-code-action` no reconoció el trigger: «No trigger found», sin sesión), el post-step «Materializar muerte del Creator sin PR» no aplica el default del punto 1: no cuelga `stalled` ni marcador; libera `serial-activo` si este arm la tenía, con pop de cola. Un fallo de la action sin execution file sigue el default de AP-036. Incidente que lo motiva: `stalled` falso sobre central#309 (run 37278082763). Detalle en AP-100 §Decisión 2.
 ---
 
 ## AP-037 — Cierre AUTÓNOMO de las completitudes por-estado: architect-resolve verifica el veredicto contra HEAD con verificación materializada y cierra `completed` (rectificación de AP-019 «opción A sin necesidad»; enmienda de AP-020/AP-026)
@@ -2703,7 +2705,7 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 **Decisión (ruling; prevalece sobre la propuesta).**
 
 1. **Vuelo único en contexto PR** (`claude-code.yml`, step `check_flight`, justo tras el kill-switch `pause-agents`). En `issue_comment` sobre PR, `pull_request_review_comment` y `pull_request_review`, son contendientes los runs del mismo workflow caller `in_progress`/`queued` (filtro de edad de 6 h, como el Guard serial), con `run_id` menor, sobre el mismo item (título del PR, título del issue de su rama `claude/issue-N-*`, o misma `head_branch`) y cuyo job del Creator NO está `skipped`. Si hay alguno, el run sale sin sesión y deja una línea sin marcador ni mención, con el token del job: «ya hay un Creator en vuelo (run N); este disparo se descarta — repítelo cuando termine». Sin reintento temporizado. Ninguna rama cuelga `stalled`, `human-needed` ni `serial-activo`. Jobs ilegibles de un contendiente ⇒ cuenta (perder un ping es visible y se repite; un doble Creator no). API de runs caída ⇒ pasa (statu quo).
-2. **Firma de AP-036 enmendada:** exige que la sesión existió. Con el step de la action en `success` y sin execution file, el post-step libera `serial-activo` si este arm la tenía (con pop de cola) y no cuelga `stalled` ni marcador. Un fallo de la action sin execution file sigue el camino de siempre.
+2. **Firma de AP-036 enmendada:** exige que la sesión existió (`success` sin execution file ⇒ sin `stalled` ni marcador, libera `serial-activo` con pop de cola; fallo sin execution file ⇒ default de AP-036). La enmienda vive en el bloque de AP-036 («Enmienda (2026-10-05, AP-100)»).
 3. **`protocol.md`:** `pause-agents` la pone «Humano o Architect» y sirve de hold de intervención en vuelo: poner → esperar a que acaben los runs del ítem → escribir → quitar + un único disparo explícito.
 
 **Qué NO.** No se crea `architect-hold` (`pause-agents` ya corta Creator, Reviewer, Watchdog y epic-merge, y quitarla no relanza nada). No se tocan `reviewer.yml` (serializado por PR en el stub), `watchdog.yml`, `epic-merge.yml` ni `templates/labels*.json`. Superficie `workflow_call` sin cambios. La línea de `docs/agents/architect.md` de cada consumidor es eje local.
