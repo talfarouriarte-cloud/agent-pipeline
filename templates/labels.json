@@ -102,7 +102,17 @@
   {
     "name": "en-cola",
     "color": "bfdadc",
-    "description": "Arm bloqueado por la serie; epic-merge armará el más antiguo al liberarse (FIFO)"
+    "description": "Arm bloqueado por la serie; se arma al liberarse por orden de prioridad (urgente → eslabón suspendido → alta → normal; antigüedad dentro de cada nivel)"
+  },
+  {
+    "name": "prioridad:urgente",
+    "color": "b60205",
+    "description": "Cola serial: se cuela en el siguiente límite entre eslabones (nunca en paralelo). La pone el humano o el Architect a petición suya"
+  },
+  {
+    "name": "prioridad:alta",
+    "color": "d93f0b",
+    "description": "Cola serial: sale antes que lo normal, pero espera al fin de la épica en marcha. La pone el humano o el Architect a petición suya"
   },
   {
     "name": "auto-archivada",
