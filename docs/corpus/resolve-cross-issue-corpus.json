@@ -2,16 +2,16 @@
   "_": "Ledger de adjudicación del belt AP-064 sobre PROSA REAL. Lo escribe `scripts/check-resolve-corpus.mjs --sellar` (AP-074; la unión CAPA∪ROL y el campo `rol`, AP-075). NO se edita a mano: un veredicto tecleado que no reproduzca pone el barrido vivo ROJO, y un ledger corrupto se repara RE-SELLANDO —lo que pierde las `nota`—, no a mano.",
   "modulo": {
     "ruta": "vendored/scripts/resolve-cross-issue-failsafe.cjs",
-    "sha256": "a9bbff71df4e6fcfdd6a9e96a937ef5663d29c63c0934deafa0baa630f5f52a3"
+    "sha256": "49e468212f12ad1e8ff8995dd58915b94c770bd0be1bf74aeb019e08f68ad3f2"
   },
   "barrido": {
-    "fecha": "2026-09-30T11:22:51.814Z",
+    "fecha": "2026-10-06T08:06:40.519Z",
     "repo": "talfarouriarte-cloud/agent-pipeline",
     "fixture": false,
     "doble": false,
-    "comentarios": 850,
-    "con_marcador_de_capa_o_rol": 25,
-    "con_marcador_de_rol_nativo": 9,
+    "comentarios": 1135,
+    "con_marcador_de_capa_o_rol": 32,
+    "con_marcador_de_rol_nativo": 16,
     "autenticado": true,
     "truncado": false,
     "duplicados": 0
@@ -319,6 +319,96 @@
       "veredicto": {
         "materializa": [],
         "avisos": [
+          "negada/condicional/pospuesta"
+        ]
+      },
+      "nota": ""
+    },
+    {
+      "id": 5911292619,
+      "url": "https://github.com/talfarouriarte-cloud/agent-pipeline/pull/291#issuecomment-5911292619",
+      "host": 291,
+      "cuerpo_sha256": "9c4fe8e7c8b27d18fd6d313e4c2d32c98c747f6fc86be5f0a4d7c132f7c1e8b3",
+      "rol": "nativo",
+      "veredicto": {
+        "materializa": [],
+        "avisos": []
+      },
+      "nota": ""
+    },
+    {
+      "id": 5911746128,
+      "url": "https://github.com/talfarouriarte-cloud/agent-pipeline/pull/292#issuecomment-5911746128",
+      "host": 292,
+      "cuerpo_sha256": "613e682d781331b17f88fdcac57a99953e88a65592bb5d337eb77b4ae64f0b4a",
+      "rol": "nativo",
+      "veredicto": {
+        "materializa": [],
+        "avisos": []
+      },
+      "nota": ""
+    },
+    {
+      "id": 5912755437,
+      "url": "https://github.com/talfarouriarte-cloud/agent-pipeline/issues/281#issuecomment-5912755437",
+      "host": 281,
+      "cuerpo_sha256": "9bbef5a260aae2877559bdc83e282883973b8e666d97a9fce6b463f7428a544c",
+      "rol": "nativo",
+      "veredicto": {
+        "materializa": [],
+        "avisos": []
+      },
+      "nota": ""
+    },
+    {
+      "id": 5990133497,
+      "url": "https://github.com/talfarouriarte-cloud/agent-pipeline/issues/309#issuecomment-5990133497",
+      "host": 309,
+      "cuerpo_sha256": "5c267b116c5f64c7cc42548ee8951f8782b51f452754f0e869a810b46f4e56f7",
+      "rol": "nativo",
+      "veredicto": {
+        "materializa": [],
+        "avisos": []
+      },
+      "nota": ""
+    },
+    {
+      "id": 5992182161,
+      "url": "https://github.com/talfarouriarte-cloud/agent-pipeline/pull/312#issuecomment-5992182161",
+      "host": 312,
+      "cuerpo_sha256": "7cb8e8843283bdff18698d730e57d9cf436334352129187ca0176585620de347",
+      "rol": "nativo",
+      "veredicto": {
+        "materializa": [],
+        "avisos": []
+      },
+      "nota": ""
+    },
+    {
+      "id": 6011140499,
+      "url": "https://github.com/talfarouriarte-cloud/agent-pipeline/pull/324#issuecomment-6011140499",
+      "host": 324,
+      "cuerpo_sha256": "a8b0773456b5805eb0d9db45c608e3b262a2b8b965911bb697ce71711ba88831",
+      "rol": "nativo",
+      "veredicto": {
+        "materializa": [],
+        "avisos": []
+      },
+      "nota": ""
+    },
+    {
+      "id": 6011334178,
+      "url": "https://github.com/talfarouriarte-cloud/agent-pipeline/issues/322#issuecomment-6011334178",
+      "host": 322,
+      "cuerpo_sha256": "19826b50d6b624056917d3afe8db348004db8a68799a8d624509cc5dbad0ae61",
+      "rol": "nativo",
+      "veredicto": {
+        "materializa": [],
+        "avisos": [
+          "negada/condicional/pospuesta",
+          "negada/condicional/pospuesta",
+          "negada/condicional/pospuesta",
+          "negada/condicional/pospuesta",
           "negada/condicional/pospuesta"
         ]
       },

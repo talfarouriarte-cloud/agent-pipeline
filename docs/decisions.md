@@ -2873,3 +2873,21 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 **Criterio falsable.** Banco verde, incluido (e). En el siguiente lote de finplan: 0 runs `failure` de `claude-code.yml` en `check_flight`, 0 `open-review-failsafe` con un run del Reviewer nacido tras el ready y 0 pares de Creators en vuelo por PR.
 
 **Fecha.** 2026-10-06.
+
+## AP-107 — Falso positivo de arm en architect-resolve por participio de estado y condicional: `AMBIGUO` los absorbe y el ledger de `check-resolve-corpus` se re-sella (2026-10-06)
+
+**Contexto.** Ruling de la revisión mensual 2026-10-06 (P0 fuera de ciclo, OK del propietario, posición 1, `serial-ok`) sobre central#328. `check-resolve-corpus` (barrido vivo, rojo (ii) de L2) estaba ROJO en `main` y en todo PR abierto, incluido #326 (central#325): el belt de AP-064 derivaba un `arm` sobre #325 desde el ruling de architect-resolve central#322 (issuecomment-6011334178), que declara «Sin arm». Medido con `derivar`, dos segmentos lo producían: «#325 lleva el ruling APROBADA con `serial-ok`, **está armado** y su sesión…» (participio de estado) y «**Re-armarlo abriría** un segundo Creator … #325 …» (condicional). Las negaciones del mismo comentario («sin re-arm», «No se re-arma») ya caían en `AMBIGUO`. Es la clase AP-073: vocabulario de acción idéntico al de una declaración, polaridad distinta. Sellar el hash viejo habría registrado como legítimo un arm que no existió.
+
+**Decisión (ruling; prevalece sobre la propuesta).**
+
+1. **`AMBIGUO` amplía su clase, sin camino paralelo** (`vendored/scripts/resolve-cross-issue-failsafe.cjs`). Dos ramas nuevas en la misma regex, con aviso `negada/condicional/pospuesta`: (a) `estar`/`quedar`/`seguir` + participio de armar («está armado», «quedó armada», «siguen re-armados») y «armado a mano»; (b) condicional sintético: infinitivo en `-ar`/`-er`/`-ir` + `ía` y raíces irregulares (`habr`, `podr`, `tendr`, `har`, `dir`, …), con la `í` acentuada obligatoria. (c) La negación explícita ya la cubrían `no`/`sin`; el banco la fija.
+2. **Banco** (`scripts/check-resolve-detection.mjs`). (u) es el cuerpo literal de issuecomment-6011334178, guardado verbatim en `docs/corpus/central-322-issuecomment-6011334178.md` ⇒ sin `arm`. (u-a)/(u-b) son sus dos segmentos culpables. Sintéticos (v-a1..3), (v-b1..3) y (v-c0..3). Controles: el participio ABSOLUTO («Re-armado #N.») y el pretérito junto a «auditoría»/«necesaria» siguen declarando, igual que (d), (r) y la instancia canónica fp#1711.
+3. **Ledger re-sellado** con `--sellar` tras volver a barrer con el módulo nuevo: 1135 comentarios, 32 con marcador de capa o rol (16 con rol nativo), 0 materializarían. Las 25 entradas que ya estaban selladas reproducen su veredicto sin cambios. No se pierde ningún positivo real del corpus porque el corpus no tenía ninguno: el ledger anterior también daba 0 materializaciones. Los positivos que el banco protege, la instancia fp#1711, (d), (r) y (t), siguen dando `arm`.
+
+**Coste asumido.** (j) cambia de esperado. «El eslabón 2/3 (#1695) ya quedó re-armado por epic-merge» era el fail-activo declarado del residual (f) de AP-064 y ahora calla. El ruling pide exactamente eso para «quedó armada», y el fallo pasa al lado barato. La rama (b) silencia también el imperfecto «quería» y los sustantivos en «-ería» («librería») del mismo segmento. Es fail-open: cero acción.
+
+**Qué NO.** No se adjudica a mano ni se edita el comentario de central#322. No cambia el criterio de rojo global del barrido vivo. Superficie `workflow_call` sin cambios. Consumidores: el módulo es `vendored/` y se despliega en su siguiente run; no hay nada que aplicar a mano.
+
+**Criterio falsable.** `check-resolve-corpus` verde en `main` tras el merge; el CI de PR #326 verde al re-ejecutarse sin cambios en #326.
+
+**Fecha.** 2026-10-06.
