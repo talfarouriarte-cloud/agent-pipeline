@@ -47,6 +47,7 @@ Regla común de escritura (central#325, AP-106):
 - **Nunca** `PUT` por Contents API sobre un fichero EXISTENTE del registro (volúmenes, `ADR-NNN.md`, índice). Con volúmenes de MB no hay forma de haberlo leído entero, así que la vía es git: clone → script → commit → push.
 - Antes del push, captura el estado remoto de la rama (`git fetch` y `origin/<rama>`). Tras el push, `adr-lint --ids-vs <ese estado>` (no `HEAD~1`). Si falla, restaura desde ese estado y avisa al propietario.
 - Antes de cualquier commit que toque el registro, `adr-lint` en verde. Ojo: normaliza espacios pero no las marcas de markdown. Una cita «…» de 40 palabras o más tiene que coincidir con el corpus, incluidos los `**`.
+- Tras el corte a `layout: "dir"` (central#331, AP-109), una rectificación se AÑADE al final del fichero de su ADR, nunca en medio. Lo vigila `adr-lint --append-only-vs <ref>`, con `<ref>` = el estado previo al push (el mismo que en `--ids-vs`), nunca un ref fijo como el tag del corte: con un ref fijo, un override eximiría su ADR para siempre; una edición deliberada dentro de un fichero existente lleva en el mensaje del commit `adr-append-override: ADR-NNN — <motivo>`.
 
 ## 5. Reglas de trabajo del Architect
 

@@ -16,9 +16,19 @@
 //  · `layout: "dir"` en la config: un `ADR-NNN.md` por ADR con sus
 //    rectificaciones dentro; mismas reglas + cabecera normalizada + cada
 //    rectificación en el fichero de su ADR.
-// Ambos cargan `./adr-registro.mjs` (servido por el graft junto a este fichero);
-// la ruta de siempre (volúmenes, sin --ids-vs) no lo necesita.
-// Uso: node scripts/adr-lint.mjs [--ids-vs <ref>]   (verde: exit 0; rojo: exit 1 + listado; error: exit 2)
+// Duplicados heredados y append-only (central#331, AP-109; origen: ensayo del
+// corte de finplan, ADR-39/50/51/85/144 repetidas desde hace volúmenes):
+//  · `duplicadosHeredados: number[]` en la config: la regla 1 (y 1c) no informa
+//    esos números; cualquier otro duplicado sigue en rojo. En `dir`, un fichero
+//    de número duplicado con rectificaciones sin override que las fije es rojo
+//    (`"ADR-NNN·R·k": "ADR-NNN"` en los overrides): nunca se elige en silencio.
+//  · `--append-only-vs <ref>` (solo `layout: "dir"`): cada `ADR-NNN.md` que
+//    existía en <ref> conserva su contenido como PREFIJO byte a byte; solo se
+//    añade al final. Override por commit en <ref>..HEAD con
+//    `adr-append-override: ADR-NNN — <motivo>` (exime solo esa ADR).
+// Todo lo anterior carga `./adr-registro.mjs` (servido por el graft junto a este
+// fichero); la ruta de siempre (volúmenes, sin --ids-vs) no lo necesita.
+// Uso: node scripts/adr-lint.mjs [--ids-vs <ref> | --append-only-vs <ref>]   (verde: exit 0; rojo: exit 1 + listado; error: exit 2)
 import { readFileSync } from 'fs';
 import { execFileSync } from 'child_process';
 
@@ -36,6 +46,15 @@ const VOLS = cfg.volumes ?? ['docs/decisions/decisions-001-075.md',
 const INDEX = cfg.index ?? 'decisions.md';
 const LIVE = VOLS[VOLS.length - 1];
 const STRICT_FROM = cfg.strictFrom ?? 217;
+// Validada aquí y no solo en normalizeConfig: la ruta de volúmenes no carga
+// el parser, y un valor que no sea lista de enteros sería un TypeError (exit 1)
+// o se ignoraría sin aviso (mismo predicado y mensaje que adr-registro).
+const DUP_RAW = cfg.duplicadosHeredados ?? [];
+if (!Array.isArray(DUP_RAW) || !DUP_RAW.every(n => Number.isInteger(n) && n > 0)) {
+  console.error(`ADR-LINT ERROR: adr-lint.config.json: duplicadosHeredados ${JSON.stringify(DUP_RAW)} no es una lista de números de ADR`);
+  process.exit(2);
+}
+const DUP_H = new Set(DUP_RAW);
 
 // Patrones de cabecera de ADR (`adrHeader`, lista de regex con grupo `adr`).
 // El default es el literal de siempre: sin config nueva, mismo comportamiento.
@@ -51,6 +70,7 @@ const ANCHOR = /[\w./-]+\.[A-Za-z0-9]+:\d+(?:-\d+)?/;
 
 const argv = process.argv.slice(2);
 if (argv.includes('--ids-vs')) await idsVs(argv[argv.indexOf('--ids-vs') + 1]);
+if (argv.includes('--append-only-vs')) await appendOnlyVs(argv[argv.indexOf('--append-only-vs') + 1]);
 if ((cfg.layout ?? 'volumes') !== 'volumes') await lintDir();
 
 const live = readFileSync(LIVE, 'utf8');
@@ -62,7 +82,7 @@ const corpus = [...VOLS, ...EXTRA].map(v => { try { return readFileSync(v, 'utf8
 
 // ── 1. Numeración: sin duplicados y sin huecos respecto al índice ──
 const headers = adrHeads(live).map(h => h.n);
-const dup = headers.filter((n, i) => headers.indexOf(n) !== i);
+const dup = headers.filter((n, i) => headers.indexOf(n) !== i && !DUP_H.has(n));
 if (dup.length) errs.push(`ADR duplicado(s) en el volumen vivo: ${[...new Set(dup)].join(', ')}`);
 const allHeaders = new Set();
 for (const v of VOLS) {
@@ -100,7 +120,7 @@ for (const m of idxEntries) {
   const rec = entryCount.get(key) ?? { n: +m[1], count: 0 };
   rec.count++; entryCount.set(key, rec);
 }
-for (const n of [...new Set([...entryCount.values()].filter(r => r.count > 1).map(r => r.n))].sort((a, b) => a - b))
+for (const n of [...new Set([...entryCount.values()].filter(r => r.count > 1 && !DUP_H.has(r.n)).map(r => r.n))].sort((a, b) => a - b))
   errs.push(`ADR-${n} duplicado en el índice`);
 }
 
@@ -110,8 +130,11 @@ for (const n of [...new Set([...entryCount.values()].filter(r => r.count > 1).ma
 const adrBlocks = blocksOf(live);
 rulesFrom2(adrBlocks, corpus);
 
-function rulesFrom2(adrBlocks, corpus) {
-for (const { num, block } of adrBlocks) {
+// `citaBlocks`: los bloques de los que se excluye la cita (regla 2). En
+// volúmenes, los de ADR; en `dir`, los del parser (ADR o rectificación): la
+// rectificación que cita lo que rectifica, en el mismo fichero, no es circular.
+function rulesFrom2(adrBlocks, corpus, citaBlocks = adrBlocks) {
+for (const { num, block } of citaBlocks) {
   if (num < STRICT_FROM) continue;
   for (const m of block.matchAll(/«([^»]{40,})»/g)) {
     const line = block.slice(Math.max(0, m.index - 300), m.index);
@@ -163,8 +186,8 @@ if (errs.length) { console.error('ADR-LINT ROJO:\n' + errs.map(e => ' - ' + e).j
 console.log(`ADR-LINT verde (${headers.length} ADRs en volumen vivo, reglas estrictas desde ADR-${STRICT_FROM}).`);
 
 // ── layout "dir": un ADR-NNN.md por ADR con sus rectificaciones dentro ──
-// Mismas reglas 1/1b/1c (sobre TODO el directorio: no hay volumen vivo) y 2–5
-// (bloque = fichero), más el formato del directorio: el fichero contiene la
+// Mismas reglas 1/1b/1c (sobre TODO el directorio: no hay volumen vivo), 3–5
+// (bloque = fichero) y 2 (bloque = el del parser, AP-109), más el formato del directorio: el fichero contiene la
 // cabecera de SU ADR; cada rectificación lleva la cabecera normalizada
 // `### ADR-NNN·R·k (fecha) — título`, nombra la ADR del fichero, no se repite y
 // va en orden de k.
@@ -176,7 +199,17 @@ async function lintDir() {
   if (!files.length) errs.push(`${c.dir}: ningún ADR-NNN.md (layout "dir")`);
   const P = R.parseFiles(files, c);
   const heads = P.adrs.map(a => a.n);
-  const dupD = [...new Set(heads.filter((n, i) => heads.indexOf(n) !== i))];
+  const dupD = [...new Set(heads.filter((n, i) => heads.indexOf(n) !== i && !DUP_H.has(n)))];
+  let fix;
+  try { fix = R.fijadas(R.loadResoluciones(c)); } catch (e) { console.error(`ADR-LINT ERROR: ${e.message}`); process.exit(2); }
+  // Las que adr-migrate ya resolvió (por clave o renumerando) constan en el
+  // informe de no atribuibles con su identificador final.
+  let rep = { entradas: [] };
+  try { rep = JSON.parse(readFileSync(c.report + '.json', 'utf8')); } catch {}
+  for (const e of rep.entradas ?? []) {
+    const g = e.resolucion != null && e.colocada && String(e.id ?? '').match(/^ADR-0*(\d+)·R·(\d+)$/);
+    if (g) fix.set(`${+g[1]}·R·${+g[2]}`, e.resolucion);
+  }
   if (dupD.length) errs.push(`ADR duplicado(s) en ${c.dir}: ${dupD.join(', ')}`);
   let idxText = '';
   try { idxText = readFileSync(c.index, 'utf8'); } catch { errs.push(`índice ${c.index} ilegible`); }
@@ -197,10 +230,14 @@ async function lintDir() {
       if (seen.has(id)) errs.push(`${f.path}:${r.line}: ${id} duplicada`);
       if (r.k < prevK) errs.push(`${f.path}:${r.line}: ${id} fuera de orden (las rectificaciones van por k)`);
       seen.add(id); prevK = Math.max(prevK, r.k);
+      if (DUP_H.has(n) && !fix.has(`${n}·R·${r.k}`))
+        errs.push(`${f.path}:${r.line}: ${id} en el fichero de ADR-${R.pad(n)}, número duplicado declarado (duplicadosHeredados): atribución ambigua sin override que la fije («${`ADR-${R.pad(n)}·R·${r.k}`}» en ${c.overrides}, o resuelta en ${c.report}.json)`);
     }
   }
   const corpusD = [...files.map(f => f.text), ...EXTRA.map(v => { try { return readFileSync(v, 'utf8'); } catch { return ''; } })].join('\n');
-  rulesFrom2(files.map(f => ({ num: +f.path.match(/ADR-(\d+)\.md$/)[1], block: f.text })), corpusD);
+  const numOf = p => +p.match(/ADR-(\d+)\.md$/)[1];
+  rulesFrom2(files.map(f => ({ num: numOf(f.path), block: f.text })), corpusD,
+    P.blocks.map(b => ({ num: numOf(b.path), block: b.headerRaw + R.bodyText(b) })));
   if (errs.length) { console.error('ADR-LINT ROJO:\n' + errs.map(e => ' - ' + e).join('\n')); process.exit(1); }
   console.log(`ADR-LINT verde (layout dir: ${files.length} ficheros, ${P.rects.length} rectificaciones en ${c.dir}, reglas estrictas desde ADR-${STRICT_FROM}).`);
   process.exit(0);
@@ -246,5 +283,57 @@ async function idsVs(ref) {
     process.exit(1);
   }
   console.log(`ADR-LINT --ids-vs ${ref} verde: ningún identificador perdido (${tot(before)} en ${ref}, ${tot(after)} en el árbol).`);
+  process.exit(0);
+}
+
+// ── --append-only-vs <ref>: tras el corte, el registro solo crece al final ──
+// (central#331, AP-109) Cierra la clase «rectificación insertada a mitad de
+// bloque» (finplan: ADR-210·R·28 dentro de R·27, ADR-155·R·1 y ADR-286·R·1
+// dentro de su ADR), que adr-equiv no ve porque certifica fidelidad, no
+// corrección. Cada `ADR-NNN.md` de <ref> debe seguir siendo PREFIJO byte a
+// byte del fichero del árbol; ficheros nuevos, libres; borrado ⇒ rojo. Override
+// auditable: un commit de <ref>..HEAD con `adr-append-override: ADR-NNN — <motivo>`.
+async function appendOnlyVs(ref) {
+  const R = await import('./adr-registro.mjs');
+  const die = m => { console.error(`ADR-LINT --append-only-vs ERROR: ${m}`); process.exit(2); };
+  if (!ref || ref.startsWith('--')) die('falta <ref> (uso: adr-lint.mjs --append-only-vs <ref>)');
+  let c;
+  try { c = R.normalizeConfig(cfg); } catch (e) { die(e.message); }
+  if (c.layout !== 'dir') die(`solo aplica con layout "dir" (la config declara «${c.layout}»)`);
+  const git = (a, enc = 'utf8') => execFileSync('git', a, { encoding: enc, maxBuffer: 1 << 28, stdio: ['ignore', 'pipe', 'pipe'] });
+  try { git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]); } catch { die(`<ref> «${ref}» ilegible (no resuelve a un commit)`); }
+  let refPaths, msgs;
+  try {
+    refPaths = git(['ls-tree', '--name-only', ref, '--', c.dir + '/']).split('\n').filter(p => /\/ADR-\d+\.md$/.test(p)).sort();
+    msgs = git(['log', '--format=%B', `${ref}..HEAD`]);
+  } catch (e) { die(`no se puede leer «${ref}»: ${String(e.stderr || e.message).trim()}`); }
+  const overrides = new Map();
+  for (const m of msgs.matchAll(/^\s*adr-append-override:\s*ADR-0*(\d+)\s*[—–-]+\s*(\S.*)$/gm)) overrides.set(+m[1], m[2].trim());
+  const bad = [], eximidas = [];
+  const now = new Map(R.dirFiles(c.dir).map(f => [f.path, f]));
+  for (const p of refPaths) {
+    const n = +p.match(/ADR-(\d+)\.md$/)[1];
+    const antes = git(['show', `${ref}:${p}`], 'buffer');
+    let fallo = null;
+    if (!now.has(p)) fallo = `${p}: borrado (existía en ${ref})`;
+    else {
+      const ahora = readFileSync(p);
+      if (ahora.length < antes.length || !ahora.subarray(0, antes.length).equals(antes)) {
+        let i = 0; while (i < antes.length && antes[i] === ahora[i]) i++;
+        const linea = antes.subarray(0, i).toString('utf8').split('\n').length;
+        fallo = `${p}:${linea}: el contenido de ${ref} ya no es prefijo (solo se admite añadir al final; una rectificación nueva va al final del fichero de su ADR)`;
+      }
+    }
+    if (!fallo) continue;
+    if (overrides.has(n)) eximidas.push(`ADR-${R.pad(n)} — ${overrides.get(n)}`);
+    else bad.push(fallo);
+  }
+  const ex = eximidas.length ? `\nEximidas por «adr-append-override:» en ${ref}..HEAD:\n` + eximidas.map(e => ' - ' + e).join('\n') : '';
+  if (bad.length) {
+    console.error(`ADR-LINT --append-only-vs ${ref} ROJO: ${bad.length} fichero(s) del registro reescritos fuera del final:\n` + bad.map(b => ' - ' + b).join('\n') +
+      `\nSi la edición es deliberada, el commit lleva «adr-append-override: ADR-NNN — <motivo>».` + ex);
+    process.exit(1);
+  }
+  console.log(`ADR-LINT --append-only-vs ${ref} verde: ${refPaths.length} fichero(s) de ${ref} conservados como prefijo (${now.size} en el árbol).` + ex);
   process.exit(0);
 }
