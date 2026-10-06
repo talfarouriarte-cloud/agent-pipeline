@@ -194,6 +194,14 @@ async function lintDir() {
   const dupD = [...new Set(heads.filter((n, i) => heads.indexOf(n) !== i && !DUP_H.has(n)))];
   let fix;
   try { fix = R.fijadas(R.loadResoluciones(c)); } catch (e) { console.error(`ADR-LINT ERROR: ${e.message}`); process.exit(2); }
+  // Las que adr-migrate ya resolvió (por clave o renumerando) constan en el
+  // informe de no atribuibles con su identificador final.
+  let rep = { entradas: [] };
+  try { rep = JSON.parse(readFileSync(c.report + '.json', 'utf8')); } catch {}
+  for (const e of rep.entradas ?? []) {
+    const g = e.resolucion != null && e.colocada && String(e.id ?? '').match(/^ADR-0*(\d+)·R·(\d+)$/);
+    if (g) fix.set(`${+g[1]}·R·${+g[2]}`, e.resolucion);
+  }
   if (dupD.length) errs.push(`ADR duplicado(s) en ${c.dir}: ${dupD.join(', ')}`);
   let idxText = '';
   try { idxText = readFileSync(c.index, 'utf8'); } catch { errs.push(`índice ${c.index} ilegible`); }
@@ -215,7 +223,7 @@ async function lintDir() {
       if (r.k < prevK) errs.push(`${f.path}:${r.line}: ${id} fuera de orden (las rectificaciones van por k)`);
       seen.add(id); prevK = Math.max(prevK, r.k);
       if (DUP_H.has(n) && !fix.has(`${n}·R·${r.k}`))
-        errs.push(`${f.path}:${r.line}: ${id} en el fichero de ADR-${R.pad(n)}, número duplicado declarado (duplicadosHeredados): atribución ambigua sin override que la fije («${`ADR-${R.pad(n)}·R·${r.k}`}» en ${c.overrides})`);
+        errs.push(`${f.path}:${r.line}: ${id} en el fichero de ADR-${R.pad(n)}, número duplicado declarado (duplicadosHeredados): atribución ambigua sin override que la fije («${`ADR-${R.pad(n)}·R·${r.k}`}» en ${c.overrides}, o resuelta en ${c.report}.json)`);
     }
   }
   const corpusD = [...files.map(f => f.text), ...EXTRA.map(v => { try { return readFileSync(v, 'utf8'); } catch { return ''; } })].join('\n');

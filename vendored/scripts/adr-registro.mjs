@@ -161,7 +161,8 @@ function claves(rects) {
 // rectificación de un número declarado en `duplicadosHeredados` (central#331,
 // AP-109). Sirve a adr-migrate (antes del corte, con el identificador que tiene
 // en el volumen) y a adr-lint en `dir` (después, con el del fichero).
-// Devuelve Map `n·R·k` → resolución.
+// Devuelve Map `n·R·k` → resolución. Tras el corte, adr-lint acepta además lo
+// que `<report>.json` da por resuelto y colocado (override por clave o renumerado).
 export const fijadas = resoluciones => new Map([...resoluciones].flatMap(([c, v]) => {
   const g = c.trim().match(/^ADR-0*(\d+)\s*·\s*R\s*·\s*(\d+)$/);
   return g ? [[`${+g[1]}·R·${+g[2]}`, v]] : [];
@@ -319,6 +320,9 @@ export function migrar(parsed, cfg, resoluciones = new Map()) {
     motivo: e.motivo, candidatos: e.candidatos.map(n => `ADR-${pad(n)}`), lineas: e.r.body.length,
     resolucion: e.resolucion != null ? resTxt(e.resolucion) : null,
     colocada: e.target != null ? `ADR-${pad(e.target)}.md` : null,
+    // Identificador final (con la k del override si renumera): adr-lint en `dir`
+    // reconoce por él la rectificación de un número duplicado ya fijada (AP-109).
+    id: e.target != null ? `ADR-${pad(e.target)}·R·${e.k}` : null,
   }));
   const pendientes = entradas.filter(e => !e.colocada);
   const repJson = { generado: 'adr-migrate (central#325)', volumenes: cfg.volumes, dir: cfg.dir, overrides: cfg.overrides, entradas };

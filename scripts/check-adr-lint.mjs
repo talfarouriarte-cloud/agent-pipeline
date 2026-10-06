@@ -341,6 +341,18 @@ caso("(i') adr-migrate · con override «ADR-002·R·1» ⇒ colocada y resuelta
   W(d, 'decisions.md', idxDe([1, 2]));
   return { ...exec(d, LINT), esperaCode: 0, esperaMsg: 'layout dir: 2 ficheros, 1 rectificaciones' };
 }));
+caso("(i') override por CLAVE que renumera ⇒ adr-migrate la coloca como R·5 y lint dir la reconoce por el informe (verde)", conDir(() => dupMig({ 'adr-migrate.overrides.json': {
+  'docs/decisions/v1.md#### ADR-2·R·1 (2026-07-01) — de cuál de las dos ADR-2#1': 'ADR-002·R·5' } }), d => {
+  const m = exec(d, V('adr-migrate.mjs'));
+  if (m.code !== 0 || !R_(d, F(2)).includes('### ADR-002·R·5 (2026-07-01)')) return { ...m, code: m.code || -1, esperaCode: 0 };
+  W(d, 'adr-lint.config.json', JSON.stringify({ ...MIG_CFG, layout: 'dir', index: 'decisions.md', duplicadosHeredados: [2] }));
+  W(d, 'decisions.md', idxDe([1, 2]));
+  const ok = exec(d, LINT);
+  if (ok.code !== 0) return { ...ok, esperaCode: 0 };
+  // Control: sin el informe, la misma rectificación queda sin fijar.
+  rmSync(join(d, 'docs/decisions/adr-no-atribuibles.json'));
+  return { ...exec(d, LINT), esperaCode: 1, esperaMsg: 'ADR-2·R·5 en el fichero de ADR-002, número duplicado declarado' };
+}));
 caso("(i') lint dir · fichero de número duplicado con rectificación sin override ⇒ rojo", conDir(() => dirRepo({ ...DIR_BASE, 2: ADR2_DUP + RECT_DUP }, { cfg: { duplicadosHeredados: [2] } }),
   d => ({ ...exec(d, LINT), esperaCode: 1, esperaMsg: 'ADR-2·R·1 en el fichero de ADR-002, número duplicado declarado (duplicadosHeredados): atribución ambigua sin override' })));
 caso("(i') lint dir · con override «ADR-002·R·1» ⇒ verde", conDir(() => dirRepo({ ...DIR_BASE, 2: ADR2_DUP + RECT_DUP }, { cfg: { duplicadosHeredados: [2] }, extra: { 'adr-migrate.overrides.json': { 'ADR-002·R·1': 'ADR-002' } } }),
