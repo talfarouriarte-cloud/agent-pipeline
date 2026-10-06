@@ -53,8 +53,14 @@ export function normalizeConfig(raw = {}) {
   const layout = raw.layout ?? 'volumes';
   if (layout !== 'volumes' && layout !== 'dir') throw new Error(`adr-lint.config.json: layout «${layout}» no es "volumes" ni "dir"`);
   const dir = raw.dir ?? 'docs/decisions/adr';
+  const dups = raw.duplicadosHeredados ?? [];
+  if (!Array.isArray(dups) || !dups.every(n => Number.isInteger(n) && n > 0))
+    throw new Error(`adr-lint.config.json: duplicadosHeredados ${JSON.stringify(dups)} no es una lista de números de ADR`);
   return {
     layout, dir,
+    // Números de ADR repetidos heredados y declarados (central#331, AP-109): la
+    // regla de duplicados no los informa; sus rectificaciones son ambiguas.
+    duplicadosHeredados: dups,
     volumes: raw.volumes ?? DEFAULT_VOLUMES,
     index: raw.index ?? 'decisions.md',
     strictFrom: raw.strictFrom ?? 217,
@@ -151,12 +157,25 @@ function claves(rects) {
   });
 }
 
+// Override en forma de identificador (`"ADR-NNN·R·k": "ADR-NNN"`): fija una
+// rectificación de un número declarado en `duplicadosHeredados` (central#331,
+// AP-109). Sirve a adr-migrate (antes del corte, con el identificador que tiene
+// en el volumen) y a adr-lint en `dir` (después, con el del fichero).
+// Devuelve Map `n·R·k` → resolución.
+export const fijadas = resoluciones => new Map([...resoluciones].flatMap(([c, v]) => {
+  const g = c.trim().match(/^ADR-0*(\d+)\s*·\s*R\s*·\s*(\d+)$/);
+  return g ? [[`${+g[1]}·R·${+g[2]}`, v]] : [];
+}));
+
 // Atribución por identificador. `resoluciones`: Map clave → { n, k? } (de
 // `adr-migrate.overrides.json`). Devuelve { entries, placed, report }; cada
-// entrada lleva su `k` final (el del override si lo renumera).
-export function attribute(parsed, resoluciones = new Map()) {
+// entrada lleva su `k` final (el del override si lo renumera). `dups`: números
+// de `duplicadosHeredados` — toda rectificación que apunte a uno de ellos es
+// AMBIGUA (dos ADRs con ese número) y va al informe salvo override: nunca se
+// elige una de las dos en silencio.
+export function attribute(parsed, resoluciones = new Map(), dups = []) {
   const existentes = new Set(parsed.adrs.map(a => a.n));
-  const ks = claves(parsed.rects);
+  const ks = claves(parsed.rects), porId = fijadas(resoluciones);
   const out = parsed.rects.map((r, i) => {
     const e = { r, clave: ks[i], k: r.k, target: null, motivo: null, candidatos: [] };
     if (r.explicit != null) {
@@ -170,6 +189,14 @@ export function attribute(parsed, resoluciones = new Map()) {
         e.motivo = `sin cabecera de ADR dentro del bloque de ADR-${r.host}, que aloja rectificaciones de otras ADRs (${ajenas.map(n => 'ADR-' + n).join(', ')})`;
         e.candidatos = [r.host, ...ajenas];
       } else e.target = r.host;
+    }
+    const dupN = e.target ?? r.explicit;
+    if (dupN != null && dups.includes(dupN)) {
+      const id = `ADR-${pad(dupN)}·R·${r.k}`, fix = porId.get(`${dupN}·R·${r.k}`);
+      e.target = null; e.candidatos = [dupN];
+      e.motivo = `ADR-${dupN} es un número duplicado declarado (duplicadosHeredados): atribución ambigua entre sus ${parsed.adrs.filter(a => a.n === dupN).length} ADRs (override «${id}» o por clave)`;
+      // Como un override por clave: la entrada sigue en el informe, resuelta.
+      if (fix != null) { e.resolucion = fix; e.k = fix.k ?? r.k; e.target = existentes.has(fix.n) ? fix.n : null; if (e.target == null) e.motivo = `override a ADR-${fix.n}, que no existe en el registro`; }
     }
     return e;
   });
@@ -218,6 +245,15 @@ export function fueraDeBloque(parsed) {
   });
 }
 
+// Secciones de ADR presentes en un texto: cabecera `#…` o negrita a inicio de
+// línea con el nombre exacto (`### Contexto`, `**Coste de revertir.**`); no
+// cuenta «**Decisión del propietario**» ni la palabra en prosa.
+const SECCIONES = ['Contexto', 'Decisión', 'Coste de revertir'];
+export const secciones = text => SECCIONES.filter(s => {
+  const w = s.replace('ó', '[oó]');
+  return new RegExp(`^[ \\t>]*(?:#{2,6}\\s+${w}[.:]?\\s*$|\\*\\*${w}[.:]?\\*\\*)`, 'mi').test(text);
+});
+
 const fence = s => '`'.repeat(Math.max(3, ...[...s.matchAll(/`+/g)].map(m => m[0].length + 1)));
 
 // Migración determinista (en memoria): no escribe nada. Devuelve los ficheros
@@ -228,7 +264,7 @@ const fence = s => '`'.repeat(Math.max(3, ...[...s.matchAll(/`+/g)].map(m => m[0
 // con su mismo fin de línea). Si un bloque acaba sin fin de línea (última línea
 // de un volumen sin `\n`), se le añade uno y queda anotado (`eolAñadido`).
 export function migrar(parsed, cfg, resoluciones = new Map()) {
-  const { entries, placed, report } = attribute(parsed, resoluciones);
+  const { entries, placed, report } = attribute(parsed, resoluciones, cfg.duplicadosHeredados ?? []);
   const files = new Map(), bloques = [];
   for (const n of [...new Set(parsed.adrs.map(a => a.n))].sort((a, b) => a - b)) {
     const name = `ADR-${pad(n)}.md`;
@@ -267,6 +303,17 @@ export function migrar(parsed, cfg, resoluciones = new Map()) {
     rectificacion: `ADR-${pad(e.target)}·R·${e.k}`, volumen: e.r.path, linea: e.r.line,
     incluye: `${e.r.path}:${e.r.cortadaPor.line} «${e.r.cortadaPor.header}»`, anfitriona: `ADR-${pad(e.r.host)}`,
   }));
+  // Anfitriona = la propia ADR (central#331, AP-109): un bloque de ADR sin
+  // secciones de ADR seguido de una rectificación suya que sí las tiene es la
+  // firma de una rectificación insertada a mitad del cuerpo de su ADR (se lleva
+  // el resto). adr-equiv no lo ve: certifica fidelidad al volumen, no corrección.
+  const porR = new Map(placed.map(e => [e.r, e]));
+  const propias = parsed.blocks.flatMap((b, i) => {
+    const sig = parsed.blocks[i + 1], e = sig && porR.get(sig);
+    if (b.tipo !== 'adr' || !e || sig.path !== b.path || e.target !== b.n || e.r.host !== b.n) return [];
+    if (secciones(bodyText(b)).length || !secciones(bodyText(sig)).length) return [];
+    return [{ rectificacion: `ADR-${pad(e.target)}·R·${e.k}`, volumen: sig.path, linea: sig.line, adr: `ADR-${pad(b.n)}`, adrLinea: b.line, secciones: secciones(bodyText(sig)) }];
+  });
   const entradas = report.map(e => ({
     clave: e.clave, volumen: e.r.path, linea: e.r.line, cabecera: e.r.header.trim(),
     motivo: e.motivo, candidatos: e.candidatos.map(n => `ADR-${pad(n)}`), lineas: e.r.body.length,
@@ -293,7 +340,10 @@ export function migrar(parsed, cfg, resoluciones = new Map()) {
       ...dupAdr.map(d => `- ${d.adr}: ${d.ubicaciones.map(u => '`' + u + '`').join(', ')}`), ''] : []),
     ...(avisos.length ? ['## Fronteras a confirmar (rectificación alojada en el bloque de otra ADR que incluye una cabecera hermana; por la definición de bloque viaja con la rectificación)', '',
       ...avisos.map(a => `- ${a.rectificacion} (\`${a.volumen}:${a.linea}\`, en el bloque de ${a.anfitriona}) incluye ${a.incluye}`), ''] : []),
+    ...(propias.length ? ['## Fronteras a confirmar: anfitriona = la propia ADR (su bloque de ADR no tiene secciones `Contexto`/`Decisión`/`Coste de revertir` y la rectificación que lo sigue sí: ¿se insertó a mitad del cuerpo de la ADR?)', '',
+      ...propias.map(a => `- ${a.rectificacion} (\`${a.volumen}:${a.linea}\`, tras ${a.adr} en \`${a.volumen}:${a.adrLinea}\`) lleva ${a.secciones.map(s => '«' + s + '»').join(', ')}`), ''] : []),
   ].join('\n');
+  avisos.push(...propias.map(a => ({ ...a, anfitriona: a.adr })));
   return { entries, placed, report, files, origen, bloques, cabeceras, fuera, dupAdr, avisos, entradas, pendientes,
     informes: [[cfg.report + '.json', JSON.stringify(repJson, null, 2) + '\n'], [cfg.report + '.md', repMd], [cfg.informe + '.md', infMd]] };
 }
