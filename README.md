@@ -116,7 +116,7 @@ agent-pipeline/
 │   ├── docs-agents/         # generic mandates: creator, reviewer, epic-auditor,
 │   │                        # watchdog + protocol.md, resolver-protocol.md
 │   ├── skills/              # framework skills (§7, layer 1)
-│   └── scripts/             # adr-lint.mjs
+│   └── scripts/             # adr-lint, adr-migrate, adr-equiv, adr-index (+ adr-registro, parser común), belts .cjs
 ├── .github/actions/
 │   └── graft-vendored/      # runtime injection of vendored/ (AP-009)
 ├── templates/               # spec, decisions, CLAUDE.domain, role-annex,
