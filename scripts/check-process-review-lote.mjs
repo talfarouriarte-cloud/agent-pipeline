@@ -10,8 +10,8 @@
 // hermanos (un paso propio de ci.yml sería un cambio de workflow pendiente).
 import { readFileSync } from 'fs';
 import yaml from 'js-yaml';
+import { cargarStep } from './lib/github-script.mjs';
 
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 function stepScript(file, id) {
   const wf = yaml.load(readFileSync(file, 'utf8'));
   for (const job of Object.values(wf.jobs || {})) {
@@ -20,8 +20,8 @@ function stepScript(file, id) {
   console.error(`CHECK-PROCESS-REVIEW-LOTE ROJO: step \`${id}\` no encontrado en ${file}`);
   process.exit(1);
 }
-const selector = new AsyncFunction('github', 'context', 'core', stepScript('.github/workflows/process-review.yml', 'lote'));
-const guardPanel = new AsyncFunction('github', 'context', 'core', stepScript('.github/workflows/claude-code.yml', 'check_panel'));
+const selector = cargarStep(stepScript('.github/workflows/process-review.yml', 'lote'));
+const guardPanel = cargarStep(stepScript('.github/workflows/claude-code.yml', 'check_panel'));
 
 const DIA = 24 * 3600 * 1000;
 const hace = d => new Date(Date.now() - d * DIA).toISOString();
@@ -68,7 +68,7 @@ async function lote(world, { evento = 'schedule', issue = null } = {}) {
   const w = { added: [], comments: [], outputs: {}, failed: null };
   const context = { repo: { owner: 'o', repo: 'r' }, eventName: evento, payload: issue ? { issue } : {} };
   const core = { setOutput: (k, v) => { w.outputs[k] = String(v); }, notice() {}, warning() {}, info() {}, setFailed: m => { w.failed = m; } };
-  await selector(api(world, w), context, core);
+  await selector({ github: api(world, w), context, core });
   return w;
 }
 const nPend = (k, extra = {}) => Array.from({ length: k }, (_, i) => panel(100 + i, extra));
@@ -179,7 +179,7 @@ async function guard(world) {
   const issue = { number: 1, body: 'Épica nueva', labels: [{ name: 'epica' }] };
   const context = { repo: { owner: 'o', repo: 'r' }, payload: { issue, comment: { body: 'arm' } } };
   const core = { setOutput: (k, v) => { w.outputs[k] = String(v); }, setFailed: m => { w.failed = m; }, notice() {}, warning() {}, info() {} };
-  await guardPanel(api({ ...world, issueComments: { 1: [] } }, w), context, core);
+  await guardPanel({ github: api({ ...world, issueComments: { 1: [] } }, w), context, core });
   return w;
 }
 BANCO.push(

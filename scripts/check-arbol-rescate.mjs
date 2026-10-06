@@ -27,6 +27,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync, execFileSync } from 'child_process';
 import yaml from 'js-yaml';
+import { cargarStep } from './lib/github-script.mjs';
 
 const require = createRequire(import.meta.url);
 const wf = yaml.load(readFileSync('.github/workflows/claude-code.yml', 'utf8'));
@@ -233,9 +234,8 @@ try {
 } finally { rmSync(tmp, { recursive: true, force: true }); }
 
 // ── github-script: cesiones ─────────────────────────────────────────────────
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const muerte = new AsyncFunction('github', 'context', 'core', 'require', muerteStep.with.script);
-const autolabel = new AsyncFunction('github', 'context', 'core', autoLabel.with.script);
+const muerte = cargarStep(muerteStep.with.script, 'post_muerte_sin_pr');
+const autolabel = cargarStep(autoLabel.with.script, 'Auto-label');
 const core = w => ({ setOutput: (k2, v) => { w.outputs[k2] = String(v); }, notice() {}, warning() {}, info() {} });
 const T0 = Date.now() - 600000;
 const at = s => new Date(T0 + s * 1000).toISOString();
@@ -272,7 +272,7 @@ async function postMuerte({ rescueWip, rescuePr = '', prs = [] }) {
   const context = { repo: { owner: 'o', repo: 'r' }, runId: 1, payload: { issue: { number: 40, title: 'x', labels: [] }, comment: { created_at: at(0) } } };
   try {
     await withEnv({ EXEC_FILE: exec, STEP_CREATOR_OUTCOME: 'success', IN_DEFAULT_BRANCH: 'main', RESCUE_WIP: rescueWip, RESCUE_PR: rescuePr, DEFAULT_GH_TOKEN: 't' },
-      () => muerte(github, context, core(w), require));
+      () => muerte({ github, context, core: core(w), require }));
   } finally { globalThis.fetch = savedFetch; rmSync(dir, { recursive: true, force: true }); }
   return w;
 }
@@ -309,7 +309,7 @@ async function runAutoLabel({ closing, marker, rescueWip = '' }) {
     },
   };
   const context = { repo: { owner: 'o', repo: 'r' }, payload: { issue: { number: 50, pull_request: {} }, comment: trigger } };
-  await withEnv({ WAS_DRAFT: 'false', IN_REVIEWER_WF: 'Opus Reviewer', RESCUE_WIP: rescueWip }, () => autolabel(github, context, core(w)));
+  await withEnv({ WAS_DRAFT: 'false', IN_REVIEWER_WF: 'Opus Reviewer', RESCUE_WIP: rescueWip }, () => autolabel({ github, context, core: core(w) }));
   return w;
 }
 {

@@ -25,9 +25,9 @@ import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import yaml from 'js-yaml';
+import { cargarStep } from './lib/github-script.mjs';
 
 const require = createRequire(import.meta.url);
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const fallos = [];
 let casos = 0;
 
@@ -77,8 +77,7 @@ function doble({ workflows = [], runs = {}, jobs = {}, issues = [], comments = {
 
 async function correr(script, env, d) {
   const context = { repo: { owner: 'o', repo: 'r' }, runId: 1, eventName: 'schedule' };
-  const fn = new AsyncFunction('github', 'context', 'core', 'fetch', 'require', 'process', script);
-  await fn(d.github, context, d.core, d.fetch, require, { env: { ...env } });
+  await cargarStep(script)({ github: d.github, context, core: d.core, require }, { env, globales: { fetch: d.fetch } });
   return d.log;
 }
 
