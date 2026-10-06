@@ -26,7 +26,8 @@
 // claves nuevas (literal capturado con el adr-lint de 997d568).
 //
 // Cuarta parte (central#334, AP-110): (vi) `--append-only-vs` con las líneas
-// `**Estado:**` enmascaradas — casos (a)–(f) del ruling; (g) = los de (iv), intactos.
+// `**Estado:**` enmascaradas — casos (a)–(f) del ruling; (g) = los de (iv), intactos;
+// (h) quitar el `\n` final del tramo es rojo y no cuenta como Estado (revisión del PR #335).
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { tmpdir } from 'os';
@@ -438,7 +439,7 @@ aoE('(a) cambio de texto de un Estado existente ⇒ verde sin override', d => {
 aoE('(b) cambio de Estado + rectificación añadida al final ⇒ verde', d => {
   sub(d, F(2), '**Estado:** Vigente', '**Estado:** Rectificada por R·2');
   W(d, F(2), R_(d, F(2)) + '\n### ADR-002·R·2 (2026-10-01) — nueva\n\n**Estado:** Vigente\n\nOtra.\n');
-}, { esperaCode: 0, esperaMsg: '2 fichero(s) de corte conservados como prefijo' });
+}, { esperaCode: 0, esperaMsg: '2 fichero(s) de corte conservados como prefijo (2 en el árbol). 1 con cambio de texto en una línea **Estado:** (exento, AP-110)' });
 aoE('(c) Estado nuevo insertado en medio ⇒ rojo', d => sub(d, F(2), 'Texto.\n', 'Texto.\n**Estado:** Nuevo\n'),
   { esperaCode: 1, esperaMsg: `${F(2)}:6: ${ESTADO_ROJO}` });
 aoE('(d) Estado eliminado ⇒ rojo', d => sub(d, F(2), '**Estado:** Vigente\n\n', ''),
@@ -454,6 +455,11 @@ aoE('(f\') Estado con otra línea cambiada, con override ⇒ verde y consta', d 
   sub(d, F(2), '**Estado:** Propuesta', '**Estado:** Implementada'); sub(d, F(2), 'Línea.', 'Línea corregida.');
   commit(d, 'corrige ADR-2\n\nadr-append-override: ADR-002 — errata autorizada');
 }, { esperaCode: 0, esperaMsg: 'ADR-002 — errata autorizada' });
+aoE('(h) solo se quita el \\n final ⇒ rojo (no cuenta como Estado)', d => W(d, F(2), R_(d, F(2)).slice(0, -1)),
+  { esperaCode: 1, esperaMsg: `${F(2)}:16: el contenido de corte ya no es prefijo` });
+aoE('(h\') cambio de Estado + \\n final quitado ⇒ rojo', d => {
+  sub(d, F(2), '**Estado:** Propuesta', '**Estado:** Implementada'); W(d, F(2), R_(d, F(2)).slice(0, -1));
+}, { esperaCode: 1, esperaMsg: `${F(2)}:16: el contenido de corte ya no es prefijo` });
 
 caso('(iv) --append-only-vs · <ref> ilegible ⇒ exit 2', conDir(aoRepo, d => ({ ...exec(d, LINT, ['--append-only-vs', 'no-existe']), esperaCode: 2, esperaMsg: 'ilegible' })));
 caso('(iv) --append-only-vs · layout "volumes" ⇒ exit 2', () => {

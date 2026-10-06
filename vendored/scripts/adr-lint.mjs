@@ -309,8 +309,8 @@ function estadoDiverge(antes, ahora) {
   const A = antes.toString('latin1').split('\n'), H = ahora.toString('latin1').split('\n');
   for (let i = 0; i < A.length; i++) {
     const a = A[i], h = H[i], ultima = i === A.length - 1;
-    if (ultima && a === '') return null;                        // <ref> acababa en \n: el resto es añadido
-    if (h === undefined) return { linea: i + 1, estado: false };
+    if (h === undefined) return { linea: i + 1, estado: false }; // también: \n final de <ref> quitado
+    if (ultima && a === '') return null;                        // <ref> acababa en \n y se conserva: el resto es añadido
     const ea = ESTADO.test(a), eh = ESTADO.test(h);
     if (ea !== eh) return { linea: i + 1, estado: true };
     if (ea) continue;                                           // texto de Estado: libre
