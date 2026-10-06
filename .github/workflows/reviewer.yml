@@ -764,6 +764,22 @@ jobs:
         run: echo "Sesión LLM viva — resetea la firma de FLOTA CAÍDA del Watchdog (AP-091)."
 
 
+      # central#327: módulo de enmiendas en vuelo (`vendored/scripts/enmiendas.cjs`)
+      # para el post-step de estado: un LGTM con una enmienda sin acuse no escribe
+      # `lgtm`. Sparse checkout del central, mismo patrón que epic-merge; va tras
+      # el checkout del repo (que vacía el workspace) y corre también cuando el
+      # cap NITS omitió la sesión (su LGTM determinista pasa por el mismo post-step).
+      - name: Módulos vendored del central (enmiendas)
+        if: always() && steps.gate.outputs.run == 'true'
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: talfarouriarte-cloud/agent-pipeline
+          ref: main
+          path: .enmiendas-central
+          sparse-checkout: vendored/scripts
+          sparse-checkout-cone-mode: true
+
       # ── Estado materializado (ADR-218 + AP-025): un paso DETERMINISTA (cero
       # LLM) cierra la costura «sesión del Reviewer → estado» (la disciplina de
       # un LLM es olvidable; el mecanismo no). DOS ramas DISJUNTAS por «¿existe
@@ -981,6 +997,43 @@ jobs:
             // ── Rama CON veredicto (ADR-218): materializa la label lgtm.
             const lastV = (lastVc.body || '').trim().split(/\s/)[0].replace(':','');
             if (lastV === 'LGTM') {
+              // central#327 (ruling mensual 2026-10-06, punto 5): con una enmienda
+              // sin acuse en el issue o el PR el veredicto no puede ser LGTM. No se
+              // escribe `lgtm` (se retira si estaba) y el turno vuelve al Creator con
+              // un re-arm que la enlaza (PAT ⇒ dispara; dedupe por conjunto y tope
+              // compartidos con la entrega al cierre del turno). Sin ronda nueva de
+              // revisión hasta el acuse. Lectura caída ⇒ fail-open aquí: el gate 3 de
+              // epic-merge re-lee y no mergea sobre incertidumbre.
+              let ENM = null;
+              const WS = process.env.GITHUB_WORKSPACE || process.cwd();
+              for (const p of [`${WS}/.enmiendas-central/vendored/scripts/enmiendas.cjs`, `${WS}/scripts/enmiendas.cjs`]) {
+                try { ENM = require(p); break; } catch (e) { /* siguiente ubicación */ }
+              }
+              if (!ENM) core.warning('enmiendas.cjs no disponible — LGTM sin comprobar enmiendas (epic-merge re-comprueba).');
+              let pendEnm = [];
+              let estadoEnm = null;
+              if (ENM) {
+                try {
+                  ({ estado: estadoEnm } = await ENM.estadoDe({ github, owner: O.owner, repo: O.repo, numero: n, esPR: true,
+                    headRef: context.payload.pull_request.head.ref, warn: (m) => core.warning(m) }));
+                  pendEnm = ENM.pendientes(estadoEnm).enmiendas;
+                } catch (e) { core.warning(`enmiendas: lectura falló (${e.message}); epic-merge re-comprueba antes de mergear.`); }
+              }
+              if (pendEnm.length) {
+                await github.rest.issues.removeLabel({ ...O, issue_number: n, name: 'lgtm' }).catch(() => {});
+                const prLabels = (context.payload.pull_request.labels || []).map(l => l.name);
+                const plan = ENM.planificar(estadoEnm, { origen: 'reviewer', soloEnmiendas: true });
+                if (prLabels.includes('pause-agents') || prLabels.includes('human-needed')) {
+                  core.notice(`PR #${n}: LGTM con enmiendas sin acuse y turno humano — lgtm retirada, sin re-arm.`);
+                } else if (plan.accion === 'rearm') {
+                  await patCall('POST', `/issues/${n}/comments`, { body: plan.cuerpo });
+                } else if (plan.accion === 'tope') {
+                  await patCall('POST', `/issues/${n}/labels`, { labels: ['human-needed'] });
+                  await patCall('POST', `/issues/${n}/comments`, { body: ENM.cuerpoTope(plan) });
+                }
+                core.warning(`PR #${n}: LGTM con enmienda(s) sin acuse (${pendEnm.map(e => e.id).join(', ')}) — sin lgtm; ${plan.accion}.`);
+                return;
+              }
               const res = await fetch(`https://api.github.com/repos/${O.owner}/${O.repo}/issues/${n}/labels`, {
                 method: 'POST',
                 headers: { Authorization: `Bearer ${process.env.ARM_PAT}`, Accept: 'application/vnd.github+json' },

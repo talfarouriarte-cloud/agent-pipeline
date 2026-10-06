@@ -1127,6 +1127,30 @@ jobs:
                 return;
               }
 
+              // GATE 3: enmiendas en vuelo (central#327, ruling mensual 2026-10-06,
+              // punto 6). Nada mergea con una enmienda (comentario de confianza con
+              // `<!-- enmienda -->`) sin acuse del Creator en el issue o el PR: el
+              // LGTM puede ser de la versión anterior a la enmienda. Lectura caída ⇒
+              // no mergeo (re-evalúo en el siguiente evento). Sin módulo ⇒ statu quo.
+              // Al acusarse, el siguiente evento (push ⇒ CI, o `lgtm`) sigue el flujo.
+              {
+                let ENM = null;
+                try { ENM = require(`${process.env.GITHUB_WORKSPACE}/.epic-merge-central/vendored/scripts/enmiendas.cjs`); }
+                catch (e) { core.warning(`[epic-merge] enmiendas.cjs no disponible (${e.message}) — gate de enmiendas inactivo (statu quo).`); }
+                if (ENM) {
+                  let pendEnm = null;
+                  try {
+                    const { estado } = await ENM.estadoDe({ github, owner, repo, numero: prNumber, esPR: true, headRef: headBranch, warn: (m) => core.warning(m) });
+                    pendEnm = ENM.pendientes(estado).enmiendas;
+                  } catch (e) { await diag(prNumber, `lectura de enmiendas falló (${e.message}); no mergeo sobre incertidumbre — re-evalúo en el siguiente evento.`); return; }
+                  if (pendEnm.length) {
+                    await setStatus(prNumber, 'estado:esperando-creator');
+                    await diag(prNumber, `enmienda sin acuse (${pendEnm.map(e => e.url || e.id).join(', ')}); no mergeo hasta el acuse del Creator (central#327).`);
+                    return;
+                  }
+                }
+              }
+
               // MERGE (directo; si ya estuviera cerrado/mergeado, el propio merge lo reporta).
               try {
                 if (process.env.IN_AUTOMERGE !== 'true') { await diag(prNumber, 'gates verdes, pero automerge=false en este repo: el merge es humano (AP-012). Esperando.'); return; }
