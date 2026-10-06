@@ -26,7 +26,7 @@ solo al notar la ausencia del comentario del Reviewer.
 **Convención operativa:** cuando un ADR requiera edit de workflow,
 añadir al ADR mismo una línea de checklist:
 
-- `[ ] decisions.md actualizado (este ADR escrito)`
+- `[ ] registro de decisiones actualizado (este ADR escrito donde diga el layout)`
 - `[ ] Edit en .github/workflows/<file>.yml aplicado`
 
 Marcar `[x]` cuando esté hecho. Antes de cerrar el chat donde se
@@ -34,14 +34,32 @@ discute el ADR, verificar que ambos checks están aplicados —
 preferiblemente con un test funcional (abrir un PR de prueba que
 ejercite el trigger).
 
+## Dónde se escribe una ADR: según el layout del registro (AP-111)
+
+No hay ruta fija: la decide `layout` en `adr-lint.config.json` del repo
+(regla común y comando para resolver el destino en `protocol.md`
+§ «Dónde va una ADR según el layout»).
+
+- `layout: "dir"`: ADR nueva = fichero nuevo `<dir>/ADR-NNN.md`;
+  rectificación = AÑADIR al final del fichero de su ADR con cabecera
+  `### ADR-NNN·R·k (fecha) — título`; en medio solo se cambia el texto
+  de `**Estado:**`; índice con `node scripts/adr-index.mjs` (trae
+  «citada en» por ADR). Nunca un volumen: `adr-lint` da rojo.
+- `layout: "volumes"` (o sin config, defaults de `adr-registro.mjs`):
+  al final del último volumen de `volumes`; índice como lo mantenga el
+  repo.
+
+El siguiente número libre se mira en el registro real (ficheros
+`ADR-NNN.md` de `<dir>` o cabeceras de los volúmenes), nunca de memoria.
+
 ## Convención de numeración de ADRs
 
 Los ADRs son secuenciales en orden de aplicación, no de discusión. Si
-discutes un cambio en un chat pero todavía no lo aplicas a
-`decisions.md`, el siguiente número disponible NO está reservado —
+discutes un cambio en un chat pero todavía no lo aplicas al
+registro de decisiones, el siguiente número disponible NO está reservado —
 otro cambio que se aplique antes se llevará ese número. Convención
-operativa: solo asigna número definitivo cuando vas a pegarlo a
-`decisions.md`. Si discutes varios ADRs en paralelo, redactalos como
+operativa: solo asigna número definitivo cuando vas a escribirlo en el
+registro. Si discutes varios ADRs en paralelo, redactalos como
 borradores con número provisional, y renumera al pegar según el orden
 real de aplicación.
 
@@ -113,7 +131,7 @@ Otras áreas candidatas futuras (no acción inmediata): shocks compuestos, multi
 
 | Tipo de contenido | Ubicación |
 |---|---|
-| Decisión cronológica con alternativas + consecuencias | ADR en `decisions.md` (corta, inmutable) |
+| Decisión cronológica con alternativas + consecuencias | ADR en el registro de decisiones (corta, inmutable; se rectifica añadiendo al final, según layout) |
 | Razonamiento conceptual de por qué se modela algo así | Doc de diseño (vivo, actualizable) |
 | Fórmulas operativas, shape de campos, mecánica de cálculo | Doc de diseño (referenciando JSDoc cuando aplique) |
 | Mapa de limitaciones honestas | Doc de diseño |
@@ -223,7 +241,8 @@ Aprendizaje del 2026-05-17 al reescribir `docs/design/optimizer.md` cuatro veces
 
 ```
 Paso 1: Verificar qué ADRs existen en el repo real (NO en /mnt/project/).
-  Si hay zip reciente subido por el usuario → extraerlo, leer decisions.md del zip.
+  Si hay zip reciente subido por el usuario → extraerlo, leer el registro del zip
+                  (índice + volúmenes o `<dir>/ADR-NNN.md`, según `layout` de adr-lint.config.json).
   Si no hay zip → usar /mnt/project/ con consciencia de que puede estar desfasado;
                   preguntar al usuario por el estado actual si la decisión depende.
 
