@@ -26,6 +26,8 @@
 //    existía en <ref> conserva su contenido como PREFIJO byte a byte; solo se
 //    añade al final. Override por commit en <ref>..HEAD con
 //    `adr-append-override: ADR-NNN — <motivo>` (exime solo esa ADR).
+//    Las líneas `**Estado:**` del tramo se comparan enmascaradas (central#334,
+//    AP-110): cambiar su texto es libre; añadirlas, quitarlas o moverlas, no.
 // Todo lo anterior carga `./adr-registro.mjs` (servido por el graft junto a este
 // fichero); la ruta de siempre (volúmenes, sin --ids-vs) no lo necesita.
 // Uso: node scripts/adr-lint.mjs [--ids-vs <ref> | --append-only-vs <ref>]   (verde: exit 0; rojo: exit 1 + listado; error: exit 2)
@@ -293,6 +295,29 @@ async function idsVs(ref) {
 // corrección. Cada `ADR-NNN.md` de <ref> debe seguir siendo PREFIJO byte a
 // byte del fichero del árbol; ficheros nuevos, libres; borrado ⇒ rojo. Override
 // auditable: un commit de <ref>..HEAD con `adr-append-override: ADR-NNN — <motivo>`.
+// Exención de las líneas de estado (central#334, AP-110): los Creators
+// actualizan `**Estado:**` al implementar la ADR, y esa línea está arriba del
+// fichero. Si el prefijo literal falla, se compara ENMASCARADO: cada línea del
+// tramo de <ref> que empieza por `**Estado:**` casa con cualquier línea `Estado`
+// en la misma posición, y el resto sigue siendo prefijo byte a byte. Añadir,
+// quitar o mover una línea `Estado`, o convertir otra en `Estado`, es rojo.
+// Devuelve null si solo cambió texto de `Estado`; si no, { linea, estado }.
+// `latin1`: decodificación sin pérdida byte↔carácter (el marcador es ASCII).
+// La regex va dentro: los modos corren por top-level await antes de esta línea.
+function estadoDiverge(antes, ahora) {
+  const ESTADO = /^\*\*Estado:\*\*/;
+  const A = antes.toString('latin1').split('\n'), H = ahora.toString('latin1').split('\n');
+  for (let i = 0; i < A.length; i++) {
+    const a = A[i], h = H[i], ultima = i === A.length - 1;
+    if (ultima && a === '') return null;                        // <ref> acababa en \n: el resto es añadido
+    if (h === undefined) return { linea: i + 1, estado: false };
+    const ea = ESTADO.test(a), eh = ESTADO.test(h);
+    if (ea !== eh) return { linea: i + 1, estado: true };
+    if (ea) continue;                                           // texto de Estado: libre
+    if (ultima ? !h.startsWith(a) : h !== a) return { linea: i + 1, estado: false };
+  }
+  return null;
+}
 async function appendOnlyVs(ref) {
   const R = await import('./adr-registro.mjs');
   const die = m => { console.error(`ADR-LINT --append-only-vs ERROR: ${m}`); process.exit(2); };
@@ -310,6 +335,7 @@ async function appendOnlyVs(ref) {
   const overrides = new Map();
   for (const m of msgs.matchAll(/^\s*adr-append-override:\s*ADR-0*(\d+)\s*[—–-]+\s*(\S.*)$/gm)) overrides.set(+m[1], m[2].trim());
   const bad = [], eximidas = [];
+  let estados = 0;
   const now = new Map(R.dirFiles(c.dir).map(f => [f.path, f]));
   for (const p of refPaths) {
     const n = +p.match(/ADR-(\d+)\.md$/)[1];
@@ -319,9 +345,10 @@ async function appendOnlyVs(ref) {
     else {
       const ahora = readFileSync(p);
       if (ahora.length < antes.length || !ahora.subarray(0, antes.length).equals(antes)) {
-        let i = 0; while (i < antes.length && antes[i] === ahora[i]) i++;
-        const linea = antes.subarray(0, i).toString('utf8').split('\n').length;
-        fallo = `${p}:${linea}: el contenido de ${ref} ya no es prefijo (solo se admite añadir al final; una rectificación nueva va al final del fichero de su ADR)`;
+        const e = estadoDiverge(antes, ahora);
+        if (e === null) estados++;
+        else if (e.estado) fallo = `${p}:${e.linea}: línea **Estado:** añadida, quitada o movida en el tramo de ${ref} (solo se admite cambiar el texto de una existente)`;
+        else fallo = `${p}:${e.linea}: el contenido de ${ref} ya no es prefijo (solo se admite añadir al final; una rectificación nueva va al final del fichero de su ADR)`;
       }
     }
     if (!fallo) continue;
@@ -334,6 +361,7 @@ async function appendOnlyVs(ref) {
       `\nSi la edición es deliberada, el commit lleva «adr-append-override: ADR-NNN — <motivo>».` + ex);
     process.exit(1);
   }
-  console.log(`ADR-LINT --append-only-vs ${ref} verde: ${refPaths.length} fichero(s) de ${ref} conservados como prefijo (${now.size} en el árbol).` + ex);
+  const est = estados ? ` ${estados} con cambio de texto en una línea **Estado:** (exento, AP-110).` : '';
+  console.log(`ADR-LINT --append-only-vs ${ref} verde: ${refPaths.length} fichero(s) de ${ref} conservados como prefijo (${now.size} en el árbol).` + est + ex);
   process.exit(0);
 }
