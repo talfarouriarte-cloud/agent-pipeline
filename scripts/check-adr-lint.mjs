@@ -18,6 +18,12 @@
 // `--ids-vs`, adr-migrate, adr-equiv, adr-index y `layout: "dir"`. Fixtures
 // SINTÉTICOS con los formatos de cabecera medidos (finplan `ADR-N · Rectificación k`,
 // `ADR-N·R·k`, `Rectificación R·k`; wmcb `Revisión R·k`), nunca el registro real.
+//
+// Tercera parte (central#331, AP-109): (i) duplicados heredados declarados,
+// (i') rectificaciones a un número duplicado (ambiguas sin override), (ii) regla 2
+// en `dir` por bloque del parser, (iii) frontera «anfitriona = propia ADR» en
+// adr-migrate, (iv) `--append-only-vs` y (v) salida idéntica en volúmenes sin
+// claves nuevas (literal capturado con el adr-lint de 997d568).
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { tmpdir } from 'os';
@@ -289,6 +295,126 @@ caso('(h) layout "volumes" sin config nueva (ni fichero de config) ⇒ comportam
   try { return { ...exec(d, LINT), esperaCode: 0, esperaMsg: 'ADR-LINT verde (3 ADRs en volumen vivo, reglas estrictas desde ADR-217)' }; }
   finally { rmSync(d, { recursive: true, force: true }); }
 });
+
+// ── central#331 (AP-109): duplicados heredados, cita a la propia ADR, frontera
+// anfitriona = propia ADR y --append-only-vs ─────────────────────────────────
+const DIR_CFG = { layout: 'dir', dir: ADRD, index: 'decisions.md', strictFrom: 1, extraSources: [] };
+const idxDe = ns => ns.map(n => `- [ADR-${n}](${ADRD}/ADR-00${n}.md) — ADR ${n}`).join('\n') + '\n';
+const dirRepo = (adrs, { cfg = {}, idx, extra = {} } = {}) => sandbox({
+  'adr-lint.config.json': { ...DIR_CFG, ...cfg }, 'decisions.md': idx ?? idxDe(Object.keys(adrs).map(Number)),
+  ...Object.fromEntries(Object.entries(adrs).map(([n, t]) => [F(n), t])), ...extra });
+const conDir = (args, fn) => () => { const d = args(); try { return fn(d); } finally { rmSync(d, { recursive: true, force: true }); } };
+const ADR2_DUP = adr(2, 'Dos (A)') + adr(2, 'Dos (B, heredada)');
+const DIR_BASE = { 1: adr(1, 'Uno'), 3: adr(3, 'Tres') };
+
+// (i) duplicado declarado ⇒ verde; no declarado ⇒ rojo (volúmenes y dir).
+casos.push({ r: run('(i) volúmenes · duplicado declarado en duplicadosHeredados ⇒ verde', { vol: VOL + adr(2, 'Dos (heredada)'), cfg: { ...CFG, duplicadosHeredados: [2] } }), esperaCode: 0 });
+casos.push({ r: run('(i) volúmenes · duplicado NO declarado ⇒ rojo', { vol: VOL + adr(2, 'Dos (heredada)') + adr(3, 'Tres (heredada)'), cfg: { ...CFG, duplicadosHeredados: [2] } }),
+  esperaCode: 1, esperaMsg: 'ADR duplicado(s) en el volumen vivo: 3' });
+caso('(i) dir · duplicado declarado ⇒ verde', conDir(() => dirRepo({ ...DIR_BASE, 2: ADR2_DUP }, { cfg: { duplicadosHeredados: [2] } }),
+  d => ({ ...exec(d, LINT), esperaCode: 0, esperaMsg: 'layout dir: 3 ficheros' })));
+caso('(i) dir · duplicado NO declarado ⇒ rojo', conDir(() => dirRepo({ ...DIR_BASE, 2: ADR2_DUP }),
+  d => ({ ...exec(d, LINT), esperaCode: 1, esperaMsg: 'ADR duplicado(s) en docs/decisions/adr: 2' })));
+caso('(i) dir · entrada de índice repetida de un número declarado ⇒ verde (1c no lo informa)', conDir(() => dirRepo({ ...DIR_BASE, 2: ADR2_DUP }, { cfg: { duplicadosHeredados: [2] }, idx: idxDe([1, 2, 2, 3]) }),
+  d => ({ ...exec(d, LINT), esperaCode: 0 })));
+caso('(i) config · duplicadosHeredados que no es lista de números ⇒ error (exit 2)', conDir(() => dirRepo(DIR_BASE, { cfg: { duplicadosHeredados: '2' } }),
+  d => ({ ...exec(d, LINT), esperaCode: 2, esperaMsg: 'duplicadosHeredados "2" no es una lista' })));
+
+// (i') rectificación a un número duplicado: no atribuible sin override; con override, colocada.
+const RECT_DUP = '### ADR-002·R·1 (2026-07-01) — de cuál de las dos ADR-2\n\nLínea.\n\n';
+const DUP_VOL = ['## ADR-1 — Uno', '', 'Texto.', '', '## ADR-2 — Dos (A)', '', 'Texto A.', '', '## ADR-2 — Dos (B, heredada)', '', 'Texto B.', '',
+  '### ADR-2·R·1 (2026-07-01) — de cuál de las dos ADR-2', '', 'Línea.', ''].join('\n');
+const dupMig = (extra = {}) => sandbox({ 'docs/decisions/v1.md': DUP_VOL, 'docs/decisions/v2.md': '',
+  'adr-lint.config.json': { ...MIG_CFG, duplicadosHeredados: [2] }, ...extra });
+caso("(i') adr-migrate · rectificación a número duplicado sin override ⇒ no atribuible (exit 1)", conDir(() => dupMig(), d => {
+  const m = exec(d, V('adr-migrate.mjs'));
+  const rep = JSON.parse(R_(d, 'docs/decisions/adr-no-atribuibles.json'));
+  if (rep.entradas.length !== 1 || rep.entradas[0].colocada || !/número duplicado declarado/.test(rep.entradas[0].motivo)) return { code: -1, out: m.out + JSON.stringify(rep), esperaCode: 1 };
+  return { ...m, esperaCode: 1, esperaMsg: '1 rectificación(es) no atribuibles sin override' };
+}));
+caso("(i') adr-migrate · con override «ADR-002·R·1» ⇒ colocada y resuelta en el informe; lint dir verde", conDir(() => dupMig({ 'adr-migrate.overrides.json': { 'ADR-002·R·1': 'ADR-002' } }), d => {
+  const m = exec(d, V('adr-migrate.mjs'));
+  if (m.code !== 0) return { ...m, esperaCode: 0 };
+  const rep = JSON.parse(R_(d, 'docs/decisions/adr-no-atribuibles.json'));
+  if (!R_(d, F(2)).includes('### ADR-002·R·1 (2026-07-01)') || rep.entradas[0]?.resolucion !== 'ADR-002') return { code: -1, out: JSON.stringify(rep), esperaCode: 0 };
+  W(d, 'adr-lint.config.json', JSON.stringify({ ...MIG_CFG, layout: 'dir', index: 'decisions.md', duplicadosHeredados: [2] }));
+  W(d, 'decisions.md', idxDe([1, 2]));
+  return { ...exec(d, LINT), esperaCode: 0, esperaMsg: 'layout dir: 2 ficheros, 1 rectificaciones' };
+}));
+caso("(i') lint dir · fichero de número duplicado con rectificación sin override ⇒ rojo", conDir(() => dirRepo({ ...DIR_BASE, 2: ADR2_DUP + RECT_DUP }, { cfg: { duplicadosHeredados: [2] } }),
+  d => ({ ...exec(d, LINT), esperaCode: 1, esperaMsg: 'ADR-2·R·1 en el fichero de ADR-002, número duplicado declarado (duplicadosHeredados): atribución ambigua sin override' })));
+caso("(i') lint dir · con override «ADR-002·R·1» ⇒ verde", conDir(() => dirRepo({ ...DIR_BASE, 2: ADR2_DUP + RECT_DUP }, { cfg: { duplicadosHeredados: [2] }, extra: { 'adr-migrate.overrides.json': { 'ADR-002·R·1': 'ADR-002' } } }),
+  d => ({ ...exec(d, LINT), esperaCode: 0 })));
+
+// (ii) regla 2 en dir: bloque = el del parser.
+const FUENTE = 'Durante el arrastre, solo se mueve la pastilla y su lectura; nada se recalcula hasta soltar.';
+const adr3Fuente = adr(3, 'Tres').replace('Texto.', `Texto.\n\n**D3.** ${FUENTE}`);
+const rectCita = q => `### ADR-003·R·1 (2026-07-01) — precisa D3\n\nSegún ADR-3 D3, verbatim:\n«${q}»\n\n`;
+caso('(ii) dir · rectificación que cita su propia ADR (mismo fichero) ⇒ verde', conDir(() => dirRepo({ 1: adr(1, 'Uno'), 3: adr3Fuente + rectCita(FUENTE) }),
+  d => ({ ...exec(d, LINT), esperaCode: 0 })));
+caso('(ii) dir · cita atribuida inexistente ⇒ rojo', conDir(() => dirRepo({ 1: adr(1, 'Uno'), 3: adr3Fuente + rectCita('Durante el arrastre se recalcula todo el modelo en cada fotograma, sin esperar a soltar.') }),
+  d => ({ ...exec(d, LINT), esperaCode: 1, esperaMsg: 'ADR-3: cita atribuida NO existe fuera del propio bloque: «Durante el arrastre se recalcula' })));
+caso('(ii) dir · cita que solo existe en la propia rectificación ⇒ rojo (auto-validación cerrada)', conDir(() => dirRepo({ 1: adr(1, 'Uno'), 3: adr(3, 'Tres') + rectCita(FUENTE) }),
+  d => ({ ...exec(d, LINT), esperaCode: 1, esperaMsg: 'cita atribuida NO existe fuera del propio bloque' })));
+
+// (iii) adr-migrate · rectificación insertada a mitad del cuerpo de su ADR ⇒ frontera anotada.
+const MID_VOL = ['## ADR-1 — Uno', '', 'Texto de uno, cortado.', '',
+  '### ADR-1·R·1 (2026-02-01) — insertada a mitad', '', 'Línea de la rectificación.', '',
+  '**Contexto.** Resto de ADR-1.', '', '**Decisión.** Resto de ADR-1.', '', '**Coste de revertir.** Bajo.', '',
+  '## ADR-2 — Dos', '', '**Contexto.** c', '', '**Decisión.** d', '', '**Coste de revertir.** Bajo.', '',
+  '### ADR-2·R·1 (2026-03-01) — al final, bien puesta', '', '**Decisión del propietario** (verbatim): sí.', '', '**Contexto.** x', ''].join('\n');
+caso('(iii) adr-migrate · rectificación a mitad de su ADR ⇒ frontera anotada (solo esa)', conDir(() => sandbox({ 'docs/decisions/v1.md': MID_VOL, 'docs/decisions/v2.md': '', 'adr-lint.config.json': MIG_CFG }), d => {
+  const m = exec(d, V('adr-migrate.mjs'));
+  const inf = R_(d, 'docs/decisions/adr-migracion.md');
+  const sec = inf.slice(inf.indexOf('## Fronteras a confirmar: anfitriona = la propia ADR'));
+  const bad = [];
+  if (!inf.includes('## Fronteras a confirmar: anfitriona = la propia ADR')) bad.push('falta la sección');
+  if (!/- ADR-001·R·1 \(`docs\/decisions\/v1\.md:5`, tras ADR-001 en `docs\/decisions\/v1\.md:1`\) lleva «Contexto», «Decisión», «Coste de revertir»/.test(sec)) bad.push('falta la línea de ADR-001·R·1');
+  if (sec.includes('ADR-002·R·1')) bad.push('anota ADR-002·R·1, cuya ADR sí tiene secciones');
+  return { code: bad.length ? -1 : m.code, out: m.out + '\n' + bad.join('\n') + '\n' + inf, esperaCode: 0, esperaMsg: '1 frontera(s) a confirmar' };
+}));
+
+// (iv) --append-only-vs <ref>.
+const AO = { 1: adr(1, 'Uno'), 2: adr(2, 'Dos'), 3: adr(3, 'Tres') };
+const aoRepo = () => { const d = dirRepo(AO); git(d, 'init', '-q'); git(d, 'add', '-A'); git(d, 'commit', '-qm', 'corte'); git(d, 'tag', 'corte'); return d; };
+const ao = (nombre, mut, espera) => caso(`(iv) --append-only-vs · ${nombre}`, conDir(aoRepo, d => {
+  const ctl = exec(d, LINT, ['--append-only-vs', 'corte']);
+  if (ctl.code !== 0) return { ...ctl, esperaCode: 0 };                       // control: sin mutación, verde
+  mut(d);
+  return { ...exec(d, LINT, ['--append-only-vs', 'corte']), ...espera };
+}));
+const commit = (d, msg) => { git(d, 'add', '-A'); git(d, 'commit', '-qm', msg); };
+ao('añadir una rectificación al final ⇒ verde', d => W(d, F(2), R_(d, F(2)) + '### ADR-002·R·1 (2026-07-01) — nueva\n\nLínea.\n'),
+  { esperaCode: 0, esperaMsg: '3 fichero(s) de corte conservados como prefijo' });
+ao('insertar en medio ⇒ rojo', d => sub(d, F(2), 'Texto.\n', 'Texto.\n\n### ADR-002·R·1 (2026-07-01) — a mitad\n\nLínea.\n'),
+  { esperaCode: 1, esperaMsg: `${F(2)}:5: el contenido de corte ya no es prefijo` });
+ao('editar una línea ⇒ rojo', d => sub(d, F(3), '**Coste de revertir.** Bajo.', '**Coste de revertir.** Alto.'),
+  { esperaCode: 1, esperaMsg: `${F(3)}:7: el contenido de corte ya no es prefijo` });
+ao('override en el mensaje exime solo esa ADR ⇒ la otra editada sigue en rojo', d => {
+  sub(d, F(1), 'Texto.', 'Texto corregido.'); sub(d, F(2), 'Texto.', 'Texto corregido.');
+  commit(d, 'corrige ADR-1\n\nadr-append-override: ADR-001 — errata en el título, autorizada por el propietario');
+}, { esperaCode: 1, esperaMsg: `${F(2)}:3: el contenido de corte ya no es prefijo` });
+ao('override en el mensaje ⇒ la ADR eximida no da rojo y consta en la salida', d => {
+  sub(d, F(1), 'Texto.', 'Texto corregido.');
+  commit(d, 'corrige ADR-1\n\nadr-append-override: ADR-001 — errata en el título, autorizada por el propietario');
+}, { esperaCode: 0, esperaMsg: 'ADR-001 — errata en el título, autorizada por el propietario' });
+ao('fichero nuevo ⇒ verde', d => W(d, F(4), adr(4, 'Cuatro')), { esperaCode: 0, esperaMsg: '(4 en el árbol)' });
+ao('borrado ⇒ rojo', d => rmSync(join(d, F(3))), { esperaCode: 1, esperaMsg: `${F(3)}: borrado (existía en corte)` });
+caso('(iv) --append-only-vs · <ref> ilegible ⇒ exit 2', conDir(aoRepo, d => ({ ...exec(d, LINT, ['--append-only-vs', 'no-existe']), esperaCode: 2, esperaMsg: 'ilegible' })));
+caso('(iv) --append-only-vs · layout "volumes" ⇒ exit 2', () => {
+  const d = idsRepo();
+  try { return { ...exec(d, LINT, ['--append-only-vs', 'HEAD']), esperaCode: 2, esperaMsg: 'solo aplica con layout "dir"' }; }
+  finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+// (v) wmcb: volúmenes sin claves nuevas ⇒ salida idéntica a la de antes de central#331
+// (literal capturado con el adr-lint de 997d568 sobre estos mismos fixtures).
+const V5_ROJO = 'ADR-LINT ROJO:\n - ADR duplicado(s) en el volumen vivo: 2\n - ADR-4: cita atribuida NO existe fuera del propio bloque: ' +
+  '«Durante el arrastre largo, solo se mueve la pastilla y su lectura; nada se recalcula hasta…»\n';
+casos.push({ r: run('(v) volúmenes sin claves nuevas · verde ⇒ salida idéntica'), esperaCode: 0,
+  esperaMsg: 'ADR-LINT verde (3 ADRs en volumen vivo, reglas estrictas desde ADR-1).\n' });
+casos.push({ r: run('(v) volúmenes sin claves nuevas · duplicado + cita propia ⇒ salida idéntica (rojo)', { vol: VOL.replace('Texto.', `Texto. ${FUENTE}`) + adr(2, 'Dos (heredada)') + adr(4, 'Cuatro').replace('Texto.', `Según ADR-1:\n«${FUENTE.replace('arrastre', 'arrastre largo')}»`),
+  idx: [...IDX_LINES, '- [ADR-4](x) — Cuatro'].join('\n') + '\n' }), esperaCode: 1, esperaMsg: V5_ROJO });
 
 let rojo = 0;
 for (const { r, esperaCode, esperaMsg } of casos) {
