@@ -49,6 +49,12 @@ runs:
         mkdir -p docs/agents
         for f in "$SRC"/docs-agents/*.md; do
           b="$(basename "$f")"
+          # `architect.md` es el mandato COMÚN de los Architects (central#327): lo
+          # leen sesiones de chat directamente de agent-pipeline@main. En el
+          # consumidor `docs/agents/architect.md` es su mandato LOCAL (trackeado):
+          # el `cp -f` + skip-worktree lo pisaría en el workspace y un Creator que
+          # lo editara produciría un diff fantasma.
+          [ "$b" != "architect.md" ] || continue
           cp -f "$f" "docs/agents/$b"
           note "docs/agents/$b"
         done
