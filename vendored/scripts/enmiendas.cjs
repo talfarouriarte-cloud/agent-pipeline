@@ -18,6 +18,9 @@
 //   <!-- rearm-enmienda: <ids> -->          re-arm con ping al Creator (PAT ⇒ TRUSTED);
 //                                           <ids> = conjunto ordenado entregado. Dedupe:
 //                                           nunca dos re-arms por el mismo conjunto.
+//   <!-- rearm-enmienda-run: <run_id> -->   va con el re-arm de la entrega: `check_flight`
+//                                           no cuenta ese run (ya en post-steps) como
+//                                           Creator en vuelo contra su propio re-arm.
 //   <!-- enmienda-aplicada: <id> -->        acuse del Creator (`claude[bot]` o TRUSTED).
 //   <!-- enmienda-rechazada: <id> -->       acuse con rechazo ⇒ `human-needed`.
 //   <!-- enmienda-rechazo-escalado: <ids> --> el post-step ya pasó esos rechazos al humano.
@@ -113,15 +116,18 @@ function pendientes(estado) {
 //   'duplicado'  — ya hubo un re-arm por EXACTAMENTE este conjunto (dedupe);
 //   'tope'       — ≥ TOPE re-arms en la ventana ⇒ `human-needed`, sin re-arm;
 //   'rearm'      — un comentario de re-arm con ping (cuerpo en `cuerpo`).
-function planificar(estado, { ahora = Date.now(), tope = TOPE, ventanaMs = VENTANA_MS, origen = 'entrega' } = {}) {
+// `soloEnmiendas` (Reviewer): los disparos diferidos los entrega el cierre del
+// turno del Creator, no el Reviewer. `runId`: el run que publica el re-arm.
+function planificar(estado, { ahora = Date.now(), tope = TOPE, ventanaMs = VENTANA_MS, origen = 'entrega', runId = null, soloEnmiendas = false } = {}) {
   const p = pendientes(estado);
+  if (soloEnmiendas) p.disparos = [];
   const lista = [...p.enmiendas.map((e) => e.id), ...p.disparos.map((d) => d.id)];
   if (!lista.length) return { accion: 'nada', ids: [], pendientes: p };
   const k = clave(lista);
   if (estado.rearms.some((r) => r.clave === k)) return { accion: 'duplicado', ids: k.split(',').map(Number), pendientes: p };
   const recientes = estado.rearms.filter((r) => ahora - new Date(r.at).getTime() < ventanaMs).length;
   if (recientes >= tope) return { accion: 'tope', ids: k.split(',').map(Number), recientes, pendientes: p };
-  return { accion: 'rearm', ids: k.split(',').map(Number), pendientes: p, cuerpo: cuerpoRearm(p, k, origen) };
+  return { accion: 'rearm', ids: k.split(',').map(Number), pendientes: p, cuerpo: cuerpoRearm(p, k, origen, runId) };
 }
 
 function listado(p) {
@@ -131,7 +137,7 @@ function listado(p) {
   ].join('\n');
 }
 
-function cuerpoRearm(p, k, origen) {
+function cuerpoRearm(p, k, origen, runId = null) {
   const porque = origen === 'reviewer'
     ? 'el Reviewer emitió `LGTM` con enmiendas sin acuse: el veredicto no cuenta y la label `lgtm` queda retirada hasta el acuse (sin ronda nueva de revisión).'
     : 'al cerrar el turno del Creator quedaban pendientes:';
@@ -146,6 +152,7 @@ function cuerpoRearm(p, k, origen) {
     '',
     '<!-- ping-creator -->',
     marcaRearm(k.split(',')),
+    ...(Number(runId) > 0 ? [`<!-- rearm-enmienda-run: ${Number(runId)} -->`] : []),
   ].join('\n');
 }
 
