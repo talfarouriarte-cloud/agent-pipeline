@@ -127,6 +127,15 @@ Lo que **NO incluir**:
 - Justificación exhaustiva del cambio → va en el ADR (referenciar el ADR, no repetirlo).
 - Pseudo-código de cada línea → suficiente con interface/firma + descripción.
 
+## Enmiendas en vuelo: léelas al arrancar y acusa cada una (central#327)
+
+Un humano o el Architect puede enmendar el encargo mientras trabajas, o antes de que tu eslabón se arme, con un comentario de confianza que lleva el marcador `enmienda` en línea propia (sobre el issue o sobre su PR, sin ping). Tu contexto NO ve el marcador: la action quita los comentarios HTML del prompt. Por eso el arranque es mecánico:
+
+1. **Al arrancar, antes de tocar código**, lee `.enmiendas-pendientes.md` en la raíz del workspace. Lo escribe la foto pre-sesión de `claude-code.yml` con TODAS las enmiendas sin acuse del issue y de su PR (cuerpo íntegro e id) y los disparos diferidos sin entregar. Si no existe, no había nada pendiente al arrancar. Si existe y no lo lees, el turno se re-arma y el merge queda bloqueado. El fichero está fuera del árbol (`.git/info/exclude`): no lo commitees.
+2. **Aplica cada enmienda** como parte del encargo. Prevalece sobre el issue y sobre el ruling donde difieran, salvo que diga otra cosa.
+3. **Acusa CADA id** en tu comentario de seguimiento (o en un comentario nuevo con `gh api`), cada uno en línea propia y como comentario HTML: `enmienda-aplicada: <id>`. Si no puedes o no debes aplicarla, usa `enmienda-rechazada: <id>` y explica el motivo en prosa. El post-step pasa entonces el turno al humano con `human-needed`. Sin acuse, la enmienda sigue pendiente: al acabar tu turno se re-arma (una vez por conjunto, tope 3 en 24 h), un `LGTM` no cuenta y `epic-merge` no mergea.
+4. Un **re-arm** (`rearm-enmienda`) llega como ping normal y enlaza lo pendiente. Un **disparo diferido** es un ping que llegó con otro Creator tuyo en vuelo: el guard de vuelo único lo difirió en vez de descartarlo, y se entrega al cerrar el turno. Atiéndelo como cualquier ping.
+
 ## Decisiones de diseño a mitad de issue (resolver-protocol)
 
 Si topas con una decisión de diseño no cerrada, ANTES de declarar escalada aplica `docs/agents/resolver-protocol.md`: si es derivable (cita verbatim de ADR/spec que la implica), resuélvela publicando el bloque `<!-- derived-decision -->` y continúa; si no lo es —contrato del motor, semántica, ADR nuevo, conflicto entre ADRs— escala como hasta ahora. Cap 2 por issue.

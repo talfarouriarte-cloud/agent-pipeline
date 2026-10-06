@@ -224,6 +224,25 @@ jobs:
       # ilegible (jobs de un contendiente sin leer ⇒ cuenta): perder un ping
       # es visible y se repite; un doble Creator no. API de runs caída ⇒ pasa
       # (statu quo previo). Banco: scripts/check-flight-guard.mjs.
+      # central#327 (ruling mensual 2026-10-06): DIFERIR en vez de descartar. El
+      # árbitro no cambia (menor `run_id`); cambia la salida: el comentario deja
+      # `disparo-pendiente: <id del ping>` y el ping se entrega en el re-arm que
+      # publica el post-step «Entregar enmiendas…» al cerrar el turno en curso.
+      # El run que publicó ese re-arm desde su post-step (marcador
+      # `rearm-enmienda-run: <run_id>` en un comentario de confianza) ya no tiene
+      # Creator en vuelo: no es contendiente de SU propio re-arm (sin esto, toda
+      # entrega se auto-difería y no la recogía nadie). Segunda exclusión,
+      # ACOTADA (enmienda 2026-10-06 de AP-100 §1, AP-108): un contendiente deja
+      # de contar solo si (a) su `Run Claude Code` está `completed` con
+      # `conclusion: skipped` (nunca hubo sesión ni habrá entrega) o (b) su step
+      # «Entregar enmiendas y disparos diferidos…» ya está `completed` (con
+      # cualquier conclusión): ya no recogerá lo diferido ante él. Con la sesión
+      # terminada y la entrega aún pendiente (rescate, auditoría, failsafes) SIGUE
+      # contando: se difiere y lo entrega él (sin doble Creator sobre la rama).
+      # Gate TRUSTED y regex de `rearm-enmienda-run`: copias de
+      # `vendored/scripts/enmiendas.cjs` (este step corre antes del checkout y no
+      # puede hacer `require`); mantener en sincronía, el banco compara los
+      # literales. Banco: check-enmiendas.mjs.
       - name: Guard de vuelo único — un Creator por PR (contexto PR)
         id: check_flight
         if: |
@@ -270,8 +289,19 @@ jobs:
               core.setOutput('blocked', 'false');
               return;
             }
+            // central#327: el re-arm de entrega lo publica el post-step de un run
+            // cuya sesión ya terminó; ese run no cuenta contra su propio re-arm.
+            // TRUSTED y regex: copia de enmiendas.cjs (TRUSTED, REARM_RUN_RE) —
+            // mantener en sincronía (costura en check-enmiendas.mjs).
+            const trig = context.payload.comment || null;
+            let exento = null;
+            if (trig && ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(trig.author_association)) {
+              const mx = String(trig.body || '').match(/^[ \t]*<!--\s*rearm-enmienda-run:\s*(\d+)\s*-->[ \t]*$/m);
+              if (mx) exento = Number(mx[1]);
+            }
             const older = runs.filter(r => r.name === context.workflow
               && r.id < context.runId
+              && r.id !== exento
               && (titles.has(r.display_title) || (branch && r.head_branch === branch)));
             const contenders = [];
             for (const r of older) {
@@ -282,6 +312,16 @@ jobs:
                 const creatorJobs = jobs.filter(j => j.name === 'claude' || / \/ claude$/.test(j.name || ''));
                 const pool = creatorJobs.length ? creatorJobs : jobs;
                 if (pool.length && pool.every(j => j.conclusion === 'skipped')) live = false;
+                // central#327 (enmienda 2026-10-06 de AP-100 §1): deja de contar
+                // solo si (a) su sesión se SALTÓ (sin sesión no habrá entrega) o
+                // (b) ya pasó su step de entrega (no recogerá lo diferido). Sesión
+                // terminada con la entrega pendiente ⇒ cuenta: se difiere y lo
+                // entrega él. Sin `steps` legibles, cuenta (fail-closed, como antes).
+                const pasos = pool.flatMap(j => j.steps || []);
+                const sesion = pasos.find(st => st.name === 'Run Claude Code');
+                const entrega = pasos.find(st => /^Entregar enmiendas y disparos diferidos/.test(st.name || ''));
+                if (sesion && sesion.status === 'completed' && sesion.conclusion === 'skipped') live = false;
+                if (entrega && entrega.status === 'completed') live = false;
               } catch (e) {
                 core.warning(`vuelo único: jobs del run ${r.id} ilegibles (${e.message}); cuenta como contendiente.`);
               }
@@ -301,12 +341,19 @@ jobs:
             // resuelve desde el checkout del consumidor.
             core.setOutput('blocked', 'true');
             core.warning(`vuelo único: run ${context.runId} cede ante ${winner} sobre #${number}.`);
+            // central#327: diferido, no descartado. Sin id de ping (no debería
+            // ocurrir) no hay nada que entregar: texto de antes.
+            const pingId = Number((context.payload.comment || context.payload.review || {}).id) || null;
+            const pingUrl = (context.payload.comment || context.payload.review || {}).html_url || '';
+            const texto = pingId
+              ? `ya hay un Creator en vuelo (run ${winner}); este disparo${pingUrl ? ` ([ping](${pingUrl}))` : ''} se entregará al terminar el turno en curso.\n\n<!-- disparo-pendiente: ${pingId} -->`
+              : `ya hay un Creator en vuelo (run ${winner}); este disparo se descarta — repítelo cuando termine.`;
             try {
               const api = process.env.GITHUB_API_URL || 'https://api.github.com';
               const res = await fetch(`${api}/repos/${owner}/${repo}/issues/${number}/comments`, {
                 method: 'POST',
                 headers: { Authorization: `Bearer ${process.env.DEFAULT_GH_TOKEN}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
-                body: JSON.stringify({ body: `ya hay un Creator en vuelo (run ${winner}); este disparo se descarta — repítelo cuando termine.` }) });
+                body: JSON.stringify({ body: texto }) });
               if (!res.ok) throw new Error(`HTTP ${res.status}`);
             } catch (e) {
               core.warning(`vuelo único: comentario de descarte falló (${e.message}); el disparo se descarta igual.`);
@@ -1400,6 +1447,51 @@ jobs:
           done < <(git status --porcelain=v1 -z --untracked-files=all)
           echo "foto pre-sesión: $(tr -cd '\0' < "$PRE_SNAPSHOT" | wc -c | awk '{print $1/2}') ruta(s) sucias"
 
+      # central#327 (ruling mensual 2026-10-06, punto 4): foto pre-sesión de las
+      # enmiendas sin acuse del issue y de su PR (también en un eslabón que se
+      # arma ahora: se leen al armarse). La action quita los comentarios HTML
+      # del prompt, así que el Creator no ve el marcador `enmienda`: la foto le
+      # da cuerpo íntegro e id para acusar. Fichero fuera del árbol
+      # (`.git/info/exclude`). Sin módulo o con la lectura caída: sin foto, y el
+      # mandato (`creator.md`) le hace leerlas por API.
+      - name: Foto de enmiendas sin acuse (pre-sesión, central#327)
+        id: foto_enmiendas
+        if: |
+          steps.check_pause.outputs.paused != 'true'
+          && steps.check_iterations.outputs.cap_reached != 'true'
+          && steps.check_chain.outputs.broken != 'true'
+          && steps.check_panel.outputs.blocked != 'true'
+          && steps.check_serial.outputs.blocked != 'true'
+          && steps.check_flight.outputs.blocked != 'true'
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const WS = process.env.GITHUB_WORKSPACE || process.cwd();
+            let ENM = null;
+            for (const p of [`${WS}/.cola-central/vendored/scripts/enmiendas.cjs`, `${WS}/scripts/enmiendas.cjs`]) {
+              try { ENM = require(p); break; } catch (e) { /* siguiente ubicación */ }
+            }
+            if (!ENM) { core.warning('enmiendas.cjs no disponible — sin foto pre-sesión (el Creator las lee por API).'); return; }
+            const { owner, repo } = context.repo;
+            const pl = context.payload;
+            const numero = (pl.pull_request && pl.pull_request.number) || (pl.issue && pl.issue.number);
+            if (!numero) return;
+            const esPR = !!(pl.pull_request || (pl.issue && pl.issue.pull_request));
+            const items = await ENM.resolverItems({ github, owner, repo, numero, esPR,
+              headRef: pl.pull_request && pl.pull_request.head && pl.pull_request.head.ref, warn: (m) => core.warning(m) });
+            const foto = ENM.fotoPendientes(await ENM.leer({ github, owner, repo, ...items }));
+            const ruta = `${WS}/.enmiendas-pendientes.md`;
+            if (!foto) { try { fs.unlinkSync(ruta); } catch (e) { /* no había */ } core.info('sin enmiendas pendientes.'); return; }
+            fs.writeFileSync(ruta, foto);
+            const ex = `${WS}/.git/info/exclude`;
+            try {
+              const cur = fs.existsSync(ex) ? fs.readFileSync(ex, 'utf8') : '';
+              if (!cur.split('\n').includes('.enmiendas-pendientes.md')) fs.appendFileSync(ex, `${cur && !cur.endsWith('\n') ? '\n' : ''}.enmiendas-pendientes.md\n`);
+            } catch (e) { core.warning(`no se pudo excluir la foto del árbol (${e.message}).`); }
+            core.notice(`central#327: foto pre-sesión con enmiendas sin acuse en ${ruta}.`);
+
       - name: Run Claude Code
         if: |
           steps.check_pause.outputs.paused != 'true'
@@ -2095,6 +2187,105 @@ jobs:
             await github.rest.issues.createComment({ owner, repo, issue_number: pr.number,
               body: '**claude-code · open-review-failsafe**: el evento que auto-dispara al Reviewer al volverse revisable el PR (`ready_for_review` del cierre draft-first, AP-094; `opened` si nació no-draft) no produjo ningún run tras el settle de liveness (~90s). Transición Creator→Reviewer materializada por ESTADO (camino RESIDUAL): `needs-review` aplicada con el PAT en el mismo job (repesca finplan#1382, AP-016). Idempotente por dedupe: si el evento hubiera disparado, este step no habría tocado nada. Si el stub del Reviewer de este repo no declara `ready_for_review` en sus `types`, este disparo es esperado (MIGRATION.md, AP-094).\n\n<!-- open-review-failsafe -->' });
             core.warning(`open-review-failsafe: PR #${pr.number} sin run del Reviewer para ${quien} — needs-review aplicada por PAT (evento opened/ready_for_review perdido o no cableado en el stub).`);
+
+      # central#327 (ruling mensual 2026-10-06, punto 3): ENTREGA al cierre del
+      # turno, antes de «Materializar muerte…» y del `turn-close-failsafe`. Reúne
+      # (a) `disparo-pendiente` sin entregar y (b) `enmienda` sin acuse, del issue
+      # y de su PR, y publica UN re-arm con ping al Creator (PAT ⇒ dispara) que
+      # los enlaza, con `rearm-enmienda: <ids>` (dedupe: nunca dos por el mismo
+      # conjunto) y `rearm-enmienda-run: <run_id>` (este run no es contendiente
+      # de su propio re-arm en `check_flight`). Tope 3 por ítem en 24 h ⇒
+      # `human-needed` + comentario, sin re-arm. Conjunto ya re-armado y aún sin
+      # acuse al final de un turno real ⇒ `human-needed` (sin bloqueo mudo). Los
+      # acuses que solo constan en el PR se reflejan en el issue (un PR posterior
+      # del mismo issue no lee los del anterior). Un `enmienda-rechazada` ⇒
+      # `human-needed` (turno al humano). No entrega: turno sin sesión (AP-100
+      # punto 2: sin execution file), WIP rescatado (AP-101: el turno ya es del
+      # Creator vía architect-resolve, que lee las enmiendas al arrancar) ni
+      # ítem con `pause-agents`/`human-needed` (turno humano; el gate de merge
+      # sigue cerrado). Destino: el PR abierto de la rama `claude/issue-N-*`, o el
+      # issue si aún no hay PR (ahí el re-arm pasa por el guard serial como
+      # cualquier arm). Lógica en `vendored/scripts/enmiendas.cjs`; banco:
+      # scripts/check-enmiendas.mjs.
+      - name: Entregar enmiendas y disparos diferidos (cierre del turno, central#327)
+        id: entrega_enmiendas
+        if: |
+          always()
+          && steps.preflight.outputs.dead != 'true'
+          && steps.creator.outcome != 'skipped' && steps.creator.outcome != 'cancelled'
+          && steps.rescate.outputs.wip != 'true'
+        continue-on-error: true
+        uses: actions/github-script@v7
+        env:
+          EXEC_FILE: ${{ steps.creator.outputs.execution_file }}
+        with:
+          github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const f = process.env.EXEC_FILE || `${process.env.RUNNER_TEMP || '/tmp'}/claude-execution-output.json`;
+            try { fs.accessSync(f, fs.constants.R_OK); }
+            catch (e) { core.info(`sin execution file (${e.message}): turno sin sesión, no entrego (lo hará el siguiente turno real).`); return; }
+            const WS = process.env.GITHUB_WORKSPACE || process.cwd();
+            let ENM = null;
+            for (const p of [`${WS}/.cola-central/vendored/scripts/enmiendas.cjs`, `${WS}/scripts/enmiendas.cjs`]) {
+              try { ENM = require(p); break; } catch (e) { /* siguiente ubicación */ }
+            }
+            if (!ENM) { core.warning('enmiendas.cjs no disponible — sin entrega de enmiendas (statu quo).'); return; }
+            const { owner, repo } = context.repo;
+            const pl = context.payload;
+            const numero = (pl.pull_request && pl.pull_request.number) || (pl.issue && pl.issue.number);
+            if (!numero) return;
+            const esPR = !!(pl.pull_request || (pl.issue && pl.issue.pull_request));
+            let items, estado;
+            try {
+              ({ items, estado } = await ENM.estadoDe({ github, owner, repo, numero, esPR,
+                headRef: pl.pull_request && pl.pull_request.head && pl.pull_request.head.ref, warn: (m) => core.warning(m) }));
+            } catch (e) { core.warning(`entrega: lectura de comentarios falló (${e.message}); sin entrega (la hará el siguiente turno real).`); return; }
+            const destino = items.pr || items.issue;
+            if (!destino) return;
+            // Acuses que solo constan en el PR: se reflejan en el issue para que un
+            // PR posterior del mismo issue (relanzamiento de un parcial) los vea.
+            if (items.pr && items.issue) {
+              const refl = ENM.acusesAReflejar(estado, items.issue);
+              if (refl.aplicada.length || refl.rechazada.length) {
+                await github.rest.issues.createComment({ owner, repo, issue_number: items.issue, body: ENM.cuerpoReflejo(refl, items.pr) })
+                  .catch(e => core.warning(`entrega: reflejo de acuses en #${items.issue} falló (${e.message}).`));
+              }
+            }
+            const pend = ENM.pendientes(estado);
+            if (pend.rechazadas.length) {
+              await github.rest.issues.addLabels({ owner, repo, issue_number: destino, labels: ['human-needed'] });
+              await github.rest.issues.createComment({ owner, repo, issue_number: destino, body: ENM.cuerpoRechazo(pend.rechazadas) });
+              core.warning(`#${destino}: enmienda rechazada por el Creator (${pend.rechazadas.map(e => e.id).join(', ')}) — human-needed.`);
+              return;
+            }
+            let labels = [];
+            try { labels = (await github.rest.issues.get({ owner, repo, issue_number: destino })).data.labels.map(l => (typeof l === 'string' ? l : l.name)); }
+            catch (e) { core.warning(`entrega: labels de #${destino} ilegibles (${e.message}); no entrego.`); return; }
+            if (labels.includes('pause-agents') || labels.includes('human-needed')) {
+              core.notice(`#${destino}: ${labels.includes('pause-agents') ? 'pause-agents' : 'human-needed'} — turno humano, no entrego.`);
+              return;
+            }
+            const plan = ENM.planificar(estado, { origen: 'entrega', runId: context.runId });
+            if (plan.accion === 'nada') { core.info('sin enmiendas ni disparos pendientes.'); return; }
+            // Duplicado al final de un turno REAL: el Creator ya fue re-armado por
+            // este mismo conjunto y lo dejó sin acuse. Sin segundo re-arm (dedupe)
+            // y sin bloqueo mudo: el turno pasa al humano.
+            if (plan.accion === 'duplicado') {
+              await github.rest.issues.addLabels({ owner, repo, issue_number: destino, labels: ['human-needed'] });
+              await github.rest.issues.createComment({ owner, repo, issue_number: destino, body: ENM.cuerpoSinAcuse(plan) });
+              core.warning(`#${destino}: {${plan.ids.join(',')}} ya re-armado y sin acuse tras el turno — human-needed.`);
+              return;
+            }
+            if (plan.accion === 'tope') {
+              await github.rest.issues.addLabels({ owner, repo, issue_number: destino, labels: ['human-needed'] });
+              await github.rest.issues.createComment({ owner, repo, issue_number: destino, body: ENM.cuerpoTope(plan) });
+              core.warning(`#${destino}: tope de re-arms (${plan.recientes} en 24 h) — human-needed, sin re-arm.`);
+              return;
+            }
+            await github.rest.issues.createComment({ owner, repo, issue_number: destino, body: plan.cuerpo });
+            core.setOutput('rearm', 'true');
+            core.notice(`#${destino}: re-arm de enmiendas/disparos {${plan.ids.join(',')}}.`);
 
       - name: Materializar muerte del Creator sin PR (post-step determinista)
         id: post_muerte_sin_pr

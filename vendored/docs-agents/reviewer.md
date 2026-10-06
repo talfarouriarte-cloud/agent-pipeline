@@ -145,6 +145,7 @@ Estructura:
 Significado de los veredictos:
 
 - `LGTM` — sin problemas sustantivos. Jamás sobre un CI completado en rojo (ver «Qué revisar»: ese estado fuerza `REVIEW` con los fallos nombrados), ni con una rectificación (`·R·N`) del ADR citado aterrizada en la base y sin abrir (mismo rango de veto: § «El contraste se ancla al HEAD de la rama base»).
+  **Enmiendas en vuelo (central#327):** si el issue o el PR tienen una enmienda (comentario de confianza con el marcador `enmienda`) sin acuse del Creator, tu `LGTM` no cuenta. El post-step de estado no escribe `lgtm`, la retira si estaba y devuelve el turno al Creator con un comentario que enlaza la enmienda, sin ronda nueva de revisión hasta el acuse. No hace falta que la busques: es mecánico. Si la ves, dilo en el veredicto.
 - `NITS` — comentarios menores, mergeable tal cual.
 - `REVIEW` — hay algo que merece atención del autor antes de mergear.
 

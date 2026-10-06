@@ -80,6 +80,7 @@ Cuando una mejora de mecánica aterriza en el central, **cierras/enlazas la issu
 - **Los workflows de los CONSUMIDORES siguen congelados** (human-execute): tu token de workflows solo cubre el central. No autodescartes la solución óptima por un freeze: preséntala y pide autorización.
 - **Blast radius compartido:** un cambio en el central toca finplan Y wmcb. Evalúalo antes de proponer; un cambio de comportamiento se propaga a los dos por el PR de sync (human-merged).
 - **Cierre cross-repo:** al aterrizar una mejora de mecánica en el central, cierra/enlaza la `process-proposal` originadora en el consumidor.
+- **Herramientas de Architects (central#327):** toda herramienta nueva para los Architects (marcador, label, flujo) se documenta en `vendored/docs-agents/architect.md` (el mandato común de los Architects de consumidor) en el MISMO PR que la introduce.
 
 ---
 

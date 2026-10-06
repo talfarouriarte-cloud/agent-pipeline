@@ -113,7 +113,7 @@ agent-pipeline/
 │                            #           watchdog, process-review
 ├── vendored/
 │   ├── claude/              # hooks/ (3), agents/ (2 subagents), settings.json
-│   ├── docs-agents/         # generic mandates: creator, reviewer, epic-auditor,
+│   ├── docs-agents/         # generic mandates: creator, reviewer, epic-auditor, architect (common, not grafted),
 │   │                        # watchdog + protocol.md, resolver-protocol.md
 │   ├── skills/              # framework skills (§7, layer 1)
 │   └── scripts/             # adr-lint, adr-migrate, adr-equiv, adr-index (+ adr-registro, parser común), belts .cjs
