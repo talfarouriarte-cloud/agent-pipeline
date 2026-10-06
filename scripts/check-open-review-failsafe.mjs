@@ -12,7 +12,7 @@
 //  (d) sin run alguno ⇒ dispara (caso finplan#1382 intacto).
 // Bordes: `ready_at` ilegible ⇒ statu quo (head SHA); run del Reviewer ANTERIOR al
 // ready ⇒ no cuenta; run en `failure` ⇒ no cuenta (AP-025); Creator con el job
-// `skipped` ⇒ no cede; PR nacido no-draft ⇒ ventana desde su creación.
+// `skipped` o fantasma >6 h ⇒ no cede; PR nacido no-draft ⇒ ventana desde su creación.
 // Ejecuta el script EMBEBIDO real con el cargador compartido (EXACTAMENTE los
 // argumentos de github-script@v7). Cuelga del piggyback de check-embedded-js.
 import { readFileSync } from 'fs';
@@ -32,7 +32,7 @@ const BRANCH = 'claude/issue-40-20261005-0700';
 const READY = '2026-10-05T10:16:18Z';
 const PR = { number: 50, title: 'feat: algo (#40)', draft: false, created_at: '2026-10-05T09:40:00Z', head: { ref: BRANCH, sha: '331439a8aaaa' } };
 const rev = (id, extra = {}) => ({ id, name: REV, head_branch: BRANCH, head_sha: '8d5c4f4dbbbb', status: 'completed', conclusion: 'success', created_at: '2026-10-05T10:16:21Z', ...extra });
-const cre = (id, extra = {}) => ({ id, name: WF, event: 'issue_comment', head_branch: 'main', display_title: PR.title, status: 'in_progress', created_at: '2026-10-05T10:20:45Z', ...extra });
+const cre = (id, extra = {}) => ({ id, name: WF, event: 'issue_comment', head_branch: 'main', display_title: PR.title, status: 'in_progress', created_at: new Date(Date.now() - 5 * 60 * 1000).toISOString(), ...extra });
 
 async function caso(world) {
   const w = { labels: [], comments: [], notices: [], warnings: [], fetches: [] };
@@ -114,6 +114,8 @@ const check = (ok, msg, w) => {
   check(w3.fired, '(c) run del Creator con el job skipped (comentario sin trigger) ⇒ no cuenta, dispara', w3);
   const w4 = await caso({ creators: [cre(37296746394, { display_title: 'otro PR' }), cre(37292273081)] });
   check(w4.fired, '(c) runs de otro PR o el propio run ⇒ no cuentan, dispara', w4);
+  const fantasma = await caso({ creators: [cre(37000000001, { status: 'queued', created_at: new Date(Date.now() - 7 * 3600 * 1000).toISOString() })] });
+  check(fantasma.fired, '(c) run fantasma en queued de hace >6 h ⇒ no cuenta (filtro de edad del guard), dispara', fantasma);
   const w5 = await caso({ creatorDown: true });
   check(w5.fired && w5.warnings.some(m => /sin cinturón/.test(m)), '(c) runs del Creator ilegibles ⇒ sin cinturón (statu quo), dispara', w5);
 }

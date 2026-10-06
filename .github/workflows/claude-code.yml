@@ -2018,8 +2018,11 @@ jobs:
                 for (const status of ['in_progress', 'queued']) {
                   const res = await fetch(`${API}/repos/${owner}/${repo}/actions/runs?status=${status}&per_page=100`, { headers: H });
                   if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                  // Mismo filtro de edad que el guard de vuelo único (runs fantasma
+                  // en `queued` con jobs vacíos cederían para siempre).
                   const runs = ((await res.json()).workflow_runs || []).filter(r => r.name === context.workflow
                     && r.id !== context.runId
+                    && (Date.now() - new Date(r.created_at).getTime()) < 6 * 60 * 60 * 1000
                     && ['issue_comment', 'pull_request_review', 'pull_request_review_comment'].includes(r.event)
                     && (r.head_branch === pr.head.ref || r.display_title === pr.title));
                   for (const r of runs) {
