@@ -23,7 +23,7 @@ Sirve para corregir o ampliar un encargo mientras el Creator trabaja en él, o a
 - **Nada mergea sin acuse.** Mientras la enmienda no tenga acuse, el `LGTM` del Reviewer no cuenta (se retira `lgtm` y el turno vuelve al Creator) y `epic-merge` no mergea (su diag enlaza la enmienda).
 - **Cómo comprobar el acuse.** Busca en el issue o en el PR un comentario del Creator con `enmienda-aplicada: <id>` o `enmienda-rechazada: <id>` (en un comentario HTML, en línea propia). Un rechazo trae el motivo en prosa y pone `human-needed`: el turno es tuyo o del propietario.
 - **Eslabones aún no armados.** Publica la enmienda en el issue del eslabón y no lo armes por ella: el Creator la lee al armarse (foto pre-sesión `.enmiendas-pendientes.md`) y la acusa en su primer turno.
-- **Límites.** Un solo re-arm por conjunto de pendientes y un máximo de 3 por ítem en 24 h. Al superarlo, `human-needed` y comentario, sin re-arm. Con `pause-agents` o `human-needed` en el ítem no se re-arma: el turno es humano.
+- **Límites.** Un solo re-arm por conjunto de pendientes y un máximo de 3 por ítem en 24 h. Al superarlo, `human-needed` y comentario, sin re-arm. Si el Creator re-armado termina su turno sin acusar, también `human-needed`: el turno es tuyo (acusa a mano con `enmienda-aplicada: <id>` en un comentario HTML, re-arma con un ping explícito o retira la enmienda). Con `pause-agents` o `human-needed` en el ítem no se re-arma: el turno es humano.
 
 ## 2. Cola de la serie
 

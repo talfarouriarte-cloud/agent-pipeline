@@ -126,14 +126,15 @@ async function correrEntrega(w, { item = PR, sesion = true, runId = 777 } = {}) 
   await entrega({ github: w.github, context: { repo: { owner: 'o', repo: 'r' }, runId, payload }, core: core(w) },
     { env: { EXEC_FILE: sesion ? EXEC : join(WS, 'no-existe.json'), GITHUB_WORKSPACE: WS } });
 }
-async function correrFlight(w, { trigger, runs }) {
+async function correrFlight(w, { trigger, runs, sesionAcabada = [] }) {
   const github = {
     rest: {
       pulls: { get: async () => ({ data: { number: PR, title: 'feat (#40)', head: { ref: RAMA } } }) },
       issues: { get: async () => ({ data: { number: ISSUE, title: 'Issue 40' } }) },
       actions: {
         listWorkflowRunsForRepo: async (p) => ({ data: { workflow_runs: p.status !== 'in_progress' ? [] : runs.map((r) => ({ id: r, name: 'Claude Code', display_title: 'feat (#40)', head_branch: 'main', created_at: HACE(1) })) } }),
-        listJobsForWorkflowRun: async () => ({ data: { jobs: [{ name: 'call / claude', status: 'in_progress', conclusion: null }] } }),
+        listJobsForWorkflowRun: async (p) => ({ data: { jobs: [{ name: 'call / claude', status: 'in_progress', conclusion: null,
+          steps: [{ name: 'Run Claude Code', status: sesionAcabada.includes(p.run_id) ? 'completed' : 'in_progress', conclusion: sesionAcabada.includes(p.run_id) ? 'success' : null }] }] } }),
       },
     },
   };
@@ -175,12 +176,16 @@ const VEREDICTO_LGTM = () => com(PR, 'LGTM\n\nTodo bien.', { min: 1 });
     '(a) al cerrar el turno en curso: UN re-arm con ping al Creator que entrega el disparo (en el PR)');
   check(!!r[0] && r[0].body.includes(dif.html_url) && /<!-- rearm-enmienda-run: 777 -->/.test(r[0].body), '(a) el re-arm enlaza el disparo y lleva el run que lo publica');
   await correrEntrega(w, { runId: 801 });
-  check(rearms(w).length === 1, '(a) un disparo ya entregado no se re-entrega');
+  check(rearms(w).length === 1 && !w.añadidas.length, '(a) un disparo ya entregado no se re-entrega');
   // El re-arm lo publicó el post-step del run 777: no es contendiente de su propio re-arm.
   const out2 = await correrFlight(w, { trigger: r[0], runs: [777, 800] });
   check(out2.blocked === 'false', '(a) el re-arm propio no se auto-difiere (el run 777 ya está en post-steps)');
   const out3 = await correrFlight(w, { trigger: r[0], runs: [776, 777, 800] });
   check(out3.blocked === 'true', '(a) …pero otro Creator en vuelo (run 776) sigue contando: árbitro intacto');
+  const w4 = mundo();
+  const ping4 = com(PR, '@claude otra cosa', { min: 1 });
+  check((await correrFlight(w4, { trigger: ping4, runs: [777, 800], sesionAcabada: [777] })).blocked === 'false',
+    '(a) contendiente con la sesión ya terminada (post-steps, ya pasó su entrega) ⇒ no cuenta: el ping no se difiere a nadie');
   const spoof = com(PR, '@claude\n<!-- rearm-enmienda-run: 777 -->', { assoc: 'NONE', login: 'mallory' });
   check((await correrFlight(w, { trigger: spoof, runs: [777, 800] })).blocked === 'true', '(a) un `rearm-enmienda-run` de autor no TRUSTED no exime');
 }
@@ -207,9 +212,13 @@ const VEREDICTO_LGTM = () => com(PR, 'LGTM\n\nTodo bien.', { min: 1 });
   await correrEntrega(w);
   await correrEntrega(w, { runId: 778 });
   check(rearms(w).length === 1, '(c) dos cierres con el mismo conjunto pendiente ⇒ un solo re-arm');
-  w.comentarios.push(enmienda(PR));
-  await correrEntrega(w, { runId: 779 });
-  check(rearms(w).length === 2, '(c) conjunto nuevo (otra enmienda) ⇒ un re-arm más');
+  check(w.añadidas.includes(`${PR}:human-needed`) && w.creados.some((c) => /<!-- enmienda-sin-acuse-tras-rearm -->/.test(c.body)),
+    '(c) …y el turno re-armado que acaba sin acusar el mismo conjunto ⇒ human-needed (sin bloqueo mudo)');
+  const wc = mundo({ comentarios: [enmienda(ISSUE), enmienda(PR)] });
+  await correrEntrega(wc);
+  wc.comentarios.push(enmienda(PR));
+  await correrEntrega(wc, { runId: 779 });
+  check(rearms(wc).length === 2 && !wc.añadidas.length, '(c) conjunto nuevo (otra enmienda) ⇒ un re-arm más');
 }
 // ── (d) tope 3/24 h ⇒ human-needed ──
 {
@@ -254,7 +263,7 @@ const VEREDICTO_LGTM = () => com(PR, 'LGTM\n\nTodo bien.', { min: 1 });
   const base = () => [e, acuse(e.id, 'aplicada', { min: 10 }), VEREDICTO_LGTM()];
   const w = mundo({ comentarios: base() });
   await correrEntrega(w);
-  check(w.creados.length === 0, '(g) entrega: enmienda acusada ⇒ sin re-arm');
+  check(rearms(w).length === 0 && !w.añadidas.length, '(g) entrega: enmienda acusada ⇒ sin re-arm');
   const wr = mundo({ comentarios: base() });
   await correrReviewer(wr);
   check(wr.labels[PR].includes('lgtm') && rearms(wr).length === 0, '(g) Reviewer: enmienda acusada ⇒ `lgtm` escrita');
@@ -264,7 +273,7 @@ const VEREDICTO_LGTM = () => com(PR, 'LGTM\n\nTodo bien.', { min: 1 });
   const e2 = enmienda(PR);
   const w2 = mundo({ comentarios: [e, e2, com(PR, `<!-- enmienda-aplicada: ${e.id}, ${e2.id} -->`, { assoc: 'NONE', login: 'claude[bot]' })] });
   await correrEntrega(w2);
-  check(w2.creados.length === 0, '(g) un acuse con varios ids acusa todos');
+  check(rearms(w2).length === 0 && !w2.añadidas.length, '(g) un acuse con varios ids acusa todos');
 }
 // ── (h) comentario no TRUSTED con el marcador ⇒ ignorado ──
 {
@@ -285,6 +294,20 @@ const VEREDICTO_LGTM = () => com(PR, 'LGTM\n\nTodo bien.', { min: 1 });
   const wd = mundo({ comentarios: [com(PR, '<!-- disparo-pendiente: 5 -->', { assoc: 'NONE', login: 'mallory' })] });
   await correrEntrega(wd);
   check(wd.creados.length === 0, '(h) un `disparo-pendiente` ajeno (ni github-actions[bot] ni TRUSTED) no se entrega');
+}
+// ── Acuse en un PR anterior del mismo issue ──
+{
+  const e = enmienda(ISSUE, { min: 60 });
+  const w = mundo({ comentarios: [e, acuse(e.id, 'aplicada', { min: 30 })] });
+  await correrEntrega(w);
+  const refl = w.creados.find((c) => c.item === ISSUE && new RegExp(`<!-- enmienda-aplicada: ${e.id} -->`).test(c.body));
+  check(!!refl && rearms(w).length === 0, 'acuse que solo consta en el PR ⇒ se refleja en el issue (PAT, TRUSTED)');
+  await correrEntrega(w, { runId: 790 });
+  check(w.creados.filter((c) => c.item === ISSUE).length === 1, 'el reflejo no se repite');
+  // PR siguiente del mismo issue: no ve los comentarios del PR anterior.
+  const w2 = mundo({ comentarios: [e, refl] });
+  await correrEntrega(w2);
+  check(w2.creados.length === 0, 'PR posterior del mismo issue: el acuse reflejado cuenta (sin re-arm ni bloqueo falso)');
 }
 // ── Bordes ──
 {

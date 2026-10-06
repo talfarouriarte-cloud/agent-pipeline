@@ -25,6 +25,8 @@
 //   <!-- enmienda-rechazada: <id> -->       acuse con rechazo ⇒ `human-needed`.
 //   <!-- enmienda-rechazo-escalado: <ids> --> el post-step ya pasó esos rechazos al humano.
 //   <!-- rearm-enmienda-tope -->            tope de re-arms superado ⇒ `human-needed`.
+//   <!-- enmienda-sin-acuse-tras-rearm -->  un turno real acabó sin acusar un conjunto ya
+//                                           re-armado ⇒ `human-needed` (sin bloqueo mudo).
 //
 // QUÉ NO. No cambia el árbitro de vuelo único (menor `run_id`), solo su salida.
 //
@@ -66,6 +68,7 @@ function escanear(comentarios) {
   const disparos = [];
   const rearms = [];
   const acuses = new Map();          // id → 'aplicada' | 'rechazada'
+  const acuseItems = new Map();      // id → Set(items donde consta el acuse)
   const escalados = new Set();
   let topes = 0;
   for (const c of comentarios || []) {
@@ -88,11 +91,37 @@ function escanear(comentarios) {
           // Un rechazo no se rebaja a aplicada por un acuse posterior ambiguo:
           // el humano tiene el turno hasta que lo resuelva.
           if (acuses.get(id) !== 'rechazada') acuses.set(id, m[1]);
+          if (!acuseItems.has(id)) acuseItems.set(id, new Set());
+          acuseItems.get(id).add(c.item);
         }
       }
     }
   }
-  return { enmiendas, disparos, rearms, acuses, escalados, topes };
+  return { enmiendas, disparos, rearms, acuses, acuseItems, escalados, topes };
+}
+
+// Acuses de enmiendas del ISSUE que solo constan en su PR. Un PR posterior del
+// mismo issue (relanzamiento de un parcial) no lee los comentarios del anterior:
+// sin reflejo en el issue, la enmienda volvería a salir sin acuse. Devuelve los
+// ids a reflejar por tipo.
+function acusesAReflejar(estado, issue) {
+  const out = { aplicada: [], rechazada: [] };
+  if (!issue) return out;
+  for (const e of estado.enmiendas) {
+    if (e.item !== issue || !estado.acuses.has(e.id)) continue;
+    if (estado.acuseItems.get(e.id).has(issue)) continue;
+    out[estado.acuses.get(e.id)].push(e.id);
+  }
+  return out;
+}
+
+function cuerpoReflejo(r, pr) {
+  return [
+    `**Enmiendas en vuelo (central#327)**: acuse(s) del Creator en #${pr}, reflejados en el issue para que un PR posterior de este mismo issue los vea.`,
+    '',
+    ...(r.aplicada.length ? [`<!-- enmienda-aplicada: ${clave(r.aplicada)} -->`] : []),
+    ...(r.rechazada.length ? [`<!-- enmienda-rechazada: ${clave(r.rechazada)} -->`, `<!-- enmienda-rechazo-escalado: ${clave(r.rechazada)} -->`] : []),
+  ].join('\n');
 }
 
 // Lo que sigue pendiente: enmiendas sin acuse, disparos nunca entregados
@@ -165,6 +194,18 @@ function cuerpoTope(plan) {
     'No se re-arma más: `human-needed`. El humano decide (aplicar a mano, re-armar con un ping explícito o retirar la enmienda).',
     '',
     '<!-- rearm-enmienda-tope -->',
+  ].join('\n');
+}
+
+function cuerpoSinAcuse(plan) {
+  return [
+    '**Enmiendas en vuelo (central#327) — sin acuse tras su re-arm**: el Creator ya fue re-armado por este mismo conjunto y su turno terminó sin acusarlo:',
+    '',
+    listado(plan.pendientes),
+    '',
+    'No se re-arma dos veces por el mismo conjunto: `human-needed`. El humano decide (acusar a mano, re-armar con un ping explícito o retirar la enmienda).',
+    '',
+    '<!-- enmienda-sin-acuse-tras-rearm -->',
   ].join('\n');
 }
 
@@ -248,6 +289,7 @@ function fotoPendientes(comentarios) {
 module.exports = {
   TRUSTED, CREATOR_LOGIN, JOB_LOGIN, TOPE, VENTANA_MS,
   ENMIENDA_RE, marcaDisparo, marcaRearm, clave,
-  escanear, pendientes, planificar, cuerpoRearm, cuerpoTope, cuerpoRechazo,
+  escanear, pendientes, planificar, cuerpoRearm, cuerpoTope, cuerpoRechazo, cuerpoSinAcuse,
+  acusesAReflejar, cuerpoReflejo,
   resolverItems, leer, estadoDe, fotoPendientes,
 };
