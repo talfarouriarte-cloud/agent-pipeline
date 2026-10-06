@@ -319,6 +319,10 @@ caso('(i) dir · entrada de índice repetida de un número declarado ⇒ verde (
   d => ({ ...exec(d, LINT), esperaCode: 0 })));
 caso('(i) config · duplicadosHeredados que no es lista de números ⇒ error (exit 2)', conDir(() => dirRepo(DIR_BASE, { cfg: { duplicadosHeredados: '2' } }),
   d => ({ ...exec(d, LINT), esperaCode: 2, esperaMsg: 'duplicadosHeredados "2" no es una lista' })));
+// En volúmenes (sin parser): un número suelto era TypeError (exit 1) y una cadena se ignoraba sin aviso.
+for (const [v, txt] of [[2, '2'], ['2', '"2"'], [['2'], '["2"]']])
+  casos.push({ r: run(`(i) volúmenes · duplicadosHeredados: ${txt} ⇒ error de config (exit 2)`, { vol: VOL + adr(2, 'Dos (heredada)'), cfg: { ...CFG, duplicadosHeredados: v } }),
+    esperaCode: 2, esperaMsg: `ADR-LINT ERROR: adr-lint.config.json: duplicadosHeredados ${txt} no es una lista` });
 
 // (i') rectificación a un número duplicado: no atribuible sin override; con override, colocada.
 const RECT_DUP = '### ADR-002·R·1 (2026-07-01) — de cuál de las dos ADR-2\n\nLínea.\n\n';

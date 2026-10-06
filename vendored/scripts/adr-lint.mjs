@@ -46,7 +46,15 @@ const VOLS = cfg.volumes ?? ['docs/decisions/decisions-001-075.md',
 const INDEX = cfg.index ?? 'decisions.md';
 const LIVE = VOLS[VOLS.length - 1];
 const STRICT_FROM = cfg.strictFrom ?? 217;
-const DUP_H = new Set(cfg.duplicadosHeredados ?? []);
+// Validada aquí y no solo en normalizeConfig: la ruta de volúmenes no carga
+// el parser, y un valor que no sea lista de enteros sería un TypeError (exit 1)
+// o se ignoraría sin aviso (mismo predicado y mensaje que adr-registro).
+const DUP_RAW = cfg.duplicadosHeredados ?? [];
+if (!Array.isArray(DUP_RAW) || !DUP_RAW.every(n => Number.isInteger(n) && n > 0)) {
+  console.error(`ADR-LINT ERROR: adr-lint.config.json: duplicadosHeredados ${JSON.stringify(DUP_RAW)} no es una lista de números de ADR`);
+  process.exit(2);
+}
+const DUP_H = new Set(DUP_RAW);
 
 // Patrones de cabecera de ADR (`adrHeader`, lista de regex con grupo `adr`).
 // El default es el literal de siempre: sin config nueva, mismo comportamiento.
