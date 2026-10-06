@@ -160,18 +160,15 @@ const CASOS = [
   // marcador entre backticks y habla de re-armar #1694, NO es del resolver.
   ['(h) review que CITA el marcador de rol', [{ host: 1696, body: 'El belt exige `<!-- watchdog-rol: architect-resolve -->`; sin él no materializa el re-arm de #1694.' }], {}, []],
   ['(i) marcador de rol dentro de un bloque cercado', [{ host: 1696, body: 'Así se emite:\n```\n<!-- watchdog-rol: architect-resolve -->\n```\nY re-armé #1694.' }], {}, []],
-  // Ronda 3, 🟡 3 — CASO DE CONGELACIÓN, no de corrección. El guard de
-  // identidad resuelve QUIÉN habla, no DE QUIÉN es la acción: el resolver
-  // NARRANDO en pasado un arm ajeno se deriva como declaración propia
-  // (`ARM` casa «re-armado»; `AMBIGUO` no casa —«quedó» no es «queda»—; y
-  // `FUTURO` tampoco, porque es pretérito, que es la forma que el mandato
-  // PIDE). Si ese arm ajeno cae fuera de la ventana del job, el belt re-arma:
-  // es el ÚNICO frente donde no cae del lado seguro (fail-activo), acotado por
-  // el guard serial y por MAX=3. Se acepta declarado —residual (f) de AP-064—
-  // a cambio de no meter heurística de atribución en prosa libre. El esperado
-  // de abajo es el comportamiento ACTUAL: si alguien lo cambia, que sea
-  // mirando este caso y no descubriéndolo en producción.
-  ['(j) NARRACIÓN de un arm ajeno (fail-activo declarado)', [cmt('El eslabón 2/3 (#1695) ya quedó re-armado por epic-merge al mergear.')], { 1695: { desStall: false, arm: true } }, []],
+  // Ronda 3, 🟡 3 — el resolver NARRANDO en pasado un arm ajeno. Hasta AP-107
+  // se derivaba como declaración propia (fail-activo declarado, residual (f)
+  // de AP-064: `ARM` casa «re-armado» y «quedó» no es «queda»). AP-107
+  // (central#328) lo CIERRA para la forma con verbo de estado: «quedó/está
+  // re-armado» es un PARTICIPIO DE ESTADO —describe cómo está el issue, no
+  // una acción del resolver—, y su hermano literal del corpus real
+  // («#325 … está armado») ponía rojo `check-resolve-corpus` en todo PR. El
+  // participio ABSOLUTO («Re-armado #N.») sigue declarando: ver (u-ctl).
+  ['(j) NARRACIÓN de un arm ajeno con verbo de estado ⇒ calla (AP-107)', [cmt('El eslabón 2/3 (#1695) ya quedó re-armado por epic-merge al mergear.')], {}, ['negada/condicional/pospuesta']],
   // AP-068 — el belt ya no lee el `host` de un campo que el banco inventaba:
   // `derivar` lo recibe calculado, y un comentario sin host no puede
   // atribuirse a nadie. Caso nuevo, cubre la rama `if (!host) continue`.
@@ -273,6 +270,40 @@ const CASOS = [
     [cmt('`stalled` retirada de #1694 y re-arm del eslabón 1/3 allí (detalle en su hilo).'),
       cmt('`stalled` retirada de #1694 y re-arm del eslabón 1/3 allí (detalle en su hilo).')],
     { 1694: { desStall: true, arm: true } }, []],
+  // ── AP-107 (central#328): participio de estado, condicional y negación ──
+  // Mismo origen que (o)–(p): PROSA REAL. El ruling de architect-resolve
+  // central#322 (issuecomment-6011334178) declara «Sin arm» y derivaba un arm
+  // sobre #325, poniendo ROJO el barrido vivo de `check-resolve-corpus` en
+  // `main` y en todo PR. El cuerpo va ENTERO y verbatim en
+  // `docs/corpus/central-322-issuecomment-6011334178.md` (no se edita: es
+  // evidencia del corpus); los dos segmentos culpables van además aislados.
+  ['(u) REAL central#322: cuerpo literal de issuecomment-6011334178 ⇒ sin arm',
+    [{ host: 322, body: readFileSync('docs/corpus/central-322-issuecomment-6011334178.md', 'utf8') }], {},
+    Array(5).fill('negada/condicional/pospuesta')],
+  ['(u-a) REAL: «#325 … está armado» (participio de estado)',
+    [cmt('#325 lleva el ruling APROBADA con `serial-ok`, está armado y su sesión de Creator está EN CURSO.', { host: 322 })], {}, ['negada/condicional/pospuesta']],
+  ['(u-b) REAL: «Re-armarlo abriría … #325» (condicional)',
+    [cmt('Re-armarlo abriría un segundo Creator sobre el MISMO fichero que el de #325 ya está editando: PR duplicado con conflicto garantizado.', { host: 322 })], {}, ['negada/condicional/pospuesta']],
+  // Sintéticos de las tres familias del ruling.
+  ['(v-a1) «quedó armada» ⇒ calla', [cmt('La serie de #1694 quedó armada tras el merge.')], {}, ['negada/condicional/pospuesta']],
+  ['(v-a2) «armado a mano» ⇒ calla', [cmt('El eslabón #1694 fue armado a mano por el propietario.')], {}, ['negada/condicional/pospuesta']],
+  ['(v-a3) «siguen re-armados» ⇒ calla', [cmt('Los eslabones de #1694 siguen re-armados desde ayer.')], {}, ['negada/condicional/pospuesta']],
+  ['(v-b1) «armaría» ⇒ calla', [cmt('Re-arm de #1694: lo armaría el watchdog en el siguiente tick.')], {}, ['negada/condicional/pospuesta']],
+  ['(v-b2) «lo armaríamos» ⇒ calla', [cmt('Con la serie libre lo armaríamos en #1694.')], {}, ['negada/condicional/pospuesta']],
+  ['(v-b3) condicional de OTRO verbo («relanzar #N duplicaría…») ⇒ calla', [cmt('Relanzar #1694 duplicaría el Creator en curso.')], {}, ['negada/condicional/pospuesta']],
+  // «arm» a secas no es vocabulario de `ARM` (sí «re-arm»): «Sin arm» no llega
+  // ni a candidato, luego ni acción ni aviso. La forma que SÍ es candidata es
+  // la de la cabecera real de central#322 («sin re-arm, fundida en #325»).
+  ['(v-c0) «Sin arm sobre #N» ⇒ ni candidato', [cmt('Sin arm sobre #1694 en este comentario.')], {}, []],
+  ['(v-c1) «sin re-arm, fundida en #N» ⇒ calla', [cmt('Issue 1696: sin re-arm, fundida en #1694.')], {}, ['negada/condicional/pospuesta']],
+  ['(v-c2) «no se re-arma» ⇒ calla', [cmt('No se re-arma #1694.')], {}, ['negada/condicional/pospuesta']],
+  ['(v-c3) «no lo re-armo» ⇒ calla', [cmt('#1694 no lo re-armo: la serie está ocupada.')], {}, ['negada/condicional/pospuesta']],
+  // Controles: las ramas nuevas NO comen las declaraciones legítimas. (d), (r)
+  // y la INSTANCIA fp#1711 de arriba ya lo fijan para el pretérito y la
+  // canónica; estos fijan las formas vecinas de las ramas nuevas.
+  ['(u-ctl) participio ABSOLUTO «Re-armado #N.» SIGUE declarando', [cmt('Re-armado #1694.')], { 1694: { desStall: false, arm: true } }, []],
+  ['(u-ctl2) pretérito con sustantivo en «-oría» SIGUE declarando', [cmt('Re-armé #1694 tras la auditoría.')], { 1694: { desStall: false, arm: true } }, []],
+  ['(u-ctl3) adjetivo en «-aria» sin tilde SIGUE declarando', [cmt('Re-armé #1694, la acción necesaria.')], { 1694: { desStall: false, arm: true } }, []],
 ];
 
 // `derivar` devuelve además `host`/`url` por declaración (los necesita el

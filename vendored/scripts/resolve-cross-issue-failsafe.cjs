@@ -56,7 +56,28 @@ const ARM = /\bre-?arm\w*|\barmad[oa]s?\b|\barm(?:o|é|a|ar|ado)\b|\brelanzamien
 // mordió al INSTRUMENTO DE MEDIDA de la casa. Una frase que niega, condiciona
 // o pospone la acción NO es una declaración de ejecución: fail-open (no actuar
 // + warning nominal), nunca materializar.
-const AMBIGUO = /\b(?:no|ni|sin|nunca|jam[áa]s|tampoco|pendiente|falta|faltan|queda|quedan|habr[íi]a|deber[íi]a|deber[áa]|hay que|convendr[íi]a|proceder[íi]a|tocar[íi]a|si|cuando|antes de|toca)\b/i;
+//
+// SEXTA y SÉPTIMA cara, medidas otra vez sobre PROSA REAL (AP-107, central#328).
+// El ruling de architect-resolve central#322 (issuecomment-6011334178) declara
+// «Sin arm en este comentario» y aun así derivó un arm sobre #325 desde dos
+// segmentos literales que no niegan ni posponen —por eso `AMBIGUO` no los veía—:
+//     «#325 lleva el ruling APROBADA con `serial-ok`, está armado y su sesión…»
+//     «Re-armarlo abriría un segundo Creator sobre el MISMO fichero … #325 …»
+// El primero es un PARTICIPIO DE ESTADO (describe cómo está #325, no una acción
+// del resolver); el segundo, un CONDICIONAL (la hipótesis que justifica NO
+// armar). Se amplía ESTA clase —no un camino paralelo— con dos ramas:
+//   (a) `estar`/`quedar`/`seguir` + participio de armar, y «armado a mano»:
+//       consecuencia ASUMIDA, el caso (j) del banco —«ya quedó re-armado por
+//       epic-merge», el fail-activo declarado de AP-064 residual (f)— pasa a
+//       callar. El participio ABSOLUTO («Re-armado #N.») sigue siendo
+//       declaración: solo calla precedido del verbo de estado.
+//   (b) condicional sintético: infinitivo en -ar/-er/-ir + `ía` (más las raíces
+//       irregulares). Exige la `í` acentuada: sin ella casaría «necesaria»,
+//       «diaria». Coste declarado: el imperfecto «quería» y los sustantivos en
+//       «-ería» («librería») también callan — fail-open, el lado barato.
+// La negación explícita (c) —«sin arm», «no se re-arma», «no lo re-armo»— ya la
+// cubría la primera rama (`no`, `sin`); el banco la fija con casos literales.
+const AMBIGUO = /\b(?:no|ni|sin|nunca|jam[áa]s|tampoco|pendiente|falta|faltan|queda|quedan|habr[íi]a|deber[íi]a|deber[áa]|hay que|convendr[íi]a|proceder[íi]a|tocar[íi]a|si|cuando|antes de|toca)\b|\b(?:est[áa]n?|estaban?|estuvo|qued[óo]|quedaron|quedaba|sigue|siguen|segu[íi]a)\s+(?:ya\s+)?(?:re-?)?armad[oa]s?\b|\b(?:re-?)?armad[oa]s?\s+a\s+mano\b|(?:[aei]r|habr|podr|tendr|har|dir|pondr|saldr|querr|sabr|valdr|vendr|cabr)ía(?:s|n|mos|is)?(?![a-záéíóúüñ])/i;
 // Cuarta cara de la misma clase: el FUTURO y la INTENCIÓN anuncian la acción,
 // no la declaran ejecutada («se armará al mergear», «voy a re-armar #N»,
 // «procedo a retirar `stalled`»). Se ancla a los MISMOS verbos de acción en
