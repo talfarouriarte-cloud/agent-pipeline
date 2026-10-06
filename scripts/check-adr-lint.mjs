@@ -28,6 +28,10 @@
 // Cuarta parte (central#334, AP-110): (vi) `--append-only-vs` con las líneas
 // `**Estado:**` enmascaradas — casos (a)–(f) del ruling; (g) = los de (iv), intactos;
 // (h) quitar el `\n` final del tramo es rojo y no cuenta como Estado (revisión del PR #335).
+//
+// Quinta parte (central#336, AP-111): (336·a) volumen recreado en `dir` ⇒ rojo;
+// (336·b) en volúmenes, sin cambios; (336·c) «citada en» de adr-index;
+// (336·d) wmcb `main`: salida idéntica (casos v/h y 336·b).
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { tmpdir } from 'os';
@@ -149,6 +153,12 @@ const MV2 = ['## ADR-3 (2026-01-10) — Tres, que aloja rectificaciones ajenas',
   '## ADR-4 (2026-01-20) — Cuatro', '', 'Texto de cuatro.', ''].join('\n');
 const migRepo = (v2 = MV2, v1 = MV1, extra = {}) => sandbox({ 'docs/decisions/v1.md': v1, 'docs/decisions/v2.md': v2, 'adr-lint.config.json': MIG_CFG, ...extra });
 const ADRD = 'docs/decisions/adr';
+// El corte a `dir`: config nueva y volúmenes fuera del árbol (con ellos dentro,
+// adr-lint en `dir` da rojo por volumen recreado — central#336, AP-111).
+const corte = (d, extra = {}) => {
+  W(d, 'adr-lint.config.json', JSON.stringify({ ...MIG_CFG, layout: 'dir', ...extra }));
+  for (const v of MIG_CFG.volumes) rmSync(join(d, v), { force: true });
+};
 const F = n => `${ADRD}/ADR-00${n}.md`;
 const snap = d => readdirSync(join(d, ADRD)).sort().map(f => f + '\n' + R_(d, `${ADRD}/${f}`)).join('\n@@\n') +
   ['adr-no-atribuibles.json', 'adr-no-atribuibles.md', 'adr-migracion.md'].map(f => R_(d, 'docs/decisions/' + f)).join('\n@@\n');
@@ -186,7 +196,7 @@ caso('(c) migración: cuatro formatos y rectificación lejos de su ADR ⇒ cada 
     if (e.code !== 0 || !/✔ \(a\)[\s\S]*✔ \(b\)[\s\S]*✔ \(c\)[\s\S]*✔ \(d\)[\s\S]*✔ \(e\)[\s\S]*✔ \(check\)/.test(e.out)) return { ...e, code: e.code || -1, esperaCode: 0 };
     const i = exec(d, V('adr-index.mjs'));
     if (i.code !== 0) return { ...i, esperaCode: 0 };
-    W(d, 'adr-lint.config.json', JSON.stringify({ ...MIG_CFG, layout: 'dir' }));
+    corte(d);
     return { ...exec(d, LINT), esperaCode: 0, esperaMsg: 'layout dir: 4 ficheros, 4 rectificaciones' };
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
@@ -279,7 +289,7 @@ caso('(a/b) --ids-vs tras el corte con una ambigua RESUELTA por override a otra 
     W(d, 'adr-migrate.overrides.json', JSON.stringify({ [CLAVE_AMBIGUA]: 'ADR-1' }));
     const m = exec(d, V('adr-migrate.mjs'));
     if (m.code !== 0) return { ...m, esperaCode: 0 };
-    W(d, 'adr-lint.config.json', JSON.stringify({ ...MIG_CFG, layout: 'dir' }));
+    corte(d);
     return { ...exec(d, LINT, ['--ids-vs', 'HEAD']), esperaCode: 0, esperaMsg: 'ningún identificador perdido' };
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
@@ -345,7 +355,7 @@ caso("(i') adr-migrate · con override «ADR-002·R·1» ⇒ colocada y resuelta
   if (m.code !== 0) return { ...m, esperaCode: 0 };
   const rep = JSON.parse(R_(d, 'docs/decisions/adr-no-atribuibles.json'));
   if (!R_(d, F(2)).includes('### ADR-002·R·1 (2026-07-01)') || rep.entradas[0]?.resolucion !== 'ADR-002') return { code: -1, out: JSON.stringify(rep), esperaCode: 0 };
-  W(d, 'adr-lint.config.json', JSON.stringify({ ...MIG_CFG, layout: 'dir', index: 'decisions.md', duplicadosHeredados: [2] }));
+  corte(d, { index: 'decisions.md', duplicadosHeredados: [2] });
   W(d, 'decisions.md', idxDe([1, 2]));
   return { ...exec(d, LINT), esperaCode: 0, esperaMsg: 'layout dir: 2 ficheros, 1 rectificaciones' };
 }));
@@ -353,7 +363,7 @@ caso("(i') override por CLAVE que renumera ⇒ adr-migrate la coloca como R·5 y
   'docs/decisions/v1.md#### ADR-2·R·1 (2026-07-01) — de cuál de las dos ADR-2#1': 'ADR-002·R·5' } }), d => {
   const m = exec(d, V('adr-migrate.mjs'));
   if (m.code !== 0 || !R_(d, F(2)).includes('### ADR-002·R·5 (2026-07-01)')) return { ...m, code: m.code || -1, esperaCode: 0 };
-  W(d, 'adr-lint.config.json', JSON.stringify({ ...MIG_CFG, layout: 'dir', index: 'decisions.md', duplicadosHeredados: [2] }));
+  corte(d, { index: 'decisions.md', duplicadosHeredados: [2] });
   W(d, 'decisions.md', idxDe([1, 2]));
   const ok = exec(d, LINT);
   if (ok.code !== 0) return { ...ok, esperaCode: 0 };
@@ -476,6 +486,45 @@ casos.push({ r: run('(v) volúmenes sin claves nuevas · verde ⇒ salida idént
   esperaMsg: 'ADR-LINT verde (3 ADRs en volumen vivo, reglas estrictas desde ADR-1).\n' });
 casos.push({ r: run('(v) volúmenes sin claves nuevas · duplicado + cita propia ⇒ salida idéntica (rojo)', { vol: VOL.replace('Texto.', `Texto. ${FUENTE}`) + adr(2, 'Dos (heredada)') + adr(4, 'Cuatro').replace('Texto.', `Según ADR-1:\n«${FUENTE.replace('arrastre', 'arrastre largo')}»`),
   idx: [...IDX_LINES, '- [ADR-4](x) — Cuatro'].join('\n') + '\n' }), esperaCode: 1, esperaMsg: V5_ROJO });
+
+// ── central#336 (AP-111): volumen recreado en `dir` y «citada en» del índice ──
+const VOL_REC = adr(4, 'Cuatro (escrita en el volumen por un mandato de volúmenes)');
+caso('(336·a) dir · docs/decisions/decisions-150-current.md recreado ⇒ rojo', conDir(() => dirRepo(DIR_BASE, { extra: { 'docs/decisions/decisions-150-current.md': VOL_REC } }),
+  d => ({ ...exec(d, LINT), esperaCode: 1, esperaMsg: 'docs/decisions/decisions-150-current.md: volumen en layout "dir" (el registro solo se lee de docs/decisions/adr/)' })));
+caso('(336·a) dir · volumen configurado fuera de decisions-*.md recreado ⇒ rojo', conDir(() => dirRepo(DIR_BASE, { cfg: { volumes: ['docs/vol-vivo.md'] }, extra: { 'docs/vol-vivo.md': VOL_REC } }),
+  d => ({ ...exec(d, LINT), esperaCode: 1, esperaMsg: 'docs/vol-vivo.md: volumen en layout "dir"' })));
+caso('(336·a) dir · informes de la migración en docs/decisions/ no son volúmenes ⇒ verde', conDir(() => dirRepo(DIR_BASE, { extra: { 'docs/decisions/adr-migracion.md': '# Informe\n', 'docs/decisions/adr-no-atribuibles.md': '# Informe\n' } }),
+  d => ({ ...exec(d, LINT), esperaCode: 0, esperaMsg: 'layout dir: 2 ficheros' })));
+// (336·b) volúmenes: el volumen vivo ES un decisions-*.md y hay otro suelto; salida literal de siempre.
+caso('(336·b) volúmenes · decisions-*.md presentes ⇒ sin cambios (salida idéntica)', conDir(() => sandbox({ 'docs/decisions/decisions-001-075.md': '', 'docs/decisions/decisions-076-149.md': '',
+  'docs/decisions/decisions-150-current.md': VOL, 'docs/decisions/decisions-suelto.md': VOL_REC, 'decisions.md': IDX_LINES.join('\n') + '\n' }),
+  d => { const r = exec(d, LINT); return { ...r, code: r.out === 'ADR-LINT verde (3 ADRs en volumen vivo, reglas estrictas desde ADR-217).\n' ? r.code : -1, esperaCode: 0 }; }));
+// (336·c) «citada en»: menciones cruzadas, autocitas (la ADR y sus rectificaciones) fuera.
+const CIT_CFG = { layout: 'dir', dir: ADRD, index: 'docs/decisions/INDEX.md', strictFrom: 1000, extraSources: [] };
+const CIT = {
+  [F(1)]: adr(1, 'Uno').replace('Texto.', 'Se apoya en ADR-002; ADR-1 y ADR-001 son ella misma.'),
+  [F(2)]: adr(2, 'Dos').replace('Texto.', 'Deriva de ADR-1 y de ADR-001·R·9 (dos menciones, una entrada); ADR-2 es ella misma.'),
+  [F(3)]: adr(3, 'Tres') + '### ADR-003·R·1 (2026-02-01) — r\n\nCorrige ADR-3 a la luz de ADR-0001.\n',
+  'adr-lint.config.json': CIT_CFG };
+const CIT_WANT = ['- [ADR-001](adr/ADR-001.md) — Uno · sin fecha · 0 rectificaciones · citada en: ADR-002, ADR-003·R·1',
+  '- [ADR-002](adr/ADR-002.md) — Dos · sin fecha · 0 rectificaciones · citada en: ADR-001',
+  '- [ADR-003](adr/ADR-003.md) — Tres · sin fecha · 1 rectificación (última: 2026-02-01)'];
+caso('(336·c) adr-index · «citada en» con menciones cruzadas, sin autocitas; --check y lint dir verdes', conDir(() => sandbox(CIT), d => {
+  const i = exec(d, V('adr-index.mjs'));
+  if (i.code !== 0) return { ...i, esperaCode: 0 };
+  const got = R_(d, 'docs/decisions/INDEX.md').split('\n').filter(l => l.startsWith('- ['));
+  if (JSON.stringify(got) !== JSON.stringify(CIT_WANT)) return { code: -1, out: 'índice:\n' + got.join('\n'), esperaCode: 0 };
+  const k = exec(d, V('adr-index.mjs'), ['--check']);
+  if (k.code !== 0) return { ...k, esperaCode: 0 };
+  return { ...exec(d, LINT), esperaCode: 0, esperaMsg: 'layout dir: 3 ficheros' };
+}));
+caso('(336·c) adr-index --check · una mención nueva desfasa «citada en» ⇒ rojo', conDir(() => sandbox(CIT), d => {
+  exec(d, V('adr-index.mjs'));
+  W(d, F(3), R_(d, F(3)) + '\n### ADR-003·R·2 (2026-03-01) — s\n\nVer ADR-2.\n');
+  return { ...exec(d, V('adr-index.mjs'), ['--check']), esperaCode: 1, esperaMsg: '+ - [ADR-002](adr/ADR-002.md) — Dos · sin fecha · 0 rectificaciones · citada en: ADR-001, ADR-003·R·2' };
+}));
+// (336·d) wmcb `main` (volúmenes, sin claves nuevas): la ruta de volúmenes no cambia — los casos (v) y (h)
+// siguen asertando la salida literal de antes; arriba, (336·b) con ficheros decisions-*.md presentes.
 
 let rojo = 0;
 for (const { r, esperaCode, esperaMsg } of casos) {

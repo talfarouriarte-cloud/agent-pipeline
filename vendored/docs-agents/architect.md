@@ -49,6 +49,7 @@ Regla común de escritura (central#325, AP-106):
 - Antes de cualquier commit que toque el registro, `adr-lint` en verde. Ojo: normaliza espacios pero no las marcas de markdown. Una cita «…» de 40 palabras o más tiene que coincidir con el corpus, incluidos los `**`.
 - Tras el corte a `layout: "dir"` (central#331, AP-109), una rectificación se AÑADE al final del fichero de su ADR, nunca en medio. Lo vigila `adr-lint --append-only-vs <ref>`, con `<ref>` = el estado previo al push (el mismo que en `--ids-vs`), nunca un ref fijo como el tag del corte: con un ref fijo, un override eximiría su ADR para siempre; una edición deliberada dentro de un fichero existente lleva en el mensaje del commit `adr-append-override: ADR-NNN — <motivo>`.
 - Actualizar la línea **Estado:** de una ADR (o de una rectificación) no requiere override (central#334, AP-110): `--append-only-vs` compara esas líneas enmascaradas. Añadir, quitar o mover una línea **Estado:** en el tramo existente sí es rojo.
+- En `layout: "dir"`, el índice (`adr-index.mjs`) trae por ADR «citada en»: las otras ADR y rectificaciones que la nombran. Úsalo para ver qué condiciona una ADR antes de diseñar sobre ella (central#336, AP-111).
 
 ## 5. Reglas de trabajo del Architect
 

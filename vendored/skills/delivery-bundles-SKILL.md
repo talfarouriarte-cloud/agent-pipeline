@@ -94,7 +94,7 @@ Reemplaza al patrón anterior ("subir 9 archivos al repo via web UI uno a uno + 
 - Zero paste-hazard (todos los textos se leen del filesystem)
 - El issue al agente cabe en 3-5 líneas
 - INSTRUCTIONS.md vive con el código que ejecuta, no en un comentario perdido
-- Las modificaciones a múltiples archivos del repo (motor + decisions.md + spec.md + esta nota) se aplican consistentemente sin transcribir manualmente
+- Las modificaciones a múltiples archivos del repo (motor + registro de decisiones + spec.md + esta nota) se aplican consistentemente sin transcribir manualmente
 
 **Cuándo NO aplica:**
 - PRs donde el agente debe escribir código nuevo (no transportar pre-verificado). Ahí el flujo `@claude` desde issue sin zip sigue siendo el correcto.
@@ -102,9 +102,11 @@ Reemplaza al patrón anterior ("subir 9 archivos al repo via web UI uno a uno + 
 
 ### Verificación de string-replacements antes de empacar el zip (sub-regla del patrón canónico)
 
-Cuando el sandbox de claude.ai produce un `_<feature>/spec-update.md` u otro fichero con bloques "Buscar"/"Reemplazar por" para docs del repo (`spec.md`, `decisions.md`, `CLAUDE.md`, `operational-notes.md`), las cadenas de "Buscar" deben coincidir **literal y unívocamente** con el archivo destino actual. La verificación correcta es leer el archivo destino del filesystem del sandbox (`/mnt/project/spec.md`, etc.) y hacer `grep -F` exacto de cada cadena de búsqueda antes de empaquetar el zip. Asumir desde memoria cómo "está redactado" el archivo es modo de fallo: produce desalineaciones que el agente correctamente detecta y reporta (siguiendo INSTRUCTIONS.md), pero cuestan un round-trip humano evitable.
+Cuando el sandbox de claude.ai produce un `_<feature>/spec-update.md` u otro fichero con bloques "Buscar"/"Reemplazar por" para docs del repo (`spec.md`, `CLAUDE.md`, `operational-notes.md`), las cadenas de "Buscar" deben coincidir **literal y unívocamente** con el archivo destino actual. La verificación correcta es leer el archivo destino del filesystem del sandbox (`/mnt/project/spec.md`, etc.) y hacer `grep -F` exacto de cada cadena de búsqueda antes de empaquetar el zip. Asumir desde memoria cómo "está redactado" el archivo es modo de fallo: produce desalineaciones que el agente correctamente detecta y reporta (siguiendo INSTRUCTIONS.md), pero cuestan un round-trip humano evitable.
 
 **Caso histórico**: PR3-bis (mayo 2026). El sandbox redactó tres `Buscar`/`Reemplazar` para `spec.md` desde memoria del documento, sin verificar contra el archivo real. Las tres fallaron al ejecutar. El agente paró correctamente; el humano tuvo que pegar las cadenas literales en un comentario al issue. Coste: ~10 min de chat, sin daño real al PR. Lección barata, pero la próxima debe verificarse antes de empaquetar.
+
+**El registro de decisiones no se edita por Buscar/Reemplazar** (AP-111): una ADR o rectificación se AÑADE donde diga `layout` en `adr-lint.config.json` — en `dir`, fichero nuevo `<dir>/ADR-NNN.md` o al final del de su ADR (en medio solo el texto de `**Estado:**`); en `volumes`, al final del último volumen de `volumes` (regla en `protocol.md` § «Dónde va una ADR según el layout»).
 
 **Aplica a**: cualquier `_<feature>/*-update.md` con bloques de string-replace literal. NO aplica a appends puros (donde el agente lee el contenido del fichero auxiliar y lo añade al final del destino) ni a archivos nuevos.
 

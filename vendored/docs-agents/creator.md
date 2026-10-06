@@ -316,9 +316,11 @@ El bloque del ADR está en `adr-XXX-block.zip` en la raíz del repo.
 
 \`\`\`bash
 unzip adr-XXX-block.zip -d /tmp/adr
-echo "" >> docs/decisions/decisions-150-current.md
-cat /tmp/adr/adr-XXX-block.md >> docs/decisions/decisions-150-current.md
-node scripts/generate-toc.mjs
+# Destino según `layout` en adr-lint.config.json (protocol.md § «Dónde va una ADR según el layout», AP-111):
+#   "dir"              → ADR nueva: cp /tmp/adr/adr-XXX-block.md <dir>/ADR-XXX.md && node scripts/adr-index.mjs
+#                        (rectificación: añadir al final de <dir>/ADR-NNN.md, nunca en medio)
+#   "volumes"/sin config → añadir al final del último volumen de `volumes`; después el TOC del repo, si lo tiene
+node scripts/adr-lint.mjs
 rm adr-XXX-block.zip
 rm -rf /tmp/adr
 \`\`\`
@@ -360,7 +362,7 @@ La cadena es autocontenida frente a señales objetivas (CI, Reviewer, nits) y es
 - **Trigger phrase**: cada issue debe contener `@claude` literal.
 - **Workflows files**: en los consumidores el Creator no los toca (ADR-020; el humano a mano). En el central los trabaja y commitea; la rama la publica el post-step de rescate — ver § "Workflows files: régimen por repo". La falta de push en sesión NO es `[NEEDS-HUMAN]` ni blocker.
 - **Persistencia incremental**: commit + push tras cada sección con estado verde (typecheck + tests del área OK). NO acumular en working tree esperando "tener todo listo". Detalle en § "Persistencia incremental" abajo.
-- **TOC de decisions.md**: las ADRs viven en volúmenes `docs/decisions/decisions-*.md` (las nuevas van SIEMPRE al volumen `-current`); `decisions.md` raíz es el índice global. Si el PR añade/renombra/cambia estado de un ADR → ejecutar `node scripts/generate-toc.mjs` antes de commitear (CLAUDE.md § "Mantenimiento del TOC").
+- **Registro de decisiones (dónde va una ADR)**: lo decide `layout` en `adr-lint.config.json` del repo, no una ruta fija (regla y comando para resolver el destino: `protocol.md` § «Dónde va una ADR según el layout», AP-111). `layout: "dir"` ⇒ ADR nueva = fichero nuevo `<dir>/ADR-NNN.md`; rectificación = añadir al final del fichero de su ADR (`### ADR-NNN·R·k (fecha) — título`); en medio solo se toca el texto de `**Estado:**`; regenerar el índice con `node scripts/adr-index.mjs`; nunca crear un volumen (`adr-lint` da rojo). `layout: "volumes"` o sin config ⇒ al final del último volumen de `volumes`, y si el PR añade/renombra/cambia estado de un ADR, el TOC del repo antes de commitear (`node scripts/generate-toc.mjs` donde exista; CLAUDE.md § "Mantenimiento del TOC"). En ambos, `node scripts/adr-lint.mjs` verde antes de commitear.
 - **CHANGELOG**: si el PR produce cambio visible para el caller del paquete → entrada en `packages/<paquete>/CHANGELOG.md` (CLAUDE.md § "CHANGELOG y docs de diseño"). Refactor interno puro: no requiere.
 - **Status headers de docs/design**: si el PR cambia el status estructural de una sección de un área con doc (`docs/design/<área>.md`) → actualizar el status header.
 - **Auth blindaje**: el step `Run Claude Code` del workflow tiene `env: ANTHROPIC_API_KEY: ""` para forzar OAuth-only. NO removerlo. Si OAuth Max falla, el job debe fallar (rojo) en lugar de caer a API key facturada silenciosamente.
