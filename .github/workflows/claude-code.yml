@@ -292,12 +292,25 @@ jobs:
               return;
             }
             const winner = Math.min(...contenders);
-            const gh = getOctokit(process.env.DEFAULT_GH_TOKEN);
-            await gh.rest.issues.createComment({ owner, repo, issue_number: number,
-              body: `ya hay un Creator en vuelo (run ${winner}); este disparo se descarta — repítelo cuando termine.` })
-              .catch(e => core.warning(`vuelo único: comentario de descarte falló (${e.message}).`));
+            // Decisión primero, comentario después: nada de la rama de bloqueo
+            // puede dejar el run en rojo (central#318: `getOctokit` no es un
+            // argumento de github-script@v7 y su ReferenceError tiñó el run).
+            // El descarte va con el token DEL JOB (`github` es el PAT: su
+            // comentario dispararía otro run de este workflow) por `fetch`
+            // global, sin depender de `@actions/github`, que `require` no
+            // resuelve desde el checkout del consumidor.
             core.setOutput('blocked', 'true');
             core.warning(`vuelo único: run ${context.runId} cede ante ${winner} sobre #${number}.`);
+            try {
+              const api = process.env.GITHUB_API_URL || 'https://api.github.com';
+              const res = await fetch(`${api}/repos/${owner}/${repo}/issues/${number}/comments`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${process.env.DEFAULT_GH_TOKEN}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
+                body: JSON.stringify({ body: `ya hay un Creator en vuelo (run ${winner}); este disparo se descarta — repítelo cuando termine.` }) });
+              if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            } catch (e) {
+              core.warning(`vuelo único: comentario de descarte falló (${e.message}); el disparo se descarta igual.`);
+            }
 
       # Cap de iteraciones: si en este PR ya hay 3+ comentarios de
       # claude[bot] y el disparo viene de un bot (Reviewer), asume
@@ -1906,6 +1919,10 @@ jobs:
         # del cierre del Creator; trigger del stub del Reviewer) y este belt vuelve
         # a ser RESIDUAL: su mismo dedupe por runs del head SHA lo apaga cuando el
         # evento convocó. Sin cambio de lógica aquí.
+        # Central#318 (asesoramiento#2707): el dedupe pregunta por VENTANA
+        # (runs del Reviewer en la rama nacidos desde el `ready_for_review`), no
+        # por el head SHA actual — una ronda completa pudo avanzarlo antes de
+        # este post-step — y cede si hay un Creator en vuelo sobre el PR.
         if: |
           always()
           && steps.preflight.outputs.dead != 'true'
@@ -1949,33 +1966,105 @@ jobs:
             // salta) y se perdería (sin re-evento tras el ready). Dejar el ready a ese
             // post-step evita la doble costura.
             if (pr.draft) { core.notice(`open-review-failsafe: PR #${pr.number} de #${n} en DRAFT — la transición ready la materializa el post-step de muerte; no se aplica needs-review a un draft.`); return; }
-            // DEDUPE (condición de aplicabilidad): ¿algún run del Reviewer para el
-            // head SHA del PR? El run pertenece al stub caller; se identifica por
-            // su `name` (mismo criterio que el watchdog, input reviewer_workflow_name).
+            // DEDUPE (condición de aplicabilidad): ¿nació algún run del Reviewer
+            // para esta rama desde que el PR se volvió revisable? Central#318
+            // (asesoramiento#2707): este post-step corre al cierre del Creator
+            // ABRIDOR, minutos después del `gh pr ready`, y una ronda completa
+            // Reviewer→Creator puede haber avanzado ya el head; preguntar por el
+            // SHA ACTUAL daba falso negativo y doblaba la review (y con ella un
+            // segundo Creator). La ventana es `branch=<rama>&created>=<ready_at>`,
+            // con `ready_at` = último `ready_for_review` del timeline (o la
+            // creación del PR si nació no-draft). `ready_at` ilegible ⇒ statu quo
+            // (runs del head SHA actual). El run pertenece al stub caller; se
+            // identifica por su `name` (mismo criterio que el watchdog, input
+            // reviewer_workflow_name).
             const REVIEWER_WF = process.env.IN_REVIEWER_WF || 'Opus Reviewer';
+            const API = process.env.GITHUB_API_URL || 'https://api.github.com';
+            const H = { Authorization: `Bearer ${process.env.ARM_PAT}`, Accept: 'application/vnd.github+json' };
+            let readyAt = null;
+            try {
+              const evs = await github.paginate(github.rest.issues.listEventsForTimeline, { owner, repo, issue_number: pr.number, per_page: 100 });
+              const readies = evs.filter(e => e.event === 'ready_for_review' && e.created_at).map(e => e.created_at).sort();
+              readyAt = readies.length ? readies[readies.length - 1] : (pr.created_at || null);
+            } catch (e) {
+              core.warning(`open-review-failsafe: timeline de #${pr.number} ilegible (${e.message}); dedupe por head SHA (statu quo).`);
+            }
+            const ventana = readyAt
+              ? `branch=${encodeURIComponent(pr.head.ref)}&created=${encodeURIComponent('>=' + readyAt)}`
+              : `head_sha=${pr.head.sha}`;
+            const quien = readyAt ? `${pr.head.ref} desde ${readyAt}` : pr.head.sha.slice(0, 7);
             // null = lectura no fiable (p.ej. PAT sin actions:read): NO decidir —
             // materializar sobre lectura fallida doblaría reviews; queda el watchdog.
+            // El endpoint lista runs de TODOS los workflows de la rama (cada label y
+            // cada push dejan varios, aunque sean `skipped`) y ordena del más nuevo
+            // al más antiguo: el primero en salirse de una página es justo el run
+            // del Reviewer nacido del ready. Se pagina hasta una página corta o
+            // vacía, con tope; tope agotado sin match ⇒ lectura no fiable (null).
+            const PAGINAS_MAX = 10;
             const found = async () => {
-              const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/actions/runs?head_sha=${pr.head.sha}&per_page=50`, {
-                headers: { Authorization: `Bearer ${process.env.ARM_PAT}`, Accept: 'application/vnd.github+json' } });
-              if (!res.ok) { core.warning(`open-review-failsafe: HTTP ${res.status} listando runs — no se decide.`); return null; }
-              // Higiene del dedupe (AP-025, repesca finplan#1450): un run del
-              // Reviewer YA CONCLUIDO en `failure` sin veredicto NO cuenta como
-              // «trigger opened OK» — es una muerte por presupuesto/crash, la
-              // cubre la rama sin-veredicto del post-step de reviewer.yml, no debe
-              // bloquear este belt. Dedupea solo contra runs vivos (queued/
-              // in_progress) o exitosos (success ⇒ el Reviewer sí posteó veredicto).
-              return (await res.json()).workflow_runs.filter(r => r.name === REVIEWER_WF).some(r =>
-                r.status === 'queued' || r.status === 'in_progress'
-                || (r.status === 'completed' && r.conclusion === 'success'));
+              for (let page = 1; page <= PAGINAS_MAX; page++) {
+                const res = await fetch(`${API}/repos/${owner}/${repo}/actions/runs?${ventana}&per_page=100&page=${page}`, { headers: H });
+                if (!res.ok) { core.warning(`open-review-failsafe: HTTP ${res.status} listando runs — no se decide.`); return null; }
+                const runs = (await res.json()).workflow_runs || [];
+                // Higiene del dedupe (AP-025, repesca finplan#1450): un run del
+                // Reviewer YA CONCLUIDO en `failure` sin veredicto NO cuenta como
+                // «trigger opened OK» — es una muerte por presupuesto/crash, la
+                // cubre la rama sin-veredicto del post-step de reviewer.yml, no debe
+                // bloquear este belt. Dedupea solo contra runs vivos (queued/
+                // in_progress) o exitosos (success ⇒ el Reviewer sí posteó veredicto).
+                if (runs.filter(r => r.name === REVIEWER_WF).some(r =>
+                  r.status === 'queued' || r.status === 'in_progress'
+                  || (r.status === 'completed' && r.conclusion === 'success'))) return true;
+                if (runs.length < 100) return false;
+                if (readyAt && runs.every(r => r.created_at < readyAt)) return false;
+              }
+              core.warning(`open-review-failsafe: >${PAGINAS_MAX * 100} runs en la ventana sin run del Reviewer — no se decide.`);
+              return null;
             };
+            // Cinturón (central#318): un run de ESTE workflow en contexto PR vivo
+            // para la rama/título del PR ⇒ el turno ya es de un Creator: ceder,
+            // igual que ante `rescate.wip`. Mismo criterio de pertenencia que el
+            // guard de vuelo único (runs con el job del Creator `skipped` no
+            // cuentan). Lectura fallida ⇒ sin cinturón (statu quo).
+            const creatorEnVuelo = async () => {
+              try {
+                for (const status of ['in_progress', 'queued']) {
+                  const res = await fetch(`${API}/repos/${owner}/${repo}/actions/runs?status=${status}&per_page=100`, { headers: H });
+                  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                  // Mismo filtro de edad que el guard de vuelo único (runs fantasma
+                  // en `queued` con jobs vacíos cederían para siempre).
+                  const runs = ((await res.json()).workflow_runs || []).filter(r => r.name === context.workflow
+                    && r.id !== context.runId
+                    && (Date.now() - new Date(r.created_at).getTime()) < 6 * 60 * 60 * 1000
+                    && ['issue_comment', 'pull_request_review', 'pull_request_review_comment'].includes(r.event)
+                    && (r.head_branch === pr.head.ref || r.display_title === pr.title));
+                  for (const r of runs) {
+                    const rj = await fetch(`${API}/repos/${owner}/${repo}/actions/runs/${r.id}/jobs?per_page=50`, { headers: H });
+                    if (!rj.ok) return r.id;
+                    const jobs = (await rj.json()).jobs || [];
+                    const creatorJobs = jobs.filter(j => j.name === 'claude' || / \/ claude$/.test(j.name || ''));
+                    const pool = creatorJobs.length ? creatorJobs : jobs;
+                    if (!(pool.length && pool.every(j => j.conclusion === 'skipped'))) return r.id;
+                  }
+                }
+              } catch (e) {
+                core.warning(`open-review-failsafe: runs del Creator ilegibles (${e.message}); sin cinturón de vuelo.`);
+              }
+              return null;
+            };
+            const cedeCreator = async () => {
+              const vivo = await creatorEnVuelo();
+              if (vivo) core.notice(`open-review-failsafe: Creator en vuelo sobre PR #${pr.number} (run ${vivo}) — el turno ya es suyo; no se convoca al Reviewer.`);
+              return !!vivo;
+            };
+            if (await cedeCreator()) return;
             // Camino sano: este post-step corre minutos después del `opened`, así
             // que el run ya existe y el corto-circuito ahorra el settle. Un match
             // POSITIVO nunca es falso negativo ⇒ el corto-circuito no reintroduce
             // el riesgo que el settle cubre (nit de la review de PR #57).
             const first = await found();
             if (first !== false) {
-              if (first) core.notice(`open-review-failsafe: run del Reviewer ya existe para ${pr.head.sha.slice(0,7)} (trigger opened/ready_for_review OK) — no se duplica.`);
+              if (first) core.notice(`open-review-failsafe: run del Reviewer ya existe para ${quien} (trigger opened/ready_for_review OK) — no se duplica.`);
               return;
             }
             // Sólo el caso dudoso (run ausente) paga el settle al bound de liveness
@@ -1985,9 +2074,10 @@ jobs:
             await new Promise(r => setTimeout(r, 90000));
             const second = await found();
             if (second !== false) {
-              if (second) core.notice(`open-review-failsafe: run del Reviewer apareció en el settle para ${pr.head.sha.slice(0,7)} — no se duplica.`);
+              if (second) core.notice(`open-review-failsafe: run del Reviewer apareció en el settle para ${quien} — no se duplica.`);
               return;
             }
+            if (await cedeCreator()) return;
             // Ningún run: el `opened` se perdió. Materializar la transición por
             // ESTADO — needs-review con el PAT (remove+add para forzar el evento
             // labeled aunque hubiera un resto). Raw fetch con ARM_PAT: github-script
@@ -2004,7 +2094,7 @@ jobs:
             await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['needs-review'] });
             await github.rest.issues.createComment({ owner, repo, issue_number: pr.number,
               body: '**claude-code · open-review-failsafe**: el evento que auto-dispara al Reviewer al volverse revisable el PR (`ready_for_review` del cierre draft-first, AP-094; `opened` si nació no-draft) no produjo ningún run tras el settle de liveness (~90s). Transición Creator→Reviewer materializada por ESTADO (camino RESIDUAL): `needs-review` aplicada con el PAT en el mismo job (repesca finplan#1382, AP-016). Idempotente por dedupe: si el evento hubiera disparado, este step no habría tocado nada. Si el stub del Reviewer de este repo no declara `ready_for_review` en sus `types`, este disparo es esperado (MIGRATION.md, AP-094).\n\n<!-- open-review-failsafe -->' });
-            core.warning(`open-review-failsafe: PR #${pr.number} sin run del Reviewer para ${pr.head.sha.slice(0,7)} — needs-review aplicada por PAT (evento opened/ready_for_review perdido o no cableado en el stub).`);
+            core.warning(`open-review-failsafe: PR #${pr.number} sin run del Reviewer para ${quien} — needs-review aplicada por PAT (evento opened/ready_for_review perdido o no cableado en el stub).`);
 
       - name: Materializar muerte del Creator sin PR (post-step determinista)
         id: post_muerte_sin_pr

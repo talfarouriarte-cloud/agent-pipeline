@@ -21,6 +21,7 @@ import { existsSync, readFileSync } from 'fs';
 import { createRequire } from 'module';
 import { resolve } from 'path';
 import yaml from 'js-yaml';
+import { cargarStep } from './lib/github-script.mjs';
 
 const CC = '.github/workflows/claude-code.yml';
 if (!existsSync(CC)) {
@@ -47,9 +48,8 @@ caso('orden: `check_panel` va ANTES de `check_serial`', idx('check_panel') < idx
 caso('gate: el `if:` de `check_serial` exige `check_panel.blocked != \'true\'`',
   /steps\.check_panel\.outputs\.blocked != 'true'/.test(serialStep.if || ''));
 
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const panelRun = new AsyncFunction('github', 'context', 'core', 'require', panelStep.with.script);
-const serialRun = new AsyncFunction('github', 'context', 'core', 'require', serialStep.with.script);
+const panelRun = cargarStep(panelStep.with.script, 'check_panel');
+const serialRun = cargarStep(serialStep.with.script, 'check_serial');
 let COLA = null;
 for (const f of ['vendored/scripts/cola-prioridad.cjs', 'scripts/cola-prioridad.cjs']) {
   if (existsSync(f)) { COLA = require(resolve(f)); break; }
@@ -101,8 +101,8 @@ async function armar(W, n, armBody) {
   const prev = process.env.IN_EPIC_LABEL;
   process.env.IN_EPIC_LABEL = 'epica';
   try {
-    await panelRun(W.github, context, core(r.panel), reqInyectado);
-    if (r.panel.blocked !== 'true') { r.serial = {}; await serialRun(W.github, context, core(r.serial), reqInyectado); }
+    await panelRun({ github: W.github, context, core: core(r.panel), require: reqInyectado });
+    if (r.panel.blocked !== 'true') { r.serial = {}; await serialRun({ github: W.github, context, core: core(r.serial), require: reqInyectado }); }
   } finally { if (prev === undefined) delete process.env.IN_EPIC_LABEL; else process.env.IN_EPIC_LABEL = prev; }
   r.armado = r.panel.blocked !== 'true' && r.serial && r.serial.blocked !== 'true';
   return r;

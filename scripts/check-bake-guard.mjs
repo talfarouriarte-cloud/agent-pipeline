@@ -10,6 +10,7 @@
 // que sus hermanos: su paso propio de `ci.yml` sería un cambio de workflow.
 import { readFileSync } from 'fs';
 import yaml from 'js-yaml';
+import { cargarStep } from './lib/github-script.mjs';
 
 const wf = yaml.load(readFileSync('.github/workflows/claude-code.yml', 'utf8'));
 let script = null;
@@ -17,8 +18,7 @@ for (const job of Object.values(wf.jobs || {})) {
   for (const st of job.steps || []) if (st.id === 'check_chain') script = st.with.script;
 }
 if (!script) { console.error('CHECK-BAKE-GUARD ROJO: step `check_chain` no encontrado en claude-code.yml'); process.exit(1); }
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const run = new AsyncFunction('github', 'context', 'core', 'process', script);
+const run = cargarStep(script, 'check_chain');
 
 const NOW = '2026-09-30T10:00:00Z';
 const OLD = '2026-07-01T00:00:00Z';
@@ -39,7 +39,7 @@ async function caso({ labels, body = '', created = NOW, comments = [], arm = '@c
   } } };
   const context = { repo: { owner: 'o', repo: 'r' }, payload: { issue, comment: { body: arm } } };
   const core = { setOutput: (k, v) => { outputs[k] = String(v); }, setFailed: m => { outputs.failed = m; }, notice() {}, warning() {} };
-  await run(github, context, core, { env: { IN_EPIC_LABEL: 'epica' } });
+  await run({ github, context, core }, { env: { IN_EPIC_LABEL: 'epica' } });
   return { broken: outputs.broken, stalled: calls.labels.includes('stalled'), comments: calls.comments, removed: calls.removed };
 }
 

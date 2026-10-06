@@ -98,7 +98,7 @@ if (errors.length) {
 // dientes (la calibración offline) no necesita token ninguno.
 // El banco va ANTES del gate que ejercita: si los dos se ponen rojos a la vez, lo
 // primero que hay que leer es si el instrumento sigue funcionando.
-for (const s of ['check-patches.mjs', 'check-resolve-detection.mjs', 'check-turn-close-detection.mjs', 'check-resolve-corpus-bank.mjs', 'check-resolve-corpus.mjs', 'check-resolve-rerun.mjs', 'check-arm-token.mjs', 'check-liveness-belts.mjs', 'check-epic-merge-diag.mjs', 'check-cola-prioridad.mjs', 'check-pausa-cola.mjs', 'check-panel-al-encolar.mjs', 'check-bake-guard.mjs', 'check-serial-guard.mjs', 'check-flight-guard.mjs', 'check-arbol-rescate.mjs', 'check-process-review-lote.mjs']) {
+for (const s of ['check-patches.mjs', 'check-resolve-detection.mjs', 'check-turn-close-detection.mjs', 'check-resolve-corpus-bank.mjs', 'check-resolve-corpus.mjs', 'check-resolve-rerun.mjs', 'check-arm-token.mjs', 'check-liveness-belts.mjs', 'check-epic-merge-diag.mjs', 'check-cola-prioridad.mjs', 'check-pausa-cola.mjs', 'check-panel-al-encolar.mjs', 'check-bake-guard.mjs', 'check-serial-guard.mjs', 'check-flight-guard.mjs', 'check-open-review-failsafe.mjs', 'check-arbol-rescate.mjs', 'check-process-review-lote.mjs']) {
   try { execFileSync('node', [`scripts/${s}`], { stdio: 'inherit' }); }
   catch { process.exit(1); }   // el exit code se propaga: el rojo de esos checks es el rojo de este paso
 }

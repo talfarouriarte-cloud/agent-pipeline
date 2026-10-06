@@ -22,6 +22,7 @@ import { existsSync, readFileSync } from 'fs';
 import { createRequire } from 'module';
 import { resolve } from 'path';
 import yaml from 'js-yaml';
+import { cargarStep } from './lib/github-script.mjs';
 
 const require = createRequire(import.meta.url);
 
@@ -151,12 +152,11 @@ if (existsSync(CC)) {
   for (const job of Object.values(wf.jobs || {})) for (const s of job.steps || []) if (s.id === 'check_serial') guardScript = s.with.script;
   caso('claude-code: step `check_serial` presente', !!guardScript);
 }
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 // `require` inyectado: cualquier ruta a `cola-prioridad.cjs` resuelve al módulo
 // fuente (en Actions vive en `.cola-central/` o en `scripts/`).
 const reqInyectado = (p) => (String(p).endsWith('cola-prioridad.cjs') ? m : require(p));
 async function guard(R, issueNumber, armBody, { epica = false } = {}) {
-  const run = new AsyncFunction('github', 'context', 'core', 'require', guardScript);
+  const run = cargarStep(guardScript, 'check_serial');
   const i = R.st.get(issueNumber);
   const issue = { number: issueNumber, title: `Issue ${issueNumber}`, created_at: i.created_at,
     labels: [...i.labels, ...(epica ? ['epica'] : [])].map((name) => ({ name })) };
@@ -166,7 +166,7 @@ async function guard(R, issueNumber, armBody, { epica = false } = {}) {
   const core = { setOutput: (k, v) => { out.outputs[k] = String(v); }, notice() {}, info() {}, warning: (w) => out.warnings.push(String(w)) };
   const prevEpic = process.env.IN_EPIC_LABEL;
   process.env.IN_EPIC_LABEL = 'epica';
-  try { await run(R.github, context, core, reqInyectado); }
+  try { await run({ github: R.github, context, core, require: reqInyectado }); }
   finally { if (prevEpic === undefined) delete process.env.IN_EPIC_LABEL; else process.env.IN_EPIC_LABEL = prevEpic; }
   return out;
 }

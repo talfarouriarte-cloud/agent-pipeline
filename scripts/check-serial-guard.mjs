@@ -11,6 +11,7 @@
 // `check-embedded-js.mjs` por la misma razón que sus hermanos.
 import { readFileSync } from 'fs';
 import yaml from 'js-yaml';
+import { cargarStep } from './lib/github-script.mjs';
 
 const wf = yaml.load(readFileSync('.github/workflows/claude-code.yml', 'utf8'));
 let script = null;
@@ -18,8 +19,7 @@ for (const job of Object.values(wf.jobs || {})) {
   for (const st of job.steps || []) if (st.id === 'check_serial') script = st.with.script;
 }
 if (!script) { console.error('CHECK-SERIAL-GUARD ROJO: step `check_serial` no encontrado en claude-code.yml'); process.exit(1); }
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const run = new AsyncFunction('github', 'context', 'core', script);
+const run = cargarStep(script, 'check_serial');
 
 const WF = 'Claude Code';
 const GUARD_STEP = 'Guard serial — un solo Creator en vuelo (solo issues)';
@@ -37,6 +37,9 @@ async function guard(world, runId, issue) {
       if (flagReads++ > 0 && world.flaggedFresh) return { data: world.flaggedFresh };
       return { data: world.flagged || [] };
     }
+    // Con el cargador fiel `require` existe y el guard carga cola-prioridad.cjs
+    // (pausa AP-103, orden AP-102): el doble respeta el filtro por label.
+    if (p.labels === 'pausa-cola') return { data: world.pausa || [] };
     if (world.issuesDown) throw new Error('API caída (issues)');
     return { data: world.issues || [] };
   };
@@ -68,7 +71,7 @@ async function guard(world, runId, issue) {
   };
   const context = { repo: { owner: 'o', repo: 'r' }, runId, workflow: WF, payload: { issue } };
   const core = { setOutput: (k, v) => { w.outputs[k] = String(v); }, notice() {}, warning: m => w.warnings.push(String(m)), info() {} };
-  await run(github, context, core);
+  await run({ github, context, core });
   return w;
 }
 
