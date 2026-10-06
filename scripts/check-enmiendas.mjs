@@ -17,7 +17,10 @@
 //  (g) enmienda acusada ⇒ flujo normal;
 //  (h) comentario no TRUSTED con el marcador ⇒ ignorado.
 // Más bordes: turno sin sesión no entrega, el re-arm propio no se auto-difiere,
-// marcador citado, rechazo ⇒ `human-needed`, foto pre-sesión y costuras.
+// exclusión ACOTADA de contendiente (enmienda 2026-10-06 de AP-100 §1), dedupe
+// por superconjunto (Reviewer concurrente), re-arm del gate 3 en un PR en
+// espera, marcador citado, rechazo ⇒ `human-needed`, foto pre-sesión y costuras
+// (incluidas las copias de TRUSTED y del regex en `check_flight`).
 // Cuelga del piggyback de `check-embedded-js.mjs` como sus hermanos.
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, symlinkSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
@@ -126,7 +129,12 @@ async function correrEntrega(w, { item = PR, sesion = true, runId = 777 } = {}) 
   await entrega({ github: w.github, context: { repo: { owner: 'o', repo: 'r' }, runId, payload }, core: core(w) },
     { env: { EXEC_FILE: sesion ? EXEC : join(WS, 'no-existe.json'), GITHUB_WORKSPACE: WS } });
 }
-async function correrFlight(w, { trigger, runs, sesionAcabada = [] }) {
+// `pasos[run_id]` = { sesion: 'in_progress'|'success'|'skipped', entrega: 'pending'|'in_progress'|'success'|'skipped' }.
+const PASO = {
+  in_progress: { status: 'in_progress', conclusion: null }, pending: { status: 'pending', conclusion: null },
+  success: { status: 'completed', conclusion: 'success' }, skipped: { status: 'completed', conclusion: 'skipped' },
+};
+async function correrFlight(w, { trigger, runs, pasos = {} }) {
   const github = {
     rest: {
       pulls: { get: async () => ({ data: { number: PR, title: 'feat (#40)', head: { ref: RAMA } } }) },
@@ -134,7 +142,10 @@ async function correrFlight(w, { trigger, runs, sesionAcabada = [] }) {
       actions: {
         listWorkflowRunsForRepo: async (p) => ({ data: { workflow_runs: p.status !== 'in_progress' ? [] : runs.map((r) => ({ id: r, name: 'Claude Code', display_title: 'feat (#40)', head_branch: 'main', created_at: HACE(1) })) } }),
         listJobsForWorkflowRun: async (p) => ({ data: { jobs: [{ name: 'call / claude', status: 'in_progress', conclusion: null,
-          steps: [{ name: 'Run Claude Code', status: sesionAcabada.includes(p.run_id) ? 'completed' : 'in_progress', conclusion: sesionAcabada.includes(p.run_id) ? 'success' : null }] }] } }),
+          steps: [
+            { name: 'Run Claude Code', ...PASO[(pasos[p.run_id] || {}).sesion || 'in_progress'] },
+            { name: 'Entregar enmiendas y disparos diferidos (cierre del turno, central#327)', ...PASO[(pasos[p.run_id] || {}).entrega || 'pending'] },
+          ] }] } }),
       },
     },
   };
@@ -182,10 +193,24 @@ const VEREDICTO_LGTM = () => com(PR, 'LGTM\n\nTodo bien.', { min: 1 });
   check(out2.blocked === 'false', '(a) el re-arm propio no se auto-difiere (el run 777 ya está en post-steps)');
   const out3 = await correrFlight(w, { trigger: r[0], runs: [776, 777, 800] });
   check(out3.blocked === 'true', '(a) …pero otro Creator en vuelo (run 776) sigue contando: árbitro intacto');
-  const w4 = mundo();
-  const ping4 = com(PR, '@claude otra cosa', { min: 1 });
-  check((await correrFlight(w4, { trigger: ping4, runs: [777, 800], sesionAcabada: [777] })).blocked === 'false',
-    '(a) contendiente con la sesión ya terminada (post-steps, ya pasó su entrega) ⇒ no cuenta: el ping no se difiere a nadie');
+  // Enmienda 2026-10-06 de AP-100 §1: exclusión ACOTADA del contendiente.
+  const flightCon = async (pasos777) => {
+    const w4 = mundo();
+    const ping4 = com(PR, '@claude otra cosa', { min: 1 });
+    w4.comentarios.push(ping4);
+    const o = await correrFlight(w4, { trigger: ping4, runs: [777, 800], pasos: { 777: pasos777 } });
+    return { blocked: o.blocked, diferido: w4.comentarios.some((c) => new RegExp(`<!-- disparo-pendiente: ${ping4.id} -->`).test(c.body)) };
+  };
+  let f4 = await flightCon({ sesion: 'success', entrega: 'pending' });
+  check(f4.blocked === 'true' && f4.diferido, '(a) sesión `success` + entrega pendiente ⇒ cuenta: cede y deja `disparo-pendiente` (lo entrega él)');
+  f4 = await flightCon({ sesion: 'success', entrega: 'in_progress' });
+  check(f4.blocked === 'true' && f4.diferido, '(a) sesión `success` + entrega `in_progress` ⇒ cuenta: cede y deja `disparo-pendiente`');
+  f4 = await flightCon({ sesion: 'success', entrega: 'success' });
+  check(f4.blocked === 'false' && !f4.diferido, '(a) entrega del contendiente `completed` ⇒ no cuenta: el ping pasa (nadie lo entregaría)');
+  f4 = await flightCon({ sesion: 'success', entrega: 'skipped' });
+  check(f4.blocked === 'false', '(a) entrega del contendiente `completed/skipped` (p. ej. WIP rescatado) ⇒ no cuenta');
+  f4 = await flightCon({ sesion: 'skipped', entrega: 'pending' });
+  check(f4.blocked === 'false', '(a) sesión del contendiente `skipped` (otro guard) ⇒ no cuenta: nunca habrá entrega');
   const spoof = com(PR, '@claude\n<!-- rearm-enmienda-run: 777 -->', { assoc: 'NONE', login: 'mallory' });
   check((await correrFlight(w, { trigger: spoof, runs: [777, 800] })).blocked === 'true', '(a) un `rearm-enmienda-run` de autor no TRUSTED no exime');
 }
@@ -248,6 +273,26 @@ const VEREDICTO_LGTM = () => com(PR, 'LGTM\n\nTodo bien.', { min: 1 });
   await correrReviewer(w);
   check(rearms(w).length === 1, '(e) dedupe compartido: un segundo LGTM con el mismo conjunto no re-arma otra vez');
 }
+// ── (e') dedupe por superconjunto: Reviewer concurrente tras una entrega con disparo ──
+{
+  const e = enmienda(ISSUE, { min: 30 });
+  const d = com(PR, '<!-- disparo-pendiente: 9100 -->', { assoc: 'NONE', login: 'github-actions[bot]', min: 20 });
+  const w = mundo({ comentarios: [e, d] });
+  await correrEntrega(w);
+  check(rearms(w).length === 1 && new RegExp(`<!-- rearm-enmienda: ${[e.id, 9100].sort((a, b) => a - b).join(',')} -->`).test(rearms(w)[0].body),
+    "(e') la entrega re-arma {E, D}");
+  w.comentarios.push(VEREDICTO_LGTM());
+  await correrReviewer(w);
+  check(rearms(w).length === 1 && !w.labels[PR].includes('lgtm'), "(e') LGTM concurrente con E sin acuse: sin `lgtm` y SIN segundo re-arm ({E} ⊆ {E, D})");
+  await correrEntrega(w, { runId: 781 });
+  check(rearms(w).length === 1 && w.añadidas.includes(`${PR}:human-needed`) && w.creados.some((c) => /<!-- enmienda-sin-acuse-tras-rearm -->/.test(c.body)),
+    "(e') el turno re-armado acaba con E sin acuse (D ya entregado) ⇒ human-needed, no re-arm de {E}");
+  const w2 = mundo({ comentarios: [e, d] });
+  await correrEntrega(w2);
+  w2.comentarios.push(com(PR, '<!-- disparo-pendiente: 9200 -->', { assoc: 'NONE', login: 'github-actions[bot]', min: 1 }));
+  await correrEntrega(w2, { runId: 782 });
+  check(rearms(w2).length === 2 && !w2.añadidas.length, "(e') un disparo NUEVO da conjunto nuevo ⇒ re-arm (la entrega no cambia de semántica)");
+}
 // ── (f) epic-merge con enmienda sin acuse ⇒ no mergea ──
 {
   const e = enmienda(PR, { min: 30 });
@@ -256,6 +301,15 @@ const VEREDICTO_LGTM = () => com(PR, 'LGTM\n\nTodo bien.', { min: 1 });
   const diag = w.comentarios.find((c) => /<!-- epic-merge-diag -->/.test(c.body));
   check(w.merges === 0, '(f) epic-merge con enmienda sin acuse ⇒ no mergea');
   check(!!diag && /enmienda sin acuse/.test(diag.body) && diag.body.includes(e.html_url), '(f) diag con el enlace a la enmienda');
+  const r = rearms(w);
+  check(r.length === 1 && /^@claude$/m.test(r[0].body) && r[0].body.includes(e.html_url) && /epic-merge no mergea/.test(r[0].body) && r[0].item === PR,
+    '(f) PR en espera sin Creator en vuelo: el gate 3 re-arma al Creator (PAT) con la enmienda enlazada');
+  await correrEpicMerge(w);
+  check(w.merges === 0 && rearms(w).length === 1, '(f) segunda evaluación con el mismo conjunto ⇒ sin segundo re-arm (dedupe)');
+  const previos = [1, 2, 3].map((k) => com(PR, `@claude\n<!-- rearm-enmienda: ${k} -->`, { min: 60 * k }));
+  const wt = mundo({ comentarios: [...previos, e, VEREDICTO_LGTM()], labels: { [PR]: ['ci-verde', 'lgtm'] } });
+  await correrEpicMerge(wt);
+  check(wt.merges === 0 && rearms(wt).length === 0 && wt.añadidas.includes(`${PR}:human-needed`), '(f) gate 3 con el tope agotado ⇒ human-needed, sin re-arm');
 }
 // ── (g) enmienda acusada ⇒ flujo normal ──
 {
@@ -358,6 +412,12 @@ const VEREDICTO_LGTM = () => com(PR, 'LGTM\n\nTodo bien.', { min: 1 });
   const sc = emStep.with.script;
   check(sc.indexOf('GATE 3: enmiendas') > sc.indexOf('GATE 2: Reviewer LGTM') && sc.indexOf('GATE 3: enmiendas') < sc.indexOf('pulls.merge('), 'costura: el gate 3 de epic-merge va entre el LGTM y el merge');
   check(ENM.clave([3, 1, 3, 2]) === '1,2,3', 'módulo: la clave del conjunto es ordenada y sin duplicados');
+  // `check_flight` no puede hacer `require` del módulo: sus copias deben coincidir.
+  const fl = porId(CC, 'check_flight').with.script;
+  check(fl.includes(`[${[...ENM.TRUSTED].map((x) => `'${x}'`).join(', ')}]`), 'costura: el gate TRUSTED de `check_flight` es el de enmiendas.cjs');
+  check(fl.includes(String(ENM.REARM_RUN_RE)), 'costura: el regex `rearm-enmienda-run` de `check_flight` es el de enmiendas.cjs');
+  check(/^Entregar enmiendas y disparos diferidos/.test(porId(CC, 'entrega_enmiendas').name) && fl.includes('/^Entregar enmiendas y disparos diferidos/'),
+    'costura: `check_flight` reconoce el step de entrega por su nombre real');
 }
 
 if (fallos) { console.error(`CHECK-ENMIENDAS ROJO: ${fallos} caso(s) fallan.`); process.exit(1); }

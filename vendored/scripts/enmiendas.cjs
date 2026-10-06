@@ -28,7 +28,12 @@
 //   <!-- enmienda-sin-acuse-tras-rearm -->  un turno real acabó sin acusar un conjunto ya
 //                                           re-armado ⇒ `human-needed` (sin bloqueo mudo).
 //
-// QUÉ NO. No cambia el árbitro de vuelo único (menor `run_id`), solo su salida.
+// QUÉ NO. No cambia el árbitro de vuelo único (menor `run_id`), solo su salida y
+// dos exclusiones acotadas de contendiente (enmienda 2026-10-06 de AP-100 §1):
+// el run que publica su propio re-arm y el que ya pasó su step de entrega (o
+// nunca tuvo sesión). `check_flight` corre antes del checkout y no puede hacer
+// `require` de este módulo: su gate TRUSTED y su regex de `rearm-enmienda-run`
+// son copias que el banco compara con las de aquí (costura en check-enmiendas).
 //
 // POR QUÉ VIVE AQUÍ (AP-068): el cuerpo embebido en `.github/workflows/**` no lo
 // puede pushear un agente ni lo ejecuta un banco; aquí lo gatea el CI del central
@@ -49,6 +54,8 @@ const REARM_RE = /^[ \t]*<!--\s*rearm-enmienda:\s*(\d+(?:\s*,\s*\d+)*)\s*-->[ \t
 const ACK_RE = /^[ \t]*<!--\s*enmienda-(aplicada|rechazada):\s*(\d+(?:\s*,\s*\d+)*)\s*-->[ \t]*$/gm;
 const ESCALADO_RE = /^[ \t]*<!--\s*enmienda-rechazo-escalado:\s*(\d+(?:\s*,\s*\d+)*)\s*-->[ \t]*$/gm;
 const TOPE_RE = /^[ \t]*<!--\s*rearm-enmienda-tope\s*-->[ \t]*$/m;
+// Copia literal en `check_flight` (claude-code.yml): mantener en sincronía.
+const REARM_RUN_RE = /^[ \t]*<!--\s*rearm-enmienda-run:\s*(\d+)\s*-->[ \t]*$/m;
 
 const ids = (s) => String(s).split(',').map((x) => Number(x.trim())).filter((n) => Number.isInteger(n) && n > 0);
 const clave = (lista) => [...new Set(lista.map(Number))].sort((a, b) => a - b).join(',');
@@ -142,18 +149,22 @@ function pendientes(estado) {
 
 // Plan de entrega. `accion`:
 //   'nada'       — nada pendiente;
-//   'duplicado'  — ya hubo un re-arm por EXACTAMENTE este conjunto (dedupe);
+//   'duplicado'  — ya hubo un re-arm cuyo conjunto CONTIENE todo lo pendiente
+//                  (dedupe por superconjunto: el Reviewer y el gate de merge, que
+//                  solo miran enmiendas, no re-arman lo que la entrega ya re-armó
+//                  junto con un disparo; un disparo NUEVO sí da conjunto nuevo);
 //   'tope'       — ≥ TOPE re-arms en la ventana ⇒ `human-needed`, sin re-arm;
 //   'rearm'      — un comentario de re-arm con ping (cuerpo en `cuerpo`).
 // `soloEnmiendas` (Reviewer): los disparos diferidos los entrega el cierre del
-// turno del Creator, no el Reviewer. `runId`: el run que publica el re-arm.
+// turno del Creator, no el Reviewer ni el gate de merge. `runId`: el run que
+// publica el re-arm. `origen`: 'entrega' | 'reviewer' | 'merge' (solo el texto).
 function planificar(estado, { ahora = Date.now(), tope = TOPE, ventanaMs = VENTANA_MS, origen = 'entrega', runId = null, soloEnmiendas = false } = {}) {
   const p = pendientes(estado);
   if (soloEnmiendas) p.disparos = [];
   const lista = [...p.enmiendas.map((e) => e.id), ...p.disparos.map((d) => d.id)];
   if (!lista.length) return { accion: 'nada', ids: [], pendientes: p };
   const k = clave(lista);
-  if (estado.rearms.some((r) => r.clave === k)) return { accion: 'duplicado', ids: k.split(',').map(Number), pendientes: p };
+  if (estado.rearms.some((r) => lista.every((id) => r.ids.includes(id)))) return { accion: 'duplicado', ids: k.split(',').map(Number), pendientes: p };
   const recientes = estado.rearms.filter((r) => ahora - new Date(r.at).getTime() < ventanaMs).length;
   if (recientes >= tope) return { accion: 'tope', ids: k.split(',').map(Number), recientes, pendientes: p };
   return { accion: 'rearm', ids: k.split(',').map(Number), pendientes: p, cuerpo: cuerpoRearm(p, k, origen, runId) };
@@ -169,7 +180,9 @@ function listado(p) {
 function cuerpoRearm(p, k, origen, runId = null) {
   const porque = origen === 'reviewer'
     ? 'el Reviewer emitió `LGTM` con enmiendas sin acuse: el veredicto no cuenta y la label `lgtm` queda retirada hasta el acuse (sin ronda nueva de revisión).'
-    : 'al cerrar el turno del Creator quedaban pendientes:';
+    : origen === 'merge'
+      ? 'epic-merge no mergea este PR (gates de CI y LGTM verdes) mientras queden enmiendas sin acuse, y no hay Creator en vuelo que las recoja:'
+      : 'al cerrar el turno del Creator quedaban pendientes:';
   return [
     '@claude',
     '',
@@ -287,7 +300,7 @@ function fotoPendientes(comentarios) {
 }
 
 module.exports = {
-  TRUSTED, CREATOR_LOGIN, JOB_LOGIN, TOPE, VENTANA_MS,
+  TRUSTED, CREATOR_LOGIN, JOB_LOGIN, TOPE, VENTANA_MS, REARM_RUN_RE,
   ENMIENDA_RE, marcaDisparo, marcaRearm, clave,
   escanear, pendientes, planificar, cuerpoRearm, cuerpoTope, cuerpoRechazo, cuerpoSinAcuse,
   acusesAReflejar, cuerpoReflejo,
