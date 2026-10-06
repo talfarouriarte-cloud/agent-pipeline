@@ -28,10 +28,13 @@
 //    `adr-append-override: ADR-NNN — <motivo>` (exime solo esa ADR).
 //    Las líneas `**Estado:**` del tramo se comparan enmascaradas (central#334,
 //    AP-110): cambiar su texto es libre; añadirlas, quitarlas o moverlas, no.
+// Volumen recreado (central#336, AP-111): en `layout: "dir"` es rojo que exista
+// en el árbol un fichero de los `volumes` configurados o cualquier
+// `docs/decisions/decisions-*.md`: lo que se escriba ahí queda fuera del registro.
 // Todo lo anterior carga `./adr-registro.mjs` (servido por el graft junto a este
 // fichero); la ruta de siempre (volúmenes, sin --ids-vs) no lo necesita.
 // Uso: node scripts/adr-lint.mjs [--ids-vs <ref> | --append-only-vs <ref>]   (verde: exit 0; rojo: exit 1 + listado; error: exit 2)
-import { readFileSync } from 'fs';
+import { readFileSync, readdirSync, existsSync } from 'fs';
 import { execFileSync } from 'child_process';
 
 // Parametrización por repo (2026-07-11, alta de what-money-cant-buy):
@@ -213,6 +216,14 @@ async function lintDir() {
     if (g) fix.set(`${+g[1]}·R·${+g[2]}`, e.resolucion);
   }
   if (dupD.length) errs.push(`ADR duplicado(s) en ${c.dir}: ${dupD.join(', ')}`);
+  // Volumen recreado (central#336, AP-111): un Creator con el mandato de
+  // volúmenes recrearía `decisions-150-current.md` con una ADR dentro; con `dir`
+  // ni este lint, ni el índice, ni los lectores lo miran: la ADR saldría del
+  // registro en silencio.
+  let sueltos = [];
+  try { sueltos = readdirSync('docs/decisions').filter(f => /^decisions-.*\.md$/.test(f)).map(f => `docs/decisions/${f}`); } catch {}
+  for (const v of [...new Set([...c.volumes.filter(v => existsSync(v)), ...sueltos])].sort())
+    errs.push(`${v}: volumen en layout "dir" (el registro solo se lee de ${c.dir}/): una ADR nueva va en ${c.dir}/ADR-NNN.md y una rectificación al final del fichero de su ADR`);
   let idxText = '';
   try { idxText = readFileSync(c.index, 'utf8'); } catch { errs.push(`índice ${c.index} ilegible`); }
   indexRules(heads, new Set(heads), idxText, `en ${c.dir}`);
