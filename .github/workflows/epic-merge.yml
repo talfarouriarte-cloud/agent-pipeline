@@ -1133,19 +1133,40 @@ jobs:
               // LGTM puede ser de la versión anterior a la enmienda. Lectura caída ⇒
               // no mergeo (re-evalúo en el siguiente evento). Sin módulo ⇒ statu quo.
               // Al acusarse, el siguiente evento (push ⇒ CI, o `lgtm`) sigue el flujo.
+              // PR en espera (sin Creator en vuelo ni LGTM nuevo): nadie más
+              // re-arma, así que este gate publica el re-arm con el PAT (mismo
+              // dedupe por superconjunto y tope 3/24 h que la entrega y el
+              // Reviewer; los kill-switches ya cortaron arriba). Si ya hubo un
+              // re-arm que cubre el conjunto, no repite: la entrega de ese turno
+              // escala a `human-needed` si acaba sin acuse.
               {
                 let ENM = null;
                 try { ENM = require(`${process.env.GITHUB_WORKSPACE}/.epic-merge-central/vendored/scripts/enmiendas.cjs`); }
                 catch (e) { core.warning(`[epic-merge] enmiendas.cjs no disponible (${e.message}) — gate de enmiendas inactivo (statu quo).`); }
                 if (ENM) {
                   let pendEnm = null;
+                  let estadoEnm = null;
                   try {
-                    const { estado } = await ENM.estadoDe({ github, owner, repo, numero: prNumber, esPR: true, headRef: headBranch, warn: (m) => core.warning(m) });
-                    pendEnm = ENM.pendientes(estado).enmiendas;
+                    ({ estado: estadoEnm } = await ENM.estadoDe({ github, owner, repo, numero: prNumber, esPR: true, headRef: headBranch, warn: (m) => core.warning(m) }));
+                    pendEnm = ENM.pendientes(estadoEnm).enmiendas;
                   } catch (e) { await diag(prNumber, `lectura de enmiendas falló (${e.message}); no mergeo sobre incertidumbre — re-evalúo en el siguiente evento.`); return; }
                   if (pendEnm.length) {
                     await setStatus(prNumber, 'estado:esperando-creator');
-                    await diag(prNumber, `enmienda sin acuse (${pendEnm.map(e => e.url || e.id).join(', ')}); no mergeo hasta el acuse del Creator (central#327).`);
+                    const plan = ENM.planificar(estadoEnm, { origen: 'merge', soloEnmiendas: true });
+                    let tras = '';
+                    try {
+                      if (plan.accion === 'rearm') {
+                        await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: plan.cuerpo });
+                        tras = ' Re-arm del Creator publicado.';
+                      } else if (plan.accion === 'tope') {
+                        await github.rest.issues.addLabels({ owner, repo, issue_number: prNumber, labels: ['human-needed'] });
+                        await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: ENM.cuerpoTope(plan) });
+                        tras = ' Tope de re-arms: human-needed.';
+                      } else if (plan.accion === 'duplicado') {
+                        tras = ' El Creator ya fue re-armado por este conjunto.';
+                      }
+                    } catch (e) { core.warning(`[epic-merge] re-arm de enmiendas falló (${e.message}).`); }
+                    await diag(prNumber, `enmienda sin acuse (${pendEnm.map(e => e.url || e.id).join(', ')}); no mergeo hasta el acuse del Creator (central#327).${tras}`);
                     return;
                   }
                 }

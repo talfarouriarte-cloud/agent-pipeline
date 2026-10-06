@@ -231,10 +231,18 @@ jobs:
       # El run que publicó ese re-arm desde su post-step (marcador
       # `rearm-enmienda-run: <run_id>` en un comentario de confianza) ya no tiene
       # Creator en vuelo: no es contendiente de SU propio re-arm (sin esto, toda
-      # entrega se auto-difería y no la recogía nadie). Por la misma razón, un
-      # contendiente cuyo step `Run Claude Code` ya está `completed` (sesión
-      # terminada, o saltada por otro guard) no es un Creator en vuelo: cederle
-      # dejaría el disparo sin nadie que lo entregue. Banco: check-enmiendas.mjs.
+      # entrega se auto-difería y no la recogía nadie). Segunda exclusión,
+      # ACOTADA (enmienda 2026-10-06 de AP-100 §1, AP-108): un contendiente deja
+      # de contar solo si (a) su `Run Claude Code` está `completed` con
+      # `conclusion: skipped` (nunca hubo sesión ni habrá entrega) o (b) su step
+      # «Entregar enmiendas y disparos diferidos…» ya está `completed` (con
+      # cualquier conclusión): ya no recogerá lo diferido ante él. Con la sesión
+      # terminada y la entrega aún pendiente (rescate, auditoría, failsafes) SIGUE
+      # contando: se difiere y lo entrega él (sin doble Creator sobre la rama).
+      # Gate TRUSTED y regex de `rearm-enmienda-run`: copias de
+      # `vendored/scripts/enmiendas.cjs` (este step corre antes del checkout y no
+      # puede hacer `require`); mantener en sincronía, el banco compara los
+      # literales. Banco: check-enmiendas.mjs.
       - name: Guard de vuelo único — un Creator por PR (contexto PR)
         id: check_flight
         if: |
@@ -283,6 +291,8 @@ jobs:
             }
             // central#327: el re-arm de entrega lo publica el post-step de un run
             // cuya sesión ya terminó; ese run no cuenta contra su propio re-arm.
+            // TRUSTED y regex: copia de enmiendas.cjs (TRUSTED, REARM_RUN_RE) —
+            // mantener en sincronía (costura en check-enmiendas.mjs).
             const trig = context.payload.comment || null;
             let exento = null;
             if (trig && ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(trig.author_association)) {
@@ -302,12 +312,16 @@ jobs:
                 const creatorJobs = jobs.filter(j => j.name === 'claude' || / \/ claude$/.test(j.name || ''));
                 const pool = creatorJobs.length ? creatorJobs : jobs;
                 if (pool.length && pool.every(j => j.conclusion === 'skipped')) live = false;
-                // central#327: un run cuya sesión del Creator ya terminó (o nunca
-                // arrancará: step `Run Claude Code` completado o saltado por otro
-                // guard) no es un Creator en vuelo y nadie entregaría lo diferido
-                // ante él. Sin `steps` legibles, cuenta (fail-closed, como antes).
-                const sesion = pool.flatMap(j => j.steps || []).find(st => st.name === 'Run Claude Code');
-                if (sesion && sesion.status === 'completed') live = false;
+                // central#327 (enmienda 2026-10-06 de AP-100 §1): deja de contar
+                // solo si (a) su sesión se SALTÓ (sin sesión no habrá entrega) o
+                // (b) ya pasó su step de entrega (no recogerá lo diferido). Sesión
+                // terminada con la entrega pendiente ⇒ cuenta: se difiere y lo
+                // entrega él. Sin `steps` legibles, cuenta (fail-closed, como antes).
+                const pasos = pool.flatMap(j => j.steps || []);
+                const sesion = pasos.find(st => st.name === 'Run Claude Code');
+                const entrega = pasos.find(st => /^Entregar enmiendas y disparos diferidos/.test(st.name || ''));
+                if (sesion && sesion.status === 'completed' && sesion.conclusion === 'skipped') live = false;
+                if (entrega && entrega.status === 'completed') live = false;
               } catch (e) {
                 core.warning(`vuelo único: jobs del run ${r.id} ilegibles (${e.message}); cuenta como contendiente.`);
               }
