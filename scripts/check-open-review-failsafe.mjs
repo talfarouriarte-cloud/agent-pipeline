@@ -12,7 +12,8 @@
 //  (d) sin run alguno ⇒ dispara (caso finplan#1382 intacto).
 // Bordes: `ready_at` ilegible ⇒ statu quo (head SHA); run del Reviewer ANTERIOR al
 // ready ⇒ no cuenta; run en `failure` ⇒ no cuenta (AP-025); Creator con el job
-// `skipped` o fantasma >6 h ⇒ no cede; PR nacido no-draft ⇒ ventana desde su creación.
+// `skipped` o fantasma >6 h ⇒ no cede; PR nacido no-draft ⇒ ventana desde su creación;
+// >50 runs ajenos más nuevos que el del Reviewer ⇒ pagina; tope agotado ⇒ no decide.
 // Ejecuta el script EMBEBIDO real con el cargador compartido (EXACTAMENTE los
 // argumentos de github-script@v7). Cuelga del piggyback de check-embedded-js.
 import { readFileSync } from 'fs';
@@ -75,7 +76,9 @@ async function caso(world) {
       if (q.get('branch')) runs = runs.filter(r => r.head_branch === q.get('branch'));
       const c = q.get('created');
       if (c) { if (!c.startsWith('>=')) throw new Error(`filtro created inesperado: ${c}`); runs = runs.filter(r => r.created_at >= c.slice(2)); }
-      return json({ workflow_runs: runs });
+      runs = [...runs].sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0));
+      const per = Number(q.get('per_page') || 30), page = Number(q.get('page') || 1);
+      return json({ total_count: runs.length, workflow_runs: runs.slice((page - 1) * per, page * per) });
     }
     throw new Error(`fetch inesperado: ${method} ${url}`);
   };
@@ -136,6 +139,15 @@ const check = (ok, msg, w) => {
   check(ciegoViejo.fired && ciegoViejo.fetches.some(f => /head_sha=331439a8aaaa/.test(f)) && ciegoViejo.warnings.some(m => /statu quo/.test(m)), 'ready_at ilegible ⇒ dedupe por head SHA actual (statu quo), con aviso', ciegoViejo);
   const ciegoActual = await caso({ timelineDown: true, reviewers: [rev(1, { head_sha: PR.head.sha })] });
   check(!ciegoActual.fired, 'ready_at ilegible + run para el head actual ⇒ no dispara (statu quo)', ciegoActual);
+  // Volumen (nit del Reviewer de PR #324): >50 runs ajenos más nuevos que el del
+  // Reviewer en la rama ⇒ el del Reviewer cae fuera de la primera página.
+  const ajenos = n => Array.from({ length: n }, (_, i) => rev(90000 + i, { name: 'CI', conclusion: 'skipped', created_at: `2026-10-05T11:${String(Math.floor(i / 60) % 60).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}Z` }));
+  const volumen = await caso({ reviewers: [rev(1), ...ajenos(150)] });
+  check(!volumen.fired && !volumen.threw && volumen.fetches.some(f => /page=2/.test(f)), '>50 (150) runs ajenos más nuevos que el del Reviewer ⇒ pagina y no dispara', volumen);
+  const volumenSin = await caso({ reviewers: ajenos(150) });
+  check(volumenSin.fired, '150 runs ajenos sin Reviewer ⇒ agota la ventana (página corta) y dispara', volumenSin);
+  const tope = await caso({ reviewers: ajenos(1000) });
+  check(!tope.fired && tope.warnings.some(m => /no se decide/.test(m)), 'tope de páginas agotado sin match ⇒ lectura no fiable, no dispara', tope);
   const draft = await caso({ pr: { ...PR, draft: true } });
   check(!draft.fired && draft.fetches.length === 0, 'PR en draft ⇒ no toca nada (AP-047)', draft);
 }
