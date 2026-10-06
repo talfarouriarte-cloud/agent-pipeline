@@ -8,11 +8,12 @@
 //       línea de más o de menos ⇒ rojo, con el diff y su ubicación;
 //   (c) toda rectificación está en el fichero de SU ADR, con cabecera normalizada;
 //   (d) el informe de no atribuibles está vacío o resuelto.
+// El preámbulo de los volúmenes cuenta en (b) contra `<dir>/_preambulo.md`.
 // Las líneas de las rectificaciones no atribuibles se descuentan de (b) y se
 // cargan en (d): así «verde salvo los no atribuibles» se lee de un vistazo.
 // Uso: node scripts/adr-equiv.mjs   (verde: exit 0; rojo: exit 1; error: exit 2)
 import { basename } from 'path';
-import { loadConfig, readVolumes, parseFiles, attribute, loadResoluciones, dirFiles, NORM_RECT, pad } from './adr-registro.mjs';
+import { loadConfig, readVolumes, parseFiles, attribute, loadResoluciones, dirFiles, preambuloFile, splitLines, PREAMBULO_MARCA, NORM_RECT, pad } from './adr-registro.mjs';
 
 const fail = m => { console.error(`ADR-EQUIV ERROR: ${m}`); process.exit(2); };
 let cfg, vols;
@@ -44,11 +45,14 @@ const put = (t, delta, where) => {
   const rec = ms.get(t) ?? { n: 0, where: [] };
   rec.n += delta; rec.where.push(where); ms.set(t, rec);
 };
+for (const x of P.preamble) put(x.t, +1, `${x.path}:${x.line}`);
 for (const a of P.adrs) for (const x of a.body) put(x.t, +1, `${a.path}:${x.line}`);
 for (const e of placed) for (const x of e.r.body) put(x.t, +1, `${e.r.path}:${x.line}`);
 for (const a of D.adrs) for (const x of a.body) put(x.t, -1, `${a.path}:${x.line}`);
 for (const r of D.rects) for (const x of r.body) put(x.t, -1, `${r.path}:${x.line}`);
 for (const x of D.preamble) put(x.t, -1, `${x.path}:${x.line}`);
+const pre = preambuloFile(cfg.dir);
+if (pre) splitLines(pre.text).forEach((t, i) => { if (!PREAMBULO_MARCA.test(t)) put(t, -1, `${pre.path}:${i + 1}`); });
 const diff = [];
 for (const [t, { n, where }] of ms) if (n !== 0)
   diff.push(`${n > 0 ? `- perdida ×${n}` : `+ sobrante ×${-n}`}: «${t.length > 100 ? t.slice(0, 100) + '…' : t}» (${where.slice(0, 3).join(', ')}${where.length > 3 ? ', …' : ''})`);

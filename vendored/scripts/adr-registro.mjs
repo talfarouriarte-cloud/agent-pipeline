@@ -10,9 +10,13 @@
 // línea es cabecera de ADR, cabecera de rectificación o contenido. Las
 // rectificaciones se reconocen ANTES que las ADR (`## ADR-5·R·1` no es la
 // ADR-5) y se asignan POR IDENTIFICADOR, nunca por posición: en finplan las de
-// ADR-210 viven dentro del bloque de otra ADR. Una rectificación termina en la
-// siguiente cabecera de ADR o de rectificación, o en una cabecera de nivel
-// MENOR que la suya (un `## Notas` de volumen no se la traga).
+// ADR-210 viven dentro del bloque de otra ADR. Una rectificación termina, como
+// toda sección markdown, en la siguiente cabecera de nivel IGUAL o MENOR que la
+// suya (o de ADR/rectificación): sus sub-secciones van en `####`; un
+// `### Coste de revertir` que la sigue es de la ADR que la aloja y se queda allí.
+// Cuando la corta una cabecera hermana que no es de rectificación se anota en
+// `cortadaPor`: si además vive en un bloque ajeno, adr-migrate lo avisa (la
+// frontera la confirma el humano; el contenido no se mueve a ciegas).
 import { readFileSync, readdirSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 
@@ -95,7 +99,7 @@ export function parseFiles(files, cfg) {
         return;
       }
       if (c?.type === 'adr') { adr = { n: c.n, path, line, header: t, body: [] }; adrs.push(adr); rect = null; return; }
-      if (rect && level(t) < rect.level) rect = null;
+      if (rect && level(t) <= rect.level) { rect.cortadaPor = { line, header: t.trim() }; rect = null; }
       if (rect) rect.body.push({ t, line });
       else if (adr) adr.body.push({ t, line });
       else preamble.push({ t, line, path });
@@ -104,13 +108,20 @@ export function parseFiles(files, cfg) {
   return { adrs, rects, preamble };
 }
 
-// Multiconjunto de identificadores tal como están ESCRITOS (para --ids-vs):
-// una rectificación sin ADR en la cabecera toma la del bloque que la contiene.
-export function idsOf(parsed) {
+// Multiconjunto de identificadores (para --ids-vs): una rectificación sin ADR
+// en la cabecera toma la del bloque que la contiene, salvo que el informe de no
+// atribuibles la haya RESUELTO a otra (`resoluciones`): entonces cuenta con la
+// resuelta, que es la que tendrá tras la migración — si no, el corte daría
+// «pérdida» por un simple cambio de fichero.
+export function idsOf(parsed, resoluciones = new Map()) {
   const ids = new Map();
   const add = id => ids.set(id, (ids.get(id) ?? 0) + 1);
   for (const a of parsed.adrs) add(`ADR-${a.n}`);
-  for (const r of parsed.rects) add(r.explicit != null || r.host != null ? `ADR-${r.explicit ?? r.host}·R·${r.k}` : `(sin ADR)·R·${r.k}`);
+  const ks = claves(parsed.rects);
+  parsed.rects.forEach((r, i) => {
+    const n = resoluciones.get(ks[i]) ?? r.explicit ?? r.host;
+    add(n != null ? `ADR-${n}·R·${r.k}` : `(sin ADR)·R·${r.k}`);
+  });
   return ids;
 }
 
@@ -179,9 +190,21 @@ export function normHeader(n, k, rest) {
 
 const trimEnd = ls => { const a = [...ls]; while (a.length && !a[a.length - 1].trim()) a.pop(); return a; };
 
-// Render determinista del directorio: Map nombre → contenido.
+export const PREAMBULO = '_preambulo.md';
+export const PREAMBULO_MARCA = /^<!-- adr-migrate: preámbulo de .* -->$/;
+
+// Render determinista del directorio: Map nombre → contenido. Lo anterior a la
+// primera ADR de cada volumen (títulos, notas, el índice en wmcb) no es de
+// ninguna ADR: va a `_preambulo.md`, una sección por volumen, para que ninguna
+// línea se pierda; qué hacer con ello lo decide la épica local.
 export function render(parsed, placed) {
   const files = new Map();
+  const pre = [];
+  for (const path of [...new Set(parsed.preamble.map(x => x.path))]) {
+    const ls = trimEnd(parsed.preamble.filter(x => x.path === path).map(x => x.t));
+    if (ls.some(l => l.trim())) pre.push([`<!-- adr-migrate: preámbulo de ${path} -->`, ...ls].join('\n'));
+  }
+  if (pre.length) files.set(PREAMBULO, pre.join('\n\n') + '\n');
   for (const n of [...new Set(parsed.adrs.map(a => a.n))].sort((a, b) => a - b)) {
     const parts = parsed.adrs.filter(a => a.n === n).map(a => trimEnd([a.header, ...a.body.map(x => x.t)]).join('\n'));
     const own = placed.filter(e => e.target === n).sort((a, b) => a.r.k - b.r.k);   // sort estable: empate ⇒ orden de origen
@@ -197,6 +220,11 @@ export const readVolumes = (cfg, read = p => readFileSync(p, 'utf8')) =>
 export function dirFiles(dir) {
   if (!existsSync(dir)) return [];
   return readdirSync(dir).filter(f => /^ADR-\d+\.md$/.test(f)).sort().map(f => ({ path: join(dir, f), text: readFileSync(join(dir, f), 'utf8') }));
+}
+
+export function preambuloFile(dir) {
+  const p = join(dir, PREAMBULO);
+  return existsSync(p) ? { path: p, text: readFileSync(p, 'utf8') } : null;
 }
 
 // Informe previo → Map clave → nº de ADR resuelto.

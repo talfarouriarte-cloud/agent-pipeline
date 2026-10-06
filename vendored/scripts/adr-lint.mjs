@@ -231,7 +231,10 @@ async function idsVs(ref) {
   if (!refFiles.length) die(`el registro no se puede leer en «${ref}» (${cRef.layout === 'dir' ? cRef.dir : cRef.volumes.join(', ')})`);
   const nowFiles = cNow.layout === 'dir' ? R.dirFiles(cNow.dir)
     : cNow.volumes.flatMap(p => { try { return [{ path: p, text: readFileSync(p, 'utf8') }]; } catch { return []; } });
-  const before = R.idsOf(R.parseFiles(refFiles, cRef)), after = R.idsOf(R.parseFiles(nowFiles, cNow));
+  // Las resoluciones del informe de no atribuibles (árbol actual) valen para
+  // los dos lados: una «Rectificación R·k» resuelta a otra ADR no es pérdida.
+  const res = R.loadResoluciones(cNow);
+  const before = R.idsOf(R.parseFiles(refFiles, cRef), res), after = R.idsOf(R.parseFiles(nowFiles, cNow), res);
   const lost = [...before].filter(([id, n]) => (after.get(id) ?? 0) < n)
     .map(([id, n]) => (after.get(id) ?? 0) ? `${id} (${n} → ${after.get(id)})` : id)
     .sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));

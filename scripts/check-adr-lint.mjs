@@ -132,6 +132,7 @@ const MV1 = ['# Volumen 1', '', '## ADR-1 (2026-01-01) — Uno', '', 'Texto de u
 const MV2 = ['## ADR-3 (2026-01-10) — Tres, que aloja rectificaciones ajenas', '', 'Texto de tres.', '',
   '### ADR-1 · Rectificación 2 (2026-04-01) — lejos de su ADR, formato largo', '', 'Línea de ADR-1·R·2.', '',
   '### ADR-2·R·2 — lejos, formato corto (2026-05-01)', '', 'Línea de ADR-2·R·2.', '',
+  '### Coste de revertir', '', 'Coste de ADR-3, que sigue a una rectificación ajena.', '',
   '## ADR-4 (2026-01-20) — Cuatro', '', 'Texto de cuatro.', ''].join('\n');
 const migRepo = (v2 = MV2) => sandbox({ 'docs/decisions/v1.md': MV1, 'docs/decisions/v2.md': v2, 'adr-lint.config.json': MIG_CFG });
 const snap = d => { const a = join(d, 'docs/decisions/adr'); return readdirSync(a).sort().map(f => f + '\n' + R_(d, 'docs/decisions/adr/' + f)).join('\n@@\n') + R_(d, 'docs/decisions/adr-no-atribuibles.json'); };
@@ -147,7 +148,12 @@ caso('(c) migración: cuatro formatos y rectificación lejos de su ADR ⇒ cada 
     const bad = [];
     if (JSON.stringify(heads(f1)) !== JSON.stringify(want1)) bad.push('ADR-001.md: ' + JSON.stringify(heads(f1)));
     if (JSON.stringify(heads(f2)) !== JSON.stringify(want2)) bad.push('ADR-002.md: ' + JSON.stringify(heads(f2)));
-    if (heads(f3).length || !f3.includes('Texto de tres.')) bad.push('ADR-003.md conserva rectificaciones ajenas o pierde su texto');
+    if (JSON.stringify(heads(f3)) !== JSON.stringify(['### Coste de revertir']) || !f3.includes('Texto de tres.') || !f3.includes('Coste de ADR-3, que sigue'))
+      bad.push('ADR-003.md conserva rectificaciones ajenas o pierde su texto/su sección tras la rectificación ajena: ' + JSON.stringify(heads(f3)));
+    if (f2.includes('Coste de ADR-3')) bad.push('ADR-002.md se tragó la sección de ADR-3 que sigue a ADR-2·R·2');
+    if (!R_(d, 'docs/decisions/adr/_preambulo.md').includes('# Volumen 1')) bad.push('el preámbulo del volumen no está en _preambulo.md');
+    const av = JSON.parse(R_(d, 'docs/decisions/adr-no-atribuibles.json')).avisos;
+    if (av.length !== 1 || av[0].rectificacion !== 'ADR-002·R·2') bad.push('falta el aviso de frontera de ADR-002·R·2: ' + JSON.stringify(av));
     if (!f2.includes('#### Sub-sección de la revisión\nLínea honda de ADR-2·R·1.')) bad.push('la sub-sección H4 no viajó con su revisión');
     if (bad.length) return { code: -1, out: bad.join('\n'), esperaCode: 0 };
     const e = exec(d, V('adr-equiv.mjs'));
@@ -183,7 +189,7 @@ caso('(e) adr-migrate dos veces ⇒ salida idéntica', () => {
   try {
     exec(d, V('adr-migrate.mjs')); const s1 = snap(d);
     const m2 = exec(d, V('adr-migrate.mjs')); const s2 = snap(d);
-    return { code: s1 === s2 ? m2.code : -1, out: m2.out, esperaCode: 0, esperaMsg: '0 escritos, 4 sin cambios, 0 borrados' };
+    return { code: s1 === s2 ? m2.code : -1, out: m2.out, esperaCode: 0, esperaMsg: '0 escritos, 5 sin cambios, 0 borrados' };
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 const mutado = (mut, msg) => () => {
@@ -198,6 +204,21 @@ caso('(f) adr-equiv: rectificación en fichero ajeno ⇒ rojo', mutado(d => {
   const t2 = R_(d, F(2)), i = t2.indexOf('### ADR-002·R·2');
   W(d, F(2), t2.slice(0, i)); W(d, F(1), R_(d, F(1)) + '\n' + t2.slice(i));
 }, 'rectificación ADR-2·R·2 en el fichero de ADR-001'));
+caso('(f) adr-equiv: una línea del preámbulo perdida ⇒ rojo', mutado(d => W(d, 'docs/decisions/adr/_preambulo.md', '<!-- adr-migrate: preámbulo de docs/decisions/v1.md -->\n'), '- perdida ×1: «# Volumen 1»'));
+caso('(a/b) --ids-vs tras el corte con una ambigua RESUELTA a otra ADR ⇒ verde (cambio de fichero, no pérdida)', () => {
+  const v2 = MV2.replace('## ADR-4', '### Rectificación R·7 (2026-06-01) — ambigua\n\nLínea ambigua.\n\n## ADR-4');
+  const d = migRepo(v2);
+  try {
+    git(d, 'init', '-q'); git(d, 'add', '-A'); git(d, 'commit', '-qm', 'volúmenes');
+    exec(d, V('adr-migrate.mjs'));
+    const rep = JSON.parse(R_(d, 'docs/decisions/adr-no-atribuibles.json'));
+    rep.entradas[0].resolucion = 'ADR-1';
+    W(d, 'docs/decisions/adr-no-atribuibles.json', JSON.stringify(rep, null, 2));
+    exec(d, V('adr-migrate.mjs'));
+    W(d, 'adr-lint.config.json', JSON.stringify({ ...MIG_CFG, layout: 'dir' }));
+    return { ...exec(d, LINT, ['--ids-vs', 'HEAD']), esperaCode: 0, esperaMsg: 'ningún identificador perdido' };
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
 caso('(g) adr-index --check detecta desfase', () => {
   const d = migRepo();
   try {
