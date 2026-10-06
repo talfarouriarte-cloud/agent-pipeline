@@ -2976,3 +2976,25 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 **Criterio falsable.** Banco verde. Sobre finplan tras ADR-287, con config `dir` + `duplicadosHeredados: [39,50,51,85,144]`: `adr-lint` 0, o la lista exacta de rectificaciones a esos números para override. **Pendiente**: la sesión del central no tiene acceso a `asesoramiento-financiero`; lo ensaya el Architect de finplan. Sobre wmcb `main`: salida idéntica a la actual (la ruta de volúmenes sin claves nuevas no cambia; caso v).
 
 **Fecha.** 2026-10-06.
+
+## AP-110 — `adr-lint --append-only-vs`: las líneas `**Estado:**` se comparan enmascaradas (cambiar su texto no requiere override) (2026-10-06)
+
+**Contexto.** Ruling de la revisión mensual 2026-10-06 (P0 fuera de ciclo, OK del propietario en chat, posición 1) sobre central#334, propuesto por el Architect de finplan tras el merge de central#331 (`f0ea6e6`). En finplan los Creators actualizan la línea `**Estado:**` de una ADR al implementarla (8 commits desde el 20-09). Esa línea está arriba del fichero: tras el corte a `layout: "dir"`, cada cambio de Estado haría rojo el guard append-only de AP-109 §4 salvo con `adr-append-override`, y un override de rutina deja de señalar nada. Bloqueante del corte de finplan (central#323, E3).
+
+**Decisión (ruling; prevalece sobre la propuesta).**
+
+1. **Exención de las líneas de estado en `adr-lint --append-only-vs <ref>`:** si el contenido de `<ref>` no es prefijo literal del fichero actual, se compara ENMASCARADO: las líneas que empiezan por `**Estado:**` (en el bloque de una ADR o de una rectificación) casan con cualquier línea `**Estado:**` en la misma posición, y el resto del tramo de `<ref>` sigue siendo prefijo byte a byte. El conjunto de líneas `Estado` del tramo no cambia ni de número ni de posición: añadir, quitar o mover una, o convertir otra línea en `Estado` (o una `Estado` en otra cosa), es rojo con su propio mensaje (`línea **Estado:** añadida, quitada o movida en el tramo de <ref>`) y la línea. Cambiar el texto de una existente es libre; el verde cuenta los ficheros con cambio de Estado exento. Todo lo demás de AP-109 §4 sin cambios: añadir al final (incluida una rectificación nueva con su `Estado`), ficheros nuevos libres, borrado rojo, override por mensaje de commit.
+2. **Banco** `scripts/check-adr-lint.mjs` (65 casos, 10 nuevos, parte vi): (a) cambio de texto de un `Estado` existente ⇒ verde sin override; (b) cambio de `Estado` + rectificación añadida al final ⇒ verde; (c) `Estado` nuevo insertado en medio ⇒ rojo; (d) `Estado` eliminado ⇒ rojo, y movido ⇒ rojo; (e) línea normal convertida en `Estado` ⇒ rojo; (f) otra línea cambiada junto a un cambio de `Estado` ⇒ rojo, y con override ⇒ verde con la eximida listada; (g) los casos (iv) de AP-109, intactos; (h) quitar solo el `\n` final del tramo ⇒ rojo y no cuenta como `Estado`, también junto a un cambio de `Estado` (review del PR #335).
+3. **Mandato:** `vendored/docs-agents/architect.md` §4: actualizar la línea **Estado:** de una ADR no requiere override.
+
+**Interpretación registrada.** (1) El ruling cita el guard como «AP-108»; el registro lo tiene como AP-109 (AP-108 es la de enmiendas en vuelo). Se enmienda AP-109 §4. (2) «Líneas que empiezan por `**Estado:**`»: a inicio de línea literal, sin sangría; el bloque de una ADR o rectificación es todo el fichero `ADR-NNN.md`, así que no se mira la cabecera que la precede. (3) La comparación es por líneas sobre la decodificación `latin1` (biyectiva byte↔carácter), así que fuera de las líneas `Estado` sigue siendo byte a byte. La última línea del tramo, si `<ref>` no acababa en salto de línea, se exige prefijo de su homóloga, como antes; si `<ref>` acababa en salto de línea, el árbol debe conservarlo (quitarlo es rojo). Cuando el prefijo literal ya se cumple, la ruta es la de AP-109 sin tocar.
+
+**Qué NO.** No cambian `adr-migrate`, `adr-equiv` ni el resto de `adr-lint`. Consumidores: nada que aplicar (el fuente vendorizado llega por graft). Superficie `workflow_call` sin cambios.
+
+**Alternativas descartadas.** Override de rutina por cada cambio de Estado: deja de señalar. Sacar `Estado` del fichero de la ADR: rompe el formato del corpus y de los Creators de finplan. Eximir toda la cabecera de la ADR: reabre la reescritura silenciosa que AP-109 cierra.
+
+**Reversibilidad.** Alta: una función de `adr-lint`; retirarla devuelve el prefijo literal de AP-109.
+
+**Criterio falsable.** Banco verde. Sobre una copia de finplan en `layout: "dir"`, el diff de un commit real de cambio de Estado (de los 8 desde el 20-09) pasa `--append-only-vs` sin override. **Pendiente**: la sesión del central no tiene acceso a `asesoramiento-financiero`; lo ensaya el Architect de finplan (el caso (a) del banco reproduce la forma).
+
+**Fecha.** 2026-10-06.

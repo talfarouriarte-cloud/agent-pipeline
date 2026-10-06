@@ -24,6 +24,10 @@
 // en `dir` por bloque del parser, (iii) frontera «anfitriona = propia ADR» en
 // adr-migrate, (iv) `--append-only-vs` y (v) salida idéntica en volúmenes sin
 // claves nuevas (literal capturado con el adr-lint de 997d568).
+//
+// Cuarta parte (central#334, AP-110): (vi) `--append-only-vs` con las líneas
+// `**Estado:**` enmascaradas — casos (a)–(f) del ruling; (g) = los de (iv), intactos;
+// (h) quitar el `\n` final del tramo es rojo y no cuenta como Estado (revisión del PR #335).
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { tmpdir } from 'os';
@@ -416,6 +420,47 @@ ao('override en el mensaje ⇒ la ADR eximida no da rojo y consta en la salida',
 }, { esperaCode: 0, esperaMsg: 'ADR-001 — errata en el título, autorizada por el propietario' });
 ao('fichero nuevo ⇒ verde', d => W(d, F(4), adr(4, 'Cuatro')), { esperaCode: 0, esperaMsg: '(4 en el árbol)' });
 ao('borrado ⇒ rojo', d => rmSync(join(d, F(3))), { esperaCode: 1, esperaMsg: `${F(3)}: borrado (existía en corte)` });
+
+// (vi) --append-only-vs con líneas `**Estado:**` enmascaradas (central#334, AP-110).
+// ADR-2 lleva Estado en la ADR (línea 3) y en su rectificación (línea 13).
+const adrE = (n, t) => `## ADR-${n} — ${t}\n\n**Estado:** Propuesta\n\nTexto.\n\n**Alternativas descartadas.** Ninguna.\n\n**Coste de revertir.** Bajo.\n\n` +
+  `### ADR-00${n}·R·1 (2026-09-01) — primera\n\n**Estado:** Vigente\n\nLínea.\n`;
+const estRepo = () => { const d = dirRepo({ 1: adr(1, 'Uno'), 2: adrE(2, 'Dos') }); git(d, 'init', '-q'); git(d, 'add', '-A'); git(d, 'commit', '-qm', 'corte'); git(d, 'tag', 'corte'); return d; };
+const aoE = (nombre, mut, espera) => caso(`(vi) --append-only-vs · Estado · ${nombre}`, conDir(estRepo, d => {
+  const ctl = exec(d, LINT, ['--append-only-vs', 'corte']);
+  if (ctl.code !== 0) return { ...ctl, esperaCode: 0 };
+  mut(d);
+  return { ...exec(d, LINT, ['--append-only-vs', 'corte']), ...espera };
+}));
+const ESTADO_ROJO = 'línea **Estado:** añadida, quitada o movida en el tramo de corte';
+aoE('(a) cambio de texto de un Estado existente ⇒ verde sin override', d => {
+  sub(d, F(2), '**Estado:** Propuesta', '**Estado:** Implementada (PR #12)'); sub(d, F(2), '**Estado:** Vigente', '**Estado:** Derogada por R·2');
+}, { esperaCode: 0, esperaMsg: '1 con cambio de texto en una línea **Estado:** (exento, AP-110)' });
+aoE('(b) cambio de Estado + rectificación añadida al final ⇒ verde', d => {
+  sub(d, F(2), '**Estado:** Vigente', '**Estado:** Rectificada por R·2');
+  W(d, F(2), R_(d, F(2)) + '\n### ADR-002·R·2 (2026-10-01) — nueva\n\n**Estado:** Vigente\n\nOtra.\n');
+}, { esperaCode: 0, esperaMsg: '2 fichero(s) de corte conservados como prefijo (2 en el árbol). 1 con cambio de texto en una línea **Estado:** (exento, AP-110)' });
+aoE('(c) Estado nuevo insertado en medio ⇒ rojo', d => sub(d, F(2), 'Texto.\n', 'Texto.\n**Estado:** Nuevo\n'),
+  { esperaCode: 1, esperaMsg: `${F(2)}:6: ${ESTADO_ROJO}` });
+aoE('(d) Estado eliminado ⇒ rojo', d => sub(d, F(2), '**Estado:** Vigente\n\n', ''),
+  { esperaCode: 1, esperaMsg: `${F(2)}:13: ${ESTADO_ROJO}` });
+aoE('(d\') Estado movido ⇒ rojo', d => sub(d, F(2), '**Estado:** Propuesta\n\nTexto.', 'Texto.\n\n**Estado:** Propuesta'),
+  { esperaCode: 1, esperaMsg: `${F(2)}:3: ${ESTADO_ROJO}` });
+aoE('(e) línea normal convertida en Estado ⇒ rojo', d => sub(d, F(2), 'Texto.', '**Estado:** Texto.'),
+  { esperaCode: 1, esperaMsg: `${F(2)}:5: ${ESTADO_ROJO}` });
+aoE('(f) otra línea cambiada junto a un cambio de Estado ⇒ rojo', d => {
+  sub(d, F(2), '**Estado:** Propuesta', '**Estado:** Implementada'); sub(d, F(2), '**Coste de revertir.** Bajo.', '**Coste de revertir.** Alto.');
+}, { esperaCode: 1, esperaMsg: `${F(2)}:9: el contenido de corte ya no es prefijo` });
+aoE('(f\') Estado con otra línea cambiada, con override ⇒ verde y consta', d => {
+  sub(d, F(2), '**Estado:** Propuesta', '**Estado:** Implementada'); sub(d, F(2), 'Línea.', 'Línea corregida.');
+  commit(d, 'corrige ADR-2\n\nadr-append-override: ADR-002 — errata autorizada');
+}, { esperaCode: 0, esperaMsg: 'ADR-002 — errata autorizada' });
+aoE('(h) solo se quita el \\n final ⇒ rojo (no cuenta como Estado)', d => W(d, F(2), R_(d, F(2)).slice(0, -1)),
+  { esperaCode: 1, esperaMsg: `${F(2)}:16: el contenido de corte ya no es prefijo` });
+aoE('(h\') cambio de Estado + \\n final quitado ⇒ rojo', d => {
+  sub(d, F(2), '**Estado:** Propuesta', '**Estado:** Implementada'); W(d, F(2), R_(d, F(2)).slice(0, -1));
+}, { esperaCode: 1, esperaMsg: `${F(2)}:16: el contenido de corte ya no es prefijo` });
+
 caso('(iv) --append-only-vs · <ref> ilegible ⇒ exit 2', conDir(aoRepo, d => ({ ...exec(d, LINT, ['--append-only-vs', 'no-existe']), esperaCode: 2, esperaMsg: 'ilegible' })));
 caso('(iv) --append-only-vs · layout "volumes" ⇒ exit 2', () => {
   const d = idsRepo();
