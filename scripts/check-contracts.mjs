@@ -402,7 +402,8 @@ for (const f of Object.keys(onDisk)) {
 //   (1) el default de todo input de `workflow_call` cuyo nombre contiene `model`;
 //   (2) el valor de `--model` / `--fallback-model` en cada `claude_args` — si es
 //       `${{ inputs.X }}` se resuelve a su default (sin default: lo pone el
-//       caller, fuera de alcance aquí); si es literal, se exige tal cual;
+//       caller, fuera de alcance aquí); `${{ vars.V || inputs.X }}` (AP-112) igual,
+//       por el default de X; si es literal, se exige tal cual;
 //   (3) todo pin `*_model` en el `with:` de un stub del central (self-*.yml) o
 //       de las plantillas de stub (templates/stubs/).
 // Un id con sufijo de fecha (`-YYYYMMDD`) se resuelve contra la entrada sin él.
@@ -422,6 +423,10 @@ if (costModels) {
   const usados = new Map();   // modelo → primera procedencia
   const usa = (m, where) => { const v = String(m).trim(); if (v && !usados.has(v)) usados.set(v, where); };
   const exprInput = /^\$\{\{\s*inputs\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}$/;
+  // AP-112: `${{ vars.V || inputs.X }}` — override por variable del consumidor. El valor
+  // de la variable vive en el caller (fuera de alcance aquí, como un pin sin default);
+  // se precifica el default de X, que es lo que corre sin variable.
+  const exprVarInput = /^\$\{\{\s*vars\.[A-Za-z_][A-Za-z0-9_]*\s*\|\|\s*inputs\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}$/;
   for (const [f, doc] of Object.entries(docs)) {
     const wc = onDisk[f] ? ((doc.on ?? doc[true]).workflow_call || {}) : null;
     const ins = (wc && wc.inputs) || {};
@@ -438,7 +443,7 @@ if (costModels) {
         if (typeof args !== 'string') continue;
         for (const mm of args.matchAll(/--(?:fallback-)?model[ =]+(\$\{\{[^}]*\}\}|\S+)/g)) {
           const val = mm[1];
-          const ref = val.match(exprInput);
+          const ref = val.match(exprInput) || val.match(exprVarInput);
           if (!ref) { usa(val, `${f} (literal en \`claude_args\`)`); continue; }
           const inp = ins[ref[1]];
           if (!inp) errors.push(`${f}: \`claude_args\` pasa \`inputs.${ref[1]}\` como modelo y ese input no existe — no hay modelo que precificar (AP-099)`);

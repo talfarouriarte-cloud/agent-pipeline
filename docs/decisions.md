@@ -3022,3 +3022,26 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 **Criterio falsable.** Banco verde. `grep -rn "decisions-150-current\|decisions-\*\.md" vendored/` solo devuelve líneas de defaults del parser o de la rama `volumes`/sin config. Sobre wmcb `main` (volúmenes): salida idéntica (ruta sin cambios; casos v, h y 336·b).
 
 **Fecha.** 2026-10-06.
+
+## AP-112 — Override del modelo primario por variable del consumidor y mensaje de error de las muertes instantáneas (2026-10-08)
+
+**Contexto.** Petición del propietario en chat (2026-10-08, fuera de ciclo), con finplan#2852 («Flota LLM caída») abierto. Medido en finplan: desde las 10:39 UTC muere al nacer toda sesión en `claude-fable-5-1` (process-review 10:39; resolver 10:42, 10:48, 11:03, 11:30, 11:46 y 12:05), con `subtype: success`, `is_error: true`, `num_turns: 1`, coste 0 y `modelUsage: {}` en ~0,5–0,7 s. A las 10:28, una sesión de Claude Code en `claude-opus-5-5` corrió 47 turnos con el mismo secret `CLAUDE_CODE_OAUTH_TOKEN`. Inferencia: cuota de Fable, no credencial; sin prueba, porque la action oculta el campo `result` en el log y el execution file muere con el runner. Tres hechos: (1) el único override de modelo es el input del reusable (`resolve_model`, `process_model`, `creator_model`, `reviewer_model`), que se fija en el stub del consumidor, congelado; (2) el `--fallback-model` de resolver y process-review (AP-088) no cubre esta caída: según la documentación de Claude Code, el fallback salta con el modelo sobrecargado o no disponible, y nunca con errores de autenticación, facturación o límite de uso — la premisa de AP-088 (2) de que el fallback evitaba la no-ejecución por créditos de Fable era falsa; (3) ningún sitio conserva el mensaje de error de una sesión muerta, así que la alarma no puede distinguir cuota de credencial.
+
+**Decisión.**
+
+1. **Override por variable.** En `claude_args`, `--model ${{ vars.PIPELINE_<ROL>_MODEL || inputs.<rol>_model }}` en los cuatro reusables (`PIPELINE_RESOLVE_MODEL`, `PIPELINE_PROCESS_MODEL`, `PIPELINE_CREATOR_MODEL`, `PIPELINE_REVIEWER_MODEL`). La variable es de repo u org del consumidor; vacía o ausente ⇒ manda el input. No cambia `--fallback-model` ni la superficie `workflow_call` (`templates/workflow-contracts.json` intacto).
+2. **Mensaje de error.** El step «Clasificar la ejecución LLM» de `watchdog.yml`, `claude-code.yml` y `reviewer.yml`, cuando la sesión es `instant`, emite una anotación `llm-error:` con `result` (truncado a 400 caracteres), `api_error_status`, `subtype` y `errors` del execution file. Es la medición previa a clasificar la flota caída y al reintento con fallback (PR siguiente): se diseña sobre el texto real, no sobre la duración.
+3. **`check-contracts`** acepta la forma `${{ vars.V || inputs.X }}` y precifica el default de X; el valor de la variable queda fuera de alcance (vive en el caller), como un input sin default.
+4. **Mandato común del Architect** (`vendored/docs-agents/architect.md` § 6): tabla de variables, alcance y dónde leer `llm-error:`.
+
+**Interpretación registrada.** (1) Que `vars` en un reusable llamado por `workflow_call` resuelve las variables del repo/org que llama es inferencia (el run vive en el repo del caller); la documentación de GitHub no lo dice de forma explícita. Se verifica en el primer run tras fijar una variable: el log imprime los `claude_args` resueltos. (2) Las variables prevalecen sobre un pin explícito del stub: son la palanca operativa y el stub está congelado. (3) El comentario de `claude-code.yml` va junto al input y no junto a `claude_args`, cuyo bloque es contexto de `docs/patches/AP-067`; así el parche sigue aplicando sin regenerarlo.
+
+**Qué NO.** No cambia ningún default de modelo (el criterio de AP-088 (b) sigue su curso). No reintenta ni clasifica todavía: eso espera al primer `llm-error:` real. Nada en consumidores.
+
+**Alternativas descartadas.** Pin en los stubs: workflow de consumidor congelado y una edición por repo y rol. Revertir el default del resolver a Opus 5.5 en el central: decisión de modelo que AP-088 ata a su criterio a 7 días, no una palanca. `show_full_output: true`: imprime la sesión entera en el log público, no solo el error.
+
+**Reversibilidad.** Alta: sin variables definidas, el comportamiento es idéntico al previo; la anotación es aditiva.
+
+**Criterio falsable.** (a) CI verde (`check-contracts`, con el caso nuevo). (b) Con `PIPELINE_RESOLVE_MODEL=claude-opus-5-5` en finplan, el siguiente run del resolver muestra `--model claude-opus-5-5` en el log y la sesión termina viva. (c) La siguiente muerte instantánea de cualquier rol deja una anotación `llm-error:` con `result` no vacío.
+
+**Fecha.** 2026-10-08.

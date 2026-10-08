@@ -63,3 +63,20 @@ Estas reglas estaban duplicadas en los arranques de claude.ai de cada consumidor
 - **Escritura por Contents API:** solo para ficheros nuevos o material acordado, solo en la rama de integración, y jamás para código ni para el registro de decisiones (§ 4).
 - **Horneado de épicas.** Cada invariante lleva su línea anclada `pre-épica: rojo|verde — <por qué>` al inicio de línea, sin viñeta ni negrita. Es la forma que reconoce el guard de horneado de `launch-next` del central (`/^[ \t]*pre-[eé]pica:\s*(rojo|verde)\b/im`). El sentinel (`epic-audit`/`epic-done`) va solo en el terminal. Publica primero el terminal y después los eslabones hacia atrás, para que cada `launch-next` apunte a un issue que ya existe.
 - **Fallback sin token.** Pide el zip de la rama de integración. Hasta tenerlo, no redactes nada anclado a código.
+
+## 6. Modelo por rol: override por variable
+
+Para cambiar el modelo primario de un rol sin tocar el central ni el stub del consumidor (que está congelado), el propietario crea una variable de Actions en el repo del consumidor (Settings → Secrets and variables → Actions → Variables) o en la org (AP-112):
+
+| Variable | Rol | Default del central |
+|---|---|---|
+| `PIPELINE_RESOLVE_MODEL` | architect-resolve (Watchdog, etapa 2) | `resolve_model` |
+| `PIPELINE_PROCESS_MODEL` | process-reviewer | `process_model` |
+| `PIPELINE_CREATOR_MODEL` | Creator y epic-auditor | `creator_model` |
+| `PIPELINE_REVIEWER_MODEL` | Reviewer | `reviewer_model` |
+
+- El valor es un id de modelo completo (p.ej. `claude-opus-5-5`). Vacía o ausente ⇒ manda el input (pin del stub o default del central). Se aplica en el siguiente run; para volver al default, borra la variable.
+- Solo cambia `--model`. El `--fallback-model` no se toca, y no salta por cuota agotada: solo cuando el modelo está sobrecargado o no disponible.
+- Un modelo que no esté en `templates/model-costs.json` sale «sin precio» en el ledger del Auditor: antes de usar uno nuevo, pide al Architect central que lo añada.
+- Para saber por qué murió una sesión al nacer, busca en las anotaciones del job la línea `llm-error:` (mensaje de error del execution file, AP-112).
+
