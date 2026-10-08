@@ -42,6 +42,10 @@ on:
       process_model:
         type: string
         default: claude-fable-5-1  # AP-088 (2026-09-28): antes claude-fable-5
+        # AP-112: la variable de repo/org `PIPELINE_PROCESS_MODEL` del CONSUMIDOR, si existe y no está
+        # vacía, prevalece sobre este input en `claude_args` — palanca operativa sin
+        # editar el central ni el stub congelado (p.ej. sacar el rol de Fable cuando
+        # su cuota se agota). No toca `--fallback-model`.
       process_fallback_model:
         type: string
         default: claude-opus-5-5  # AP-088: antes claude-opus-5
@@ -430,7 +434,7 @@ jobs:
           # AP-088 (2026-09-28): `--effort medium` explícito; sin flag cada modelo aplica
           # su default de lanzamiento y un cambio upstream lo movería sin aviso.
           claude_args: |
-            --model ${{ inputs.process_model }}
+            --model ${{ vars.PIPELINE_PROCESS_MODEL || inputs.process_model }}
             --fallback-model ${{ inputs.process_fallback_model }}
             --effort medium
             --max-turns ${{ (inputs.budget_pin_forzado && inputs.process_max_turns) || (inputs.process_max_turns >= 120 && inputs.process_max_turns) || 120 }}

@@ -30,6 +30,10 @@ on:
         description: Modelo del Creator
         type: string
         default: claude-opus-5-5  # AP-087 (2026-09-25): decisión del propietario, criterio calidad/token; cierra AP-080
+        # AP-112: la variable de repo/org `PIPELINE_CREATOR_MODEL` del CONSUMIDOR, si existe y no está
+        # vacía, prevalece sobre este input en `claude_args` — palanca operativa sin
+        # editar el central ni el stub congelado (p.ej. sacar el rol de Fable cuando
+        # su cuota se agota). No toca `--fallback-model`.
       creator_max_turns:
         description: max-turns del Creator
         type: number
@@ -1568,7 +1572,7 @@ jobs:
           # AP-088 (2026-09-28): `--effort medium` explícito; sin flag cada modelo aplica
           # su default de lanzamiento y un cambio upstream lo movería sin aviso.
           claude_args: |
-            --model ${{ inputs.creator_model }}
+            --model ${{ vars.PIPELINE_CREATOR_MODEL || inputs.creator_model }}
             --effort medium
             --max-turns ${{ inputs.creator_max_turns }}
             --permission-mode bypassPermissions
@@ -1806,6 +1810,14 @@ jobs:
               : (Number.isFinite(turns) && turns <= 1 && cost === 0 && muVacio ? 'instant' : 'ilegible');
             core.info(`ejecución LLM: num_turns=${r.num_turns} · total_cost_usd=${r.total_cost_usd} · modelUsage=${mu === undefined ? '(ausente)' : muVacio ? '{}' : 'con uso'} ⇒ ${kind}`);
             core.setOutput('kind', kind);
+            // AP-112: en muerte instantánea, anota el MENSAJE de error del execution file.
+            // La action oculta `result` en el log («full output hidden»): sin esto la causa
+            // (cuota del modelo, cuota del plan, credencial) no es legible en ningún sitio,
+            // y es lo que necesita la clasificación de la flota caída. Truncado, una línea.
+            if (kind === 'instant') {
+              const msg = String(r.result ?? '').replace(/\s+/g, ' ').slice(0, 400);
+              core.warning(`llm-error: ${JSON.stringify({ result: msg, api_error_status: r.api_error_status ?? null, subtype: r.subtype ?? null, errors: Array.isArray(r.errors) ? r.errors.map(e => String(e).slice(0, 200)) : null })}`);
+            }
             // Ledger de coste del Auditor (AP-099, central#281): el execution file vive en el
             // runner y muere con el job, así que el `modelUsage` se materializa como UNA
             // anotación `model-usage:` de este step — legible después por la API de
