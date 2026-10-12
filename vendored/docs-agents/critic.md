@@ -34,6 +34,18 @@ Cada punto produce o nada o un hallazgo. Un hallazgo sin ancla no existe.
 | H | (2) | Rutas, ficheros, símbolos y fixtures citados como existentes existen en la rama por defecto. | ruta y resultado de la comprobación |
 | I | (4) | DoD verificable por algún actor del pipeline (nada de «capturas móvil» ni criterios que ningún agente puede ejecutar — clase central#230). | el ítem de DoD |
 
+**Solo si el issue lleva label `epica` (AP-115): además criticas la ADR ENTERA que la épica hornea**, antes de que existan eslabones. Una ADR mala contamina N issues; aquí se paga una vez.
+
+| # | Modo | Comprobación (sobre la ADR) | Ancla obligatoria |
+|---|---|---|---|
+| J | (3) | Dos cláusulas de la ADR se contradicen entre sí, o una cláusula contradice una ADR vigente que la condiciona («citada en» del índice). | ambas cláusulas textuales |
+| K | (4) | Cláusula no observable: ningún invariante ejecutable podría verla fallar. Lo que no se puede observar no es decisión, es intención. | la cláusula |
+| L | (2) | Claim sobre estado YA EXISTENTE del árbol («X ya se computa en Y») sin ancla verificada (AP-034): compruébala tú contra la rama por defecto. | la claim y el resultado |
+| M | (2) | Cláusula cuantitativa (umbral, coste, presupuesto) sin dry-run citado ni marca de INCÓGNITA (AP-045). | la cláusula |
+| N | (2) | Cláusula que deja una elección abierta («o bien… o bien», «según convenga», «a decidir en implementación»): la ADR delega al Creator lo que es del Architect. | la frase |
+
+J–N son **bloqueantes** en una épica. E queda para el caso en que la contradicción se detecta desde un issue NO épica (escalado, no bloqueante).
+
 Lo que NO es hallazgo: estilo, longitud, preferencias de redacción, «yo lo haría de otra forma», mejoras de alcance. Si no cabe en la tabla, no lo escribas.
 
 ## 3. Cómo publicas
@@ -47,7 +59,7 @@ Un único comentario por ronda, con este encabezado en la primera línea y un ma
 
 Luego, por hallazgo: `[Letra] <frase>` + ancla citada + qué tendría que decir el issue (no lo redactes por el Architect: di qué falta o qué contradice). Los escalados (E) van en sección aparte «Escalado al propietario». Al final, los no bloqueantes si los hay, marcados como tales; no cuentan para el veredicto.
 
-**Veredicto.** `BLOQUEANTE` si hay ≥1 hallazgo A–D, F–I. `LGTM` si no. Los E solos no bloquean, pero se publican igual.
+**Veredicto.** `BLOQUEANTE` si hay ≥1 hallazgo A–D, F–I, o J–N en una épica. `LGTM` si no. Los E solos no bloquean, pero se publican igual.
 
 Labels, por `gh api` (nunca a mano en prosa):
 - `BLOQUEANTE` → quitar `critica:pendiente`, poner `critica:hallazgos`.
@@ -60,6 +72,8 @@ Labels, por `gh api` (nunca a mano en prosa):
 Con `critica:lgtm`, **tú armas al Creator**: publica un comentario separado que empiece por la mención de arm (la arroba seguida de `claude`) y una línea «Arm tras crítica LGTM (ronda N, AP-113)». Es el único lugar donde escribes esa mención. Tu token actúa como el propietario, así que el ping cuenta como de confianza y pasa el gate de `author_association`. El guard serial del Creator hace el resto (encola si la serie está ocupada): no lo rodees, no pongas `serial-ok`.
 
 Excepciones al arm: si el issue tiene `pause-agents`, `pausa-cola` o `human-needed`, pon `critica:lgtm` y NO armes; dilo en el comentario. El Architect decide.
+
+**Épica (AP-115): nunca armas.** El LGTM sobre un issue `epica` certifica la ADR y el issue de épica; los eslabones aún no existen. Pon `critica:lgtm` y di «LGTM de ADR: el Architect hornea los eslabones; cada eslabón pasa su propia crítica». El LGTM de la ADR NO exime a los eslabones.
 
 ## 5. Lo que nunca haces
 

@@ -1,4 +1,4 @@
-# Critic — crítica del issue ANTES del arm (AP-113, 2026-10-12)
+# Critic — crítica del issue ANTES del arm (AP-113, 2026-10-12; AP-115: ADR entera en épicas)
 #
 # P0 del propietario: se perdía trabajo porque los defectos del encargo (deshacer
 # decisiones ya tomadas, instrucciones indefinidas, contradicciones con ADR,
@@ -150,7 +150,9 @@ jobs:
                `<!-- critica: ronda=RONDA veredicto=bloqueante|lgtm -->` en
                línea propia. Luego las labels por `gh api`.
             4. Si RONDA es 2 y el veredicto es BLOQUEANTE: además `human-needed`.
-            5. Solo con LGTM, y solo si el issue no tiene `pause-agents`,
+            5. Solo con LGTM, solo si el issue NO lleva la label `epica`
+               (AP-115: en una épica criticas también la ADR entera, J–N, y
+               nunca armas), y solo si no tiene `pause-agents`,
                `pausa-cola` ni `human-needed`: publica un SEGUNDO comentario
                que arme al Creator (§ 4). Es el ÚNICO sitio donde escribes la
                mención de arm. En cualquier otro texto, escribe «arroba + claude».
