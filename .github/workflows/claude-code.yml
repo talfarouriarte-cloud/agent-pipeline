@@ -467,6 +467,10 @@ jobs:
             const issue = context.payload.issue;
             const labels = (issue.labels || []).map(l => l.name);
             if (labels.includes('critica:lgtm')) { core.setOutput('blocked', 'false'); return; }
+            // Arm de auditoría (epic-merge → Auditor): no es un issue de diseño, no
+            // hay Architect que corrija hallazgos. Misma exención que el guard
+            // serial (rectificación AP-116, finplan#2938 atascado el primer día).
+            if (['auditoria', 'auditoria-completa'].some(n => labels.includes(n))) { core.notice('arm de auditoría: exento del gate de crítica.'); core.setOutput('blocked', 'false'); return; }
             if (labels.includes('critica-na')) { core.notice('critica-na presente: gate de crítica omitido (override humano).'); core.setOutput('blocked', 'false'); return; }
             const armBody = String(context.payload.comment?.body || '');
             const REARM = ['epic-auto-launch', 'watchdog-rearm', 'arm-de-cola', 'rearm-enmienda', 'eslabon-suspendido'];
