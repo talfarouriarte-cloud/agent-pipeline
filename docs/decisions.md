@@ -3126,6 +3126,8 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 
 **Qué NO.** No critica los 4 issues de finplan ya armados hoy. No toca `critic.yml`. Sin cambio de contrato `workflow_call`.
 
+**Rectificación (2026-10-12, mismo día).** Los arms de auditoría (`auditoria`/`auditoria-completa`, los publica epic-merge para el Auditor) quedan EXENTOS del gate: no son issues de diseño y no hay Architect que corrija hallazgos. finplan#2938 (auditoría de #2933) quedó `critica:hallazgos`+`stalled` en la primera hora; desbloqueado a mano con `critica-na`. Misma exención que el guard serial.
+
 **Riesgo aceptado.** Un ping bloqueado por el gate no entra en `en-cola`: el issue espera al Critic, no a la serie. Si el Critic muere, el post-step de `critic.yml` pone `human-needed` y el Architect re-pinga.
 
 **Reversibilidad.** Alta: quitar el step.
