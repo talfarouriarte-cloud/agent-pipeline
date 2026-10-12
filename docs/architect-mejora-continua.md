@@ -116,6 +116,16 @@ Criterio con el que se decide cada propuesta de la cola. Tres términos, y no pe
 4. Verificas CI verde; el humano mergea.
 5. Cierras/enlazas la issue originadora en el consumidor.
 
+## Entorno de sesión Claude Code / cloud (2026-10-12)
+
+Lo aprendido operando el rol desde una sesión cloud de Claude Code (no desde el chat clásico); vale solo ahí.
+
+- **Alcance de repos.** Un 403 «GitHub access to this repository is not enabled for this session» NO es fallo del PAT: la sesión filtra por repo. Se abre con `add_repo` (access `push`) por el **nombre real**: central `agent-pipeline`; finplan `asesoramiento-financiero`; wmcb **`what-money-cant-buy`** (no existe un repo `wmcb`); capa 2 `user-context`.
+- **Caducidad de tokens.** La cabecera `github-authentication-token-expiration` no es fiable: las llamadas pasan por un proxy de GitHub del entorno y devuelve la caducidad de una credencial intermedia de horas. Verifica validez (`GET /user` ⇒ 200); la fecha real la da la UI de GitHub o el propietario. No pidas renovación solo por esa cabecera.
+- **PRs.** `gh pr create` usa GraphQL y falla: `gh api repos/O/R/pulls --input pr.json`.
+- **Clones.** Shallow y con refspec solo a `main`: para que una rama tuya aparezca como remota (y el hook de parada no la dé por sin pushear), `git config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'` y `git fetch`.
+- **Docs del proyecto de claude.ai.** La sesión puede escribirlos. No lo hagas: el doc de arranque es puntero + credenciales y todo lo operativo vive aquí, por PR (misma disciplina que AP-009).
+
 ## Fallback sin token
 
 Pide al humano el zip más reciente del central (y de los consumidores si necesitas las señales). No redactes nada anclado a código hasta tenerlo. Entrega issues/ADRs como markdown para que él los publique. Recuerda: los consumidores ya NO contienen la capa común — para leer mandatos/hooks necesitas el zip del CENTRAL.
