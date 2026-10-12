@@ -3112,3 +3112,24 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 **Criterio falsable.** Mensual de noviembre: de los hallazgos del Critic en épicas, la proporción J–N frente a A–I dice si los defectos nacen en la ADR o en el issue (dato que hoy no existe). Si en 5 épicas J–N = 0, la checklist sobra o la ADR ya venía filtrada por chat: se decide ahí.
 
 **Fecha.** 2026-10-12.
+
+## AP-116 — Gate de crítica en el arm: sin `critica:lgtm` no se arma al Creator; el ping dispara al Critic (2026-10-12)
+
+**Contexto.** AP-113 (mergeado 10:35 UTC) dejó el disparo del Critic en manos del Architect: poner `critica:pendiente` en vez de pingar. A las 19:40–19:52 del mismo día el Architect de finplan publicó un correctivo (#2933) y una épica de 3 eslabones (#2934–#2936) con ping directo: 0 críticas, #2936 en cola. Misma clase que el guard de panel (2026-07-12): lo que depende de que una sesión de chat recuerde un protocolo, falla, y las sesiones no comparten contexto. El propietario: «lo que habíamos hecho tenía que ser mecánico; el guard es el que debe lanzar al crítico».
+
+**Decisión.**
+
+1. Step `check_critica` en `claude-code.yml`, ANTES de `check_chain`, solo contexto issue. Sin `critica:lgtm` ni `critica-na`: pone `critica:pendiente` (dispara al Critic por `labeled`), comenta `<!-- critica-gate -->` y bloquea; con `critica:hallazgos`, el ping del Architect = nueva ronda (quita `hallazgos`, pone `pendiente`). Gatea `check_chain` y los 13 steps que ya gateaban por `check_chain.broken` (mismo patrón que `check_panel`).
+2. Exentos: contexto PR; re-arms de cadena/cola/watchdog/enmienda/eslabón suspendido (el arm inicial ya pasó); label `critica-na`, que solo pone el humano (como `serial-ok`).
+3. `architect.md` § 7 reescrita: el Architect pinga como siempre y vigila labels; no pone `critica:pendiente` a mano.
+4. Labels: `critica-na` nueva; `claude-code.yml` declara las cuatro `critica*` en `labels-usage.json`.
+
+**Qué NO.** No critica los 4 issues de finplan ya armados hoy. No toca `critic.yml`. Sin cambio de contrato `workflow_call`.
+
+**Riesgo aceptado.** Un ping bloqueado por el gate no entra en `en-cola`: el issue espera al Critic, no a la serie. Si el Critic muere, el post-step de `critic.yml` pone `human-needed` y el Architect re-pinga.
+
+**Reversibilidad.** Alta: quitar el step.
+
+**Criterio falsable.** Desde el merge, 0 issues armados en consumidores sin `critica:lgtm` o `critica-na` (consulta: issues con `serial-activo` o PR `claude/issue-N` sin esas labels). El de AP-113 sigue vigente para medir el efecto.
+
+**Fecha.** 2026-10-12.

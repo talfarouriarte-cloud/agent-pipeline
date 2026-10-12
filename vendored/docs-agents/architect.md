@@ -81,15 +81,17 @@ Para cambiar el modelo primario de un rol sin tocar el central ni el stub del co
 - Para saber por qué murió una sesión al nacer, busca en las anotaciones del job la línea `llm-error:` (mensaje de error del execution file, AP-112).
 
 
-## 7. Crítica del issue antes del arm (AP-113)
+## 7. Crítica del issue antes del arm (AP-113 / AP-116)
 
-Todo issue que vayas a armar (épica, eslabón, suelto, correctivo) pasa primero por el Critic (`docs/agents/critic.md`). Lo que comprueba: invariantes presentes, ejecutables y que cubren el alcance; compatibilidad con las ADR citadas; que no deshace decisiones registradas (ADR, `epic-context`); que no deja decisiones de diseño al Creator; que lo que cita como existente existe. Máximo 2 rondas.
+**Mecánico: no tienes que hacer nada distinto.** Pingas el issue como siempre. El gate del arm (`claude-code.yml`, AP-116) comprueba si el issue tiene `critica:lgtm`; si no, NO arma al Creator: pone `critica:pendiente` (que dispara al Critic, `docs/agents/critic.md`), comenta y para. El Critic publica su crítica (máx. 2 rondas) y, con LGTM, **arma él** al Creator.
 
-- **Publicar.** Crea el issue **sin la mención de arm** y con la label `critica:pendiente`. No lo pingues. El Critic se dispara por la label.
-- **Épica = crítica de la ADR (AP-115).** Pon `critica:pendiente` en el issue de épica ANTES de hornear eslabones: el Critic critica la ADR entera (J–N: contradicciones, cláusulas no observables, claims de árbol sin ancla, cuantitativas sin dry-run, elecciones abiertas). Con `critica:lgtm` el Critic NO arma: horneas los eslabones y cada uno pasa su crítica. Un hallazgo J–N se corrige en la ADR (registro, § 4), no en el issue.
-- **Vigilar barato.** Prográmate una tarea cada 5 minutos que mire **solo las labels** del issue (`gh api repos/O/R/issues/N --jq '[.labels[].name]'`), no el body ni los comentarios. Actúa solo en dos casos:
-  - `critica:hallazgos` → lee el comentario `**Crítica · ronda N/2 · BLOQUEANTE**`, corrige el issue (edita el body; cada hallazgo dice qué falta o qué contradice, tú lo redactas) y vuelve a poner `critica:pendiente` (quita antes `critica:hallazgos`). Un hallazgo «Escalado al propietario» (contradicción interna de una ADR) no se parchea en el issue: se cierra con el propietario primero.
-  - `critica:lgtm` → **borra la tarea programada**. No armes: el Critic ya ha armado al Creator (o ha dicho por qué no, si hay `pause-agents`/`pausa-cola`/`human-needed`).
-- **Ronda 2 bloqueante** ⇒ el Critic pone `human-needed`: el issue es del propietario; borra la tarea y díselo en el chat.
-- **`human-needed` sin crítica** (post-step del Critic: la sesión murió sin publicar) ⇒ vuelve a poner `critica:pendiente` una vez; si repite, arma a mano y anótalo.
-- **Lo que el Critic no sustituye:** el guard de horneado del arm (AP-021/029/096) sigue detrás como red; `epic-context` sigue siendo tuyo de escribir, y es lo que el Critic lee para saber qué decisiones ya están tomadas. Un issue sin ADR ni `epic-context` es un issue al que el Critic solo puede criticar la forma.
+Lo que el Critic comprueba: invariantes presentes, ejecutables y que cubren el alcance; compatibilidad con las ADR citadas; que no deshace decisiones registradas (ADR, `epic-context`); que no deja decisiones de diseño al Creator; que lo que cita como existente existe. En una **épica** (AP-115) critica además la ADR entera (J–N) y con LGTM no arma: horneas los eslabones y cada uno pasa su crítica.
+
+- **Vigilar barato.** Tras pingar, prográmate una tarea cada 5 minutos que mire **solo las labels** del issue (`gh api repos/O/R/issues/N --jq '[.labels[].name]'`). Actúa en dos casos:
+  - `critica:hallazgos` → lee el comentario `**Crítica · ronda N/2 · BLOQUEANTE**`, corrige el body (cada hallazgo dice qué falta o qué contradice; tú lo redactas) y **vuelve a pingar**: el gate re-dispara al Critic (nueva ronda). Un hallazgo J–N se corrige en la ADR (§ 4). Un «Escalado al propietario» (contradicción interna de ADR) se cierra con él antes.
+  - `critica:lgtm` → **borra la tarea**. No armes: ya lo ha hecho el Critic (o ha dicho por qué no: `pause-agents`/`pausa-cola`/`human-needed`, o épica).
+- **Ronda 2 bloqueante** ⇒ `human-needed`: el issue es del propietario; borra la tarea y díselo.
+- **`human-needed` sin crítica** (la sesión del Critic murió) ⇒ pinga otra vez (el gate vuelve a poner `critica:pendiente`); si repite, pide al propietario `critica-na`.
+- **Override:** `critica-na` la pone solo el humano. No la pidas por comodidad.
+- **Re-arms exentos:** `epic-auto-launch`, `watchdog-rearm`, `arm-de-cola`, `rearm-enmienda`: el arm inicial ya pasó por aquí.
+- **Lo que el Critic no sustituye:** el guard de horneado (AP-021/029/096) sigue detrás como red; `epic-context` (AP-114) es lo que el Critic lee para saber qué decisiones ya están tomadas: sin ADR ni contexto, solo puede criticar la forma.

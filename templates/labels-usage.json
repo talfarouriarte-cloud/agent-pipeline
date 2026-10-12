@@ -12,7 +12,11 @@
     "en-cola",
     "prioridad:urgente",
     "prioridad:alta",
-    "pausa-cola"
+    "pausa-cola",
+    "critica:pendiente",
+    "critica:hallazgos",
+    "critica:lgtm",
+    "critica-na"
   ],
   "epic-merge.yml": [
     "auditoria",

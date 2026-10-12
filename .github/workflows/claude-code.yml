@@ -440,11 +440,63 @@ jobs:
       # AP-096 (central#260): el guard de horneado de invariantes (AP-021 +
       # AP-029) corre también en el arm de un issue `correctivo` SUELTO (sin
       # `epica`), sobre el body del propio issue. Banco: check-bake-guard.mjs.
+      # GATE de crítica en el arm (AP-116, 2026-10-12). AP-113 dependía de que
+      # el Architect PUSIERA `critica:pendiente` en vez de pingar; el mismo día
+      # del merge una épica entera y un correctivo (finplan #2933–#2936) se
+      # armaron con ping directo. Misma clase que el guard de panel: lo que
+      # depende de que una sesión de chat recuerde el protocolo, falla. Aquí el
+      # ping ES el disparo: sin `critica:lgtm`, no se arma al Creator — se pone
+      # `critica:pendiente` (dispara al Critic por `labeled`) y se para con
+      # comentario. El Critic arma él tras el LGTM (critic.md § 4) y ese ping
+      # vuelve a entrar aquí con la label puesta. Exentos: contexto PR; re-arms
+      # de cadena/cola/watchdog/enmienda (el arm inicial ya pasó por aquí);
+      # label `critica-na` (solo el humano, como `serial-ok`). Va ANTES de
+      # check_chain: un issue sin crítica no debe gastar los guards siguientes.
+      - name: Check crítica previa al arm (issues only, AP-116)
+        id: check_critica
+        if: |
+          steps.check_pause.outputs.paused != 'true'
+          && steps.check_iterations.outputs.cap_reached != 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const isIssueCtx = !!context.payload.issue && !context.payload.issue.pull_request;
+            if (!isIssueCtx) { core.setOutput('blocked', 'false'); return; }
+            const issue = context.payload.issue;
+            const labels = (issue.labels || []).map(l => l.name);
+            if (labels.includes('critica:lgtm')) { core.setOutput('blocked', 'false'); return; }
+            if (labels.includes('critica-na')) { core.notice('critica-na presente: gate de crítica omitido (override humano).'); core.setOutput('blocked', 'false'); return; }
+            const armBody = String(context.payload.comment?.body || '');
+            const REARM = ['epic-auto-launch', 'watchdog-rearm', 'arm-de-cola', 'rearm-enmienda', 'eslabon-suspendido'];
+            if (REARM.some(m => armBody.includes(m))) { core.setOutput('blocked', 'false'); return; }
+            // Sin crítica: no se arma. Si ya está pendiente o con hallazgos, no
+            // se duplica el disparo — solo se recuerda el estado.
+            const yaPendiente = labels.includes('critica:pendiente');
+            const conHallazgos = labels.includes('critica:hallazgos');
+            if (!yaPendiente && !conHallazgos) {
+              await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['critica:pendiente'] });
+            }
+            const estado = conHallazgos
+              ? 'tiene `critica:hallazgos`: lee la crítica, corrige el body y vuelve a pingar (el gate re-dispara al Critic).'
+              : yaPendiente ? 'ya tiene `critica:pendiente`: el Critic está en ello; no hace falta pingar.'
+              : 'no había pasado por el Critic: pongo `critica:pendiente` y el Critic se dispara ahora.';
+            await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
+              body: `**claude-code · gate de crítica (AP-116)**: este issue ${estado} Con \`critica:lgtm\` el Critic arma al Creator él mismo. Override humano: label \`critica-na\`.\n\n<!-- critica-gate -->` });
+            if (conHallazgos) {
+              // Re-disparo: el ping del Architect tras corregir = nueva ronda.
+              await github.rest.issues.removeLabel({ owner, repo, issue_number: issue.number, name: 'critica:hallazgos' }).catch(() => {});
+              await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['critica:pendiente'] });
+            }
+            core.setOutput('blocked', 'true');
+
       - name: Check epic chain integrity (issues only)
         id: check_chain
         if: |
           steps.check_pause.outputs.paused != 'true'
           && steps.check_iterations.outputs.cap_reached != 'true'
+          && steps.check_critica.outputs.blocked != 'true'
         uses: actions/github-script@v7
         env:
           IN_EPIC_LABEL: ${{ inputs.epic_label }}
@@ -665,6 +717,7 @@ jobs:
           steps.check_pause.outputs.paused != 'true'
           && steps.check_iterations.outputs.cap_reached != 'true'
           && steps.check_chain.outputs.broken != 'true'
+          && steps.check_critica.outputs.blocked != 'true'
         uses: actions/github-script@v7
         env:
           IN_EPIC_LABEL: ${{ inputs.epic_label }}
@@ -832,6 +885,7 @@ jobs:
           steps.check_pause.outputs.paused != 'true'
           && steps.check_iterations.outputs.cap_reached != 'true'
           && steps.check_chain.outputs.broken != 'true'
+          && steps.check_critica.outputs.blocked != 'true'
           && steps.check_panel.outputs.blocked != 'true'
           && steps.check_serial.outputs.blocked != 'true'
           && steps.check_flight.outputs.blocked != 'true'
@@ -912,6 +966,7 @@ jobs:
           steps.check_pause.outputs.paused != 'true'
           && steps.check_iterations.outputs.cap_reached != 'true'
           && steps.check_chain.outputs.broken != 'true'
+          && steps.check_critica.outputs.blocked != 'true'
           && steps.check_panel.outputs.blocked != 'true'
           && steps.check_serial.outputs.blocked != 'true'
           && steps.check_flight.outputs.blocked != 'true'
@@ -1317,6 +1372,7 @@ jobs:
           steps.check_pause.outputs.paused != 'true'
           && steps.check_iterations.outputs.cap_reached != 'true'
           && steps.check_chain.outputs.broken != 'true'
+          && steps.check_critica.outputs.blocked != 'true'
           && steps.check_panel.outputs.blocked != 'true'
           && steps.check_serial.outputs.blocked != 'true'
           && steps.check_flight.outputs.blocked != 'true'
@@ -1384,6 +1440,7 @@ jobs:
           steps.check_pause.outputs.paused != 'true'
           && steps.check_iterations.outputs.cap_reached != 'true'
           && steps.check_chain.outputs.broken != 'true'
+          && steps.check_critica.outputs.blocked != 'true'
           && steps.check_panel.outputs.blocked != 'true'
           && steps.check_serial.outputs.blocked != 'true'
           && steps.check_flight.outputs.blocked != 'true'
@@ -1401,6 +1458,7 @@ jobs:
           steps.check_pause.outputs.paused != 'true'
           && steps.check_iterations.outputs.cap_reached != 'true'
           && steps.check_chain.outputs.broken != 'true'
+          && steps.check_critica.outputs.blocked != 'true'
           && steps.check_panel.outputs.blocked != 'true'
           && steps.check_serial.outputs.blocked != 'true'
           && steps.check_flight.outputs.blocked != 'true'
@@ -1415,6 +1473,7 @@ jobs:
           steps.check_pause.outputs.paused != 'true'
           && steps.check_iterations.outputs.cap_reached != 'true'
           && steps.check_chain.outputs.broken != 'true'
+          && steps.check_critica.outputs.blocked != 'true'
           && steps.check_panel.outputs.blocked != 'true'
           && steps.check_serial.outputs.blocked != 'true'
           && steps.check_flight.outputs.blocked != 'true'
@@ -1432,6 +1491,7 @@ jobs:
           steps.check_pause.outputs.paused != 'true'
           && steps.check_iterations.outputs.cap_reached != 'true'
           && steps.check_chain.outputs.broken != 'true'
+          && steps.check_critica.outputs.blocked != 'true'
           && steps.check_panel.outputs.blocked != 'true'
           && steps.check_serial.outputs.blocked != 'true'
           && steps.check_flight.outputs.blocked != 'true'
@@ -1464,6 +1524,7 @@ jobs:
           steps.check_pause.outputs.paused != 'true'
           && steps.check_iterations.outputs.cap_reached != 'true'
           && steps.check_chain.outputs.broken != 'true'
+          && steps.check_critica.outputs.blocked != 'true'
           && steps.check_panel.outputs.blocked != 'true'
           && steps.check_serial.outputs.blocked != 'true'
           && steps.check_flight.outputs.blocked != 'true'
@@ -1501,6 +1562,7 @@ jobs:
           steps.check_pause.outputs.paused != 'true'
           && steps.check_iterations.outputs.cap_reached != 'true'
           && steps.check_chain.outputs.broken != 'true'
+          && steps.check_critica.outputs.blocked != 'true'
           && steps.check_panel.outputs.blocked != 'true'
           && steps.check_serial.outputs.blocked != 'true'
           && steps.check_flight.outputs.blocked != 'true'
@@ -3136,6 +3198,7 @@ jobs:
           && steps.check_pause.outputs.paused != 'true'
           && steps.check_iterations.outputs.cap_reached != 'true'
           && steps.check_chain.outputs.broken != 'true'
+          && steps.check_critica.outputs.blocked != 'true'
           && steps.check_panel.outputs.blocked != 'true'
           && steps.check_serial.outputs.blocked != 'true'
           && steps.check_flight.outputs.blocked != 'true'
@@ -3499,6 +3562,7 @@ jobs:
           && steps.check_pause.outputs.paused != 'true'
           && steps.check_iterations.outputs.cap_reached != 'true'
           && steps.check_chain.outputs.broken != 'true'
+          && steps.check_critica.outputs.blocked != 'true'
           && steps.check_panel.outputs.blocked != 'true'
           && steps.check_serial.outputs.blocked != 'true'
           && steps.check_flight.outputs.blocked != 'true'
@@ -3666,6 +3730,7 @@ jobs:
           && steps.check_pause.outputs.paused != 'true'
           && steps.check_iterations.outputs.cap_reached != 'true'
           && steps.check_chain.outputs.broken != 'true'
+          && steps.check_critica.outputs.blocked != 'true'
           && steps.check_panel.outputs.blocked != 'true'
           && steps.check_serial.outputs.blocked != 'true'
           && steps.check_flight.outputs.blocked != 'true'
