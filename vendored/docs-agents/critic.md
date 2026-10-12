@@ -14,7 +14,7 @@ Cuatro modos de fallo repetidos del encargo (P0 del propietario, 2026-10-12, «s
 
 - El issue con label `critica:pendiente`, su body y sus comentarios (incluida tu ronda anterior, si la hay).
 - Las ADR que el issue cita (`ADR-NNN`) en el registro de decisiones del repo (respeta `layout`: fichero por ADR o volumen; usa el índice si existe).
-- La skill `epic-context-<ADR>` si existe (racional, alternativas RECHAZADAS, correcciones del humano). No es normativa ni citable, pero es la memoria de las decisiones ya tomadas: es donde miras para el modo de fallo (1).
+- El contexto de decisión (AP-114): la skill `epic-context-<ADR>` de cada ADR que el issue cita, si existe (épicas Y sueltos con ADR escriben ahí; busca la sección `## Suelto #N` de otros sueltos de la misma ADR), y en un suelto sin ADR la sección `## Contexto de decisión (no normativa)` de su body. Racional, alternativas RECHAZADAS, correcciones del humano. No es normativo ni citable, pero es la memoria de las decisiones ya tomadas: es donde miras para el modo de fallo (1). Si el issue cita una ADR cuya skill no existe y tampoco trae sección en el body, dilo como hallazgo no bloqueante: sin contexto, F solo puede contrastar contra la ADR.
 - `docs/agents/protocol.md` (vocabulario del issue: bloque de invariantes, `pre-épica:`, `invariantes-na`), `docs/agents/creator.md` (qué puede y no puede decidir el Creator).
 - El árbol de la rama por defecto solo para comprobar que las rutas, ficheros y símbolos que el issue cita como EXISTENTES existen (clase central#270).
 
@@ -29,7 +29,7 @@ Cada punto produce o nada o un hallazgo. Un hallazgo sin ancla no existe.
 | C | (4) | Los invariantes cubren el alcance: cada cláusula del alcance tiene un invariante que la observaría fallar. Lo que no se puede observar no es alcance. | cláusula sin invariante |
 | D | (3) | Cada instrucción del issue es compatible con las cláusulas de las ADR citadas y con las ADR que las condicionan («citada en» del índice). | `ADR-NNN §/cláusula` textual |
 | E | (3) | Si dos cláusulas de una misma ADR (o de dos ADR vigentes) se contradicen entre sí, el defecto es de la ADR, no del issue: hallazgo **escalado**, no bloqueante para el issue; lo resuelve el Architect con el propietario. | ambas cláusulas textuales |
-| F | (1) | El issue no revierte ni reabre decisiones registradas (ADR vigente, `epic-context`: alternativas rechazadas, correcciones del humano) que no sean su asunto. | la decisión textual y la frase del issue que la deshace |
+| F | (1) | El issue no revierte ni reabre decisiones registradas (ADR vigente; `epic-context-<ADR>` incluidas las secciones `## Suelto #N`; sección `## Contexto de decisión` del body en sueltos sin ADR: alternativas rechazadas, correcciones del humano) que no sean su asunto. | la decisión textual y la frase del issue que la deshace |
 | G | (2) | Ninguna instrucción exige al Creator una decisión de diseño (elegir entre alternativas, fijar un umbral, decidir alcance). El Creator ejecuta; decide el Architect. | la frase indefinida |
 | H | (2) | Rutas, ficheros, símbolos y fixtures citados como existentes existen en la rama por defecto. | ruta y resultado de la comprobación |
 | I | (4) | DoD verificable por algún actor del pipeline (nada de «capturas móvil» ni criterios que ningún agente puede ejecutar — clase central#230). | el ítem de DoD |
