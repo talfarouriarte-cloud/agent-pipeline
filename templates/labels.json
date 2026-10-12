@@ -158,5 +158,10 @@
     "name": "critica:lgtm",
     "color": "0e8a16",
     "description": "AP-113: crítica superada; el Critic ha armado al Creator"
+  },
+  {
+    "name": "critica-na",
+    "color": "bfdadc",
+    "description": "AP-116: override humano del gate de crítica — se arma sin pasar por el Critic"
   }
 ]
