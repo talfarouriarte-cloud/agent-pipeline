@@ -1,0 +1,205 @@
+# Critic — crítica del issue ANTES del arm (AP-113, 2026-10-12)
+#
+# P0 del propietario: se perdía trabajo porque los defectos del encargo (deshacer
+# decisiones ya tomadas, instrucciones indefinidas, contradicciones con ADR,
+# falta de invariantes) se descubrían DESPUÉS del arm — enmiendas en vuelo,
+# escalados, PRs descartados. Este rol los paga antes, con un comentario.
+#
+# Flujo: el Architect publica el issue con `critica:pendiente` y NO lo arma.
+# Este reusable se dispara por el `labeled`, lee issue + ADR citadas +
+# epic-context y publica UNA crítica por ronda (máx. 2) con veredicto:
+#   BLOQUEANTE → `critica:hallazgos` (ronda 2: + `human-needed`)
+#   LGTM       → `critica:lgtm` y ARMA al Creator (ping de confianza por PAT)
+# El Architect vigila solo las labels (tarea programada cada 5 min, ver
+# vendored/docs-agents/architect.md § 7) y borra su tarea con `critica:lgtm`.
+#
+# Fuera del régimen serial: no produce PRs ni toma `serial-activo`. El guard
+# serial lo ejerce el arm del Creator que este rol dispara, no este run.
+# Mandato: vendored/docs-agents/critic.md (servido por el graft, AP-009).
+name: Critic
+
+# CALLABLE (agent-pipeline): trigger y concurrency en el stub
+# (concurrency group critic-<issue>, cancel-in-progress: false).
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        default: ubuntu-latest
+      default_branch:
+        type: string
+        default: main
+      critic_model:
+        type: string
+        default: claude-opus-5-5
+        # AP-112: la variable de repo/org `PIPELINE_CRITIC_MODEL` del CONSUMIDOR, si
+        # existe y no está vacía, prevalece sobre este input en `claude_args`.
+      critic_fallback_model:
+        type: string
+        default: claude-fable-5-1  # mismo par que el resto de roles; con precio en model-costs.json
+      critic_max_turns:
+        # NO lesson-bearing (sin incidente que lo calibre todavía): estimación de
+        # arranque. Lectura de issue + ≤5 ADR + epic-context + comprobación de
+        # rutas + 1 comentario + labels + (opcional) ping. Se calibra con los
+        # primeros 10 runs (criterio falsable de AP-113).
+        type: number
+        default: 40
+      timeout_minutes:
+        type: number
+        default: 20
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+      REVIEWER_GITHUB_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  critic:
+    name: Crítica del issue
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    # Solo el `labeled` de `critica:pendiente`. `pause-agents` = hold humano.
+    if: |
+      github.event_name == 'issues'
+      && github.event.label.name == 'critica:pendiente'
+      && !contains(github.event.issue.labels.*.name, 'pause-agents')
+    steps:
+      - name: Checkout (registro de decisiones + docs de agentes)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.default_branch }}
+
+      - name: Graft vendored (capa común servida desde el central — AP-009)
+        uses: talfarouriarte-cloud/agent-pipeline/.github/actions/graft-vendored@main
+
+      # Idempotencia y tope de rondas, DETERMINISTA (cero LLM): si el issue ya
+      # tiene un marcador `critica: ronda=2`, el ciclo está cerrado; si tiene
+      # `critica:lgtm`, ya pasó. En ambos casos el run sale verde sin sesión.
+      - name: Ronda y gate
+        id: ronda
+        uses: actions/github-script@v7
+        env:
+          GH_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+        with:
+          github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          script: |
+            const O = { owner: context.repo.owner, repo: context.repo.repo };
+            const num = context.payload.issue.number;
+            const labels = (context.payload.issue.labels || []).map(l => l.name);
+            if (labels.includes('critica:lgtm')) { core.notice('critica:lgtm ya presente: nada que hacer.'); core.setOutput('run', 'false'); return; }
+            const cs = await github.paginate(github.rest.issues.listComments, { ...O, issue_number: num, per_page: 100 });
+            const RE = /<!--\s*critica:\s*ronda=(\d)\s+veredicto=(bloqueante|lgtm)\s*-->/g;
+            let maxRonda = 0;
+            for (const c of cs) for (const m of (c.body || '').matchAll(RE)) maxRonda = Math.max(maxRonda, Number(m[1]));
+            if (maxRonda >= 2) {
+              core.notice(`ronda 2 ya publicada: ciclo cerrado (human-needed). Sin sesión.`);
+              core.setOutput('run', 'false'); return;
+            }
+            core.setOutput('run', 'true');
+            core.setOutput('ronda', String(maxRonda + 1));
+            core.info(`ronda ${maxRonda + 1}/2 sobre #${num}`);
+
+      - name: Asegurar ~/.local/bin (instalador nativo de Claude Code)
+        if: steps.ronda.outputs.run == 'true'
+        run: mkdir -p "$HOME/.local/bin"
+
+      - name: Run critic
+        id: critic
+        if: steps.ronda.outputs.run == 'true'
+        # Pin a SHA completo (AP-085/AP-087): mismo pin que el resto de reusables.
+        uses: anthropics/claude-code-action@8cf3482550831fb35a4fc3fbf7ca139cf8028b4c # v1.0.233
+        env:
+          # Blindaje OAuth-only: si OAuth Max falla, rojo en vez de facturar por API key.
+          ANTHROPIC_API_KEY: ""
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: "claude"
+          # PAT: los comentarios salen con autoría del propietario ⇒ el ping de arm
+          # del § 4 del mandato pasa el gate author_association del Creator.
+          github_token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          claude_args: |
+            --model ${{ vars.PIPELINE_CRITIC_MODEL || inputs.critic_model }}
+            --fallback-model ${{ inputs.critic_fallback_model }}
+            --effort high
+            --max-turns ${{ inputs.critic_max_turns }}
+            --allowedTools "Read,Glob,Grep,Bash(gh issue view:*),Bash(gh issue comment:*),Bash(gh api:*),Bash(ls:*),Bash(test:*)"
+          prompt: |
+            REPO: ${{ github.repository }}
+            ISSUE: ${{ github.event.issue.number }}
+            RONDA: ${{ steps.ronda.outputs.ronda }}/2
+            RAMA POR DEFECTO: ${{ inputs.default_branch }}
+
+            Eres el Critic del pipeline de agentes de este repo. Tu mandato
+            completo está en `docs/agents/critic.md` (léelo ENTERO antes de
+            nada; si existe `docs/agents/critic-annex.md`, también). Resumen
+            vinculante:
+
+            1. Lee el issue (`gh issue view ISSUE --comments`), las ADR que
+               cita en el registro de decisiones del repo, la skill
+               `epic-context-<ADR>` si existe, `docs/agents/protocol.md` y
+               `docs/agents/creator.md`.
+            2. Aplica la checklist A–I del mandato § 2. Un hallazgo sin ancla
+               textual no existe. La ausencia del bloque de invariantes (A) es
+               bloqueante SIEMPRE.
+            3. Publica UN comentario (§ 3) con la cabecera
+               `**Crítica · ronda RONDA/2 · <BLOQUEANTE|LGTM>**` y el marcador
+               `<!-- critica: ronda=RONDA veredicto=bloqueante|lgtm -->` en
+               línea propia. Luego las labels por `gh api`.
+            4. Si RONDA es 2 y el veredicto es BLOQUEANTE: además `human-needed`.
+            5. Solo con LGTM, y solo si el issue no tiene `pause-agents`,
+               `pausa-cola` ni `human-needed`: publica un SEGUNDO comentario
+               que arme al Creator (§ 4). Es el ÚNICO sitio donde escribes la
+               mención de arm. En cualquier otro texto, escribe «arroba + claude».
+
+            No edites el body, no cierres nada, no toques ADR, no abras PR.
+
+      - name: Anotar el consumo LLM (model-usage, AP-099)
+        if: always() && steps.critic.outcome != 'skipped' && steps.critic.outcome != 'cancelled'
+        uses: actions/github-script@v7
+        env:
+          EXEC_FILE: ${{ steps.critic.outputs.execution_file }}
+        with:
+          script: |
+            const fs = require('fs');
+            const f = process.env.EXEC_FILE || `${process.env.RUNNER_TEMP || '/tmp'}/claude-execution-output.json`;
+            let d = null;
+            try { d = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (e) { core.info(`execution file ilegible (${e.message}): sin dato.`); return; }
+            const msgs = Array.isArray(d) ? d : (d ? [d] : []);
+            const r = [...msgs].reverse().find(m => m && m.type === 'result') || null;
+            const mu = r && r.modelUsage;
+            if (!mu || typeof mu !== 'object' || Object.keys(mu).length === 0) { core.info('sin modelUsage con uso: sin dato.'); return; }
+            const tok = Object.fromEntries(Object.entries(mu).map(([m, u]) => [m, {
+              in: Number(u && u.inputTokens) || 0, out: Number(u && u.outputTokens) || 0,
+              cr: Number(u && u.cacheReadInputTokens) || 0, cw: Number(u && u.cacheCreationInputTokens) || 0 }]));
+            core.notice(`model-usage: ${JSON.stringify({ num_turns: r.num_turns, models: tok })}`);
+
+      # El exit code del step de sesión MIENTE (finplan#1326): se verifica el
+      # estado MATERIALIZADO. Sin marcador de esta ronda ⇒ la sesión murió sin
+      # publicar: se deja `critica:pendiente` → `human-needed` con diagnóstico,
+      # para que el Architect lo vea en su siguiente tick y no espere en vano.
+      - name: Verificación de presencia del resultado
+        if: always() && steps.ronda.outputs.run == 'true'
+        uses: actions/github-script@v7
+        env:
+          RONDA: ${{ steps.ronda.outputs.ronda }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          script: |
+            const O = { owner: context.repo.owner, repo: context.repo.repo };
+            const num = context.payload.issue.number;
+            const cs = await github.paginate(github.rest.issues.listComments, { ...O, issue_number: num, per_page: 100 });
+            const RE = new RegExp(`<!--\\s*critica:\\s*ronda=${process.env.RONDA}\\s+veredicto=(bloqueante|lgtm)\\s*-->`);
+            if (cs.some(c => RE.test(c.body || ''))) { core.info(`ronda ${process.env.RONDA} materializada.`); return; }
+            core.warning(`ronda ${process.env.RONDA}: la sesión terminó sin publicar su crítica.`);
+            try {
+              await github.rest.issues.removeLabel({ ...O, issue_number: num, name: 'critica:pendiente' });
+            } catch (e) { core.info(`removeLabel critica:pendiente: ${e.message}`); }
+            await github.rest.issues.addLabels({ ...O, issue_number: num, labels: ['human-needed'] });
+            await github.rest.issues.createComment({ ...O, issue_number: num,
+              body: `**critic · post-step**: la sesión del Critic (ronda ${process.env.RONDA}) terminó sin publicar su crítica ([run](${process.env.RUN_URL})). Retiro \`critica:pendiente\` y pongo \`human-needed\`: el Architect decide si vuelve a poner \`critica:pendiente\` (nueva sesión, misma ronda) o arma a mano. Sin mención de arm aquí.` });
+            core.setFailed('Critic sin resultado materializado.');

@@ -3045,3 +3045,28 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 **Criterio falsable.** (a) CI verde (`check-contracts`, con el caso nuevo). (b) Con `PIPELINE_RESOLVE_MODEL=claude-opus-5-5` en finplan, el siguiente run del resolver muestra `--model claude-opus-5-5` en el log y la sesión termina viva. (c) La siguiente muerte instantánea de cualquier rol deja una anotación `llm-error:` con `result` no vacío.
 
 **Fecha.** 2026-10-08.
+
+## AP-113 — Critic: crítica del issue antes del arm, con arm delegado tras el LGTM (2026-10-12)
+
+**Contexto.** P0 del propietario en chat (2026-10-12, fuera de la cola mensual por AP-082: «se ha perdido mucho trabajo con esto»). Cuatro modos de fallo recurrentes del encargo, todos descubiertos DESPUÉS del arm: (1) el issue deshace decisiones ya tomadas ajenas a su asunto; (2) instrucciones indefinidas que obligan al Creator a decidir o escalar; (3) contradicciones con una ADR o dentro de una ADR; (4) estructura incompleta, sobre todo sin invariantes. Hay propuestas de la misma familia en la cola (central#270, #301, #302, #305, #230): el patrón está confirmado; su peso relativo no está medido. Hoy el único filtro previo al arm es el guard determinista de horneado (AP-021/029/096), que comprueba presencia, no calidad, y cubre `epica`/`correctivo`.
+
+**Decisión.**
+
+1. **Rol nuevo `Critic`**, reusable `critic.yml` + stub `templates/stubs/stub-critic.yml` (human-execute en finplan y wmcb), disparado por `labeled: critica:pendiente`. Mandato canónico `vendored/docs-agents/critic.md`, servido por el graft. Checklist cerrada A–I; un hallazgo sin ancla textual no existe. Ausencia de invariantes = bloqueante siempre (regla dura). Contradicción interna de ADR = escalado al propietario, no parche en el issue.
+2. **Máximo 2 rondas.** Veredicto por comentario con marcador `<!-- critica: ronda=N veredicto=… -->`. Ronda 2 bloqueante ⇒ `human-needed`. Un step determinista previo a la sesión cierra el ciclo (sin LLM) si ya hay ronda 2 o `critica:lgtm`.
+3. **El arm es del Critic.** Con `critica:lgtm` publica él el ping de confianza al Creator (su token es el PAT, `author_association: OWNER`). El guard serial del Creator sigue intacto: el Critic no lo rodea. Excepción: `pause-agents`/`pausa-cola`/`human-needed` ⇒ LGTM sin arm.
+4. **Lado del Architect** (`architect.md` § 7): publica con `critica:pendiente` y sin ping; tarea programada cada 5 min que mira solo labels; con `critica:hallazgos` corrige y re-etiqueta; con `critica:lgtm` borra la tarea.
+5. **Fuera del régimen serial**: no abre PR ni toma `serial-activo`. `PIPELINE_CRITIC_MODEL` como override (AP-112). Presupuestos (`critic_max_turns` 40, `timeout_minutes` 20) **no** lesson-bearing: estimación de arranque, a calibrar.
+6. Labels fijas `critica:pendiente|hallazgos|lgtm` en `labels.json`/`labels-usage.json`; contrato en `workflow-contracts.json`.
+
+**Qué NO.** No extiende `epic-context` a sueltos (cambio de `proceso-diseño`, PR aparte). No toca el guard de horneado: queda detrás como red. No se exige para issues del central (la cola mensual ya tiene ruling como gate).
+
+**Alternativas descartadas.** (a) Subagente crítico dentro de la sesión del Architect: no sirve a los Architects de consumidor (otras sesiones de chat), sin traza en el repo. (b) Job dentro de `process-review.yml` para no tocar consumidores congelados: el propietario prefiere reusable propio y sube los stubs. (c) Crítica en paralelo al Creator ya armado: convierte cada hallazgo en enmienda en vuelo, que es el retrabajo que se quiere evitar.
+
+**Riesgos.** Un LLM crítico siempre encuentra algo: el tope de 2 rondas y «hallazgo = ancla» son el freno; si la tasa de BLOQUEANTE en ronda 1 supera el 80 % sostenido, la checklist es demasiado ancha y se revisa. Latencia añadida por issue: una sesión (~5–15 min) más el tick del Architect.
+
+**Reversibilidad.** Alta: sin la label nadie se dispara; retirar el stub devuelve el flujo previo.
+
+**Criterio falsable (AP-099, término (a)).** En los 10 primeros issues con `critica:lgtm` de cada consumidor, frente a los 10 anteriores sin crítica: enmiendas en vuelo + escalados `human-needed` + PRs cerrados sin merge **por punto entregado** baja; (c) fuga/rework de la matriz del Auditor no sube. Además: distribución de hallazgos por letra A–I (dice qué modo de fallo pesa de verdad) y tasa de ronda 2. Se lee en la mensual de noviembre.
+
+**Fecha.** 2026-10-12.

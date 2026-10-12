@@ -143,5 +143,20 @@
     "name": "accion:propietario",
     "color": "d93f0b",
     "description": "Ruling mensual: configuración/decisión del propietario, no código."
+  },
+  {
+    "name": "critica:pendiente",
+    "color": "fbca04",
+    "description": "AP-113: issue publicado, a la espera de la crítica del Critic; NO armar"
+  },
+  {
+    "name": "critica:hallazgos",
+    "color": "e4a11b",
+    "description": "AP-113: el Critic publicó hallazgos bloqueantes; turno del Architect"
+  },
+  {
+    "name": "critica:lgtm",
+    "color": "0e8a16",
+    "description": "AP-113: crítica superada; el Critic ha armado al Creator"
   }
 ]

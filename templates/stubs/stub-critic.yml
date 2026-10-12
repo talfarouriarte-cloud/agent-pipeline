@@ -1,0 +1,22 @@
+# STUB (agent-pipeline). AP-113 (2026-10-12): crítica del issue ANTES del arm.
+# El Architect publica el issue con `critica:pendiente` y no lo arma; el Critic
+# publica su crítica y, con LGTM, arma él al Creator.
+name: Critic
+on:
+  issues:
+    types: [labeled]
+permissions:
+  contents: read
+  issues: write
+concurrency:
+  group: critic-${{ github.event.issue.number }}
+  cancel-in-progress: false
+jobs:
+  call:
+    uses: talfarouriarte-cloud/agent-pipeline/.github/workflows/critic.yml@main
+    with:
+      runner: ubuntu-latest
+      default_branch: main
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      REVIEWER_GITHUB_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
