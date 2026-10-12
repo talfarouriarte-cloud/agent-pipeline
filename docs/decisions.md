@@ -3143,7 +3143,7 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 1. **Fail-open en el post-step de `critic.yml`:** sin marcador de la ronda ⇒ retira `critica:*`, pone `critica-na`, comenta con `<!-- critica-no-realizada: ronda=N -->` y ARMA al Creator (ping con PAT), salvo hold (`pause-agents`/`pausa-cola`/`human-needed`). Se pierde la crítica de ese issue, no la cadena. El marcador es la serie para la mensual: tasa de muertes del Critic.
 2. **Presupuesto:** `critic_max_turns` 40 → 80, `timeout_minutes` 20 → 30. Siguen sin ser lesson-bearing hasta tener 10 runs.
 3. **Disciplina de lectura** (`critic.md` § 1-bis): cláusulas citadas por grep, nunca volúmenes enteros; publicar con lo que haya al 50 % del presupuesto marcando lo no comprobado como no bloqueante.
-4. **Ronda 2 bloqueante sigue en `human-needed`:** ahí hay una crítica concreta que leer; es el único caso en que parar aporta.
+4. **Ronda 2 bloqueante también fail-open** (propietario, 2026-10-13 00:32: «esto es trabajo perdido»): el Critic publica la crítica como rastro, pone `critica-na` y arma. El Critic nunca pone `human-needed`.
 
 **Qué NO.** No cambia el gate AP-116. Sin cambio de contrato (defaults de inputs existentes).
 

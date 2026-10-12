@@ -8,7 +8,7 @@
 # Flujo: el Architect publica el issue con `critica:pendiente` y NO lo arma.
 # Este reusable se dispara por el `labeled`, lee issue + ADR citadas +
 # epic-context y publica UNA crítica por ronda (máx. 2) con veredicto:
-#   BLOQUEANTE → `critica:hallazgos` (ronda 2: + `human-needed`)
+#   BLOQUEANTE → `critica:hallazgos` (ronda 2: `critica-na` y ARMA igual, AP-117)
 #   LGTM       → `critica:lgtm` y ARMA al Creator (ping de confianza por PAT)
 # El Architect vigila solo las labels (tarea programada cada 5 min, ver
 # vendored/docs-agents/architect.md § 7) y borra su tarea con `critica:lgtm`.
@@ -96,7 +96,7 @@ jobs:
             let maxRonda = 0;
             for (const c of cs) for (const m of (c.body || '').matchAll(RE)) maxRonda = Math.max(maxRonda, Number(m[1]));
             if (maxRonda >= 2) {
-              core.notice(`ronda 2 ya publicada: ciclo cerrado (human-needed). Sin sesión.`);
+              core.notice(`ronda 2 ya publicada: ciclo cerrado. Sin sesión.`);
               core.setOutput('run', 'false'); return;
             }
             core.setOutput('run', 'true');
@@ -149,8 +149,10 @@ jobs:
                `**Crítica · ronda RONDA/2 · <BLOQUEANTE|LGTM>**` y el marcador
                `<!-- critica: ronda=RONDA veredicto=bloqueante|lgtm -->` en
                línea propia. Luego las labels por `gh api`.
-            4. Si RONDA es 2 y el veredicto es BLOQUEANTE: además `human-needed`.
-            5. Solo con LGTM, solo si el issue NO lleva la label `epica`
+            4. Si RONDA es 2 y el veredicto es BLOQUEANTE (AP-117): publica la
+               crítica igual, pero pon `critica-na` en vez de `critica:hallazgos`
+               y ARMA al Creator como en el paso 5. Nunca `human-needed`.
+            5. Con LGTM (o ronda 2 bloqueante), solo si el issue NO lleva la label `epica`
                (AP-115: en una épica criticas también la ADR entera, J–N, y
                nunca armas), y solo si no tiene `pause-agents`,
                `pausa-cola` ni `human-needed`: publica un SEGUNDO comentario
