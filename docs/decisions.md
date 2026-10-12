@@ -3091,3 +3091,24 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 **Criterio falsable.** En la mensual de noviembre, de los hallazgos F del Critic en sueltos, ≥ 1 cita una sección `## Suelto #N` o `## Contexto de decisión` (la casa se usa y sirve). Si en 10 sueltos con ADR ninguno amplía su `epic-context`, la regla no se sigue y se revisa el porqué (coste del Architect o cap).
 
 **Fecha.** 2026-10-12.
+
+## AP-115 — El Critic critica la ADR entera en el issue de épica, antes de hornear eslabones; en épica nunca arma (2026-10-12)
+
+**Contexto.** Pregunta del propietario tras AP-113/114: «¿el crítico mira también la calidad de las ADR?». No: solo como referencia para el issue (D) y escalaba la contradicción interna (E) si el issue tocaba justo esas cláusulas. Una ADR mal horneada contaminaba N eslabones y se detectaba N veces tarde, o nunca.
+
+**Decisión.**
+
+1. **Vehículo:** el issue de épica. El Architect pone `critica:pendiente` en él antes de hornear eslabones. Cero vocabulario nuevo.
+2. **Checklist J–N** (sobre la ADR, bloqueantes en épica): J contradicción interna o con ADR vigente («citada en»); K cláusula no observable; L claim de estado del árbol sin ancla (AP-034); M cuantitativa sin dry-run ni INCÓGNITA (AP-045); N elección abierta delegada al Creator. E queda para la detección desde un issue no épica (escalado).
+3. **En épica el Critic no arma.** `critica:lgtm` certifica ADR + issue de épica; el Architect hornea los eslabones y cada uno pasa su propia crítica. El LGTM de ADR no exime a los eslabones.
+4. Un hallazgo J–N se corrige en la ADR (registro, `architect.md` § 4), no en el issue.
+
+**Qué NO.** No cambia workflow (solo el prompt), labels ni contrato. No añade rondas: las 2 cubren ADR + issue.
+
+**Alternativas descartadas.** Issue puente `critica-adr: ADR-NNN`: vocabulario y un issue más por épica. Eximir a los eslabones tras LGTM de ADR: el eslabón añade alcance, invariantes y DoD propios que la ADR no tiene.
+
+**Reversibilidad.** Alta: texto.
+
+**Criterio falsable.** Mensual de noviembre: de los hallazgos del Critic en épicas, la proporción J–N frente a A–I dice si los defectos nacen en la ADR o en el issue (dato que hoy no existe). Si en 5 épicas J–N = 0, la checklist sobra o la ADR ya venía filtrada por chat: se decide ahí.
+
+**Fecha.** 2026-10-12.
