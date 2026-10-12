@@ -3070,3 +3070,24 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 **Criterio falsable (AP-099, término (a)).** En los 10 primeros issues con `critica:lgtm` de cada consumidor, frente a los 10 anteriores sin crítica: enmiendas en vuelo + escalados `human-needed` + PRs cerrados sin merge **por punto entregado** baja; (c) fuga/rework de la matriz del Auditor no sube. Además: distribución de hallazgos por letra A–I (dice qué modo de fallo pesa de verdad) y tasa de ronda 2. Se lee en la mensual de noviembre.
 
 **Fecha.** 2026-10-12.
+
+## AP-114 — Contexto de decisión para issues sueltos: misma skill `epic-context-<ADR>` si hay ADR, sección en el body si no (2026-10-12)
+
+**Contexto.** Continuación de AP-113 (P0 del propietario). El modo de fallo (1) —el issue deshace decisiones ya tomadas ajenas a su asunto— solo lo puede detectar el Critic si la decisión está escrita donde él mira. Para épicas existe `epic-context-<ADR>` (skill temporal del consumidor, no normativa, archivada por el Auditor al cerrar). Para sueltos y correctivos no había casa: el contexto vivía en el chat del Architect, y un suelto N deshacía lo decidido en el suelto N-1 de la misma ADR sin que nadie lo viera.
+
+**Decisión.**
+
+1. **Suelto con ADR:** su contexto va en la MISMA `epic-context-<ADR>` (crear si no existe; ampliar con sección fechada `## Suelto #N` si existe, dentro del cap ~2.5k). Una casa por ADR; el archivo sigue siendo del Auditor.
+2. **Suelto sin ADR:** sección `## Contexto de decisión (no normativa)` en el body. Muere con el issue; nada que archivar.
+3. **Nunca una skill por issue.**
+4. Lectores: `critic.md` § 1 y checklist F; `resolver-protocol.md` (test de derivabilidad admite la sección del body como fuente no normativa); `proceso-diseño` § epic-context.
+
+**Qué NO.** No crea archivador para sueltos (no hace falta: la skill es por ADR). No hace normativo el contexto: sigue sin poder contradecir ADR/spec. Sin workflows, labels ni contratos: solo `vendored/`.
+
+**Alternativas descartadas.** (B) `epic-context-#<issue>`: reproduce el leak de skills muertas de 2026-07-10 y exige un archivador que no existe. (C sola) siempre en el body: pierde la memoria entre sueltos de la misma ADR, que es exactamente el fallo (1).
+
+**Reversibilidad.** Alta: texto de mandatos y skill.
+
+**Criterio falsable.** En la mensual de noviembre, de los hallazgos F del Critic en sueltos, ≥ 1 cita una sección `## Suelto #N` o `## Contexto de decisión` (la casa se usa y sirve). Si en 10 sueltos con ADR ninguno amplía su `epic-context`, la regla no se sigue y se revisa el porqué (coste del Architect o cap).
+
+**Fecha.** 2026-10-12.

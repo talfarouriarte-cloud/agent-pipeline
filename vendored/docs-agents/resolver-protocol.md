@@ -10,8 +10,9 @@ cadena; las que crean compromiso nuevo escalan a humano, siempre.
 ## Test de derivabilidad
 
 Una decisión es **derivable** si y solo si puedes citar verbatim el ADR, la
-sección de spec.md, o el **doc de contexto de la épica** (skill temporal
-`epic-context-<ADR>`, si existe) que la implica. El doc de contexto es
+sección de spec.md, o el **doc de contexto** (skill temporal
+`epic-context-<ADR>`, si existe; en un suelto sin ADR, la sección
+`## Contexto de decisión (no normativa)` de su body, AP-114) que la implica. El doc de contexto es
 NO-normativo: sirve para derivar, jamás para contradecir — si su contenido
 choca con un ADR o con spec.md, gana el ADR/spec y el conflicto mismo es
 NO derivable (escala). Consúltalo SOLO al llegar a este gate, no al arrancar
