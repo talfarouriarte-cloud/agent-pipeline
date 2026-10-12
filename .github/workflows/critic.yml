@@ -8,7 +8,7 @@
 # Flujo: el Architect publica el issue con `critica:pendiente` y NO lo arma.
 # Este reusable se dispara por el `labeled`, lee issue + ADR citadas +
 # epic-context y publica UNA crítica por ronda (máx. 2) con veredicto:
-#   BLOQUEANTE → `critica:hallazgos` (ronda 2: + `human-needed`)
+#   BLOQUEANTE → `critica:hallazgos` (ronda 2: `critica-na` y ARMA igual, AP-117)
 #   LGTM       → `critica:lgtm` y ARMA al Creator (ping de confianza por PAT)
 # El Architect vigila solo las labels (tarea programada cada 5 min, ver
 # vendored/docs-agents/architect.md § 7) y borra su tarea con `critica:lgtm`.
@@ -38,15 +38,15 @@ on:
         type: string
         default: claude-fable-5-1  # mismo par que el resto de roles; con precio en model-costs.json
       critic_max_turns:
-        # NO lesson-bearing (sin incidente que lo calibre todavía): estimación de
-        # arranque. Lectura de issue + ≤5 ADR + epic-context + comprobación de
-        # rutas + 1 comentario + labels + (opcional) ping. Se calibra con los
-        # primeros 10 runs (criterio falsable de AP-113).
+        # 80 y no 40 (AP-117, finplan#2946 el primer día): la primera sesión real
+        # murió en `error_max_turns` a los 40 con 2,6M tokens de caché leídos y
+        # la crítica sin publicar. Va con la disciplina de lectura del mandato
+        # (§ 1: cláusulas citadas, no volúmenes). Se calibra con los 10 primeros.
         type: number
-        default: 40
+        default: 80
       timeout_minutes:
         type: number
-        default: 20
+        default: 30  # AP-117: 20 → 30, acompaña al bump de turnos
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
@@ -96,7 +96,7 @@ jobs:
             let maxRonda = 0;
             for (const c of cs) for (const m of (c.body || '').matchAll(RE)) maxRonda = Math.max(maxRonda, Number(m[1]));
             if (maxRonda >= 2) {
-              core.notice(`ronda 2 ya publicada: ciclo cerrado (human-needed). Sin sesión.`);
+              core.notice(`ronda 2 ya publicada: ciclo cerrado. Sin sesión.`);
               core.setOutput('run', 'false'); return;
             }
             core.setOutput('run', 'true');
@@ -149,8 +149,10 @@ jobs:
                `**Crítica · ronda RONDA/2 · <BLOQUEANTE|LGTM>**` y el marcador
                `<!-- critica: ronda=RONDA veredicto=bloqueante|lgtm -->` en
                línea propia. Luego las labels por `gh api`.
-            4. Si RONDA es 2 y el veredicto es BLOQUEANTE: además `human-needed`.
-            5. Solo con LGTM, solo si el issue NO lleva la label `epica`
+            4. Si RONDA es 2 y el veredicto es BLOQUEANTE (AP-117): publica la
+               crítica igual, pero pon `critica-na` en vez de `critica:hallazgos`
+               y ARMA al Creator como en el paso 5. Nunca `human-needed`.
+            5. Con LGTM (o ronda 2 bloqueante), solo si el issue NO lleva la label `epica`
                (AP-115: en una épica criticas también la ADR entera, J–N, y
                nunca armas), y solo si no tiene `pause-agents`,
                `pausa-cola` ni `human-needed`: publica un SEGUNDO comentario
@@ -181,8 +183,11 @@ jobs:
 
       # El exit code del step de sesión MIENTE (finplan#1326): se verifica el
       # estado MATERIALIZADO. Sin marcador de esta ronda ⇒ la sesión murió sin
-      # publicar: se deja `critica:pendiente` → `human-needed` con diagnóstico,
-      # para que el Architect lo vea en su siguiente tick y no espere en vano.
+      # publicar. FAIL-OPEN (AP-117, decisión del propietario 2026-10-13: «prefiero
+      # que siga la cadena a un human-needed que lo para todo»): se pone
+      # `critica-na` con marcador `critica-no-realizada` y se ARMA al Creator. Se
+      # pierde la crítica de ESTE issue, no la cadena; el marcador deja rastro
+      # para la mensual (tasa de muertes del Critic = su propio criterio).
       - name: Verificación de presencia del resultado
         if: always() && steps.ronda.outputs.run == 'true'
         uses: actions/github-script@v7
@@ -197,11 +202,16 @@ jobs:
             const cs = await github.paginate(github.rest.issues.listComments, { ...O, issue_number: num, per_page: 100 });
             const RE = new RegExp(`<!--\\s*critica:\\s*ronda=${process.env.RONDA}\\s+veredicto=(bloqueante|lgtm)\\s*-->`);
             if (cs.some(c => RE.test(c.body || ''))) { core.info(`ronda ${process.env.RONDA} materializada.`); return; }
-            core.warning(`ronda ${process.env.RONDA}: la sesión terminó sin publicar su crítica.`);
-            try {
-              await github.rest.issues.removeLabel({ ...O, issue_number: num, name: 'critica:pendiente' });
-            } catch (e) { core.info(`removeLabel critica:pendiente: ${e.message}`); }
-            await github.rest.issues.addLabels({ ...O, issue_number: num, labels: ['human-needed'] });
+            core.warning(`ronda ${process.env.RONDA}: la sesión terminó sin publicar su crítica — fail-open (AP-117).`);
+            const labels = (context.payload.issue.labels || []).map(l => l.name);
+            for (const n of ['critica:pendiente', 'critica:hallazgos']) {
+              try { await github.rest.issues.removeLabel({ ...O, issue_number: num, name: n }); } catch (e) { core.info(`removeLabel ${n}: ${e.message}`); }
+            }
+            await github.rest.issues.addLabels({ ...O, issue_number: num, labels: ['critica-na'] });
             await github.rest.issues.createComment({ ...O, issue_number: num,
-              body: `**critic · post-step**: la sesión del Critic (ronda ${process.env.RONDA}) terminó sin publicar su crítica ([run](${process.env.RUN_URL})). Retiro \`critica:pendiente\` y pongo \`human-needed\`: el Architect decide si vuelve a poner \`critica:pendiente\` (nueva sesión, misma ronda) o arma a mano. Sin mención de arm aquí.` });
-            core.setFailed('Critic sin resultado materializado.');
+              body: `**critic · post-step**: la sesión del Critic (ronda ${process.env.RONDA}) terminó sin publicar su crítica ([run](${process.env.RUN_URL})). Fail-open (AP-117): \`critica-na\` y arm al Creator sin crítica. Este issue NO ha sido criticado.\n\n<!-- critica-no-realizada: ronda=${process.env.RONDA} -->` });
+            const hold = ['pause-agents', 'pausa-cola', 'human-needed'].filter(n => labels.includes(n));
+            if (hold.length) { core.notice(`hold presente (${hold.join(', ')}): critica-na puesta, sin arm.`); return; }
+            await github.rest.issues.createComment({ ...O, issue_number: num,
+              body: `@claude\n\nArm tras fail-open del Critic (AP-117, ronda ${process.env.RONDA}): crítica no realizada.` });
+            core.warning('Critic sin resultado: Creator armado por fail-open.');

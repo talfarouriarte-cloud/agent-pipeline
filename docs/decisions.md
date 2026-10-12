@@ -3135,3 +3135,22 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 **Criterio falsable.** Desde el merge, 0 issues armados en consumidores sin `critica:lgtm` o `critica-na` (consulta: issues con `serial-activo` o PR `claude/issue-N` sin esas labels). El de AP-113 sigue vigente para medir el efecto.
 
 **Fecha.** 2026-10-12.
+
+## AP-117 — Critic fail-open: sin crítica materializada se arma al Creator con `critica-na`; presupuesto 80/30 y disciplina de lectura (2026-10-13)
+
+**Contexto.** Primera noche del Critic en finplan. #2946 (suelto ADR-133·R·1): sesión muerta en `error_max_turns` (40) con 2,6M tokens de caché leídos y 20k de salida, sin crítica publicada; el post-step puso `human-needed` y la cadena se paró. Propietario: «prefiero que siga la cadena a un human-needed que lo para todo». Desbloqueado a mano con `critica-na`.
+
+**Decisión.**
+
+1. **Fail-open en el post-step de `critic.yml`:** sin marcador de la ronda ⇒ retira `critica:*`, pone `critica-na`, comenta con `<!-- critica-no-realizada: ronda=N -->` y ARMA al Creator (ping con PAT), salvo hold (`pause-agents`/`pausa-cola`/`human-needed`). Se pierde la crítica de ese issue, no la cadena. El marcador es la serie para la mensual: tasa de muertes del Critic.
+2. **Presupuesto:** `critic_max_turns` 40 → 80, `timeout_minutes` 20 → 30. Siguen sin ser lesson-bearing hasta tener 10 runs.
+3. **Disciplina de lectura** (`critic.md` § 1-bis): cláusulas citadas por grep, nunca volúmenes enteros; publicar con lo que haya al 50 % del presupuesto marcando lo no comprobado como no bloqueante.
+4. **Ronda 2 bloqueante también fail-open** (propietario, 2026-10-13 00:32: «esto es trabajo perdido»): el Critic publica la crítica como rastro, pone `critica-na` y arma. El Critic nunca pone `human-needed`.
+
+**Qué NO.** No cambia el gate AP-116. Sin cambio de contrato (defaults de inputs existentes).
+
+**Riesgo aceptado.** Un Critic que muera sistemáticamente deja pasar todo con `critica-na` y el pipeline vuelve al estado pre-AP-113 sin que nadie se pare: por eso el marcador. Si en la mensual > 20 % de issues llevan `critica-no-realizada`, el Critic no sirve tal como está.
+
+**Criterio falsable.** 10 siguientes issues: ≤ 1 con `critica-no-realizada`; 0 cadenas paradas por el Critic.
+
+**Fecha.** 2026-10-13.

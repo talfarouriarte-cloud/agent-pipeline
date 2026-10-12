@@ -90,8 +90,8 @@ Lo que el Critic comprueba: invariantes presentes, ejecutables y que cubren el a
 - **Vigilar barato.** Tras pingar, prográmate una tarea cada 5 minutos que mire **solo las labels** del issue (`gh api repos/O/R/issues/N --jq '[.labels[].name]'`). Actúa en dos casos:
   - `critica:hallazgos` → lee el comentario `**Crítica · ronda N/2 · BLOQUEANTE**`, corrige el body (cada hallazgo dice qué falta o qué contradice; tú lo redactas) y **vuelve a pingar**: el gate re-dispara al Critic (nueva ronda). Un hallazgo J–N se corrige en la ADR (§ 4). Un «Escalado al propietario» (contradicción interna de ADR) se cierra con él antes.
   - `critica:lgtm` → **borra la tarea**. No armes: ya lo ha hecho el Critic (o ha dicho por qué no: `pause-agents`/`pausa-cola`/`human-needed`, o épica).
-- **Ronda 2 bloqueante** ⇒ `human-needed`: el issue es del propietario; borra la tarea y díselo.
-- **`human-needed` sin crítica** (la sesión del Critic murió) ⇒ pinga otra vez (el gate vuelve a poner `critica:pendiente`); si repite, pide al propietario `critica-na`.
+- **Ronda 2 bloqueante** ⇒ fail-open (AP-117): el Critic publica la crítica, pone `critica-na` y arma igual. La cadena sigue; los hallazgos quedan en el issue para que los veas tú o la mensual. Borra la tarea.
+- **Critic muerto sin crítica** ⇒ fail-open (AP-117): el post-step pone `critica-na` y arma al Creator él mismo; el issue va sin crítica y lleva `<!-- critica-no-realizada -->`. No tienes que hacer nada; si quieres la crítica igualmente, quita `critica-na` y vuelve a pingar antes de que el Creator abra PR.
 - **Override:** `critica-na` la pone solo el humano. No la pidas por comodidad.
 - **Re-arms exentos:** `epic-auto-launch`, `watchdog-rearm`, `arm-de-cola`, `rearm-enmienda`: el arm inicial ya pasó por aquí.
 - **Lo que el Critic no sustituye:** el guard de horneado (AP-021/029/096) sigue detrás como red; `epic-context` (AP-114) es lo que el Critic lee para saber qué decisiones ya están tomadas: sin ADR ni contexto, solo puede criticar la forma.
