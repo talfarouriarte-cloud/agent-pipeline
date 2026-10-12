@@ -275,5 +275,41 @@
         "leccion": "central#247 (aud. finplan#2276/#2289) — 2 de 2 muertes de architect-resolve en 4 ciclos fueron error_max_turns a 41/40, una DESPUÉS de publicar su Δ; el mandato creció (ADR-217, AP-021, AP-029) y el presupuesto seguía en su valor de alta. El stub de finplan pineaba 40: desde AP-092 el clamp AP-061 lo eleva"
       }
     }
+  },
+  "critic.yml": {
+    "inputs": {
+      "runner": {
+        "has_default": true,
+        "required": false
+      },
+      "default_branch": {
+        "has_default": true,
+        "required": false
+      },
+      "critic_model": {
+        "has_default": true,
+        "required": false
+      },
+      "critic_fallback_model": {
+        "has_default": true,
+        "required": false
+      },
+      "critic_max_turns": {
+        "has_default": true,
+        "required": false
+      },
+      "timeout_minutes": {
+        "has_default": true,
+        "required": false
+      }
+    },
+    "secrets_required": [
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "REVIEWER_GITHUB_TOKEN"
+    ],
+    "permissions_required": {
+      "contents": "read",
+      "issues": "write"
+    }
   }
 }

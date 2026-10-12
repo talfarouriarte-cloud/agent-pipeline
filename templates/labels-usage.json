@@ -57,5 +57,13 @@
   "self-mensual-queue.yml": [
     "mensual:aprobada",
     "mensual:fundida"
+  ],
+  "critic.yml": [
+    "critica:pendiente",
+    "critica:hallazgos",
+    "critica:lgtm",
+    "human-needed",
+    "pause-agents",
+    "pausa-cola"
   ]
 }

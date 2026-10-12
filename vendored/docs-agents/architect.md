@@ -80,3 +80,15 @@ Para cambiar el modelo primario de un rol sin tocar el central ni el stub del co
 - Un modelo que no esté en `templates/model-costs.json` sale «sin precio» en el ledger del Auditor: antes de usar uno nuevo, pide al Architect central que lo añada.
 - Para saber por qué murió una sesión al nacer, busca en las anotaciones del job la línea `llm-error:` (mensaje de error del execution file, AP-112).
 
+
+## 7. Crítica del issue antes del arm (AP-113)
+
+Todo issue que vayas a armar (épica, eslabón, suelto, correctivo) pasa primero por el Critic (`docs/agents/critic.md`). Lo que comprueba: invariantes presentes, ejecutables y que cubren el alcance; compatibilidad con las ADR citadas; que no deshace decisiones registradas (ADR, `epic-context`); que no deja decisiones de diseño al Creator; que lo que cita como existente existe. Máximo 2 rondas.
+
+- **Publicar.** Crea el issue **sin la mención de arm** y con la label `critica:pendiente`. No lo pingues. El Critic se dispara por la label.
+- **Vigilar barato.** Prográmate una tarea cada 5 minutos que mire **solo las labels** del issue (`gh api repos/O/R/issues/N --jq '[.labels[].name]'`), no el body ni los comentarios. Actúa solo en dos casos:
+  - `critica:hallazgos` → lee el comentario `**Crítica · ronda N/2 · BLOQUEANTE**`, corrige el issue (edita el body; cada hallazgo dice qué falta o qué contradice, tú lo redactas) y vuelve a poner `critica:pendiente` (quita antes `critica:hallazgos`). Un hallazgo «Escalado al propietario» (contradicción interna de una ADR) no se parchea en el issue: se cierra con el propietario primero.
+  - `critica:lgtm` → **borra la tarea programada**. No armes: el Critic ya ha armado al Creator (o ha dicho por qué no, si hay `pause-agents`/`pausa-cola`/`human-needed`).
+- **Ronda 2 bloqueante** ⇒ el Critic pone `human-needed`: el issue es del propietario; borra la tarea y díselo en el chat.
+- **`human-needed` sin crítica** (post-step del Critic: la sesión murió sin publicar) ⇒ vuelve a poner `critica:pendiente` una vez; si repite, arma a mano y anótalo.
+- **Lo que el Critic no sustituye:** el guard de horneado del arm (AP-021/029/096) sigue detrás como red; `epic-context` sigue siendo tuyo de escribir, y es lo que el Critic lee para saber qué decisiones ya están tomadas. Un issue sin ADR ni `epic-context` es un issue al que el Critic solo puede criticar la forma.
