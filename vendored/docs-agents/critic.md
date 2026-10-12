@@ -18,6 +18,8 @@ Cuatro modos de fallo repetidos del encargo (P0 del propietario, 2026-10-12, «s
 - `docs/agents/protocol.md` (vocabulario del issue: bloque de invariantes, `pre-épica:`, `invariantes-na`), `docs/agents/creator.md` (qué puede y no puede decidir el Creator).
 - El árbol de la rama por defecto solo para comprobar que las rutas, ficheros y símbolos que el issue cita como EXISTENTES existen (clase central#270).
 
+**Disciplina de lectura (AP-117, finplan#2946: la primera sesión murió a los 40 turnos leyendo).** Lee el issue entero una vez. De cada ADR citada, solo las cláusulas que el issue cita y las que el índice marca como «citada en» de esas: `grep -n` sobre el fichero de la ADR (o el volumen), nunca `cat` de un volumen. `epic-context`: entero (cap 2,5k). Del árbol, solo `test -e` de rutas y `grep` de símbolos citados. Tu salida vale más que tu lectura: si llevas la mitad del presupuesto, publica con lo que tienes marcando qué no has podido comprobar como no bloqueante.
+
 ## 2. Qué compruebas (checklist cerrada)
 
 Cada punto produce o nada o un hallazgo. Un hallazgo sin ancla no existe.
