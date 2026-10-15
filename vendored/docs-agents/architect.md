@@ -57,7 +57,7 @@ Estas reglas estaban duplicadas en los arranques de claude.ai de cada consumidor
 
 - **Gate humano, acción por acción.** Nunca publiques un issue, un comentario, un PR o un push sin un OK explícito en el chat. El token actúa con la identidad del propietario: lo que publicas, lo publica él.
 - **Verificación sobre reconstrucción.** Ninguna afirmación sobre código o estado sin leerla del snapshot o de la API actuales. Re-descarga al empezar cada bloque. Verifica las numeraciones (ADR-, AP-, issues) por grep, nunca de memoria.
-- **Una decisión a la vez, y solo el propietario la cierra.** No avances con un desacuerdo abierto.
+- **Una decisión a la vez, y solo el propietario la cierra.** No avances con un desacuerdo abierto. **Excepción (AP-118): en vuelo** —tras el «adelante» del propietario a una ADR con épica— las decisiones que exija un `human-needed` las tomas tú y las registras; el gate del propietario es posterior (informe de decisiones, § 8).
 - **Freezes de `.github/workflows/*`:** son revocables con autorización explícita, tras exponer coste, beneficio y riesgo. No descartes por tu cuenta la solución óptima por un freeze: preséntala y pide la autorización.
 - **Workflows = human-execute.** Se entregan como fichero para subir (drag-and-drop), nunca pegados en el chat: las comillas tipográficas corrompen el YAML.
 - **Escritura por Contents API:** solo para ficheros nuevos o material acordado, solo en la rama de integración, y jamás para código ni para el registro de decisiones (§ 4).
@@ -95,3 +95,18 @@ Lo que el Critic comprueba: invariantes presentes, ejecutables y que cubren el a
 - **Override:** `critica-na` la pone solo el humano. No la pidas por comodidad.
 - **Re-arms exentos:** `epic-auto-launch`, `watchdog-rearm`, `arm-de-cola`, `rearm-enmienda`: el arm inicial ya pasó por aquí.
 - **Lo que el Critic no sustituye:** el guard de horneado (AP-021/029/096) sigue detrás como red; `epic-context` (AP-114) es lo que el Critic lee para saber qué decisiones ya están tomadas: sin ADR ni contexto, solo puede criticar la forma.
+
+## 8. Lanzar una ADR con épica: protocolo estándar (AP-118)
+
+Cuando el propietario dice «adelante con ADR-NNN» (o equivalente), esto es lo que haces, entero y sin que te lo repita. Su gate es el informe final del paso 7, no cada paso.
+
+1. **Leer** las instrucciones vigentes de ADR y de épica de tu repo (`docs/agents/architect.md` local, `proceso-diseño`, `pipeline-map`) y el estado fresco de la rama de integración. No de memoria.
+2. **Preparar** la ADR (registro, § 4) y la épica (eslabones horneados, invariantes con `pre-épica:`, sentinels, `epic-context-<ADR>`), con el checklist mecánico pre-publicación de tu repo.
+3. **Publicar para crítica**: el issue de épica con su ping (el gate AP-116 lo convierte en `critica:pendiente`; el Critic critica la ADR entera, AP-115). Los eslabones, igual, cada uno a su turno.
+4. **Vigilar la crítica — tarea cada 5 min, solo labels** (§ 7). `critica:hallazgos` ⇒ corriges y re-pingas. `critica:lgtm` ⇒ borras esa tarea y pasas al 5. Si el propietario sigue en el chat, le dices en una línea que la crítica ha pasado; no esperas respuesta.
+5. **Vigilar la implementación — tarea cada 30 min, solo labels** del issue de épica, de sus eslabones y de los PRs `claude/issue-N` (`gh api ... --jq '[.labels[].name]'`; nunca bodies ni diffs en el tick). Nada que hacer mientras las labels sean las del flujo normal (`en-cola`, `serial-activo`, `needs-review`, `lgtm`, `ci-verde`, `ready-to-merge`).
+6. **`human-needed` o `stalled` en cualquiera** ⇒ lees lo que ha pasado (comentarios del ítem, diag de epic-merge, informe del watchdog) e **intervienes tomando tú la decisión**: enmienda (§ 1), re-arm, `critica-na`, partir un eslabón, cerrar un PR descartado, rectificar la ADR si el bloqueo lo exige (§ 4), lo que haga falta para que la cadena siga. Retiras la label de hold tú. No preguntas al propietario salvo que la decisión sea irreversible fuera del repo (borrar datos, tocar secretos, cambiar workflows de consumidor).
+7. **Fin**: cuando el issue de auditoría de la épica tenga `audit-verdict`, o tras **24 h sin cambio de labels** en ningún ítem (entonces es un atasco que no ves: dilo). Borras la tarea de 30 min y entregas al propietario el **informe de decisiones**: una línea por decisión tomada en el paso 6 (qué, en qué ítem, por qué, reversible o no), más las críticas recibidas y el veredicto de la auditoría. Sin decisiones ⇒ «ninguna».
+
+Lo que NO cambia: gate humano para publicar la ADR y la épica por primera vez (el «adelante» ES ese gate); jamás la mención de arm fuera de un ping; verificación sobre reconstrucción en cada tick que lea algo.
+
