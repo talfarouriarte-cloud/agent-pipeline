@@ -3155,6 +3155,17 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 
 **Fecha.** 2026-10-13.
 
+## AP-118 — Protocolo estándar «adelante con ADR-NNN»: crítica, vigilancia por labels e intervención autónoma en `human-needed`, con informe de decisiones como gate posterior (2026-10-15)
+
+**Contexto.** El propietario repetía en cada lanzamiento de ADR con épica la misma instrucción de siete pasos (leer instrucciones, preparar ADR y épica, publicar para crítica, aviso cada 5 min para la crítica, aviso cada 30 min para seguir la implementación solo por labels, intervenir en `human-needed` tomando él —el Architect— las decisiones, informar al final de las decisiones tomadas). Lo que depende de que se repita en el chat, un día no se repite.
+
+**Decisión.** `vendored/docs-agents/architect.md` § 8 fija ese protocolo como comportamiento por defecto del Architect de consumidor ante «adelante con ADR-NNN». Enmienda a § 5: «solo el propietario cierra una decisión» tiene excepción en vuelo —las decisiones que exija un `human-needed` las toma el Architect y las registra; el gate del propietario es el informe final (decisión explícita del propietario 2026-10-15: «quiero decir lo que he dicho; mi gate es posterior»). Fin de la vigilancia: `audit-verdict` en la auditoría de la épica o 24 h sin cambio de labels. Vigilancia siempre por labels, nunca por bodies.
+
+**Qué NO.** Sin mecánica nueva: todo lo que usa existe (gate AP-116, Critic, enmiendas, tareas programadas de claude.ai). No se aplica al Architect central (su cola tiene ruling mensual).
+
+**Riesgo aceptado.** Una decisión de ADR tomada en vuelo por el Architect entra sin ruling previo del propietario; el informe final es la revisión. Mismo perfil de riesgo que `automerge` en el central (AP-090).
+
+**Criterio falsable.** Siguientes 3 lanzamientos de ADR con épica en finplan: 0 repeticiones de la instrucción en el chat y 3 informes de decisiones entregados.
 ## AP-119 — Critic: tope de 3 rondas y veredicto en ronda ≥ 2 solo por hallazgos nuevos o sin resolver (2026-10-15)
 
 **Contexto.** 12 issues criticados en finplan en 3 días: ronda 1 bloqueante en 10; de esos, 5 LGTM en ronda 2 y **4 armados en ronda 2 aún bloqueantes** por el fail-open de AP-117 (#2956, #2963, #2968, #2985): un tercio entra con hallazgos conocidos sin resolver. Lectura de #2968 y #2985: los hallazgos de ronda 1 se resuelven; la ronda 2 bloquea por hallazgos NUEVOS que la corrección destapa, o por restos de issues que arrancaron con 11. Converge, pero necesita 3. Defecto de instrumento además: la ronda 2 relista lo ya resuelto sin distinguirlo, y el Architect no sabe por dónde ir. Propietario: «dos rondas son pocas».
