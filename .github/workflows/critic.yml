@@ -7,7 +7,7 @@
 #
 # Flujo: el Architect publica el issue con `critica:pendiente` y NO lo arma.
 # Este reusable se dispara por el `labeled`, lee issue + ADR citadas +
-# epic-context y publica UNA crítica por ronda (máx. 2) con veredicto:
+# epic-context y publica UNA crítica por ronda (máx. 3, AP-119) con veredicto:
 #   BLOQUEANTE → `critica:hallazgos` (ronda 2: `critica-na` y ARMA igual, AP-117)
 #   LGTM       → `critica:lgtm` y ARMA al Creator (ping de confianza por PAT)
 # El Architect vigila solo las labels (tarea programada cada 5 min, ver
@@ -77,7 +77,7 @@ jobs:
         uses: talfarouriarte-cloud/agent-pipeline/.github/actions/graft-vendored@main
 
       # Idempotencia y tope de rondas, DETERMINISTA (cero LLM): si el issue ya
-      # tiene un marcador `critica: ronda=2`, el ciclo está cerrado; si tiene
+      # tiene un marcador `critica: ronda=3`, el ciclo está cerrado; si tiene
       # `critica:lgtm`, ya pasó. En ambos casos el run sale verde sin sesión.
       - name: Ronda y gate
         id: ronda
@@ -95,13 +95,13 @@ jobs:
             const RE = /<!--\s*critica:\s*ronda=(\d)\s+veredicto=(bloqueante|lgtm)\s*-->/g;
             let maxRonda = 0;
             for (const c of cs) for (const m of (c.body || '').matchAll(RE)) maxRonda = Math.max(maxRonda, Number(m[1]));
-            if (maxRonda >= 2) {
-              core.notice(`ronda 2 ya publicada: ciclo cerrado. Sin sesión.`);
+            if (maxRonda >= 3) {
+              core.notice(`ronda 3 ya publicada: ciclo cerrado. Sin sesión.`);
               core.setOutput('run', 'false'); return;
             }
             core.setOutput('run', 'true');
             core.setOutput('ronda', String(maxRonda + 1));
-            core.info(`ronda ${maxRonda + 1}/2 sobre #${num}`);
+            core.info(`ronda ${maxRonda + 1}/3 sobre #${num}`);
 
       - name: Asegurar ~/.local/bin (instalador nativo de Claude Code)
         if: steps.ronda.outputs.run == 'true'
@@ -130,7 +130,7 @@ jobs:
           prompt: |
             REPO: ${{ github.repository }}
             ISSUE: ${{ github.event.issue.number }}
-            RONDA: ${{ steps.ronda.outputs.ronda }}/2
+            RONDA: ${{ steps.ronda.outputs.ronda }}/3
             RAMA POR DEFECTO: ${{ inputs.default_branch }}
 
             Eres el Critic del pipeline de agentes de este repo. Tu mandato
@@ -146,13 +146,17 @@ jobs:
                textual no existe. La ausencia del bloque de invariantes (A) es
                bloqueante SIEMPRE.
             3. Publica UN comentario (§ 3) con la cabecera
-               `**Crítica · ronda RONDA/2 · <BLOQUEANTE|LGTM>**` y el marcador
+               `**Crítica · ronda RONDA/3 · <BLOQUEANTE|LGTM>**` y el marcador
                `<!-- critica: ronda=RONDA veredicto=bloqueante|lgtm -->` en
                línea propia. Luego las labels por `gh api`.
-            4. Si RONDA es 2 y el veredicto es BLOQUEANTE (AP-117): publica la
+            4. En ronda ≥ 2 (AP-119): relee tu crítica anterior. Cada hallazgo
+               repetido lleva «(ronda N, sin resolver)»; cada uno nuevo, «(nuevo)»;
+               lo resuelto se lista en una línea «Resueltos: …» y NO cuenta.
+               Solo bloquean los «sin resolver» y los «nuevos».
+               Si RONDA es 3 y el veredicto es BLOQUEANTE (AP-117): publica la
                crítica igual, pero pon `critica-na` en vez de `critica:hallazgos`
                y ARMA al Creator como en el paso 5. Nunca `human-needed`.
-            5. Con LGTM (o ronda 2 bloqueante), solo si el issue NO lleva la label `epica`
+            5. Con LGTM (o ronda 3 bloqueante), solo si el issue NO lleva la label `epica`
                (AP-115: en una épica criticas también la ADR entera, J–N, y
                nunca armas), y solo si no tiene `pause-agents`,
                `pausa-cola` ni `human-needed`: publica un SEGUNDO comentario
