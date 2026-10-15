@@ -3154,3 +3154,17 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 **Criterio falsable.** 10 siguientes issues: ≤ 1 con `critica-no-realizada`; 0 cadenas paradas por el Critic.
 
 **Fecha.** 2026-10-13.
+
+## AP-119 — Critic: tope de 3 rondas y veredicto en ronda ≥ 2 solo por hallazgos nuevos o sin resolver (2026-10-15)
+
+**Contexto.** 12 issues criticados en finplan en 3 días: ronda 1 bloqueante en 10; de esos, 5 LGTM en ronda 2 y **4 armados en ronda 2 aún bloqueantes** por el fail-open de AP-117 (#2956, #2963, #2968, #2985): un tercio entra con hallazgos conocidos sin resolver. Lectura de #2968 y #2985: los hallazgos de ronda 1 se resuelven; la ronda 2 bloquea por hallazgos NUEVOS que la corrección destapa, o por restos de issues que arrancaron con 11. Converge, pero necesita 3. Defecto de instrumento además: la ronda 2 relista lo ya resuelto sin distinguirlo, y el Architect no sabe por dónde ir. Propietario: «dos rondas son pocas».
+
+**Decisión.** (1) Tope 3 rondas; fail-open en la tercera (régimen AP-117 intacto). (2) En ronda ≥ 2 el Critic relee su crítica anterior y clasifica cada hallazgo: «(nuevo)», «(ronda N, sin resolver)» o «Resueltos: …» en una línea; solo bloquean nuevos y sin resolver. `critic.yml` (gate de ronda, prompt), `critic.md` § 3, `architect.md` § 7.
+
+**Qué NO.** Sin cambio de contrato, labels ni gate AP-116.
+
+**Coste.** ~10 min de Critic + una vuelta del Architect por ronda extra, sobre eslabones que viven días.
+
+**Criterio falsable.** Siguientes 20 issues criticados: tasa de ronda 3 bloqueante (arm con hallazgos) < 20 %; si no, subir a 4 o estrechar la checklist en la mensual. Y 0 críticas de ronda ≥ 2 que bloqueen citando un hallazgo marcado resuelto.
+
+**Fecha.** 2026-10-15.

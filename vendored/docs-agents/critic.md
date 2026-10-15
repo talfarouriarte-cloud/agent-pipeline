@@ -55,19 +55,19 @@ Lo que NO es hallazgo: estilo, longitud, preferencias de redacción, «yo lo har
 Un único comentario por ronda, con este encabezado en la primera línea y un marcador HTML en línea propia:
 
 ```
-**Crítica · ronda N/2 · <BLOQUEANTE|LGTM>**
+**Crítica · ronda N/3 · <BLOQUEANTE|LGTM>**
 <!-- critica: ronda=N veredicto=bloqueante|lgtm -->
 ```
 
 Luego, por hallazgo: `[Letra] <frase>` + ancla citada + qué tendría que decir el issue (no lo redactes por el Architect: di qué falta o qué contradice). Los escalados (E) van en sección aparte «Escalado al propietario». Al final, los no bloqueantes si los hay, marcados como tales; no cuentan para el veredicto.
 
-**Veredicto.** `BLOQUEANTE` si hay ≥1 hallazgo A–D, F–I, o J–N en una épica. `LGTM` si no. Los E solos no bloquean, pero se publican igual. Un `BLOQUEANTE` solo bloquea en ronda 1: en ronda 2 se arma igual (ver Rondas).
+**Veredicto.** `BLOQUEANTE` si hay ≥1 hallazgo A–D, F–I, o J–N en una épica. `LGTM` si no. Los E solos no bloquean, pero se publican igual. Un `BLOQUEANTE` solo bloquea en rondas 1 y 2: en ronda 3 se arma igual (ver Rondas).
 
 Labels, por `gh api` (nunca a mano en prosa):
 - `BLOQUEANTE` → quitar `critica:pendiente`, poner `critica:hallazgos`.
 - `LGTM` → quitar `critica:pendiente` y `critica:hallazgos`, poner `critica:lgtm`, y § 4.
 
-**Rondas.** N se lee de tu comentario anterior en el issue (+1). Si N = 2 y el veredicto es `BLOQUEANTE` (AP-117, decisión del propietario: la cadena nunca se para por el Critic): publica la crítica igual (queda como rastro), pero en vez de `critica:hallazgos` pon **`critica-na`** y **arma al Creator** (§ 4) con la línea «Arm tras ronda 2 bloqueante (AP-117): hallazgos sin resolver, ver crítica». No hay ronda 3 ni `human-needed`. Si encuentras un marcador `ronda=2` previo, no publiques nada: el ciclo está cerrado.
+**Rondas (AP-119: máximo 3).** N se lee de tu comentario anterior en el issue (+1). **En ronda ≥ 2 relees tu crítica anterior y clasificas**: cada hallazgo repetido lleva la marca «(ronda N, sin resolver)», cada uno nuevo «(nuevo)», y lo que el Architect resolvió va en una sola línea «Resueltos: A, G, J» sin volver a razonarlo. **Solo bloquean los «sin resolver» y los «nuevos»**: un hallazgo resuelto jamás cuenta para el veredicto. Si N = 3 y el veredicto es `BLOQUEANTE` (AP-117, decisión del propietario: la cadena nunca se para por el Critic): publica la crítica igual (queda como rastro), pero en vez de `critica:hallazgos` pon **`critica-na`** y **arma al Creator** (§ 4) con la línea «Arm tras ronda 3 bloqueante (AP-117/119): hallazgos sin resolver, ver crítica». No hay ronda 4 ni `human-needed`. Si encuentras un marcador `ronda=3` previo, no publiques nada: el ciclo está cerrado.
 
 ## 4. El arm es tuyo tras el LGTM
 
