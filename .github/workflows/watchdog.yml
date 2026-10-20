@@ -1261,15 +1261,53 @@ jobs:
               const { data: ciRuns } = await github.rest.actions.listWorkflowRunsForRepo({
                 ...O, head_sha: pr.head.sha, per_page: 20,
               });
-              const ci = ciRuns.workflow_runs
-                .filter(r => r.name === process.env.IN_CI_WF)
+              const ciDelWf = ciRuns.workflow_runs.filter(r => r.name === process.env.IN_CI_WF);
+              const ci = ciDelWf
                 .sort((x, y) => new Date(y.created_at) - new Date(x.created_at))[0];
-              if (!ci || ci.status !== 'completed' || ci.conclusion !== 'failure') continue;
+              if (!ci || ci.status !== 'completed') continue;
+              // central#364 (aud. asesoramiento#3072): un job que agota
+              // `timeout-minutes` termina `cancelled`, no `failure`, y hasta hoy
+              // NINGÚN ejecutor autónomo lo veía (ni este retry ni el post-step
+              // resolve-rerun): 2 h 50 min de cadena parada y 3 relanzamientos
+              // humanos. Un `cancelled` NO SUSTITUIDO —ningún otro run del
+              // mismo workflow sobre este mismo head creado después o a la
+              // vez— cuenta como rojo completado y consume el mismo retry 1/1.
+              // Si hay sustituto (doble disparo push+pull_request con
+              // `cancel-in-progress` sobre el mismo SHA), el sustituto es el
+              // run vigente y el cancelado no se toca. Un cancel MANUAL sobre
+              // el head vigente también entra por aquí: cap 1 lo acota, igual
+              // que a un flaky. Ojo: la cancelación por timeout no es un test
+              // que falle — no hay cosecha de flaky que hacer.
+              const sustituido = ci.conclusion === 'cancelled' && ciDelWf.some(r =>
+                r.id !== ci.id && new Date(r.created_at) >= new Date(ci.created_at));
+              const cancelado = ci.conclusion === 'cancelled' && !sustituido;
+              if (ci.conclusion !== 'failure' && !cancelado) continue;
 
               const { data: prComments } = await github.rest.issues.listComments({
                 ...O, issue_number: pr.number, per_page: 100,
               });
               const retries = prComments.filter(c => (c.body || '').includes(CI_RETRY_MARK)).length;
+
+              if (retries === 0 && cancelado) {
+                // Re-run COMPLETO: en un run cancelado por timeout los jobs no
+                // están en `failure`, luego `rerun-failed-jobs` no tiene qué
+                // relanzar. Sin fast-path de atribuibilidad: no hay test
+                // fallido que atribuir.
+                try {
+                  await github.rest.actions.reRunWorkflow({ ...O, run_id: ci.id });
+                  await github.rest.issues.createComment({
+                    ...O, issue_number: pr.number,
+                    body: `${CI_RETRY_MARK}\n**watchdog**: CI \`cancelled\` sin run sustituto sobre este head (run ${ci.id}; firma de \`timeout-minutes\` agotado o cancel manual); re-lanzado el run completo (retry 1/1, mismo cap que el detector de flakiness). Si vuelve a quedar cancelado o rojo, se escala al Creator. No es un test que falle: si el corte es por duración de la suite, el arreglo vive en el consumidor, no en un re-run.\n${CAPA}`,
+                  });
+                  core.notice(`PR #${pr.number}: CI cancelled no sustituido, re-run completo lanzado (run ${ci.id}).`);
+                } catch (e) {
+                  core.warning(`PR #${pr.number}: no se pudo re-lanzar el run cancelado: ${e.message}`);
+                  anomalies.push({ type: 'pr-ci-red-persistent', number: pr.number,
+                    branch: pr.head.ref, ci_run: ci.id, retries, retry_error: e.message, causa: 'cancelled',
+                    labels: pr.labels.map(l => l.name) });
+                }
+                continue;
+              }
 
               if (retries === 0) {
                 // Fast-path de rojo ATRIBUIBLE (2026-07-12, propuesta #1268 del
@@ -1345,6 +1383,7 @@ jobs:
                 branch: pr.head.ref,
                 ci_run: ci.id,
                 retries,
+                causa: cancelado ? 'cancelled' : 'failure',
                 labels: pr.labels.map(l => l.name),
               });
             }
@@ -1834,12 +1873,42 @@ jobs:
 
             Tipo `pr-ci-red-persistent` (CI rojo tras retry mecánico): baja
             el log del fallo (`gh run view <ci_run> --log-failed`), identifica
-            el test y decide: si el fallo es atribuible al PR, ping-creator en
+            el test y decide. Si `causa` es `cancelled` (central#364) el run
+            murió por `timeout-minutes` agotado o cancel manual, NO por un
+            test: no busques un test que falle ni armes al Creator a buscar
+            «un handle abierto» en el diff. Mira la duración: si la suite
+            pasó entera y el corte llegó en una medición posterior (p. ej.
+            `test-budget-check`), el rojo NO es atribuible al diff y la causa
+            vive en el consumidor; declara el ruling de re-run como abajo y,
+            si reincide, `stalled` con el diagnóstico de duración. Si el
+            fallo es atribuible al PR, ping-creator en
             el PR con el log relevante citado y la instrucción de corregir;
             si es un flaky ajeno al PR (pasa en local / falla intermitente en
-            runner), dilo en el comentario, re-lanza el CI una última vez con
-            `gh api -X POST repos/${{ github.repository }}/actions/runs/<ci_run>/rerun-failed-jobs`
-            y si reincide aplica label `stalled` + diagnóstico SIN @claude.
+            runner), dilo en el comentario y DECLARA ahí mismo el ruling de
+            re-run poniendo, EN SU PROPIA LÍNEA, el marcador
+            `<!-- watchdog-resolve-rerun -->` (AP-077). NO intentes re-lanzar
+            el CI tú: el muro DOMINANTE es el scope de tu token, no tu
+            allowlist. Aunque reordenes el comando para pasarla
+            (`gh api repos/<o>/<r>/actions/runs/<id>/rerun-failed-jobs --method POST`
+            SÍ casa con `Bash(gh api repos/*)`), tu PAT no lleva
+            `actions: write` y la API responde `403 · Resource not accessible
+            by personal access token` (medido en finplan PR #1801,
+            2026-08-04) — ampliar tu allowlist NO te desbloquea. Coste de esa
+            denegación cuando se creía de allowlist: 3 h 26 min de cadena
+            muerta sobre finplan#1741 y un gate humano. Quien ejecuta es el
+            post-step
+            determinista `watchdog-resolve-rerun` de esta misma etapa, al
+            cerrar el job, con cap 1 por PR y head SHA.
+            El ruling se declara UNA sola vez por head: si ya lo declaraste
+            sobre este mismo head —lo lleve el PR materializado o no, porque
+            el post-step tiene frentes que fallan en silencio— NO lo
+            re-declares. No tienes memoria entre ticks, así que «ya lo
+            declaraste» no lo recuerdas: lo COMPRUEBAS en el hilo del PR —un
+            comentario tuyo anterior con ese marcador en LÍNEA PROPIA (citado
+            entre backticks o dentro de un bloque NO cuenta, AP-063) y
+            posterior al último push del head vigente—. Y si reincide aplica
+            label `stalled` + diagnóstico SIN @claude: esa escalada es
+            INCONDICIONAL y no depende de que el re-run llegara a ocurrir.
             Cuenta como re-arm a efectos del cap.
 
             Tipo `stalled-autonomous-resolve` (régimen autónomo 2026-07-07,
@@ -1877,6 +1946,79 @@ jobs:
             labels, runs recientes) y ejecuta la acción mínima que reanude la
             cadena, respetando el cap de reintentos y las prohibiciones del
             rol. Si un item no necesita acción, dilo y no toques nada.
+
+      - name: Materializar el ruling de RE-RUN declarado por el resolver (watchdog-resolve-rerun)
+        # AP-077 (repesca finplan#1741, aud. finplan#1743) — la capa de
+        # vigilancia diagnosticaba el CI rojo NO-atribuible y no podía ejecutar
+        # el único remedio que su propio diagnóstico prescribe: re-lanzar los
+        # jobs fallidos. El muro DOMINANTE del resolver es el SCOPE de su PAT
+        # —`403 · Resource not accessible by personal access token`, sin
+        # `actions: write` (medido en finplan PR #1801, 2026-08-04)—, no el
+        # allowlist: la forma con endpoint primero SÍ casa con
+        # `Bash(gh api repos/*)` y aun así muere en ese 403, luego ampliar el
+        # allowlist no desbloquea nada por sí solo. Asimetría entre autoridad de
+        # DIAGNÓSTICO y autoridad de REMEDIO (clase 5 del pipeline-map,
+        # mandate/toolbox drift): 3 corridas, 2 de ellas REDUNDANTES, 3 h 26
+        # min de cadena muerta y 1 gate humano.
+        #
+        # Se cierra materializando lo DECLARADO (patrón AP-064) en vez de
+        # ampliar el allowlist del LLM: el resolver declara el ruling con un
+        # marcador anclado y este paso lo ejecuta al cerrar el job. Cap 1 por
+        # PR y head SHA con contador propio — no consume el retry 1/1 del
+        # detector ni el cap 2 del dispatcher de turno (misma separación que
+        # `watchdog-lgtm-rematerialize`) — y el cortacircuito a `human-needed`
+        # queda intacto.
+        #
+        # El cuerpo NO vive aquí sino en
+        # `vendored/scripts/watchdog-resolve-rerun.cjs`, servido al workspace
+        # por `graft-vendored` (doctrina AP-068): la App no tiene permiso
+        # `workflows` (ADR-020), luego el código embebido en este fichero sería
+        # intocable para un agente. Aquí solo queda la invocación.
+        #
+        # CERO permiso nuevo: escribe con el `GITHUB_TOKEN` del job, cuyo
+        # `actions: write` ya existía (ADR-217 §7) y que es el MISMO camino por
+        # el que el detector re-lanza jobs fallidos en su retry 1/1 (`:231` y
+        # `:999`, las dos llamadas PROBADAS del fichero, ambas sin
+        # `github-token:`). NO el PAT: `permissions:` gobierna el
+        # `GITHUB_TOKEN`, no un secreto de usuario, y la capacidad
+        # Actions-write del PAT no consta medida — AP-066 dice lo contrario
+        # («donde el PAT no lea Actions, ese belt está inerte»). Con el PAT un
+        # 403 dejaría la denegación de hoy convertida en un `::warning`, que es
+        # el mismo episodio con otro nombre. La autoría humana es cosmética
+        # para un RE-RUN (no nace evento que el anti-loop deba dejar pasar) y
+        # el comentario del belt no despierta a nadie: va sin `@claude`.
+        #
+        # Y lo que ese token NO puede leer: `checks.listAnnotations` exige
+        # `checks: read`, que este bloque `permissions:` no declara y que no es
+        # añadible (clave nueva ⇒ `startup_failure` de flota en todo stub con
+        # bloque explícito — AP-022 clase #57, `decisions.md:1476`). El guard de
+        # atribuibilidad del belt cae por tanto SIEMPRE por su fail-open: se
+        # conserva (un 403 no puede bloquear el remedio) pero ya no en silencio
+        # —`::warning` nominal + la inertidad dicha en el comentario— y NO
+        # cuenta como guard puesto. El riesgo «enmascarar regresiones a base de
+        # re-runs» lo acotan el cap 1 por head SHA y el cortacircuito a
+        # `human-needed`: DOS cosas, no tres. Residual (f) de AP-077.
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          # Kill-switch reutilizado, sin label nueva: el conjunto de exclusión
+          # es el MISMO que el del detector. Un ítem que el watchdog no vigila
+          # tampoco se re-lanza por aquí.
+          IN_SKIP_LABELS: ${{ inputs.skip_labels }}
+          # Sin el nombre del workflow de CI no se puede identificar el run del
+          # head vigente: el módulo es fail-closed si llega vacío.
+          IN_CI_WF: ${{ inputs.ci_workflow_name }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const ruta = `${process.env.GITHUB_WORKSPACE}/scripts/watchdog-resolve-rerun.cjs`;
+            let belt;
+            // Fail-open ANUNCIADO: si el graft no corrió (o sirvió una versión
+            // sin el módulo), el belt queda MUDO — pero que lo esté tiene que
+            // verse, que es la clase entera que AP-077 cierra.
+            try { belt = require(ruta); }
+            catch (e) { core.warning(`resolve-rerun: módulo no injertado en ${ruta} (${e.message}) — belt MUDO en esta corrida.`); return; }
+            await belt({ github, context, core, skipLabels: process.env.IN_SKIP_LABELS });
 
       - name: Materializar arm en ping-creator huérfanos (post-architect)
         # fp#1344 (repesca A, auditoría #1343): el architect-etapa escribió
