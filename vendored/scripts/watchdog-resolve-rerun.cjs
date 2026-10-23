@@ -255,20 +255,43 @@ async function run({ github, context, core, skipLabels }) {
 
     if (!CI_WF) { core.warning('resolve-rerun: `IN_CI_WF` vacío — sin el nombre del workflow de CI no se puede identificar el run; fail-closed.'); continue; }
     let ci = null;
+    let ciDelWf = [];
     try {
       const { data: runs } = await github.rest.actions.listWorkflowRunsForRepo({ owner, repo, head_sha: head, per_page: 20 });
-      ci = (runs.workflow_runs || []).filter((r) => r.name === CI_WF)
-        .sort((x, y) => new Date(y.created_at) - new Date(x.created_at))[0] || null;
+      ciDelWf = (runs.workflow_runs || []).filter((r) => r.name === CI_WF);
+      ci = ciDelWf.slice().sort((x, y) => new Date(y.created_at) - new Date(x.created_at))[0] || null;
     } catch (e) { core.warning(`resolve-rerun: runs de CI de #${n} ilegibles (${e.message}) — fail-closed.`); continue; }
     // Frescura POR ESTADO: el ruling se materializa solo si el head VIGENTE
     // sigue en rojo completado. Un ruling viejo, o uno citado en prosa sobre un
     // PR ya verde o con push nuevo, es inocuo por construcción.
-    if (!ci || ci.status !== 'completed' || ci.conclusion !== 'failure') {
-      core.notice(`resolve-rerun: #${n} — el CI del head vigente no está en rojo completado (${ci ? `${ci.status}/${ci.conclusion}` : 'sin run'}); el ruling ya no describe el estado, sin actuar.`);
+    //
+    // `cancelled` NO SUSTITUIDO también es rojo completado (AP-120, central#364,
+    // aud. asesoramiento#3072): un job que agota `timeout-minutes` termina
+    // `cancelled`, no `failure`, y con el filtro a `failure` el ruling del
+    // resolver («re-run del CI, no atribuible al diff») se saltaba con una
+    // notice — 2 h 50 min de cadena parada y 3 relanzamientos humanos. Es
+    // «sustituido» si existe OTRO run del mismo workflow sobre este mismo head
+    // creado después o a la vez (doble disparo push+pull_request con
+    // `cancel-in-progress`): entonces el sustituto es el run vigente y el
+    // cancelado no se toca. Un push nuevo cambia el head y el cancelado deja de
+    // seleccionarse por construcción. Un cancel MANUAL sobre el head vigente
+    // entra por aquí: el cap 1 por head lo acota, igual que a un flaky.
+    const sustituido = !!ci && ci.conclusion === 'cancelled' && ciDelWf.some((r) =>
+      r.id !== ci.id && new Date(r.created_at) >= new Date(ci.created_at));
+    const cancelado = !!ci && ci.status === 'completed' && ci.conclusion === 'cancelled' && !sustituido;
+    if (!ci || ci.status !== 'completed' || (ci.conclusion !== 'failure' && !cancelado)) {
+      core.notice(`resolve-rerun: #${n} — el CI del head vigente no está en rojo completado (${ci ? `${ci.status}/${ci.conclusion}${sustituido ? ' sustituido por un run posterior' : ''}` : 'sin run'}); el ruling ya no describe el estado, sin actuar.`);
       continue;
     }
 
-    const attr = await atribuible({ github, core, owner, repo, pull_number: n, run_id: ci.id });
+    // En un run cancelado los jobs no están en `failure`: no hay anotación de
+    // test que atribuir (el guard devolvería «no recomputable» tras llamadas
+    // vacías) y `rerun-failed-jobs` no tendría qué relanzar. Se usa el re-run
+    // COMPLETO y se dice en el comentario que la causa es de duración, no un
+    // test.
+    const attr = cancelado
+      ? { atribuible: false, legible: false, inerte: false, ficheros: [], cancelado: true }
+      : await atribuible({ github, core, owner, repo, pull_number: n, run_id: ci.id });
     if (attr.atribuible) {
       core.warning(`resolve-rerun: #${n} — rojo ATRIBUIBLE al diff (${attr.ficheros.join(', ')}); el remedio de esa vía es \`ping-creator\`, no el re-run. Sin actuar.`);
       continue;
@@ -277,8 +300,11 @@ async function run({ github, context, core, skipLabels }) {
     // Se ejecuta ANTES de afirmar nada. Tragar el fallo y comentar igualmente
     // dejaría un rastro falso al Auditor y quemaría el cap sobre un re-run que
     // no ocurrió, que es la clase exacta que este belt existe para cerrar.
-    try { await github.rest.actions.reRunWorkflowFailedJobs({ owner, repo, run_id: ci.id }); }
-    catch (e) {
+    const verbo = cancelado ? 'rerun' : 'rerun-failed-jobs';
+    try {
+      if (cancelado) await github.rest.actions.reRunWorkflow({ owner, repo, run_id: ci.id });
+      else await github.rest.actions.reRunWorkflowFailedJobs({ owner, repo, run_id: ci.id });
+    } catch (e) {
       // EL REMEDIO NO SE EJERCE, Y ESO NO PUEDE SER SILENCIO (AP-077, repesca
       // finplan#1806). Un `rerun-failed-jobs` que falla deja el ruling
       // DECLARADO pero SIN materializar, y un `core.warning` en el log del job
@@ -293,15 +319,15 @@ async function run({ github, context, core, skipLabels }) {
       // libre—. Misma doctrina que la inertidad de `checks: read` de arriba:
       // fail-open sí, silencio nunca.
       const es403 = e.status === 403 || /not accessible/i.test(e.message || '');
-      core.warning(`resolve-rerun: #${n} — \`rerun-failed-jobs\` sobre el run ${ci.id} falló (${e.message})${es403 ? ' — 403 de permiso: el token del step no lleva `actions: write` (precondición de AP-077, medido en finplan#1801 12:59Z)' : ''}; el remedio NO se ejerció y se DECLARA en el PR. NO se deja marcador de materialización: el cap sigue libre y la escalada del resolver (segundo rojo ⇒ stalled ⇒ human-needed) queda intacta.`);
+      core.warning(`resolve-rerun: #${n} — \`${verbo}\` sobre el run ${ci.id} falló (${e.message})${es403 ? ' — 403 de permiso: el token del step no lleva `actions: write` (precondición de AP-077, medido en finplan#1801 12:59Z)' : ''}; el remedio NO se ejerció y se DECLARA en el PR. NO se deja marcador de materialización: el cap sigue libre y la escalada del resolver (segundo rojo ⇒ stalled ⇒ human-needed) queda intacta.`);
       // Dedup best-effort por head sobre el historial ya leído: no re-declarar
       // el mismo fallo dos veces (una CITA en prosa del marcador tampoco lo
       // re-dispara — clase AP-063, mismo despojo que el cap).
       if (!cs.some((c) => despojar(c.body).includes(MARK_FALLO(head)))) {
-        const cuerpoFallo = `**watchdog · resolve-rerun (AP-077)**: el resolver rulló «rojo NO atribuible al diff — flaky de contención, re-lanzar» (${decl.html_url}) pero el remedio **NO se pudo ejercer**: \`rerun-failed-jobs\` sobre el run ${ci.id} (head \`${head.slice(0, 7)}\`) devolvió\n\n\`\`\`\n${String(e.message || e).slice(0, 500)}\n\`\`\`\n\n`
+        const cuerpoFallo = `**watchdog · resolve-rerun (AP-077)**: el resolver rulló «${cancelado ? 'CI cancelado sin run sustituto (timeout agotado o cancel manual), no atribuible al diff — re-lanzar' : 'rojo NO atribuible al diff — flaky de contención, re-lanzar'}» (${decl.html_url}) pero el remedio **NO se pudo ejercer**: \`${verbo}\` sobre el run ${ci.id} (head \`${head.slice(0, 7)}\`) devolvió\n\n\`\`\`\n${String(e.message || e).slice(0, 500)}\n\`\`\`\n\n`
           + (es403
               ? 'Es un **403 de permiso**, no un fallo transitorio: el token con el que este step llama a la API de Actions **no lleva `actions: write`**. Es la PRECONDICIÓN de AP-077 (ver `docs/agents/watchdog.md`), medida en finplan PR #1801 (2026-08-04T12:59Z). Quien aplicó el parche debe conceder ese scope al token del step —o retirar el remedio si no se va a ejercer, contra la superficie muerta de AP-078—. '
-              : 'Fallo al llamar a `rerun-failed-jobs`. ')
+              : `Fallo al llamar a \`${verbo}\`. `)
           + `El ruling queda **declarado pero NO materializado**: el re-run no ocurrió, no se deja marcador \`-materializado\` y el cortacircuito de siempre (segundo rojo sobre este head ⇒ \`stalled\` + diagnóstico ⇒ \`human-needed\`) sigue INTACTO. Sin este comentario ese estado sería indistinguible del belt no desplegado, que es la clase que AP-077 cierra.\n\n${MARK_FALLO(head)}\n${CAPA}`;
         try { await github.rest.issues.createComment({ owner, repo, issue_number: n, body: cuerpoFallo }); }
         catch (e2) { core.warning(`resolve-rerun: #${n} — el fallo del re-run tampoco se pudo DECLARAR en el PR (${e2.message}): doble silencio, queda solo en el log del job.`); }
@@ -325,14 +351,16 @@ async function run({ github, context, core, skipLabels }) {
     // imprescindible es el marcador, y si tampoco cuaja se dice EXACTAMENTE
     // qué queda sin soporte.
     let marcado = false;
-    const cuerpo = `**watchdog · resolve-rerun (AP-077)**: el resolver rulló «rojo NO atribuible al diff — flaky de contención, re-lanzar» (${decl.html_url}) y ese ruling se ha MATERIALIZADO: re-lanzados los jobs fallidos del run ${ci.id} sobre el head \`${head.slice(0, 7)}\`.\n\n`
+    const cuerpo = `**watchdog · resolve-rerun (AP-077)**: el resolver rulló «${cancelado ? 'CI cancelado sin run sustituto, no atribuible al diff — re-lanzar' : 'rojo NO atribuible al diff — flaky de contención, re-lanzar'}» (${decl.html_url}) y ese ruling se ha MATERIALIZADO: ${cancelado ? `re-lanzado el run COMPLETO ${ci.id} (estaba \`cancelled\`: firma de \`timeout-minutes\` agotado o cancel manual; sus jobs no están en \`failure\`, luego \`rerun-failed-jobs\` no tendría qué relanzar — AP-120)` : `re-lanzados los jobs fallidos del run ${ci.id}`} sobre el head \`${head.slice(0, 7)}\`.\n\n`
       + `Cap **1 por PR y head SHA**, con contador propio: no consume el retry 1/1 del detector (\`watchdog-ci-retry\`) ni el cap 2 del dispatcher de turno. Si el CI vuelve a rojo sobre este mismo head, el cap queda agotado y el cortacircuito de siempre (\`stalled\` + diagnóstico ⇒ \`human-needed\`) sigue intacto.\n\n`
       // Tres estados, no dos: recomputada / sin datos / INERTE. El tercero es
       // hoy el permanente (`checks: read` ausente y no añadible), y decirlo con
       // la misma frase que un borde incidental sería el silencio que este belt
       // cierra. Quien audite tiene que poder distinguir «no había nada anotado»
       // de «no pudimos mirar».
-      + `${attr.legible
+      + `${attr.cancelado
+        ? 'Atribuibilidad NO aplicable: un run cancelado no tiene test fallido que atribuir. Si el corte es por duración de la suite (p. ej. una re-medición tras una suite verde), la causa vive en el consumidor y un re-run solo compra tiempo: el cortacircuito sigue intacto.'
+        : attr.legible
         ? `Atribuibilidad recomputada contra el estado: ${attr.ficheros.length} fichero(s) con fallo anotado, no todos tocados por el diff.`
         : attr.inerte
           ? 'Atribuibilidad **NO recomputada**: las anotaciones del check-run no son legibles con el `GITHUB_TOKEN` de este job (`checks: read` ausente y no añadible — AP-022 clase #57), luego ese guard está INERTE y este re-run NO ha comprobado que el rojo viva fuera del diff. Acotado por el cap 1 por head y por el cortacircuito; residual (f) de AP-077.'
@@ -343,7 +371,7 @@ async function run({ github, context, core, skipLabels }) {
       core.warning(`resolve-rerun: #${n} — el re-run del run ${ci.id} SÍ se ejecutó, pero su comentario falló (${e.message}); reintento con el cuerpo mínimo, que es el que sostiene el cap.`);
       try {
         await github.rest.issues.createComment({ owner, repo, issue_number: n,
-          body: `**watchdog · resolve-rerun (AP-077)**: re-lanzados los jobs fallidos del run ${ci.id} sobre el head \`${head.slice(0, 7)}\` (el diagnóstico largo no pudo publicarse; el ruling está en ${decl.html_url}).\n\n${MARK(head)}\n${CAPA}` });
+          body: `**watchdog · resolve-rerun (AP-077)**: ${cancelado ? 're-lanzado el run completo' : 're-lanzados los jobs fallidos del run'} ${ci.id} sobre el head \`${head.slice(0, 7)}\` (el diagnóstico largo no pudo publicarse; el ruling está en ${decl.html_url}).\n\n${MARK(head)}\n${CAPA}` });
         marcado = true;
       } catch (e2) {
         core.warning(`resolve-rerun: #${n} — el marcador del cap NO se pudo publicar (${e2.message}) con el re-run YA ejecutado sobre ${head.slice(0, 7)}: el cap 1 queda SIN soporte y un run concurrente podría re-lanzar una segunda vez sobre ese mismo head. Es el único frente en que este belt puede pasarse de la raya; queda dicho, nunca en silencio.`);

@@ -358,6 +358,20 @@ vacío; el arreglo es un PR en el central sobre el fichero FUENTE y su banco
 (`scripts/check-resolve-rerun.mjs`), y desde un consumidor lo que abres es
 la escalada.
 
+**Anotación (2026-10-20, AP-120, central#364).** El párrafo anterior queda
+superado al mergear central#365: el parche de AP-077 se aplica ahí y el
+post-step pasa a estar invocado en `watchdog.yml`. Y desde AP-120 el
+«rojo completado» que el belt y el retry del detect reconocen incluye el CI
+**`cancelled` no sustituido** (firma de `timeout-minutes` agotado o cancel
+manual): se relanza el run COMPLETO (`rerun`, no `rerun-failed-jobs`) bajo el
+mismo cap 1 por head. Si el `pr-ci-red-persistent` que te llega trae
+`causa: cancelled`, el run murió por duración, no por un test: no busques un
+test que falle ni armes al Creator a cazar «handles abiertos»; mira si la
+suite pasó entera y el corte llegó después (re-medición, p. ej.
+`test-budget-check`), declara el ruling de re-run si no es atribuible al
+diff y, si reincide, `stalled` con el diagnóstico de duración — la causa de
+esa clase vive en el consumidor, no en un re-run.
+
 **Precondición de aplicación del parche: el token del step necesita
 `actions: write`** (repesca finplan#1806). Cuando el humano aplique el parche,
 el paso `watchdog-resolve-rerun` llama a `rerun-failed-jobs` con el token que

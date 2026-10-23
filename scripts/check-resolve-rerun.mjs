@@ -179,6 +179,8 @@ async function correr({
         listWorkflowRunsForRepo: async () => ({ data: { workflow_runs: runs } }),
         listJobsForWorkflowRun: async () => ({ data: { jobs: [{ id: 9, conclusion: 'failure' }] } }),
         reRunWorkflowFailedJobs: async ({ run_id }) => { escrituras.push(`rerun#${run_id}`); if (rerunErr) throw rerunErr; },
+        // Re-run COMPLETO (AP-120): es el verbo de un run `cancelled`, cuyos jobs no están en `failure`.
+        reRunWorkflow: async ({ run_id }) => { escrituras.push(`rerun-completo#${run_id}`); if (rerunErr) throw rerunErr; },
       },
       // El 403 de `checks: read` no es un borde hipotético: es el estado
       // PERMANENTE de la configuración desplegada (ningún bloque `permissions:`
@@ -302,6 +304,54 @@ const CONTRATO = [
   ['sin run de CI para el head ⇒ no se toca',
     { ciRuns: [] },
     (r) => r.escrituras.length === 0],
+  // AP-120 (central#364, aud. asesoramiento#3072): un job que agota
+  // `timeout-minutes` termina `cancelled`, no `failure`; con el filtro a
+  // `failure` el ruling del resolver se saltaba con una notice y nadie
+  // relanzaba (2 h 50 min parada, 3 relanzamientos humanos). Tres casos que se
+  // necesitan mutuamente: el que ESCRIBE (cancelado sin sustituto ⇒ re-run
+  // COMPLETO, no `rerun-failed-jobs`, y el comentario lo dice), el que NO
+  // escribe porque hay sustituto (doble disparo con `cancel-in-progress`: el
+  // sustituto es el run vigente), y el control de que el verbo completo NO se
+  // usa para `failure` (mutación «siempre rerun completo» pasaría los dos
+  // primeros).
+  ['CI `cancelled` SIN run sustituto sobre el head ⇒ re-run COMPLETO (no rerun-failed-jobs) + comentario que nombra la causa de duración y el marcador del cap',
+    { ciRuns: [{ id: 777, name: 'CI', status: 'completed', conclusion: 'cancelled', created_at: new Date().toISOString() }] },
+    (r) => r.escrituras.join(',') === 'rerun-completo#777,createComment#1741'
+      && /cancelled/.test(r.cuerpos[0]) && /run COMPLETO/.test(r.cuerpos[0])
+      && /duración/.test(r.cuerpos[0])
+      && r.cuerpos[0].includes(`<!-- watchdog-resolve-rerun-materializado: ${HEAD} -->`)],
+  ['CI `cancelled` SUSTITUIDO por un run posterior del mismo workflow sobre el mismo head ⇒ el vigente es el sustituto; si está en verde, cero escrituras',
+    { ciRuns: [
+      { id: 777, name: 'CI', status: 'completed', conclusion: 'cancelled', created_at: new Date(Date.now() - 120_000).toISOString() },
+      { id: 778, name: 'CI', status: 'completed', conclusion: 'success', created_at: new Date(Date.now() - 60_000).toISOString() },
+    ] },
+    (r) => r.escrituras.length === 0],
+  ['CI `cancelled` con otro run del mismo workflow creado a la VEZ (empate de `created_at`) ⇒ se considera sustituido, cero escrituras',
+    { ciRuns: (() => { const t = new Date().toISOString(); return [
+      { id: 777, name: 'CI', status: 'completed', conclusion: 'cancelled', created_at: t },
+      { id: 778, name: 'CI', status: 'completed', conclusion: 'failure', created_at: t },
+    ]; })() },
+    (r) => !r.escrituras.includes('rerun-completo#777')],
+  ['un run de OTRO workflow sobre el mismo head no cuenta como sustituto',
+    { ciRuns: [
+      { id: 777, name: 'CI', status: 'completed', conclusion: 'cancelled', created_at: new Date(Date.now() - 120_000).toISOString() },
+      { id: 779, name: 'Deploy', status: 'completed', conclusion: 'success', created_at: new Date(Date.now() - 60_000).toISOString() },
+    ] },
+    (r) => r.escrituras.join(',') === 'rerun-completo#777,createComment#1741'],
+  ['control AP-120: un `failure` sigue usando rerun-failed-jobs, nunca el re-run completo',
+    {},
+    (r) => r.escrituras.includes('rerun#777') && !r.escrituras.some((e) => e.startsWith('rerun-completo'))],
+  ['el cap 1 por head también cubre el re-run completo: marcador previo ⇒ el cancelado no se relanza',
+    { ciRuns: [{ id: 777, name: 'CI', status: 'completed', conclusion: 'cancelled', created_at: new Date().toISOString() }],
+      comentariosPR: [{ body: `previo\n<!-- watchdog-resolve-rerun-materializado: ${HEAD} -->` }] },
+    (r) => r.escrituras.length === 0],
+  ['el re-run completo que FALLA se declara con el verbo `rerun` y el marcador de fallo, sin materialización',
+    { ciRuns: [{ id: 777, name: 'CI', status: 'completed', conclusion: 'cancelled', created_at: new Date().toISOString() }],
+      rerunErr: new Error('502 Bad Gateway') },
+    (r) => r.escrituras.join(',') === 'rerun-completo#777,createComment#1741'
+      && /`rerun`/.test(r.cuerpos[0]) && !/`rerun-failed-jobs`/.test(r.cuerpos[0])
+      && r.cuerpos[0].includes(`<!-- watchdog-resolve-rerun-fallo: ${HEAD} -->`)
+      && !r.cuerpos[0].includes(`<!-- watchdog-resolve-rerun-materializado: ${HEAD} -->`)],
   ['`IN_CI_WF` vacío ⇒ fail-closed anunciado',
     { envCiWf: '' },
     (r) => r.escrituras.length === 0 && r.avisos.some((a) => /IN_CI_WF/.test(a))],
