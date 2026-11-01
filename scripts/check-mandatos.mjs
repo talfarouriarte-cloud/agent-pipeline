@@ -76,8 +76,11 @@ if (reales.length) {
 // Mutaciones: cada una revierte UN literal y tiene que dar rojo.
 const MUTACIONES = [
   ['a: sin §9', t => ({ ...t, architect: t.architect.replace('## 9. Plantilla del issue suelto', '## 9. Otra cosa') })],
+  ['a: sin alcance', t => ({ ...t, architect: t.architect.replace('`## Alcance`', '`## Ámbito`') })],
   ['a: sin sección de cláusulas', t => ({ ...t, architect: t.architect.replace('`## Cláusulas del ADR que este suelto consume`', '`## Cláusulas`') })],
   ['a: sin fuente de magnitudes', t => ({ ...t, architect: t.architect.replace('`## Fuente de cada magnitud mostrada`', '`## Fuentes`') })],
+  ['a: sin invariantes', t => ({ ...t, architect: t.architect.replace('`## Invariantes funcionales`', '`## Invariantes`') })],
+  ['a: sin DoD', t => ({ ...t, architect: t.architect.replace('`## DoD`', '`## Hecho`') })],
   ['a: sin contexto de decisión', t => ({ ...t, architect: t.architect.replace('`## Contexto de decisión (no normativa)`', '`## Contexto`') })],
   ['b: sin fila Q', t => ({ ...t, critic: t.critic.replace(/^\| Q \|/m, '| X |') })],
   ['b: veredicto sin Q', t => ({ ...t, critic: t.critic.replace('A–D, F–I, Q', 'A–D, F–I') })],
