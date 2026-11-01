@@ -111,6 +111,8 @@ try {
   sh('git checkout -q main && mkdir -p .claude/skills/E && echo base > .claude/skills/E/SKILL.md && git add . && git commit -qm E && git push -q && git checkout -q feat', wt);
   writeFileSync(join(wt, '.claude/skills/T/SKILL.md'), 'v3\n');
   bank.push(['AP-133 (a) skill M con blob ≠ base ⇒ BLOQUEA', run('npx vitest run a.ts', wt), 2]);
+  sh('mkdir -p src', wt);
+  bank.push(['AP-133 (k) skill M ≠ base, hook con cwd en subdirectorio ⇒ BLOQUEA (rutas contra la raíz)', run('npx vitest run a.test.ts', join(wt, 'src'), { CLAUDE_PROJECT_DIR: wt }), 2]);
   writeFileSync(join(wt, '.claude/skills/T/SKILL.md'), 'v1\n');
   bank.push(['AP-133 (b) skill M con el blob de la base (AP-097) ⇒ permite', run('npx vitest run a.ts', wt), 0]);
   sh('git checkout -q -- .claude && mkdir -p .claude/skills/N && echo nueva > .claude/skills/N/SKILL.md', wt);
@@ -132,6 +134,7 @@ try {
   // ── AP-133: tope de rutas por invocación (árbol limpio y pusheado).
   bank.push(['AP-133 (e) 26 rutas ⇒ BLOQUEA', run(`npx vitest run ${paths(26)}`, wt), 2]);
   bank.push(['AP-133 (f) 25 rutas ⇒ permite', run(`npx vitest run ${paths(25)}`, wt), 0]);
+  bank.push(['AP-133 (j) 26 rutas en líneas continuadas con `\\` ⇒ BLOQUEA (cola aplanada)', run(`npx vitest run \\\n  ${paths(26).split(' ').join(' \\\n  ')}`, wt), 2]);
   bank.push(['AP-133 (g) PIPELINE_MAX_TEST_PATHS=0 + 40 rutas ⇒ permite', run(`npx vitest run ${paths(40)}`, wt, { PIPELINE_MAX_TEST_PATHS: '0' }), 0]);
   bank.push(['AP-133 (i) `> /tmp/out.log` no cuenta como ruta', run(`npx vitest run ${paths(25)} > /tmp/out.log`, wt), 0]);
   bank.push(['AP-133 (i′) `>/tmp/out.log` pegado y `| tee /tmp/x.log` no cuentan', Math.max(run(`npx vitest run ${paths(25)} >/tmp/out.log`, wt), run(`npx vitest run ${paths(25)} 2>&1 | tee /tmp/x.log`, wt)), 0]);

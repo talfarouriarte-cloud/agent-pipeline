@@ -58,14 +58,16 @@ if [ "${PIPELINE_VERIFY_AFTER_PUSH:-1}" != "0" ] && git rev-parse --is-inside-wo
     # borrado, enlace o hash filtrado igual a origin/<base>:<ruta>. Listado
     # como la red: -z y --untracked-files=all (un fichero por entrada, nunca
     # el directorio). Sin base resoluble: fail-open a la exclusión anterior.
+    # Las rutas de porcelain son relativas a la raíz: se resuelven contra ella.
     dirty=0; base=""; base_state=""
+    top=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
     while IFS= read -r -d '' ent; do
       xy=${ent:0:2}; p=${ent:3}
       case "$xy" in R*|C*) IFS= read -r -d '' _ || true;; esac
       case "$p" in
         .claude/*)
           case "$xy" in *D*) continue;; esac
-          { [ -L "$p" ] || [ ! -f "$p" ]; } && continue
+          { [ -L "$top/$p" ] || [ ! -f "$top/$p" ]; } && continue
           if [ -z "$base_state" ]; then
             base_state=no
             cache=$(git rev-parse --git-path pipeline-base 2>/dev/null || true)
@@ -86,7 +88,7 @@ if [ "${PIPELINE_VERIFY_AFTER_PUSH:-1}" != "0" ] && git rev-parse --is-inside-wo
             fi
           fi
           [ "$base_state" = ok ] || continue
-          hb=$(git hash-object --path="$p" -- "$p" 2>/dev/null || echo '?')
+          hb=$(git -C "$top" hash-object --path="$p" -- "$p" 2>/dev/null || echo '?')
           [ "$(git rev-parse -q --verify "refs/remotes/origin/$base:$p" 2>/dev/null || true)" = "$hb" ] && continue
           dirty=$((dirty + 1));;
         *) dirty=$((dirty + 1));;
@@ -109,12 +111,16 @@ tail=$(printf '%s' "$cmd" | sed -E 's#.*(vitest|'"$PNPM_TEST"'[^[:space:]]*|npm[
 # (AP-124 (b) sobre un productor muy usado) es la suite en la práctica y mata
 # la sesión antes del push (aud. asesoramiento#3384). Una ruta = un token de
 # la cola con el predicado de abajo; no cuentan los flags, las redirecciones
-# (sueltas o pegadas) ni nada tras el primer `|`, `>`, `>>` o `2>`.
+# (sueltas o pegadas) ni nada tras el primer `|`, `>`, `>>` o `2>`. La cola
+# se aplana antes (continuaciones `\` y saltos de línea → espacio): `read`
+# solo lee la primera línea. Residual léxico: `$(…)`/backticks no se expanden
+# (AP-133 § Riesgos).
 # PIPELINE_MAX_TEST_PATHS (default 25; 0 desactiva).
 max_paths="${PIPELINE_MAX_TEST_PATHS:-25}"
 if [ "$max_paths" != "0" ] && [ "$max_paths" -eq "$max_paths" ] 2>/dev/null; then
   npaths=0
-  read -r -a toks <<< "$tail" || true
+  flat=${tail//$'\\\n'/ }; flat=${flat//$'\n'/ }
+  read -r -a toks <<< "$flat" || true
   for t in "${toks[@]+"${toks[@]}"}"; do
     case "$t" in '|'*|'>'*|'>>'*|'2>'*) break;; -*|*'>'*) continue;; esac
     if printf '%s' "$t" | grep -Eq '\.[cm]?[jt]sx?("|'"'"')?$|/'; then npaths=$((npaths + 1)); fi
