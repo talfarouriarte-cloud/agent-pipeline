@@ -1320,14 +1320,41 @@ jobs:
               // label `lgtm` (post-step determinista de reviewer.yml; CI la
               // invalida en código nuevo). El escaneo de comentarios queda de
               // RESPALDO TRANSITORIO (PRs pre-cambio); retirar en fase 2.
+              // AP-130 (central#370, review de #389 🔴): tras un merge mecánico
+              // append-only del registro (commit `merge(registro): append-only
+              // de … (watchdog, AP-N)` en la rama y/o su marcador
+              // `watchdog-rebase-append`) solo cuenta un veredicto del Reviewer
+              // POSTERIOR a ambos — con label `lgtm` o sin ella. Lo que entró
+              // desde la base puede ser una rectificación que AP-055 no ve en
+              // `layout: "dir"`; sin esta relación de orden, el respaldo por
+              // comentarios resucitaba el LGTM anterior (misma clase que
+              // `RV.consumida` en GATE 4). El commit ancla también el caso en que
+              // el Watchdog empujó y no llegó a publicar el marcador.
               let lgtm = prLabels.includes('lgtm');
-              if (!lgtm) try {
-                const { data: comments } = await github.rest.issues.listComments({
-                  owner, repo, issue_number: prNumber, per_page: 100 });
-                const verdicts = comments.filter(c =>
-                  c.user.login === REVIEWER_LOGIN && /^\s*(LGTM|REVIEW|NITS)\b/.test(c.body || ''));
-                const last = verdicts[verdicts.length - 1];
-                lgtm = !!(last && /^\s*LGTM\b/.test(last.body));
+              let appendSinVeredicto = false;
+              try {
+                const esVeredicto = c => c.user && c.user.login === REVIEWER_LOGIN && /^\s*(LGTM|REVIEW|NITS)\b/.test(c.body || '');
+                const pcs = await github.paginate(github.rest.pulls.listCommits, { owner, repo, pull_number: prNumber, per_page: 100 });
+                let tAppend = 0;
+                for (const c of pcs) {
+                  const subj = ((c.commit && c.commit.message) || '').split('\n')[0];
+                  if (/^merge\(registro\): append-only de .+ \(watchdog, AP-\d+\)$/.test(subj))
+                    tAppend = Math.max(tAppend, Date.parse(c.commit.committer && c.commit.committer.date) || 1);
+                }
+                const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: prNumber, per_page: 100 });
+                let iMarca = -1;
+                comments.forEach((c, i) => { if ((c.body || '').includes('<!-- watchdog-rebase-append: ')) iMarca = i; });
+                if (tAppend || iMarca >= 0) {
+                  const posteriores = comments.filter((c, i) => i > iMarca && esVeredicto(c)
+                    && (!tAppend || Date.parse(c.created_at) > tAppend));
+                  const last = posteriores[posteriores.length - 1];
+                  lgtm = !!(last && /^\s*LGTM\b/.test(last.body));
+                  appendSinVeredicto = !last;
+                } else if (!lgtm) {
+                  const verdicts = comments.filter(esVeredicto);
+                  const last = verdicts[verdicts.length - 1];
+                  lgtm = !!(last && /^\s*LGTM\b/.test(last.body));
+                }
               } catch (e) { await diag(prNumber, `chequeo Reviewer falló: ${e.message}`); return; }
               if (!lgtm) {
                 // ¿Espera al Reviewer (sin veredicto aún) o al Creator (REVIEW/NITS abiertos)?
@@ -1338,7 +1365,7 @@ jobs:
                   if (vs.length && /^\s*(REVIEW|NITS)\b/.test(vs[vs.length - 1].body || '')) waitingOn = 'estado:esperando-creator';
                 } catch (e) { core.info('estado lgtm: ' + e.message); }
                 await setStatus(prNumber, waitingOn);
-                await diag(prNumber, `Reviewer aún no LGTM (${waitingOn.replace('estado:', '')}); espero.`);
+                await diag(prNumber, `Reviewer aún no LGTM (${waitingOn.replace('estado:', '')}); espero.${appendSinVeredicto ? ' Merge mecánico append-only del registro (AP-130) sin veredicto del Reviewer POSTERIOR: el LGTM anterior no cuenta.' : ''}`);
                 return;
               }
 

@@ -1216,6 +1216,25 @@ jobs:
                 continue; // dirty: la lógica de CI-rojo no aplica (no hay checks)
               }
 
+              // AP-130, red por estado (review de #389 🟡): tras el push del
+              // merge mecánico el PR deja de estar `dirty` y no vuelve a ser
+              // candidato. Si «Materializar rebase append-only» no terminó
+              // (error de API, timeout, cancelación), el HEAD es el commit de
+              // merge del Watchdog SIN su marcador: se re-entrega como
+              // candidato YA resuelto (`materializar`), sin merge ni push.
+              try {
+                const { data: hc } = await github.rest.repos.getCommit({ ...O, ref: pr.head.sha });
+                const subj = ((hc && hc.commit && hc.commit.message) || '').split('\n')[0];
+                if (/^merge\(registro\): append-only de .+ \(watchdog, AP-\d+\)$/.test(subj)) {
+                  const mcs = await github.paginate(github.rest.issues.listComments, { ...O, issue_number: pr.number, per_page: 100 });
+                  if (!mcs.some(c => (c.body || '').includes(`<!-- watchdog-rebase-append: ${pr.head.sha} -->`))) {
+                    adrAppend.push({ number: pr.number, head_ref: pr.head.ref, head_sha: pr.head.sha, rebases: 0, materializar: pr.head.sha });
+                    core.setOutput('adr_append', JSON.stringify(adrAppend));
+                    core.notice(`PR #${pr.number}: HEAD ${pr.head.sha.slice(0, 7)} es un merge append-only sin marcador — re-materializo (AP-130).`);
+                  }
+                }
+              } catch (e) { core.info(`append-only/red #${pr.number}: ${e.message}`); }
+
               // Run de CI más reciente sobre el HEAD exacto del PR.
               const { data: ciRuns } = await github.rest.actions.listWorkflowRunsForRepo({
                 ...O, head_sha: pr.head.sha, per_page: 20,
@@ -1642,8 +1661,10 @@ jobs:
       # fast-forward con el PAT ⇒ dispara CI). Cualquier otro caso, y todo fallo
       # del camino mecánico, cae al ping LLM de siempre en «Materializar rebase
       # append-only» (invariante de fail-open: todo candidato recibe en el mismo
-      # tick o un `watchdog-rebase-append` o un ping LLM). El gate 0 del scan
-      # garantiza que no hay sesión del Creator viva sobre la rama.
+      # tick o un `watchdog-rebase-append` o un ping LLM; si (iii) no termina
+      # DESPUÉS del push, la red por estado del modo d) lo re-materializa en el
+      # tick siguiente). El gate 0 del scan garantiza que no hay sesión del
+      # Creator viva sobre la rama.
       - name: Checkout del consumidor (merge append-only, AP-130)
         if: steps.scan.outputs.adr_append != '' && steps.scan.outputs.adr_append != '[]'
         continue-on-error: true
@@ -1671,7 +1692,9 @@ jobs:
           put() {
             node -e 'const fs=require("fs");const [f,n,v]=process.argv.slice(1);const o=JSON.parse(fs.readFileSync(f,"utf8"));let r;try{r=JSON.parse(v)}catch(e){r={ok:false,na:"merge-error",detalle:String(v).slice(0,300)}}o[n]=r;fs.writeFileSync(f,JSON.stringify(o));' "$RES" "$1" "$2"
           }
-          LISTA=$(node -e 'for (const c of JSON.parse(process.env.CANDS || "[]")) console.log(c.number + "\t" + c.head_ref)')
+          # `materializar`: red por estado del scan (merge ya empujado en un tick
+          # anterior) ⇒ ni merge ni push; lo resuelve el step siguiente.
+          LISTA=$(node -e 'for (const c of JSON.parse(process.env.CANDS || "[]")) if (!c.materializar) console.log(c.number + "\t" + c.head_ref)')
           while IFS=$'\t' read -r NUM REF; do
             [ -z "$NUM" ] && continue
             if [ ! -f "$MOD" ]; then put "$NUM" '{"ok":false,"na":"modulo-ausente"}'; continue; fi
@@ -1719,7 +1742,9 @@ jobs:
             try { resultados = JSON.parse(process.env.RESULTADOS || '{}') || {}; } catch (e) { core.warning(`resultados ilegibles: ${e.message} — todos los candidatos van a sin-resultado.`); }
             for (const c of cands) {
               try {
-                const r0 = resultados[String(c.number)];
+                // Red por estado del scan: el merge ya está en la rama, falta
+                // la materialización de un tick anterior que no terminó.
+                const r0 = c.materializar ? { ok: true, sha: String(c.materializar), ruta: null, red: true } : resultados[String(c.number)];
                 const ok = !!(r0 && r0.ok === true && /^[0-9a-f]{7,40}$/.test(String(r0.sha || '')));
                 if (ok) {
                   const MARK = `<!-- watchdog-rebase-append: ${r0.sha} -->`;
@@ -1744,7 +1769,7 @@ jobs:
                   }
                   const que = `${hadLgtm ? 'Retirada la label `lgtm`: el veredicto previo no vio lo que entró desde la base. ' : ''}${reconvoca ? 'Re-aplicada `needs-review` por PAT: el Reviewer juzga el HEAD nuevo.' : pf.draft ? 'Sin `needs-review`: el PR está en draft (el Reviewer entrará por `ready`).' : `Sin \`needs-review\`: el veredicto vigente es \`${lastV}\`, el turno es del Creator y la próxima review consume el HEAD nuevo.`}`;
                   await patCall('POST', `/issues/${c.number}/comments`, {
-                    body: `**watchdog · merge append-only del registro (AP-130)**: el único conflicto con \`origin/${process.env.IN_DEFAULT_BRANCH}\` era un append por los dos lados al final de \`${r0.ruta || 'registro'}\`. Resuelto sin sesión LLM con un commit de merge de dos padres (${r0.sha.slice(0, 7)}): ancestro + bloque de la base + bloque del PR, sin reescritura de historia. ${que}\n\n${MARK}\n${CAPA}` });
+                    body: `**watchdog · merge append-only del registro (AP-130)**: el único conflicto con \`origin/${process.env.IN_DEFAULT_BRANCH}\` era un append por los dos lados al final de \`${r0.ruta || 'registro'}\`. Resuelto sin sesión LLM con un commit de merge de dos padres (${r0.sha.slice(0, 7)}): ancestro + bloque de la base + bloque del PR, sin reescritura de historia. ${r0.red ? '(Materialización tardía: la del tick del merge no terminó; la detectó la red por estado del scan.) ' : ''}${que}\n\n${MARK}\n${CAPA}` });
                   core.notice(`PR #${c.number}: merge append-only ${r0.sha.slice(0, 7)} — lgtm ${hadLgtm ? 'retirada' : 'ausente'}, needs-review ${reconvoca ? 're-aplicada' : pf.draft ? 'omitida (draft)' : `omitida (turno del Creator: ${lastV})`}.`);
                 } else {
                   const na = String((r0 && r0.na) || 'sin-resultado').replace(/[^a-z-]/g, '') || 'sin-resultado';
