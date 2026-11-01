@@ -491,6 +491,18 @@ if (existsSync(EM) && existsSync(CC)) {
   caso('solo el filtro de existencia de `sweepQueueAtExit` lee `en-cola` con `per_page: 5`', lecturas5 === 1
     && /labels: 'en-cola'[^\n]*per_page: 5\b/.test(cuerpo(em, 'async function sweepQueueAtExit(', '// Helper: label de estado')));
 }
+// Watchdog (review PR #385, 🟡 1): el dependiente con `depende-de` abierto es
+// espera legítima en el detector `issue-armed-no-pr`, ANTES de la sospecha de
+// `cola-huerfana`, y solo sin el propio PR huérfano (AP-048 intacto).
+const WD = '.github/workflows/watchdog.yml';
+if (existsSync(WD)) {
+  const wd = readFileSync(WD, 'utf8');
+  const a = wd.indexOf('- name: Scan for stalled work');
+  const scan = a === -1 ? '' : wd.slice(a, wd.indexOf('- name: Harvest flaky candidates', a + 1));
+  const iOwn = scan.indexOf('const ownOrphanPR'), iDep = scan.indexOf('COLA.dependenciasAbiertas('), iSos = scan.indexOf('if (!freshSuspicion)');
+  caso('watchdog scan (AP-126): `en-cola` con `depende-de` abierto se salta ANTES de la sospecha/`cola-huerfana`', iOwn !== -1 && iOwn < iDep && iDep < iSos);
+  caso('watchdog scan (AP-126): la exención no aplica con el propio PR huérfano (interbloqueo AP-048)', /if \(!ownOrphanPR && COLA && COLA\.dependenciasAbiertas\)/.test(scan));
+}
 
 // ── Copias: la del consumidor (`scripts/`) es la del central ───────────────
 if (existsSync('vendored/scripts/cola-prioridad.cjs') && existsSync('scripts/cola-prioridad.cjs')) {
