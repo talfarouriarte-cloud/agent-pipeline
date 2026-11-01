@@ -612,7 +612,12 @@ jobs:
               // AP-018 §3): vale en CUALQUIER comentario de confianza del issue —
               // un re-arm posterior no lo pierde. Pasa en SILENCIO, cero re-avisos
               // y cero re-stalls (converge con el dedup de AP-018 §2).
-              const naDeclared = existing.some(c => /<!--\s*invariantes-na\s*-->/.test(c.body || '') && TRUSTED.has(c.author_association));
+              // AP-127 (central#301): vale también en el BODY del issue armado,
+              // de cualquier autor — el body lo escribe quien hornea (el Auditor
+              // crea el correctivo por `gh api`, canal que conserva el HTML, y su
+              // comentario sale como `claude[bot]`, fuera de TRUSTED).
+              const naDeclared = /<!--\s*invariantes-na\s*-->/.test(issue.body || '')
+                || existing.some(c => /<!--\s*invariantes-na\s*-->/.test(c.body || '') && TRUSTED.has(c.author_association));
               if (naDeclared) return false;
               const where = scope === 'suelto'
                 ? 'este issue `correctivo` (suelto, fuera de cadena) no declara el bloque `## Invariantes funcionales` en su body (AP-096, central#260: el guard cubre también los correctivos sueltos)'
@@ -2105,6 +2110,9 @@ jobs:
           && !contains(join(github.event.issue.labels.*.name, ','), 'auditoria-completa')
           && github.event.issue.pull_request == null
         uses: actions/github-script@v7
+        env:
+          # AP-127: clase de la sesión (AP-091) para no re-armar una muerte instantánea.
+          LLM_EXEC_KIND: ${{ steps.llm_exec.outputs.kind }}
         with:
           github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
           script: |
@@ -2123,10 +2131,32 @@ jobs:
               owner, repo, issue_number, per_page: 100 });
             const published = comments.some(c => HAS_REPORT.test(c.body || ''));
             if (!published) {
+              // AP-127 (central#356): un único re-arm automático por panel. La
+              // sesión del Auditor que termina VIVA sin informe (asesoramiento#2983:
+              // `success`, 49/200 turnos, cortada a mitad de los invariantes)
+              // no necesita decisión para retomarse: el texto del re-arm es
+              // derivable del estado (parciales `audit-parcial`/`talla-pre`).
+              // Segundo fallo (marcador ya puesto) o muerte instantánea (AP-091:
+              // cuota/credencial ⇒ re-armar es otra NULO) ⇒ `stalled` como antes.
+              // Ningún texto de este step contiene la cadena que lee HAS_REPORT
+              // (crítica ronda 3 de #356): el comentario del propio post-step no
+              // puede contar como informe en la sesión siguiente.
+              const REARM_RE = /<!--\s*audit-rearm-auto\s*-->/;
+              const yaReArmado = comments.some(c => REARM_RE.test(c.body || ''));
+              const kind = process.env.LLM_EXEC_KIND || '';
+              if (!yaReArmado && kind !== 'instant') {
+                await github.rest.issues.createComment({ owner, repo, issue_number,
+                  body: '@claude Auditoría interrumpida sin informe: retoma desde el último parcial (`audit-parcial`/`talla-pre`) sin repetir lo ejecutado. Lee los parciales de este panel, continúa por el primer bloque sin parcial y publica el informe final completo (epic-auditor.md §7); un invariante que no quepa va como `medida-pendiente`. **claude-code · post-step de auditoría** (AP-127): re-arm automático, uno por panel; un segundo fallo escala con `stalled`.\n\n<!-- audit-rearm-auto -->' });
+                core.warning(`auditoría #${issue_number}: sin informe publicado (sesión ${kind || 'sin clasificar'}) — auditoria-completa NO aplicada; re-arm automático (audit-rearm-auto).`);
+                return;
+              }
               await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['stalled'] });
+              const motivo = yaReArmado
+                ? 'el panel ya tuvo su re-arm automático (`audit-rearm-auto`) y la sesión de retoma tampoco publicó'
+                : 'la sesión murió al nacer (firma AP-091: cuota o credencial; re-armarla sería otra sesión NULO)';
               await github.rest.issues.createComment({ owner, repo, issue_number,
-                body: '**claude-code · post-step de auditoría**: la sesión del Auditor terminó SIN informe publicado (ningún comentario contiene el bloque `## Métricas de proceso`). NO se aplica `auditoria-completa` — el process-review no debe correr contra un panel vacío (clase informe-no-publicado, finplan#1296/#1295). Escalado vía `stalled`.\n\n<!-- informe-no-publicado -->' });
-              core.warning(`auditoría #${issue_number}: sin informe publicado — auditoria-completa NO aplicada; stalled.`);
+                body: `**claude-code · post-step de auditoría**: la sesión del Auditor terminó SIN informe publicado (ningún comentario lleva el bloque de métricas de proceso del informe final) y ${motivo}. NO se aplica \`auditoria-completa\` — el process-review no debe correr contra un panel vacío (clase informe-no-publicado, finplan#1296/#1295). Escalado vía \`stalled\`.\n\n<!-- informe-no-publicado -->` });
+              core.warning(`auditoría #${issue_number}: sin informe publicado — auditoria-completa NO aplicada; stalled (${yaReArmado ? 'segundo fallo' : 'muerte instantánea'}).`);
               return;
             }
             // Materialización del veredicto POR ESTADO (AP-013, 2026-07-15,
