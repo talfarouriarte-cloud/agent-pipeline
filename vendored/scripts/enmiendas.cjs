@@ -220,7 +220,7 @@ function cuerpoRearm(p, k, origen, runId = null) {
     '',
     listado(p),
     '',
-    'Lee cada enlace COMPLETO (por API: el marcador no llega a tu contexto), aplícalo y acusa CADA id en un comentario NUEVO con `gh api`, no en tu comentario de seguimiento (ahí el comentario HTML se pierde), en línea propia: `enmienda-aplicada: <id>` (o `enmienda-rechazada: <id>` + motivo, que pasa el turno al humano), envuelto en un comentario HTML; cópialo también, en línea propia, en el body del PR. Un disparo diferido es un ping normal: atiéndelo como tal. Nada mergea mientras quede una enmienda sin acuse.',
+    'Lee cada enlace COMPLETO (por API: el marcador no llega a tu contexto), aplícalo y acusa CADA id en un comentario NUEVO con `gh api`, no en tu comentario de seguimiento (ahí el comentario HTML se pierde), en línea propia: `enmienda-aplicada: <id>` (o `enmienda-rechazada: <id>` + motivo, que pasa el turno al humano), envuelto en un comentario HTML; cópialo también, en línea propia, en el body del PR (y en el bloque `pr-body-declarado` si lo publicas). Un disparo diferido es un ping normal: atiéndelo como tal. Nada mergea mientras quede una enmienda sin acuse.',
     '',
     '<!-- ping-creator -->',
     marcaRearm(k.split(',')),

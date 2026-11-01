@@ -449,6 +449,8 @@ const VEREDICTO_LGTM = () => com(PR, 'LGTM\n\nTodo bien.', { min: 1 });
   const fotoTxt = ENM.fotoPendientes([e]);
   check(/comentario NUEVO con `gh api`, no en tu comentario de seguimiento/.test(cuerpoR) && /comentario NUEVO con `gh api`, no en tu comentario de seguimiento/.test(fotoTxt),
     '348(a) re-arm y foto mandan acusar en un comentario NUEVO por `gh api`, no en el de seguimiento');
+  check(/en el bloque `pr-body-declarado` si lo publicas/.test(cuerpoR) && /en el bloque `pr-body-declarado` si lo publicas/.test(fotoTxt),
+    '348(a) re-arm y foto nombran también el bloque `pr-body-declarado` (mismo texto que `creator.md`, AP-123 §1)');
 }
 // ── central#348 (b) fixture asesoramiento#2909: 4 disparos distintos en 24 h ──
 {
