@@ -142,6 +142,13 @@ jobs:
             let COLA = null;
             try { COLA = require(`${process.env.GITHUB_WORKSPACE}/.epic-merge-central/vendored/scripts/cola-prioridad.cjs`); }
             catch (e) { core.warning(`[epic-merge] cola-prioridad no disponible (${e.message}) — cola FIFO, sin cesión a urgentes.`); }
+            // central#368 (AP-125): guard de rango al consumir `epic-audit` y
+            // dedupe de panel consciente del veredicto (`epic-audit-guard.cjs`,
+            // mismo checkout sparse). Sin módulo: statu quo (panel como antes,
+            // adopción por título), con aviso.
+            let EAG = null;
+            try { EAG = require(`${process.env.GITHUB_WORKSPACE}/.epic-merge-central/vendored/scripts/epic-audit-guard.cjs`); }
+            catch (e) { core.warning(`[epic-merge] epic-audit-guard no disponible (${e.message}) — sin guard de rango ni dedupe por veredicto (statu quo).`); }
             // central#314: interruptor global `pausa-cola` — lectura ÚNICA del
             // módulo (`COLA.leerPausa`), fail-open: si la consulta falla, aviso
             // y comportamiento de antes. Sin módulo, sin pausa (statu quo).
@@ -269,7 +276,11 @@ jobs:
                   body: `@claude arranca — turno de cola: la serie quedó libre (${why}). ${COLA ? COLA.describir(next) : 'Eras el más antiguo en \`en-cola\`.'}\n\n<!-- arm-de-cola -->\n${EMD.marcadoresPop(next.number, origen)}` });
                 serieTomada = true;
                 await diag(prNumber, `serie libre (${why}): armado el siguiente de la cola, #${next.number}.`, { pop: origen ? next.number : null });
+                // AP-125: el nº armado lo lee el guard de `epic-audit` prematuro
+                // (dueño único del arm del pendiente menor).
+                return next.number;
               } catch (e) { await diag(prNumber, `arm de cola falló: ${e.message}`); }
+              return null;
             }
 
             // ── Re-evaluación de la cola al CIERRE del job (AP-062, repesca
@@ -450,30 +461,74 @@ jobs:
                 else await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
               } catch (e) { core.warning('writeAuditClaim: ' + e.message); }
             }
+            // AP-125 (central#368): hilo PAGINADO de un panel — el `audit-verdict`
+            // lo publica el Auditor al final, nunca en la página 1 de un panel con
+            // conversación larga. Fallo de lectura ⇒ null (el llamante adopta:
+            // statu quo).
+            async function comentariosDe(n) {
+              try { return await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: n, per_page: 100 }); }
+              catch (e) { core.warning(`comentarios de #${n}: ${e.message}`); return null; }
+            }
+            // Paneles del alcance (abiertos o cerrados, título base o
+            // «(re-auditoría k)») con su veredicto: entrada de `tituloReauditoria`.
+            async function panelesDelAlcance(base) {
+              const todos = await github.paginate(github.rest.issues.listForRepo, {
+                owner, repo, state: 'all', labels: 'auditoria', per_page: 100 });
+              const out = [];
+              for (const i of todos.filter(i => !i.pull_request && EAG.esDelAlcance(i.title, base)))
+                out.push({ number: i.number, title: i.title, conVeredicto: EAG.tieneVeredicto(await comentariosDe(i.number)) });
+              return out;
+            }
             // Devuelve el nº de la auditoría vigente para este alcance (creada,
             // adoptada o superviviente) o null si la creación falló.
+            // AP-125: un panel abierto de título exacto CON `audit-verdict` ya no
+            // se adopta (asesoramiento#3109): la vigente pasa a ser una
+            // re-auditoría de título propio, y los pasos 1-2 se repiten con ese
+            // título (una 2.ª evaluación del mismo merge la reclama o adopta).
             async function createAuditIdempotent(prNumber, { title, labels, body }) {
-              const marker = AUDIT_CLAIM(title);
-              // 1) Claim materializado en el PR (fuertemente consistente).
-              try {
-                const { data: cs } = await github.rest.issues.listComments({
-                  owner, repo, issue_number: prNumber, per_page: 100 });
-                const claimed = cs.find(c => (c.body || '').includes(marker));
-                if (claimed) {
-                  const m = (claimed.body || '').match(/→\s*#(\d+)/);
-                  await diag(prNumber, `auditoría «${title}» ya reclamada${m ? ' (#' + m[1] + ')' : ''}; no creo duplicado.`);
-                  return m ? Number(m[1]) : null;
-                }
-              } catch (e) { core.warning('claim read: ' + e.message); }
-              // 2) Cinturón por label (REST Issues API, no search index): título exacto abierto.
-              try {
-                const existing = (await openAuditsByTitle(title))[0];
-                if (existing) {
-                  await writeAuditClaim(prNumber, title, existing.number);
-                  await diag(prNumber, `auditoría abierta existente #${existing.number} para «${title}»; la adopto, no creo duplicado.`);
-                  return existing.number;
-                }
-              } catch (e) { core.warning('belt list: ' + e.message); }
+              const base = title;
+              for (let vuelta = 0; vuelta < 5; vuelta++) {
+                const marker = AUDIT_CLAIM(title);
+                // 1) Claim materializado en el PR (fuertemente consistente).
+                try {
+                  const { data: cs } = await github.rest.issues.listComments({
+                    owner, repo, issue_number: prNumber, per_page: 100 });
+                  const claimed = cs.find(c => (c.body || '').includes(marker));
+                  if (claimed) {
+                    const m = (claimed.body || '').match(/→\s*#(\d+)/);
+                    await diag(prNumber, `auditoría «${title}» ya reclamada${m ? ' (#' + m[1] + ')' : ''}; no creo duplicado.`);
+                    return m ? Number(m[1]) : null;
+                  }
+                } catch (e) { core.warning('claim read: ' + e.message); }
+                // 2) Cinturón por label (REST Issues API, no search index): título exacto abierto.
+                let siguiente = null;
+                try {
+                  const existing = (await openAuditsByTitle(title))[0];
+                  if (existing) {
+                    const cs = EAG ? await comentariosDe(existing.number) : null;
+                    let paneles = [];
+                    if (cs && EAG.tieneVeredicto(cs)) {
+                      // Con veredicto, un fallo al listar los paneles NO puede
+                      // acabar adoptando (ni recreando con el título base, que
+                      // el cinturón post-create resolvería a favor del panel
+                      // juzgado, de número menor): se sigue con lo leído.
+                      try { paneles = await panelesDelAlcance(base); }
+                      catch (e) { core.warning(`paneles del alcance «${base}»: ${e.message} — numero la re-auditoría sin ellos.`); }
+                    }
+                    const d = cs ? EAG.decidirAdopcion(existing, cs, paneles, base) : { adoptar: true };
+                    if (!d.adoptar) {
+                      siguiente = d.titulo;
+                      await diag(prNumber, `auditoría abierta #${existing.number} para «${title}» YA tiene \`audit-verdict\`: no la adopto (AP-125); la vigente es «${siguiente}».`);
+                    } else {
+                      await writeAuditClaim(prNumber, title, existing.number);
+                      await diag(prNumber, `auditoría abierta existente #${existing.number} para «${title}»; la adopto, no creo duplicado.`);
+                      return existing.number;
+                    }
+                  }
+                } catch (e) { core.warning('belt list: ' + e.message); }
+                if (!siguiente || siguiente === title) break;
+                title = siguiente;
+              }
               // 3) Crear + reclamar de inmediato (claim antes de ceder el turno).
               let created = null;
               try {
@@ -500,6 +555,62 @@ jobs:
                 }
               } catch (e) { core.warning('post-create belt: ' + e.message); }
               return created ? created.number : null;
+            }
+
+            // ── Guard de rango al consumir `epic-audit` (AP-125, central#368). Lo
+            // usan los DOS consumidores del sentinel (merge y cierre por estado).
+            // Solo importan los issues ABIERTOS con la label de épica del input:
+            // un cerrado (también `not_planned`) nunca es pendiente. Fallo de
+            // lectura o sin módulo ⇒ `crear` (statu quo) con aviso.
+            async function guardEpicAudit(scope, issueNumber) {
+              const crear = { accion: 'crear', pendientes: [], rango: null };
+              if (!EAG) return crear;
+              if (!EAG.parseRango(scope)) { core.notice('epic-audit: alcance sin rango #a-#b, guard de rango no aplicado'); return crear; }
+              try {
+                const abiertos = await github.paginate(github.rest.issues.listForRepo, {
+                  owner, repo, state: 'open', labels: process.env.IN_EPIC_LABEL, per_page: 100 });
+                return EAG.decidirEpicAudit({ scope, issueNumber, issuesDelIntervalo: abiertos, epicLabel: process.env.IN_EPIC_LABEL });
+              } catch (e) { core.warning(`[epic-merge] guard de rango de epic-audit: lectura falló (${e.message}) — panel como antes.`); return crear; }
+            }
+            // `prematuro`: marcador en el pendiente MENOR (dedupe por marcador) y
+            // `stalled` solo si nadie es dueño de su arm (`EAG.destinoPrematuro`).
+            // `armadoAhora`: nº que armó el pop de cola de ESTE merge (o null).
+            async function marcarPrematuro(issueConSentinel, ps, armadoAhora) {
+              const menor = ps[0];
+              let labelsPendiente = [], prAbierto = false;
+              try { labelsPendiente = ((await github.rest.issues.get({ owner, repo, issue_number: menor })).data.labels || []).map(l => l.name); }
+              catch (e) { core.info(`prematuro: issues.get #${menor}: ${e.message}`); }
+              try {
+                const { data: prs } = await github.rest.pulls.list({ owner, repo, state: 'open', per_page: 100 });
+                prAbierto = prs.some(p => (p.head.ref || '').startsWith(`claude/issue-${menor}-`));
+              } catch (e) { core.info(`prematuro: pulls.list: ${e.message}`); }
+              const destino = EAG.destinoPrematuro({ pendienteMenor: menor, labelsPendiente, prAbierto, armadoAhora });
+              const cs = await comentariosDe(menor);
+              if ((cs || []).some(c => EAG.PREMATURO_RE.test(c.body || ''))) return { destino, repetido: true };   // dedupe del ruling: si el pendiente ya lo tiene, no se repite
+              if (destino.stalled) await github.rest.issues.addLabels({ owner, repo, issue_number: menor, labels: ['stalled'] });
+              await github.rest.issues.createComment({ owner, repo, issue_number: menor,
+                body: EAG.cuerpoPrematuro({ issueConSentinel, pendientes: ps, destino }) });
+              return { destino, repetido: false };
+            }
+            const describirPrematuro = (r, ps) => `epic-audit prematuro: rango abierto ${ps.map(n => '#' + n).join(', ')}; sin panel. Marcador en #${r.destino.issue}${r.repetido ? ' (ya estaba)' : ''}; ${r.destino.stalled ? '`stalled` (sin dueño del arm)' : `sin \`stalled\` (dueño del arm: ${r.destino.motivo})`}.`;
+            // Body del panel de épica (compartido por los dos consumidores). Con
+            // `rango-abierto`, una línea + marcador para el Auditor.
+            function cuerpoPanelEpica(scope, g) {
+              return [
+                `Auditoría post-épica (run único). Alcance: **${scope}**.`,
+                ``,
+                `Rol y protocolo: \`docs/agents/epic-auditor.md\` (vinculante).`,
+                `Los «Invariantes funcionales de la épica» viven en el ISSUE DE ÉPICA del rango (casa canónica, junto al sentinel): léelos allí y EJECÚTALOS. Su ausencia ALLÍ es la omisión a visibilizar.`,
+                `Compara el árbol mergeado de \`${process.env.IN_DEFAULT_BRANCH}\` contra el alcance TOTAL`,
+                `de la épica (ADR + unión de issues del rango), no PR-a-PR.`,
+                ...(g && g.accion === 'rango-abierto' ? [
+                  ``,
+                  `**Rango abierto al consumir \`epic-audit\`:** ${g.pendientes.map(n => '#' + n).join(', ')} siguen abiertos. Trátalos como no entregados salvo evidencia en el árbol.`,
+                  EAG.marcadorRangoAbierto(g.pendientes),
+                ] : []),
+                ``,
+                `@claude arranca la auditoría siguiendo docs/agents/epic-auditor.md.`,
+              ].join('\n');
             }
 
             // ── Post-merge: parcial / cierre de issue / sentinels. Camino único
@@ -704,25 +815,39 @@ jobs:
               //    re-auditoría encuentra huecos, escala a humano — ver
               //    docs/agents/epic-auditor.md);
               //  - el issue de auditoría se crea aquí (no por merge) → no re-dispara.
+              //  - AP-125 (central#368): guard de rango. Un `epic-audit` en un
+              //    INTERMEDIO con eslabones abiertos no crea panel (`prematuro`);
+              //    si el issue es el último y aun así queda algo abierto, el panel
+              //    se crea con la lista (`rango-abierto`).
               const am = body.match(/<!--\s*epic-audit:\s*([^>]+?)\s*-->/);
-              if (am) {
-                const scope = am[1].trim();
+              const scopeAm = am ? am[1].trim() : null;
+              const gAm = am ? await guardEpicAudit(scopeAm, issueNumber) : null;
+              // Horneado doble (`epic-audit` + `launch-next`) en un intermedio
+              // prematuro: la cadena TIENE dueño del arm — se sigue por
+              // `launch-next` (más abajo) y el sentinel queda sin consumir. Sin
+              // pop ni `stalled`: armar el sucesor y popear la cola a la vez
+              // sería doble arm.
+              const prematuroConCadena = gAm && gAm.accion === 'prematuro' && /<!--\s*launch-next:\s*#?\d+\s*-->/.test(body);
+              if (prematuroConCadena) await diag(prNumber, `MERGEADO; epic-audit prematuro en #${issueNumber} (rango abierto ${gAm.pendientes.map(n => '#' + n).join(', ')}): no se crea panel; sigo por launch-next.`);
+              if (am && !prematuroConCadena) {
+                const scope = scopeAm;
+                if (gAm.accion === 'prematuro') {
+                  // La serie se libera igual (garantía AP-014): pop PRIMERO, para
+                  // que el guard sepa si ese pop armó al pendiente menor.
+                  const armado = await armQueue(prNumber, `epic-audit prematuro en #${issueNumber}: la serie queda libre`);
+                  try {
+                    const r = await marcarPrematuro(issueNumber, gAm.pendientes, armado);
+                    await diag(prNumber, `MERGEADO; ${describirPrematuro(r, gAm.pendientes)}`);
+                  } catch (e) { await diag(prNumber, `MERGEADO; epic-audit prematuro, pero marcar el pendiente falló: ${e.message}`); }
+                  return;
+                }
                 try {
                   const auditNumber = await createAuditIdempotent(prNumber, {
                     title: `Auditoría de épica · ${scope}`,
                     labels: ['auditoria'],
-                    body: [
-                      `Auditoría post-épica (run único). Alcance: **${scope}**.`,
-                      ``,
-                      `Rol y protocolo: \`docs/agents/epic-auditor.md\` (vinculante).`,
-                      `Los «Invariantes funcionales de la épica» viven en el ISSUE DE ÉPICA del rango (casa canónica, junto al sentinel): léelos allí y EJECÚTALOS. Su ausencia ALLÍ es la omisión a visibilizar.`,
-                      `Compara el árbol mergeado de \`${process.env.IN_DEFAULT_BRANCH}\` contra el alcance TOTAL`,
-                      `de la épica (ADR + unión de issues del rango), no PR-a-PR.`,
-                      ``,
-                      `@claude arranca la auditoría siguiendo docs/agents/epic-auditor.md.`,
-                    ].join('\n'),
+                    body: cuerpoPanelEpica(scope, gAm),
                   });
-                  if (auditNumber) await diag(prNumber, `MERGEADO + epic-audit: auditoría en #${auditNumber}. Épica terminada.`);
+                  if (auditNumber) await diag(prNumber, `MERGEADO + epic-audit: auditoría en #${auditNumber}${gAm.accion === 'rango-abierto' ? ` (rango abierto: ${gAm.pendientes.map(n => '#' + n).join(', ')})` : ''}. Épica terminada.`);
                   await armQueue(prNumber, 'épica terminada (epic-audit)');
                 } catch (e) {
                   await diag(prNumber, `mergeado pero crear/armar auditoría falló: ${e.message}`);
@@ -738,9 +863,18 @@ jobs:
                 // toda cadena es epic-audit. Antes: diag silencioso (incidente
                 // wmcb #6, 2026-07-11: épica cerrada sin auditoría ni proceso).
                 // `stalled` lo recoge architect-resolve por el trigger labeled.
+                // AP-125: si este issue recibió un `epic-audit-prematuro` (era el
+                // pendiente menor de un intermedio con el sentinel de fin), se
+                // cita: el sentinel de la épica sigue en ese intermedio.
+                let prem = '';
+                if (EAG) {
+                  const pcs = (await comentariosDe(issueNumber)) || [];
+                  const pc = pcs.filter(c => EAG.PREMATURO_RE.test(c.body || '')).pop();
+                  if (pc) prem = ` Último \`epic-audit-prematuro\` de la cadena (rango abierto entonces: ${(pc.body.match(EAG.PREMATURO_RE) || [])[1]}): ${pc.html_url || 'comentario en este issue'} — el sentinel de fin sigue en el intermedio que nombra y nadie lo consumió.`;
+                }
                 await github.rest.issues.addLabels({ owner, repo, issue_number: issueNumber, labels: ['stalled'] });
                 await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber,
-                  body: '**epic-merge · cola huérfana**: issue de épica mergeado y cerrado SIN sentinel (ni launch-next ni epic-audit). El fin legítimo de una cadena es siempre epic-audit; esto es un defecto de horneado, no un fin. Escalado a architect-resolve vía `stalled`.\n\n<!-- cola-huerfana -->' });
+                  body: `**epic-merge · cola huérfana**: issue de épica mergeado y cerrado SIN sentinel consumible (ni \`launch-next\` ni \`epic-audit\`, o \`epic-audit\` ya declarado prematuro en la cadena). El fin legítimo de una cadena es siempre epic-audit; esto es un defecto de horneado, no un fin.${prem} Escalado a architect-resolve vía \`stalled\`.\n\n<!-- cola-huerfana -->` });
                 await diag(prNumber, `MERGEADO pero sin sentinel: cola huérfana — issue #${issueNumber} marcado stalled y escalado.`);
                 return;
               }
@@ -932,25 +1066,31 @@ jobs:
               // createAuditIdempotent es idempotente por título/claim ⇒ si el
               // humano ya creó la auditoría, la adopta sin duplicar. El claim se
               // ancla en el propio issue cerrado (no hay PR aquí).
+              // AP-125 (central#368): MISMO guard de rango que el camino de merge
+              // (fila `epic-state-close-processed`: «la MISMA lógica»), con una
+              // diferencia: aquí NUNCA hay pop (este handler no re-popea, ver
+              // NOTA arriba), así que `armadoAhora` es null y el rastro va por
+              // `stateCloseMark` (no hay PR).
               const am = body.match(/<!--\s*epic-audit:\s*([^>]+?)\s*-->/);
-              if (am) {
-                const scope = am[1].trim();
+              const scopeAm = am ? am[1].trim() : null;
+              const gAm = am ? await guardEpicAudit(scopeAm, issueNumber) : null;
+              const prematuroConCadena = gAm && gAm.accion === 'prematuro' && /<!--\s*launch-next:\s*#?\d+\s*-->/.test(body);
+              if (am && !prematuroConCadena) {
+                const scope = scopeAm;
+                if (gAm.accion === 'prematuro') {
+                  try {
+                    const r = await marcarPrematuro(issueNumber, gAm.pendientes, null);
+                    await stateCloseMark(issueNumber, describirPrematuro(r, gAm.pendientes));
+                  } catch (e) { await stateCloseMark(issueNumber, `epic-audit prematuro (rango abierto ${gAm.pendientes.map(n => '#' + n).join(', ')}; sin panel), pero marcar el pendiente falló: ${e.message}`); }
+                  return;
+                }
                 try {
                   const auditNumber = await createAuditIdempotent(issueNumber, {
                     title: `Auditoría de épica · ${scope}`,
                     labels: ['auditoria'],
-                    body: [
-                      `Auditoría post-épica (run único). Alcance: **${scope}**.`,
-                      ``,
-                      `Rol y protocolo: \`docs/agents/epic-auditor.md\` (vinculante).`,
-                      `Los «Invariantes funcionales de la épica» viven en el ISSUE DE ÉPICA del rango (casa canónica, junto al sentinel): léelos allí y EJECÚTALOS. Su ausencia ALLÍ es la omisión a visibilizar.`,
-                      `Compara el árbol mergeado de \`${process.env.IN_DEFAULT_BRANCH}\` contra el alcance TOTAL`,
-                      `de la épica (ADR + unión de issues del rango), no PR-a-PR.`,
-                      ``,
-                      `@claude arranca la auditoría siguiendo docs/agents/epic-auditor.md.`,
-                    ].join('\n'),
+                    body: cuerpoPanelEpica(scope, gAm),
                   });
-                  await stateCloseMark(issueNumber, `\`epic-audit\` consumido tras cierre por estado: auditoría ${auditNumber ? '#' + auditNumber : '(creación falló)'} para «${scope}».`);
+                  await stateCloseMark(issueNumber, `\`epic-audit\` consumido tras cierre por estado: auditoría ${auditNumber ? '#' + auditNumber : '(creación falló)'} para «${scope}»${gAm.accion === 'rango-abierto' ? ` (rango abierto: ${gAm.pendientes.map(n => '#' + n).join(', ')})` : ''}.`);
                 } catch (e) {
                   await stateCloseMark(issueNumber, `cierre por estado: crear/armar auditoría «${scope}» falló: ${e.message}`);
                 }
@@ -1216,6 +1356,47 @@ jobs:
                 }
               }
 
+              // GATE 4: rectificación en vuelo (AP-055 reutilizado, central#304,
+              // AP-125). Mismo detector, clave y marcador que el scan del Watchdog
+              // (`rect-en-vuelo.cjs`); aquí corre justo antes de mergear, sin
+              // esperar a que un tick caiga en la ventana LGTM→merge. Por cada
+              // clave SIN marcador en el PR: comentario con su marcador (cap 1
+              // por clave), retirar `lgtm`, `needs-review` por PAT (remove+add)
+              // salvo draft o `REVIEW`/`NITS` vigente (excepciones de AP-055), y
+              // no mergeo. Sin módulo o con la lectura caída: aviso y el merge
+              // sigue como antes (el Watchdog conserva su detector).
+              {
+                let RV = null;
+                try { RV = require(`${process.env.GITHUB_WORKSPACE}/.epic-merge-central/vendored/scripts/rect-en-vuelo.cjs`); }
+                catch (e) { core.warning(`[epic-merge] rect-en-vuelo no disponible (${e.message}) — gate de rectificación inactivo (statu quo).`); }
+                if (RV) {
+                  let nuevos = [], rcs = [];
+                  try {
+                    const rects = await RV.detectar({ github, O: { owner, repo }, pr: pf || pr, warn: (m) => core.warning(m), info: (m) => core.info(m) });
+                    if (rects.length) {
+                      rcs = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: prNumber, per_page: 100 });
+                      nuevos = rects.filter(r => !RV.yaMarcada(rcs, r.clave));
+                    }
+                  } catch (e) { core.warning(`[epic-merge] rect-en-vuelo #${prNumber}: ${e.message} — gate de rectificación no evaluado; el Watchdog conserva su detector.`); }
+                  if (nuevos.length) {
+                    const vs = rcs.filter(c => c.user && c.user.login === REVIEWER_LOGIN && /^\s*(LGTM|REVIEW|NITS)\b/.test(c.body || ''));
+                    const lastV = vs.length ? (vs[vs.length - 1].body || '').trim().split(/\s/)[0].replace(':', '') : null;
+                    const reconvoca = !(pf && pf.draft) && lastV !== 'REVIEW' && lastV !== 'NITS';
+                    const lista = nuevos.map(r => `- \`${r.clave}\` — ${r.linea}`).join('\n');
+                    await github.rest.issues.createComment({ owner, repo, issue_number: prNumber,
+                      body: `**epic-merge · rectificación de ADR aterrizada EN VUELO (AP-055, gate de merge)**: tras el punto de partida de este PR han aterrizado en \`${pr.base.ref}\` rectificaciones de ADRs/APs que el PR CITA, y el LGTM puede ser anterior:\n\n${lista}\n\nRetirada la label \`lgtm\` y ${reconvoca ? 're-aplicada `needs-review` por PAT para re-convocar al Reviewer sobre la base normativa VIGENTE.' : `re-convocatoria OMITIDA (${pf && pf.draft ? 'PR en draft' : `veredicto vigente \`${lastV}\`: el turno es del Creator`}).`} No mergeo.\n\n@reviewer: abre las rectificaciones listadas y CITA su veredicto contra ellas (\`reviewer.md\` § «El contraste se ancla al HEAD de la rama base»). Si no afectan a las cláusulas que este PR implementa, dilo explícitamente en el veredicto.\n\n${nuevos.map(r => RV.marcador(r.clave)).join('\n')}` });
+                    await github.rest.issues.removeLabel({ owner, repo, issue_number: prNumber, name: 'lgtm' }).catch(() => {});
+                    if (reconvoca) {
+                      await github.rest.issues.removeLabel({ owner, repo, issue_number: prNumber, name: 'needs-review' }).catch(() => {});
+                      await github.rest.issues.addLabels({ owner, repo, issue_number: prNumber, labels: ['needs-review'] });
+                    }
+                    await setStatus(prNumber, reconvoca ? 'estado:esperando-reviewer' : 'estado:esperando-creator');
+                    await diag(prNumber, `rectificación ${nuevos.map(r => '`' + r.clave + '`').join(', ')} aterrizada tras el LGTM; ${reconvoca ? 're-convoco al Reviewer' : 'turno del Creator'}. No mergeo.`);
+                    return;
+                  }
+                }
+              }
+
               // MERGE (directo; si ya estuviera cerrado/mergeado, el propio merge lo reporta).
               try {
                 if (process.env.IN_AUTOMERGE !== 'true') { await diag(prNumber, 'gates verdes, pero automerge=false en este repo: el merge es humano (AP-012). Esperando.'); return; }
@@ -1233,7 +1414,39 @@ jobs:
                   return;
                 }
                 await github.rest.pulls.merge({ owner, repo, pull_number: prNumber, merge_method: 'squash' });
-              } catch (e) { await diag(prNumber, `MERGE FALLÓ: ${e.message} (¿ya mergeado / protección de rama / token sin contents:write?)`); return; }
+              } catch (e) {
+                // central#333 (AP-125): «Base branch was modified» es transitorio
+                // (la base se movió durante el merge). Hasta 3 veces: marcador en
+                // el PR + `updateBranch` y re-entrada por `workflow_run` del CI
+                // (mismo camino que `behind`); a la 4.ª, `stalled` en el issue.
+                // El conteo son los marcadores del PR (persisten entre jobs).
+                let r = { accion: 'diag' };
+                let previos = 0;
+                try {
+                  const mcs = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: prNumber, per_page: 100 });
+                  previos = EMD.contarReintentos(mcs);
+                  r = EMD.decidirReintentoMerge({ mensaje: e.message, reintentosPrevios: previos });
+                } catch (e2) { core.warning('reintento de merge: ' + e2.message); }
+                if (r.accion === 'update-branch') {
+                  try {
+                    await github.rest.issues.createComment({ owner, repo, issue_number: prNumber,
+                      body: `**epic-merge · reintento de merge ${previos + 1}/${EMD.MERGE_RETRY_CAP}**: el merge falló con «${e.message}» (la base se movió durante el merge). Actualizo la rama; el CI re-evalúa y este gate vuelve a entrar.\n\n${EMD.marcadorReintento((pf && pf.head && pf.head.sha) || pr.head.sha)}` });
+                    await github.rest.pulls.updateBranch({ owner, repo, pull_number: prNumber });
+                    await diag(prNumber, `MERGE FALLÓ por base modificada (${previos + 1}/${EMD.MERGE_RETRY_CAP}): rama actualizada; re-entro por el CI.`);
+                  } catch (e3) { await diag(prNumber, `MERGE FALLÓ por base modificada y updateBranch falló: ${e3.message}`); }
+                  return;
+                }
+                if (r.accion === 'stalled') {
+                  try {
+                    await github.rest.issues.addLabels({ owner, repo, issue_number: issueNumber, labels: ['stalled'] });
+                    await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber,
+                      body: `**epic-merge · merge atascado**: el PR #${prNumber} falló ${EMD.MERGE_RETRY_CAP} reintentos por base modificada («${e.message}»). Escalado a architect-resolve vía \`stalled\`.` });
+                  } catch (e4) { core.warning('stalled por reintentos: ' + e4.message); }
+                  await diag(prNumber, `MERGE FALLÓ: ${e.message} — ${EMD.MERGE_RETRY_CAP} reintentos por base modificada agotados; issue #${issueNumber} \`stalled\`.`);
+                  return;
+                }
+                await diag(prNumber, `MERGE FALLÓ: ${e.message} (¿ya mergeado / protección de rama / token sin contents:write?)`); return;
+              }
               try { await github.rest.git.deleteRef({ owner, repo, ref: `heads/${headBranch}` }); } catch (e) {}
 
               await setStatus(prNumber, null, 'merged'); // limpiar estado:* + espejo verde
