@@ -8,8 +8,13 @@
 # Flujo: el Architect publica el issue con `critica:pendiente` y NO lo arma.
 # Este reusable se dispara por el `labeled`, lee issue + ADR citadas +
 # epic-context y publica UNA crítica por ronda (máx. 3, AP-119) con veredicto:
-#   BLOQUEANTE → `critica:hallazgos` (ronda 2: `critica-na` y ARMA igual, AP-117)
+#   BLOQUEANTE → `critica:hallazgos` (ronda 3: `critica-na` y ARMA igual, AP-117)
 #   LGTM       → `critica:lgtm` y ARMA al Creator (ping de confianza por PAT)
+# AP-128 (central#359): las labels y el arm NO los pone la sesión, los
+# materializa el post-step «Verificación de presencia del resultado» desde el
+# marcador del veredicto (`vendored/scripts/critica.cjs`): labels en el issue y
+# en los eslabones de `critica-cubre`, y re-emisión del arm que el gate retuvo
+# (`arm-retenido`), también en épica.
 # El Architect vigila solo las labels (tarea programada cada 5 min, ver
 # vendored/docs-agents/architect.md § 7) y borra su tarea con `critica:lgtm`.
 #
@@ -118,8 +123,8 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           allowed_bots: "claude"
-          # PAT: los comentarios salen con autoría del propietario ⇒ el ping de arm
-          # del § 4 del mandato pasa el gate author_association del Creator.
+          # PAT: los comentarios salen con autoría del propietario ⇒ el marcador
+          # del veredicto cuenta como de confianza para el post-step (AP-128).
           github_token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
           claude_args: |
             --model ${{ vars.PIPELINE_CRITIC_MODEL || inputs.critic_model }}
@@ -141,27 +146,30 @@ jobs:
             1. Lee el issue (`gh issue view ISSUE --comments`), las ADR que
                cita en el registro de decisiones del repo, la skill
                `epic-context-<ADR>` si existe, `docs/agents/protocol.md` y
-               `docs/agents/creator.md`.
-            2. Aplica la checklist A–I del mandato § 2. Un hallazgo sin ancla
-               textual no existe. La ausencia del bloque de invariantes (A) es
-               bloqueante SIEMPRE.
+               `docs/agents/creator.md`. Si lleva la label `epica`, lee también
+               por `gh api` el body de cada eslabón de su cadena `launch-next`.
+            2. Aplica la checklist A–I del mandato § 2 (en épica: J–N sobre la
+               ADR, O y P sobre la cadena, y A–I sobre CADA eslabón). Un
+               hallazgo sin ancla textual no existe. La ausencia del bloque de
+               invariantes (A) es bloqueante SIEMPRE.
             3. Publica UN comentario (§ 3) con la cabecera
                `**Crítica · ronda RONDA/3 · <BLOQUEANTE|LGTM>**` y el marcador
                `<!-- critica: ronda=RONDA veredicto=bloqueante|lgtm -->` en
-               línea propia. Luego las labels por `gh api`.
+               línea propia. En épica, en línea propia también
+               `<!-- critica-cubre: #<eslabón> #<eslabón> … -->` (en TODO
+               veredicto). Con LGTM, o en ronda 3, una línea de talla pre por
+               issue cubierto (§ 3, skill `talla-issue`). NO pongas labels:
+               las pone el post-step desde tu marcador (AP-128).
             4. En ronda ≥ 2 (AP-119): relee tu crítica anterior. Cada hallazgo
                repetido lleva «(ronda N, sin resolver)»; cada uno nuevo, «(nuevo)»;
                lo resuelto se lista en una línea «Resueltos: …» y NO cuenta.
                Solo bloquean los «sin resolver» y los «nuevos».
                Si RONDA es 3 y el veredicto es BLOQUEANTE (AP-117): publica la
-               crítica igual, pero pon `critica-na` en vez de `critica:hallazgos`
-               y ARMA al Creator como en el paso 5. Nunca `human-needed`.
-            5. Con LGTM (o ronda 3 bloqueante), solo si el issue NO lleva la label `epica`
-               (AP-115: en una épica criticas también la ADR entera, J–N, y
-               nunca armas), y solo si no tiene `pause-agents`,
-               `pausa-cola` ni `human-needed`: publica un SEGUNDO comentario
-               que arme al Creator (§ 4). Es el ÚNICO sitio donde escribes la
-               mención de arm. En cualquier otro texto, escribe «arroba + claude».
+               crítica igual; el post-step pone `critica-na` y re-emite el arm
+               con tus hallazgos sin resolver. Nunca `human-needed`.
+            5. NUNCA armas (AP-128): el arm que el gate retuvo lo re-emite el
+               post-step tras tu veredicto. No escribas la mención de arm en
+               ningún texto; si tienes que nombrarla, escribe «arroba + claude».
 
             No edites el body, no cierres nada, no toques ADR, no abras PR.
 
@@ -192,6 +200,18 @@ jobs:
       # `critica-na` con marcador `critica-no-realizada` y se ARMA al Creator. Se
       # pierde la crítica de ESTE issue, no la cadena; el marcador deja rastro
       # para la mensual (tasa de muertes del Critic = su propio criterio).
+      # AP-128 (central#359): con marcador, este step es el DUEÑO de la
+      # transición (antes la hacía la sesión por `gh api`, y a veces no:
+      # asesoramiento#2985). Lógica en `scripts/critica.cjs` (grafteado):
+      #   bloqueante r<3 ⇒ `critica:hallazgos`; bloqueante r3 ⇒ `critica-na` en el
+      #   issue y en los `critica-cubre`; lgtm ⇒ `critica:lgtm` en el issue y en
+      #   los `critica-cubre`; sin marcador ⇒ `critica-na` y, en `epica`, también
+      #   en la cadena `launch-next` parseada del body.
+      # Arm: tras lgtm o r3, re-emite el ÚLTIMO `arm-retenido` del gate sin arm
+      # posterior (en línea propia), con su marcador de origen y
+      # `arm-reemitido` (el Watchdog no lo cuenta como re-arm nuevo). Sin
+      # `arm-retenido` ⇒ sin arm. Holds (`pause-agents`, `pausa-cola`,
+      # `human-needed`) ⇒ labels sí, arm no. Banco: scripts/check-critica.mjs.
       - name: Verificación de presencia del resultado
         if: always() && steps.ronda.outputs.run == 'true'
         uses: actions/github-script@v7
@@ -203,19 +223,50 @@ jobs:
           script: |
             const O = { owner: context.repo.owner, repo: context.repo.repo };
             const num = context.payload.issue.number;
+            const C = require(`${process.env.GITHUB_WORKSPACE}/scripts/critica.cjs`);
+            const ronda = Number(process.env.RONDA);
             const cs = await github.paginate(github.rest.issues.listComments, { ...O, issue_number: num, per_page: 100 });
-            const RE = new RegExp(`<!--\\s*critica:\\s*ronda=${process.env.RONDA}\\s+veredicto=(bloqueante|lgtm)\\s*-->`);
-            if (cs.some(c => RE.test(c.body || ''))) { core.info(`ronda ${process.env.RONDA} materializada.`); return; }
-            core.warning(`ronda ${process.env.RONDA}: la sesión terminó sin publicar su crítica — fail-open (AP-117).`);
-            const labels = (context.payload.issue.labels || []).map(l => l.name);
-            for (const n of ['critica:pendiente', 'critica:hallazgos']) {
+            // Labels frescas: las del payload son las del `labeled` que disparó el run.
+            const { data: iss } = await github.rest.issues.get({ ...O, issue_number: num });
+            const labels = (iss.labels || []).map(l => (typeof l === 'string' ? l : l.name));
+            const v = C.leerVeredicto(cs, ronda);
+            const plan = C.planLabels(v, ronda, labels);
+            let cubiertos = v ? v.cubre.filter(n => n !== num) : [];
+            if (!v) {
+              core.warning(`ronda ${ronda}: la sesión terminó sin publicar su crítica — fail-open (AP-117).`);
+              if (labels.includes('epica')) {
+                try {
+                  const r = await C.cadenaDesdeBody(iss.body, async n => (await github.rest.issues.get({ ...O, issue_number: n })).data.body);
+                  cubiertos = r.eslabones;
+                  if (!r.completa) core.notice(`cadena launch-next de #${num} incompleta (sin epic-audit): critica-na solo en ${cubiertos.length} eslabón(es) leídos.`);
+                } catch (e) { cubiertos = []; core.notice(`cadena launch-next de #${num} ilegible (${e.message}): critica-na solo en la épica.`); }
+              }
+              await github.rest.issues.createComment({ ...O, issue_number: num,
+                body: `**critic · post-step**: la sesión del Critic (ronda ${ronda}) terminó sin publicar su crítica ([run](${process.env.RUN_URL})). Fail-open (AP-117): \`critica-na\`${cubiertos.length ? ` (también en ${cubiertos.map(n => `#${n}`).join(', ')})` : ''} y arm al Creator sin crítica. Este issue NO ha sido criticado.\n\n<!-- critica-no-realizada: ronda=${ronda} -->` });
+            } else core.info(`ronda ${ronda} materializada: ${v.veredicto} (${plan.caso}).`);
+            for (const n of plan.issue.quitar) {
               try { await github.rest.issues.removeLabel({ ...O, issue_number: num, name: n }); } catch (e) { core.info(`removeLabel ${n}: ${e.message}`); }
             }
-            await github.rest.issues.addLabels({ ...O, issue_number: num, labels: ['critica-na'] });
+            if (plan.issue.poner.length) await github.rest.issues.addLabels({ ...O, issue_number: num, labels: plan.issue.poner });
+            if (plan.cubiertos) for (const n of cubiertos) {
+              for (const q of plan.cubiertos.quitar) {
+                try { await github.rest.issues.removeLabel({ ...O, issue_number: n, name: q }); } catch (e) { /* no la tenía */ }
+              }
+              try { await github.rest.issues.addLabels({ ...O, issue_number: n, labels: plan.cubiertos.poner }); }
+              catch (e) { core.warning(`#${n} (critica-cubre): no pude poner ${plan.cubiertos.poner.join(', ')} (${e.message}).`); }
+            }
+            if (!plan.arm) return;
+            // AP-121: un ruling de la cola mensual solo lo arma la cola.
+            if (labels.includes('mensual:aprobada')) { core.notice('mensual:aprobada: el arm es de self-mensual-queue (AP-121). Sin arm.'); return; }
+            const ret = C.armRetenido(cs);
+            if (v && !ret) { core.notice(`#${num}: sin arm-retenido vigente (crítica pedida por label o arm ya posterior): sin arm.`); return; }
+            const hold = C.HOLDS.filter(n => labels.includes(n));
+            if (hold.length) {
+              await github.rest.issues.createComment({ ...O, issue_number: num,
+                body: `**critic · post-step**: \`${plan.cierre}\` puesta; hold presente (${hold.map(h => `\`${h}\``).join(', ')}): sin arm. Quien retire el hold arma.` });
+              core.notice(`hold presente (${hold.join(', ')}): ${plan.cierre} puesta, sin arm.`); return;
+            }
+            const hallazgos = plan.caso === 'ronda3' ? C.hallazgosAbiertos(v.comentario.body) : [];
             await github.rest.issues.createComment({ ...O, issue_number: num,
-              body: `**critic · post-step**: la sesión del Critic (ronda ${process.env.RONDA}) terminó sin publicar su crítica ([run](${process.env.RUN_URL})). Fail-open (AP-117): \`critica-na\` y arm al Creator sin crítica. Este issue NO ha sido criticado.\n\n<!-- critica-no-realizada: ronda=${process.env.RONDA} -->` });
-            const hold = ['pause-agents', 'pausa-cola', 'human-needed'].filter(n => labels.includes(n));
-            if (hold.length) { core.notice(`hold presente (${hold.join(', ')}): critica-na puesta, sin arm.`); return; }
-            await github.rest.issues.createComment({ ...O, issue_number: num,
-              body: `@claude\n\nArm tras fail-open del Critic (AP-117, ronda ${process.env.RONDA}): crítica no realizada.` });
-            core.warning('Critic sin resultado: Creator armado por fail-open.');
+              body: C.textoReemision({ origen: ret ? ret.origen : 'manual', ronda, caso: plan.caso, hallazgos }) });
+            core.notice(`#${num}: arm re-emitido (${plan.caso}, origen ${ret ? ret.origen : 'manual'}).`);

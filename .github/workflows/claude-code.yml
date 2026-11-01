@@ -490,6 +490,15 @@ jobs:
       # de cadena/cola/watchdog/enmienda (el arm inicial ya pasó por aquí);
       # label `critica-na` (solo el humano, como `serial-ok`). Va ANTES de
       # check_chain: un issue sin crítica no debe gastar los guards siguientes.
+      # AP-128 (central#359): el comentario del gate graba el arm que retiene
+      # (`arm-retenido: <origen>`) y el post-step de `critic.yml` lo re-emite
+      # tras el veredicto (la sesión del Critic ya no arma ni pone labels).
+      # Exentos además los correctivos del Auditor (`correctivo-auditor`) y
+      # `epic-partial-relaunch`; un re-arm mecánico con la crítica en curso se
+      # retiene sin abrir ronda. La lógica es una COPIA LITERAL de la sección
+      # `copia-gate` de `vendored/scripts/critica.cjs` (este step corre antes del
+      # checkout y no puede hacer `require`); `scripts/check-critica.mjs`
+      # compara el texto y ejecuta el step contra el banco de casos.
       - name: Check crítica previa al arm (issues only, AP-116)
         id: check_critica
         if: |
@@ -513,19 +522,72 @@ jobs:
               core.notice('mensual:aprobada: solo arma la cola mensual (cola-mensual-arm). Ping ignorado.');
               core.setOutput('blocked', 'true'); return;
             }
-            if (labels.includes('critica:lgtm')) { core.setOutput('blocked', 'false'); return; }
-            // Arm de auditoría (epic-merge → Auditor): no es un issue de diseño, no
-            // hay Architect que corrija hallazgos. Misma exención que el guard
-            // serial (rectificación AP-116, finplan#2938 atascado el primer día).
-            if (['auditoria', 'auditoria-completa'].some(n => labels.includes(n))) { core.notice('arm de auditoría: exento del gate de crítica.'); core.setOutput('blocked', 'false'); return; }
-            if (labels.includes('critica-na')) { core.notice('critica-na presente: gate de crítica omitido (override humano).'); core.setOutput('blocked', 'false'); return; }
+            // ── copia-gate:inicio ── (copia LITERAL en `check_critica` de claude-code.yml; el banco compara el texto)
+            const CRITICA_TRUSTED = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+            const CRITICA_REARM = ['epic-auto-launch', 'watchdog-rearm', 'arm-de-cola', 'rearm-enmienda', 'eslabon-suspendido'];
+            const CRITICA_EN_CURSO = ['critica:pendiente', 'critica:hallazgos'];
+            // Código citado fuera: una mención entre backticks o en bloque cercado no es arm
+            // ni marcador (clase AP-063; mismo literal que `resolve-cross-issue-failsafe.cjs`).
+            const critDespojar = (raw) => String(raw || '').replace(/```[\s\S]*?```/g, ' ').replace(/`[^`\n]*`/g, ' ');
+            // Arm = la mención al inicio de una línea propia o el sentinel `ping-creator`
+            // (mismo literal que `PING_RE` de `enmiendas.cjs`). Nunca substring.
+            const CRITICA_PING_RE = /^[ \t]*@claude(?![\w-])|<!--\s*ping-creator\s*-->/m;
+            const esArm = (body) => CRITICA_PING_RE.test(critDespojar(body));
+            // Origen del arm: el primer marcador HTML de re-arm mecánico, o `manual`.
+            // `epic-partial-relaunch` (y sus variantes `-por-estado…`) se reconoce aparte.
+            const origenArm = (body) => {
+              const t = critDespojar(body);
+              if (/<!--\s*epic-partial-relaunch(?:-[a-z-]+)?\s*(?::[^>]*)?-->/.test(t)) return 'epic-partial-relaunch';
+              for (const m of CRITICA_REARM) if (new RegExp(`<!--\\s*${m}(?![\\w-])[^>]*-->`).test(t)) return m;
+              return 'manual';
+            };
+            // Correctivo del Auditor: label `correctivo` + `<!-- correctivo-auditor: #<panel> -->` como
+            // PRIMERA línea no vacía del body (regla posicional AP-011).
+            const esCorrectivoAuditor = (labels, issueBody) => labels.includes('correctivo')
+              && /^\s*<!--\s*correctivo-auditor(?::\s*#?\d+)?\s*-->[ \t]*$/m.test((String(issueBody || '').split('\n').find((l) => l.trim()) || ''));
+            // Exenciones del gate AP-116, en este orden (AP-128 pieza 2(c)). `exento`
+            // ⇒ el arm continúa. Si no, `mecanico` dice si el arm entrante es un re-arm
+            // mecánico retenido con la crítica en curso (no abre ronda).
+            const exencionGate = (labels, armBody, issueBody) => {
+              const origen = origenArm(armBody);
+              const enCurso = CRITICA_EN_CURSO.some((n) => labels.includes(n));
+              const r = (exento, motivo) => ({ exento, motivo, origen, mecanico: !exento && origen !== 'manual' && enCurso });
+              if (labels.includes('critica:lgtm')) return r(true, 'critica:lgtm');
+              if (['auditoria', 'auditoria-completa'].some((n) => labels.includes(n))) return r(true, 'auditoria');
+              if (labels.includes('critica-na')) return r(true, 'critica-na');
+              if (esCorrectivoAuditor(labels, issueBody)) return r(true, 'correctivo-auditor');
+              if (origen === 'epic-partial-relaunch') return r(true, 'epic-partial-relaunch');
+              if (origen !== 'manual' && !enCurso) return r(true, `rearm:${origen}`);
+              return r(false, enCurso ? 'critica-en-curso' : 'sin-critica');
+            };
+            // ── copia-gate:fin ──
+            // AP-128 (central#359): exenciones y origen por la copia de arriba.
+            // Orden: `critica:lgtm`; auditoría (rectificación AP-116,
+            // finplan#2938); `critica-na`; correctivo del Auditor (label +
+            // `correctivo-auditor` en la primera línea del body; un `correctivo`
+            // sin él lo redacta el Architect y pasa la crítica, caso #2933);
+            // `epic-partial-relaunch` (el eslabón se criticó con su épica); y los
+            // re-arms mecánicos solo SIN crítica en curso: la label niega la
+            // exención (asesoramiento#3291: un `watchdog-rearm` pasó con
+            // `critica:hallazgos` y armó sin ronda 2).
             const armBody = String(context.payload.comment?.body || '');
-            const REARM = ['epic-auto-launch', 'watchdog-rearm', 'arm-de-cola', 'rearm-enmienda', 'eslabon-suspendido'];
-            if (REARM.some(m => armBody.includes(m))) { core.setOutput('blocked', 'false'); return; }
-            // Sin crítica: no se arma. Si ya está pendiente o con hallazgos, no
-            // se duplica el disparo — solo se recuerda el estado.
+            const ex = exencionGate(labels, armBody, issue.body || '');
+            if (ex.exento) { core.notice(`gate de crítica: exento (${ex.motivo}).`); core.setOutput('blocked', 'false'); return; }
             const yaPendiente = labels.includes('critica:pendiente');
             const conHallazgos = labels.includes('critica:hallazgos');
+            const retenido = `<!-- arm-retenido: ${ex.origen} -->`;
+            const post = (estado) => github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
+              body: `**claude-code · gate de crítica (AP-116, AP-128)**: este issue ${estado} Con \`critica:lgtm\` (o \`critica-na\` de ronda 3) el post-step del Critic re-emite el arm retenido. Override humano: label \`critica-na\`.\n\n<!-- critica-gate -->\n${retenido}` });
+            if (ex.mecanico) {
+              // Re-arm mecánico con la crítica en curso: se retiene SIN abrir
+              // ronda (enmienda de AP-116 §1). La ronda solo la abre el ping del
+              // Architect; si no, un re-arm sobre un body sin corregir gastaba
+              // una de las 3 rondas de AP-119.
+              await post(`tiene la crítica en curso (\`${yaPendiente ? 'critica:pendiente' : 'critica:hallazgos'}\`): re-arm mecánico retenido (\`${ex.origen}\`). El issue sigue en crítica; se re-emite tras el veredicto.`);
+              core.setOutput('blocked', 'true'); return;
+            }
+            // Sin crítica: no se arma. Si ya está pendiente, no se duplica el
+            // disparo; con hallazgos, el ping del Architect = nueva ronda.
             if (!yaPendiente && !conHallazgos) {
               await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['critica:pendiente'] });
             }
@@ -533,8 +595,7 @@ jobs:
               ? 'tiene `critica:hallazgos`: lee la crítica, corrige el body y vuelve a pingar (el gate re-dispara al Critic).'
               : yaPendiente ? 'ya tiene `critica:pendiente`: el Critic está en ello; no hace falta pingar.'
               : 'no había pasado por el Critic: pongo `critica:pendiente` y el Critic se dispara ahora.';
-            await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
-              body: `**claude-code · gate de crítica (AP-116)**: este issue ${estado} Con \`critica:lgtm\` el Critic arma al Creator él mismo. Override humano: label \`critica-na\`.\n\n<!-- critica-gate -->` });
+            await post(estado);
             if (conHallazgos) {
               // Re-disparo: el ping del Architect tras corregir = nueva ronda.
               await github.rest.issues.removeLabel({ owner, repo, issue_number: issue.number, name: 'critica:hallazgos' }).catch(() => {});
