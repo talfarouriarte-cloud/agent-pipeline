@@ -972,8 +972,10 @@ jobs:
         # ventana TOCTOU con un ganador único determinista (menor `run_id` sobre el
         # mismo issue; solo el ganador escribe el flag) — ver AP-033.
         # AP-097 (central#267): el cinturón se extiende a arranques simultáneos de
-        # issues DISTINTOS (cinturón cruzado); el perdedor sale `stalled` +
-        # `serial-toctou-cruzado`. Banco: scripts/check-serial-guard.mjs.
+        # issues DISTINTOS (cinturón cruzado). AP-122 (central#343/#373): el
+        # perdedor sale `en-cola` + `serial-toctou-cruzado` (no `stalled`), la
+        # relectura es por número y el ganador post-verifica tras escribir el
+        # flag. Banco: scripts/check-serial-guard.mjs.
         id: check_serial
         if: |
           steps.check_pause.outputs.paused != 'true'
@@ -1292,11 +1294,31 @@ jobs:
               // Convergencia: todos los contendientes que se ven calculan el mismo
               // ganador; si sólo el perdedor ve al ganador, el ganador toma y el
               // perdedor cede; si sólo el ganador ve al perdedor, es el statu quo.
+              // ── RELECTURA POR NÚMERO + TRAZA + POST-VERIFICACIÓN (AP-122, central#343/#373) ──
+              // #373: dos guards solapados 3 s y el cinturón no arbitró, sin
+              // marcador ni warning. Para un candidato con guard `completed` la
+              // relectura era el LISTADO FILTRADO por `serial-activo` emparejado
+              // por `title`: un listado que aún no refleja el `addLabels` del
+              // ganador (hecho segundos antes) lo descartaba. Ahora: (1a) mapa
+              // título → número sacado de `recent` (sin número ⇒ contendiente,
+              // fail-closed); (1b) relectura FUERTE con `issues.get` del número;
+              // (1c) cada run evaluado deja `core.notice` con su motivo (sin traza
+              // no hay diagnóstico posible); (1d) tras escribir el flag, si hubo
+              // candidatos con guard pasado, se re-verifican a los 5 s y, si
+              // alguno lleva el flag, este run (mayor `run_id`) cede.
+              // (1e) El perdedor queda `en-cola`, no `stalled` (AP-122): lo arma
+              // el pop de cola, no architect-resolve.
               const CROSS_WINDOW_MS = 10 * 60 * 1000;
               // Nombre literal de ESTE step (la API de jobs expone `name`, no `id`).
               const GUARD_STEP = 'Guard serial — un solo Creator en vuelo (solo issues)';
               const CROSS_EXEMPT = ['auditoria', 'auditoria-completa', 'serial-ok'];
               let crossWinner = null;
+              let titleToNumber = new Map();
+              const postVerify = [];   // candidatos con guard pasado y sin flag (1d)
+              const llevaFlag = async n => {
+                const { data } = await github.rest.issues.get({ owner, repo, issue_number: n });
+                return (data.labels || []).some(l => (typeof l === 'string' ? l : l.name) === 'serial-activo');
+              };
               if (runsListed && winner === context.runId) {
                 let recent = null;
                 try {
@@ -1306,23 +1328,26 @@ jobs:
                   core.warning(`Guard serial · cinturón cruzado: no se pudo listar issues (${e.message}); sin cinturón cruzado.`);
                 }
                 if (recent) {
+                  titleToNumber = new Map(recent.map(i => [i.title, i.number]));
                   const prTitles = new Set(prs.map(p => p.title));
                   const nonArmTitles = new Set(recent
                     .filter(i => i.pull_request || (i.labels || []).some(l => CROSS_EXEMPT.includes(l.name)))
                     .map(i => i.title));
                   const selfRun = runs.find(r => r.id === context.runId);
                   const selfMs = selfRun ? new Date(selfRun.created_at).getTime() : nowMs;
-                  const candidates = runs.filter(r => r.name === context.workflow
-                    && r.id < context.runId
-                    && (r.event === 'issue_comment' || r.event === 'issues')
-                    && r.display_title !== issue.title
-                    && !(r.head_branch || '').startsWith('claude/')
-                    && !prTitles.has(r.display_title)
-                    && !nonArmTitles.has(r.display_title)
-                    && (selfMs - new Date(r.created_at).getTime()) <= CROSS_WINDOW_MS);
                   const cross = [];
-                  let fresh;   // undefined = sin releer; null = relectura fallida
-                  for (const r of candidates) {
+                  const traza = (r, motivo) => {
+                    const n = titleToNumber.get(r.display_title);
+                    core.notice(`Guard serial · cinturón cruzado: run ${r.id} (${n ? `#${n}` : 'sin número'}) → ${motivo}.`);
+                  };
+                  for (const r of runs) {
+                    if (r.name !== context.workflow || r.id >= context.runId) continue;
+                    if ((selfMs - new Date(r.created_at).getTime()) > CROSS_WINDOW_MS) { traza(r, 'fuera-de-ventana'); continue; }
+                    if (prTitles.has(r.display_title)) { traza(r, 'pr-title'); continue; }
+                    if (nonArmTitles.has(r.display_title)) { traza(r, 'exento'); continue; }
+                    if (r.display_title === issue.title) { traza(r, 'mismo-issue'); continue; }
+                    if ((r.head_branch || '').startsWith('claude/')) { traza(r, 'rama-claude'); continue; }
+                    if (r.event !== 'issue_comment' && r.event !== 'issues') { traza(r, 'evento-no-arm'); continue; }
                     let pastGuard = false;
                     try {
                       const { data: jl } = await github.rest.actions.listJobsForWorkflowRun({ owner, repo, run_id: r.id, per_page: 50 });
@@ -1332,36 +1357,40 @@ jobs:
                       core.warning(`Guard serial · cinturón cruzado: jobs del run ${r.id} ilegibles (${e.message}); cuenta como contendiente.`);
                     }
                     if (pastGuard) {
-                      if (fresh === undefined) {
-                        try {
-                          ({ data: fresh } = await github.rest.issues.listForRepo({
-                            owner, repo, state: 'open', labels: 'serial-activo', per_page: 20 }));
-                        } catch (e) {
-                          fresh = null;
-                          core.warning(`Guard serial · cinturón cruzado: relectura de serial-activo fallida (${e.message}); los candidatos con guard pasado cuentan.`);
+                      const n = titleToNumber.get(r.display_title);
+                      if (n) {
+                        let flag = true;   // error de lectura ⇒ contendiente
+                        try { flag = await llevaFlag(n); } catch (e) {
+                          core.warning(`Guard serial · cinturón cruzado: relectura de #${n} fallida (${e.message}); cuenta como contendiente.`);
                         }
+                        if (!flag) { traza(r, 'guard-pasado-sin-flag'); postVerify.push({ run: r, number: n }); continue; }
                       }
-                      if (fresh && !fresh.some(i => i.title === r.display_title)) continue;
                     }
+                    traza(r, 'contendiente');
                     cross.push(r);
                   }
                   if (cross.length > 0) crossWinner = cross.reduce((a, b) => (b.id < a.id ? b : a));
                 }
               }
-              if (crossWinner) {
-                // Perdedor cruzado: el ganador arma OTRO issue ⇒ este issue NO se
-                // arma ahora. Ruling mensual 2026-09-30: sale con `stalled` +
-                // marcador (dedup AP-018 §1) y architect-resolve lo re-arma cuando
-                // la serie quede libre. NO escribe `serial-activo` (lo escribe el
-                // ganador ⇒ nunca se orfana el mutex).
+              // Perdedor (de cualquiera de los dos cinturones cruzados): `en-cola`
+              // + marcador (dedup AP-018 §1). NO escribe `serial-activo` (lo
+              // escribe el ganador ⇒ nunca se orfana el mutex).
+              const cederCruzado = async texto => {
                 const cmts = await github.paginate(github.rest.issues.listComments,
                   { owner, repo, issue_number: issue.number, per_page: 100 });
                 if (!cmts.some(c => (c.body || '').includes('<!-- serial-toctou-cruzado -->'))) {
                   await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
-                    body: `**claude-code · guard serial · cinturón cruzado (AP-097)**: arranque simultáneo con el arm de OTRO issue («${crossWinner.display_title}», run \`${crossWinner.id}\`, creado ${crossWinner.created_at}). Ambos leyeron la serie libre; el ganador determinista es el run más antiguo (menor \`run_id\`) de CUALQUIER issue, y ese no es este (\`${context.runId}\`). Este issue NO se arma y queda \`stalled\`: architect-resolve lo re-arma cuando la serie quede libre. No se escribe \`serial-activo\` (lo escribe el ganador). Para forzar YA: \`serial-ok\`.\n\n<!-- serial-toctou-cruzado -->` });
+                    body: `${texto}\n\n<!-- serial-toctou-cruzado -->` });
                 }
-                await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['stalled'] });
+                await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['en-cola'] });
                 core.setOutput('blocked', 'true');
+              };
+              if (crossWinner) {
+                // Perdedor cruzado: el ganador arma OTRO issue ⇒ este issue NO se
+                // arma ahora. AP-122 (sustituye el ruling mensual 2026-09-30, que
+                // lo dejaba `stalled` a la espera de architect-resolve): queda
+                // `en-cola` y lo arma el pop de cola en cuanto la serie quede libre.
+                await cederCruzado(`**claude-code · guard serial · cinturón cruzado (AP-097, AP-122)**: arranque simultáneo con el arm de OTRO issue («${crossWinner.display_title}», run \`${crossWinner.id}\`, creado ${crossWinner.created_at}). Ambos leyeron la serie libre; el ganador determinista es el run más antiguo (menor \`run_id\`) de CUALQUIER issue, y ese no es este (\`${context.runId}\`). Este issue NO se arma y queda \`en-cola\`: lo arma el pop de cola cuando la serie quede libre (\`armQueue\`/\`popQueue\`/barridos/\`liberarCola\`). No se escribe \`serial-activo\` (lo escribe el ganador). Para forzar YA: \`serial-ok\`.`);
                 core.warning(`Guard serial · cinturón cruzado: run ${context.runId} (#${issue.number}) cede ante ${crossWinner.id} («${crossWinner.display_title}»).`);
               } else if (winner !== context.runId) {
                 // Arranque simultáneo con `run_id` MENOR: es el ganador
@@ -1376,7 +1405,29 @@ jobs:
                 // Ganador (o único contendiente): toma ATÓMICAMENTE el mutex.
                 await github.rest.issues.removeLabel({ owner, repo, issue_number: issue.number, name: 'en-cola' }).catch(() => {});
                 await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['serial-activo'] });
-                core.setOutput('blocked', 'false');
+                // (1d) Post-verificación: sólo si hubo candidatos cruzados de
+                // `run_id` menor descartados por «guard pasado sin flag» (sin
+                // ellos no hay espera: coste cero en el caso común). La regla del
+                // ganador no cambia (menor `run_id`) ⇒ nunca ceden los dos: el
+                // mínimo no tiene a nadie menor contra quien post-verificar.
+                let cedeA = null;
+                if (postVerify.length > 0) {
+                  await new Promise(r => setTimeout(r, 5000));
+                  for (const pv of postVerify) {
+                    let flag = true;   // fail-closed: lectura fallida ⇒ cede
+                    try { flag = await llevaFlag(pv.number); } catch (e) {
+                      core.warning(`Guard serial · post-verificación: relectura de #${pv.number} fallida (${e.message}); este run cede.`);
+                    }
+                    if (flag) { cedeA = pv; break; }
+                  }
+                }
+                if (cedeA) {
+                  await github.rest.issues.removeLabel({ owner, repo, issue_number: issue.number, name: 'serial-activo' }).catch(() => {});
+                  await cederCruzado(`**claude-code · guard serial · cinturón cruzado (AP-122)**: post-verificación: el issue #${cedeA.number} (run ${cedeA.run.id}, menor) escribió el flag; este run cede y queda en-cola. Este run es \`${context.runId}\`; se retira el \`serial-activo\` propio; lo arma el pop de cola cuando la serie quede libre.`);
+                  core.warning(`Guard serial · post-verificación: run ${context.runId} (#${issue.number}) cede ante ${cedeA.run.id} (#${cedeA.number}).`);
+                } else {
+                  core.setOutput('blocked', 'false');
+                }
               }
             }
 

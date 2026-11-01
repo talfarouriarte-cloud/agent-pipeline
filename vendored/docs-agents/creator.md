@@ -455,6 +455,7 @@ El bloque va en un **comentario SEPARADO vía `gh api` en el ISSUE** (canal AP-0
 
 - **Polaridad REAL anclada, exactamente una**: `<!-- partial-pr -->` por DEFECTO (mientras quede alcance del issue sin cubrir); `<!-- full-pr -->` SOLO cuando hayas completado TODO el alcance. Nunca declares `full-pr` optimista: si te equivocas por exceso, el post-step abriría un full que cierra el issue con alcance sin cubrir.
 - **Referencia consistente con la polaridad**: `Refs #N` con `partial-pr` (NO cierra el issue — un parcial que cerrara huérfana el alcance restante); `Closes #N` con `full-pr` (restituye el cierre automático + el consumo de `launch-next` por epic-merge al mergear ⇒ cascada cero). El post-step exige esta consistencia: un bloque `partial-pr`+`Closes` (o `full-pr`+`Refs`) se rechaza y cae al forzado.
+- **Absorción de otro issue (`Absorbe #N`, AP-122)**: si tu PR absorbe por adenda o ruling el alcance de otro issue encolado #N, el body lleva además `Absorbe #N` a inicio de línea (una por issue, fuera de backticks). Al mergear, `epic-merge` cierra #N por estado; si el PR se cierra sin merge, #N vuelve a `en-cola`.
 - **Huella `pre-reviewer`** cuando ya corrió (`pre-reviewer: ejecutado · N hallazgos · M aplicados`); si aún no —hitos intermedios—, `pre-reviewer: no ejecutado — pendiente (hito intermedio)`.
 
 ```bash

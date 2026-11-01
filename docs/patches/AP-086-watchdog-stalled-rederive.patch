@@ -56,7 +56,10 @@
 # de tres líneas efectivas dentro de un `github-script` ya existente, más dos
 # enmiendas de comentario/description (hunks 1 y 5).
 #
-# verificado-contra: 44a70f226be4d77f1a8341bbc4c7b38e0dc4e7a2
+# REGENERADO por AP-122 (central#343/#285): el bloque AP-038 se movió delante
+# del Gate 0; el contenido del parche es el mismo, re-anclado al árbol nuevo.
+#
+# verificado-contra: 8ae4089ba3348f34a1d8f3899cd7066b81324a7f
 diff --git a/.github/workflows/self-watchdog.yml b/.github/workflows/self-watchdog.yml
 index f88cf97..c03cd62 100644
 --- a/.github/workflows/self-watchdog.yml
@@ -82,10 +85,10 @@ index f88cf97..c03cd62 100644
        # AP-058: merge humano en el central (AP-012, espejo de
        # `automerge: false` en self-epic-merge) — LGTM+gates verdes+abierto
 diff --git a/.github/workflows/watchdog.yml b/.github/workflows/watchdog.yml
-index db6f1df..8e95928 100644
+index bf467b6..2994158 100644
 --- a/.github/workflows/watchdog.yml
 +++ b/.github/workflows/watchdog.yml
-@@ -101,7 +101,12 @@ on:
+@@ -126,7 +126,12 @@ on:
            la lista histórica de consumidor (paneles abiertos por diseño). El
            CENTRAL la pasa SIN `process-proposal`: aquí esa label es la COLA de
            trabajo, no un panel (AP-051 — el barrido AP-038 salía con «Sin
@@ -99,9 +102,9 @@ index db6f1df..8e95928 100644
          type: string
          default: "pause-agents,human-needed,auditoria,process-proposal,registro-decisiones"
      secrets:
-@@ -350,6 +355,32 @@ jobs:
-               return res;
-             };
+@@ -533,6 +538,32 @@ jobs:
+             const SKIP_LABELS = (process.env.IN_SKIP_LABELS || '').split(',').map(x => x.trim()).filter(Boolean);
+             const skip = labels => labels.some(l => SKIP_LABELS.includes(l.name));
              const { data: prs } = await github.rest.pulls.list({ ...O, state: 'open', per_page: 50 });
 +            // AP-086 (repesca finplan#1810, reincidencia de AP-051 en el otro
 +            // consumidor): el barrido de `stalled` por ESTADO de AQUÍ (AP-038)
@@ -132,7 +135,7 @@ index db6f1df..8e95928 100644
              // ── Re-derivación por ESTADO de la señal `stalled` (AP-038).
              // El camino por evento (labeled=stalled ⇒ anomalía directa, arriba)
              // solo existe en el PAYLOAD de su run — y la concurrency global del
-@@ -369,7 +400,7 @@ jobs:
+@@ -556,7 +587,7 @@ jobs:
                  state: 'open', labels: 'stalled', per_page: 30 });
                for (const it of stIss) {
                  if (it.pull_request) continue;             // PRs: los cubre el bloque de PRs abajo
@@ -141,7 +144,7 @@ index db6f1df..8e95928 100644
                  if (anomalies.some(a => a.number === it.number)) continue;
                  const { data: cs } = await github.rest.issues.listComments({ ...O, issue_number: it.number, per_page: 100 });
                  const autos = cs.filter(c => (c.body || '').includes('<!-- autonomous-decision -->')).length;
-@@ -386,7 +417,7 @@ jobs:
+@@ -573,7 +604,7 @@ jobs:
                  }
                }
                for (const pr of prs.filter(p => p.labels?.some(l => l.name === 'stalled'))) {

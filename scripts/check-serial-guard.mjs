@@ -2,7 +2,9 @@
 // check-serial-guard — banco del guard serial (step `check_serial` de
 // claude-code.yml), centrado en el cinturón CRUZADO de AP-097 (central#267):
 // dos arms simultáneos de issues DISTINTOS deben dejar EXACTAMENTE un
-// `serial-activo`.
+// `serial-activo`. AP-122 (central#343/#373): el perdedor queda `en-cola` (no
+// `stalled`), la relectura de un candidato con guard pasado es por NÚMERO
+// (`issues.get`, no el listado filtrado) y el ganador post-verifica a los 5 s.
 //
 // Ejecuta el script EMBEBIDO real (no una copia) contra un doble de la API. Un
 // arranque simultáneo se modela como N runs que leen TODOS la misma foto (nadie
@@ -30,8 +32,21 @@ const armRun = (id, title, s = 0, extra = {}) => ({ id, name: WF, event: 'issue_
 
 // Ejecuta el guard para UN run contra la foto compartida `world`.
 async function guard(world, runId, issue) {
-  const w = { added: [], removed: [], comments: [], outputs: {}, warnings: [] };
+  const w = { added: [], removed: [], comments: [], outputs: {}, warnings: [], notices: [], esperas: [] };
   let flagReads = 0;
+  // `issues.get` lee `world.issuesById` (y, tras la espera de la post-
+  // verificación, `world.issuesByIdTras`); si no, la foto de `world.issues`.
+  let trasEspera = false;
+  const getIssue = async p => {
+    if ((world.getDown || []).includes(p.issue_number)) throw new Error('API caída (issues.get)');
+    const tabla = (trasEspera && world.issuesByIdTras) || world.issuesById || {};
+    const i = tabla[p.issue_number] || (world.issues || []).find(x => x.number === p.issue_number);
+    if (!i) throw new Error('404');
+    return { data: i };
+  };
+  // Doble del global `setTimeout` (la post-verificación espera 5 s): no
+  // espera, registra la duración y conmuta la foto de `issues.get`.
+  const setTimeout = (fn, ms) => { w.esperas.push(ms); trasEspera = true; fn(); return 0; };
   const listForRepo = async p => {
     if (p.labels === 'serial-activo') {
       if (flagReads++ > 0 && world.flaggedFresh) return { data: world.flaggedFresh };
@@ -49,6 +64,7 @@ async function guard(world, runId, issue) {
       pulls: { list: async () => ({ data: world.prs || [] }) },
       issues: {
         listForRepo,
+        get: getIssue,
         listComments: async p => ({ data: (world.comments || {})[p.issue_number] || [] }),
         addLabels: async p => { w.added.push(...p.labels.map(l => `${p.issue_number}:${l}`)); },
         removeLabel: async p => { w.removed.push(`${p.issue_number}:${p.name}`); },
@@ -70,8 +86,8 @@ async function guard(world, runId, issue) {
     },
   };
   const context = { repo: { owner: 'o', repo: 'r' }, runId, workflow: WF, payload: { issue } };
-  const core = { setOutput: (k, v) => { w.outputs[k] = String(v); }, notice() {}, warning: m => w.warnings.push(String(m)), info() {} };
-  await run({ github, context, core });
+  const core = { setOutput: (k, v) => { w.outputs[k] = String(v); }, notice: m => w.notices.push(String(m)), warning: m => w.warnings.push(String(m)), info() {} };
+  await run({ github, context, core }, { globales: { setTimeout } });
   return w;
 }
 
@@ -82,27 +98,27 @@ const has = (w, re) => w.comments.some(c => re.test(c.body));
 const serialCount = ws => ws.reduce((n, w) => n + w.added.filter(l => l.endsWith(':serial-activo')).length, 0);
 
 const BANCO = [
-  ['dos arms de issues DISTINTOS a 2 s ⇒ exactamente un serial-activo (el más antiguo); el otro stalled + marcador',
+  ['dos arms de issues DISTINTOS a 2 s ⇒ exactamente un serial-activo (el más antiguo); el otro en-cola + marcador (AP-122)',
     async () => {
       const world = { runs: [armRun(100, A.title, 0), armRun(101, B.title, 2)], issues: [A, B] };
       const [wa, wb] = [await guard(world, 100, A), await guard(world, 101, B)];
       return serialCount([wa, wb]) === 1 && wa.added.includes('10:serial-activo') && wa.outputs.blocked === 'false'
-        && wb.outputs.blocked === 'true' && wb.added.includes('11:stalled') && !wb.added.includes('11:serial-activo')
+        && wb.outputs.blocked === 'true' && wb.added.includes('11:en-cola') && !wb.added.includes('11:stalled') && !wb.added.includes('11:serial-activo')
         && has(wb, /<!-- serial-toctou-cruzado -->/) && has(wb, /run `100`/);
     }],
   ['orden de ejecución inverso (el perdedor corre primero) ⇒ mismo desenlace',
     async () => {
       const world = { runs: [armRun(100, A.title, 0), armRun(101, B.title, 2)], issues: [A, B] };
       const [wb, wa] = [await guard(world, 101, B), await guard(world, 100, A)];
-      return serialCount([wa, wb]) === 1 && wa.added.includes('10:serial-activo') && wb.added.includes('11:stalled');
+      return serialCount([wa, wb]) === 1 && wa.added.includes('10:serial-activo') && wb.added.includes('11:en-cola');
     }],
-  ['tres arms simultáneos ⇒ un serial-activo, dos stalled',
+  ['tres arms simultáneos ⇒ un serial-activo, dos en-cola',
     async () => {
       const C = iss(13, 'Correctivo C');
       const world = { runs: [armRun(100, A.title, 0), armRun(101, B.title, 1), armRun(102, C.title, 2)], issues: [A, B, C] };
       const ws = [await guard(world, 100, A), await guard(world, 101, B), await guard(world, 102, C)];
-      const stalled = ws.reduce((n, w) => n + w.added.filter(l => l.endsWith(':stalled')).length, 0);
-      return serialCount(ws) === 1 && stalled === 2;
+      const encola = ws.reduce((n, w) => n + w.added.filter(l => l.endsWith(':en-cola')).length, 0);
+      return serialCount(ws) === 1 && encola === 2;
     }],
   ['el ganador sólo ve al perdedor (id mayor) ⇒ toma el mutex',
     async () => {
@@ -120,7 +136,7 @@ const BANCO = [
     async () => {
       const world = { runs: [armRun(100, AUD.title, 0), armRun(101, B.title, 2)], issues: [AUD, B] };
       const w = await guard(world, 101, B);
-      return w.added.includes('11:serial-activo') && !w.added.includes('11:stalled');
+      return w.added.includes('11:serial-activo') && !w.added.includes('11:en-cola');
     }],
   ['run anterior del loop de un PR abierto ⇒ no es contendiente',
     async () => {
@@ -145,19 +161,20 @@ const BANCO = [
     async () => {
       const world = { runs: [armRun(100, A.title, -180), armRun(101, B.title, 2)], issues: [A, B], guardDone: [100] };
       const w = await guard(world, 101, B);
-      return w.added.includes('11:serial-activo') && !w.added.includes('11:stalled') && w.outputs.blocked === 'false';
+      return w.added.includes('11:serial-activo') && !w.added.includes('11:en-cola') && w.outputs.blocked === 'false';
     }],
-  ['guard del cruzado pasado y su flag escrito tras la lectura ⇒ cuenta: B cede (stalled)',
+  ['guard del cruzado pasado y su flag escrito tras la lectura ⇒ cuenta: B cede (en-cola)',
     async () => {
-      const world = { runs: [armRun(100, A.title, 0), armRun(101, B.title, 2)], issues: [A, B], guardDone: [100], flaggedFresh: [A] };
+      const world = { runs: [armRun(100, A.title, 0), armRun(101, B.title, 2)], issues: [A, B], guardDone: [100],
+        flaggedFresh: [A], issuesById: { 10: iss(10, A.title, ['serial-activo']) } };
       const w = await guard(world, 101, B);
-      return w.added.includes('11:stalled') && !w.added.includes('11:serial-activo');
+      return w.added.includes('11:en-cola') && !w.added.includes('11:serial-activo');
     }],
   ['jobs del cruzado ilegibles ⇒ fail-closed: cuenta como contendiente',
     async () => {
       const world = { runs: [armRun(100, A.title, -180), armRun(101, B.title, 2)], issues: [A, B], guardDone: [100], jobsDown: [100] };
       const w = await guard(world, 101, B);
-      return w.added.includes('11:stalled') && !w.added.includes('11:serial-activo');
+      return w.added.includes('11:en-cola') && !w.added.includes('11:serial-activo');
     }],
   ['lista de issues caída ⇒ sin cinturón cruzado (statu quo) y aviso',
     async () => {
@@ -171,12 +188,12 @@ const BANCO = [
       const w = await guard(world, 101, B);
       return w.added.includes('11:serial-activo');
     }],
-  ['marcador ya emitido ⇒ re-asegura stalled sin comentario nuevo (dedup)',
+  ['marcador ya emitido ⇒ re-asegura en-cola sin comentario nuevo (dedup)',
     async () => {
       const world = { runs: [armRun(100, A.title, 0), armRun(101, B.title, 2)], issues: [A, B],
         comments: { 11: [{ body: 'x\n<!-- serial-toctou-cruzado -->' }] } };
       const w = await guard(world, 101, B);
-      return w.added.includes('11:stalled') && w.comments.length === 0;
+      return w.added.includes('11:en-cola') && w.comments.length === 0;
     }],
   ['regresión AP-033 Change B: dos arranques del MISMO issue ⇒ cede SIN re-etiquetar',
     async () => {
@@ -190,6 +207,57 @@ const BANCO = [
       const w = await guard(world, 101, B);
       return w.added.includes('11:en-cola') && !w.added.includes('11:stalled') && w.outputs.blocked === 'true';
     }],
+  // ── AP-122 (central#343/#373) ──
+  ['#373: candidato con guard pasado, listado filtrado SIN el flag pero issues.get CON él ⇒ el run mayor cede (en-cola + marcador)',
+    async () => {
+      const world = { runs: [armRun(100, A.title, -3), armRun(101, B.title, 0)], issues: [A, B], guardDone: [100],
+        flaggedFresh: [], issuesById: { 10: iss(10, A.title, ['serial-activo']) } };
+      const w = await guard(world, 101, B);
+      return w.outputs.blocked === 'true' && w.added.includes('11:en-cola') && !w.added.includes('11:serial-activo')
+        && has(w, /<!-- serial-toctou-cruzado -->/) && w.notices.some(m => /run 100 \(#10\) → contendiente/.test(m));
+    }],
+  ['pop de cola: candidato con guard pasado e issues.get SIN flag ⇒ no cede; traza guard-pasado-sin-flag',
+    async () => {
+      const world = { runs: [armRun(100, A.title, -180), armRun(101, B.title, 2)], issues: [A, B], guardDone: [100] };
+      const w = await guard(world, 101, B);
+      return w.outputs.blocked === 'false' && w.added.includes('11:serial-activo') && !w.removed.includes('11:serial-activo')
+        && w.notices.some(m => /run 100 \(#10\) → guard-pasado-sin-flag/.test(m));
+    }],
+  ['post-verificación: a los 5 s el candidato menor lleva serial-activo ⇒ cede, retira su flag, en-cola, marcador',
+    async () => {
+      const world = { runs: [armRun(100, A.title, -2), armRun(101, B.title, 0)], issues: [A, B], guardDone: [100],
+        issuesByIdTras: { 10: iss(10, A.title, ['serial-activo']) } };
+      const w = await guard(world, 101, B);
+      return w.esperas.length === 1 && w.esperas[0] === 5000
+        && w.added.includes('11:serial-activo') && w.removed.includes('11:serial-activo')
+        && w.added.includes('11:en-cola') && w.outputs.blocked === 'true'
+        && has(w, /post-verificación: el issue #10 \(run 100, menor\) escribió el flag; este run cede y queda en-cola/) && has(w, /<!-- serial-toctou-cruzado -->/);
+    }],
+  ['sin runs evaluados con id menor ⇒ no hay espera (setTimeout no se invoca)',
+    async () => {
+      const world = { runs: [armRun(101, B.title, 0), armRun(102, A.title, 2)], issues: [A, B] };
+      const w = await guard(world, 101, B);
+      return w.esperas.length === 0 && w.added.includes('11:serial-activo') && w.outputs.blocked === 'false';
+    }],
+  ['issues.get del candidato falla ⇒ cuenta como contendiente',
+    async () => {
+      const world = { runs: [armRun(100, A.title, -180), armRun(101, B.title, 2)], issues: [A, B], guardDone: [100], getDown: [10] };
+      const w = await guard(world, 101, B);
+      return w.added.includes('11:en-cola') && !w.added.includes('11:serial-activo') && w.warnings.some(m => /relectura de #10/.test(m));
+    }],
+  ['título del candidato sin número en recent ⇒ contendiente (fail-closed)',
+    async () => {
+      const world = { runs: [armRun(100, 'Issue fuera del listado', -180), armRun(101, B.title, 2)], issues: [B], guardDone: [100] };
+      const w = await guard(world, 101, B);
+      return w.added.includes('11:en-cola') && !w.added.includes('11:serial-activo')
+        && w.notices.some(m => /run 100 \(sin número\) → contendiente/.test(m));
+    }],
+  ['traza: cada run menor evaluado deja notice con su motivo (exento, fuera-de-ventana)',
+    async () => {
+      const world = { runs: [armRun(90, A.title, -15 * 60), armRun(100, AUD.title, 0), armRun(101, B.title, 2)], issues: [A, B, AUD] };
+      const w = await guard(world, 101, B);
+      return w.notices.some(m => /run 90 \(#10\) → fuera-de-ventana/.test(m)) && w.notices.some(m => /run 100 \(#12\) → exento/.test(m));
+    }],
 ];
 
 const rojos = [];
@@ -197,4 +265,4 @@ for (const [nombre, fn] of BANCO) {
   try { if (!(await fn())) rojos.push(nombre); } catch (e) { rojos.push(`${nombre}: excepción ${e.message}`); }
 }
 if (rojos.length) { console.error('CHECK-SERIAL-GUARD ROJO:'); rojos.forEach(e => console.error('  - ' + e)); process.exit(1); }
-console.log(`check-serial-guard verde: ${BANCO.length} casos del guard serial (AP-033 Change B + cinturón cruzado AP-097).`);
+console.log(`check-serial-guard verde: ${BANCO.length} casos del guard serial (AP-033 Change B + cinturón cruzado AP-097 + AP-122).`);
