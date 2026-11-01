@@ -71,8 +71,10 @@ caso('[J] pendiente `serial-activo` / `en-cola` / con PR ⇒ sin `stalled`',
   && G.destinoPrematuro({ pendienteMenor: 3105, labelsPendiente: [], prAbierto: true, armadoAhora: null }).stalled === false);
 caso('[J] pendiente sin dueño ⇒ `stalled` en el pendiente menor',
   J(G.destinoPrematuro({ pendienteMenor: 3105, labelsPendiente: [], prAbierto: false, armadoAhora: 999 })) === J({ issue: 3105, stalled: true, motivo: null }));
-caso('[J] el cuerpo lleva el marcador del intermedio',
-  G.cuerpoPrematuro({ issueConSentinel: 3104, pendientes: [3105], destino: { issue: 3105, stalled: true } }).includes('<!-- epic-audit-prematuro: #3104 -->'));
+caso('[J] el cuerpo lleva el marcador literal del ruling (lista de pendientes `#N,#M`) y nombra el intermedio',
+  G.cuerpoPrematuro({ issueConSentinel: 3104, pendientes: [3105, 3107], destino: { issue: 3105, stalled: true } }).includes('<!-- epic-audit-prematuro: #3105,#3107 -->')
+  && /está en #3104 \(intermedio\)/.test(G.cuerpoPrematuro({ issueConSentinel: 3104, pendientes: [3105], destino: { issue: 3105, stalled: true } })));
+caso('marcador de rango abierto literal del ruling', G.marcadorRangoAbierto([3104, 3106]) === '<!-- epic-audit-rango-abierto: #3104,#3106 -->');
 
 // ── (g) decidirAdopcion ────────────────────────────────────────────────────
 const BASE = 'Auditoría de épica · ADR-294, #3104-#3105';
@@ -103,7 +105,7 @@ if (existsSync(EM)) {
   symlinkSync(process.cwd(), join(WS, '.epic-merge-central'));
 
   // Merge MANUAL del PR 50 de `issueN` (`epica`); `issues` = mundo inicial.
-  async function mergeManual({ issueN, issues }) {
+  async function mergeManual({ issueN, issues, fallaListadoTotal = false }) {
     const db = new Map(issues.map(i => [i.number, { state: 'open', labels: [], comments: [], body: '', title: `Issue ${i.number}`, created_at: '2026-10-22T13:00:00Z', ...i }]));
     db.set(50, { number: 50, state: 'closed', labels: [], comments: [], body: '<!-- full-pr -->', title: 'feat', pull_request: {} });
     const get = n => { const i = db.get(n); if (!i) throw new Error('404'); return i; };
@@ -121,8 +123,8 @@ if (existsSync(EM)) {
         listLabelsOnIssue: async p => ({ data: get(p.issue_number).labels.map(name => ({ name })) }),
         update: async p => { const i = get(p.issue_number); if (p.state) i.state = p.state; return { data: {} }; },
         create: async p => { const n = nid++; db.set(n, { number: n, state: 'open', labels: p.labels, comments: [], body: p.body, title: p.title }); return { data: { number: n } }; },
-        listForRepo: async p => ({ data: [...db.values()].filter(i => (p.state === 'all' || i.state === (p.state || 'open')) && !i.pull_request
-          && (!p.labels || p.labels.split(',').every(n => i.labels.includes(n)))).map(conLabels) }),
+        listForRepo: async p => { if (fallaListadoTotal && p.state === 'all') throw new Error('502'); return { data: [...db.values()].filter(i => (p.state === 'all' || i.state === (p.state || 'open')) && !i.pull_request
+          && (!p.labels || p.labels.split(',').every(n => i.labels.includes(n)))).map(conLabels) }; },
       },
       users: { getAuthenticated: async () => ({ data: { login: 'talfarouriarte-cloud' } }) },
     };
@@ -150,8 +152,8 @@ if (existsSync(EM)) {
     ] });
     caso('(e-real) intermedio con sentinel de fin ⇒ NO se crea panel', paneles(db).length === 0);
     caso('(e-real) la serie se libera igual: el pop arma #3105', tiene(db, 3105, /<!-- arm-de-cola -->/));
-    caso('(e-real) [J] #3105 lleva `epic-audit-prematuro: #3104` y NO `stalled` (un solo dueño del arm)',
-      tiene(db, 3105, /<!-- epic-audit-prematuro: #3104 -->/) && !db.get(3105).labels.includes('stalled'));
+    caso('(e-real) [J] #3105 lleva `epic-audit-prematuro: #3105` y NO `stalled` (un solo dueño del arm)',
+      tiene(db, 3105, /<!-- epic-audit-prematuro: #3105 -->/) && !db.get(3105).labels.includes('stalled'));
   }
   // (e-real, sin dueño) cola vacía: nadie arma #3105 ⇒ `stalled` + marcador.
   {
@@ -160,7 +162,7 @@ if (existsSync(EM)) {
       { number: 3105, labels: ['epica'], body: 'Eslabón 2/2.' },
     ] });
     caso('(e-real) pendiente sin dueño del arm ⇒ `stalled` + marcador en #3105, sin panel',
-      paneles(db).length === 0 && db.get(3105).labels.includes('stalled') && tiene(db, 3105, /<!-- epic-audit-prematuro: #3104 -->/));
+      paneles(db).length === 0 && db.get(3105).labels.includes('stalled') && tiene(db, 3105, /<!-- epic-audit-prematuro: #3105 -->/));
   }
   // (e-real, con cadena) `epic-audit` + `launch-next` en el intermedio ⇒ se sigue la cadena.
   {
@@ -182,6 +184,18 @@ if (existsSync(EM)) {
     caso('(g-real) panel con veredicto NO se adopta: nace «(re-auditoría 1)» armado en su body',
       nuevos.length === 1 && nuevos[0].title === 'Auditoría de épica · ADR-294, #3104-#3105 (re-auditoría 1)' && /@claude arranca la auditoría/.test(nuevos[0].body));
     caso('(g-real) el panel viejo no recibe claim ni arm nuevo', db.get(3109).comments.length === 1);
+  }
+  // (g-real, listado caído) con veredicto y el listado de paneles del alcance
+  // caído, NO se adopta ni se recrea con el título base (pre-reviewer, 3).
+  {
+    const { db } = await mergeManual({ fallaListadoTotal: true, issueN: 3105, issues: [
+      { number: 3104, labels: ['epica'], state: 'closed', body: SENT },
+      { number: 3105, labels: ['epica'], body: SENT },
+      { number: 3109, labels: ['auditoria'], title: 'Auditoría de épica · ADR-294, #3104-#3105', comments: [{ id: 900, body: 'Informe.\n<!-- audit-verdict: clean -->', user: { login: 'x' } }] },
+    ] });
+    const nuevos = paneles(db).filter(i => i.number !== 3109);
+    caso('(g-real) listado de paneles caído ⇒ igual «(re-auditoría 1)»; el panel juzgado intacto',
+      nuevos.length === 1 && / \(re-auditoría 1\)$/.test(nuevos[0].title) && db.get(3109).comments.length === 1 && db.get(3109).state === 'open');
   }
   // (f-real) último eslabón con un issue del intervalo abierto ⇒ panel con la línea de rango abierto.
   {

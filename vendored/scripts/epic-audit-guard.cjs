@@ -23,9 +23,11 @@ const RANGO_RE = /#(\d+)\s*[-–]\s*#(\d+)/;
 // Misma regex que el post-step del Auditor (`claude-code.yml`, `RE_VERDICT`).
 const RE_VERDICT = /<!--\s*audit-verdict:\s*(clean|findings)\s*-->/;
 
-const marcadorPrematuro = (n) => `<!-- epic-audit-prematuro: #${n} -->`;
-const PREMATURO_RE = /<!--\s*epic-audit-prematuro:\s*#(\d+)\s*-->/;
-const marcadorRangoAbierto = (ps) => `<!-- epic-audit-rango-abierto: ${ps.map((n) => '#' + n).join(', ')} -->`;
+// Formas literales del ruling: la lista de PENDIENTES, `#N,#M` sin espacios.
+const listaMarcador = (ps) => ps.map((n) => '#' + n).join(',');
+const marcadorPrematuro = (ps) => `<!-- epic-audit-prematuro: ${listaMarcador(ps)} -->`;
+const PREMATURO_RE = /<!--\s*epic-audit-prematuro:\s*(#\d+(?:\s*,\s*#\d+)*)\s*-->/;
+const marcadorRangoAbierto = (ps) => `<!-- epic-audit-rango-abierto: ${listaMarcador(ps)} -->`;
 
 function parseRango(scope) {
   const m = String(scope || '').match(RANGO_RE);
@@ -95,7 +97,7 @@ function cuerpoPrematuro({ issueConSentinel, pendientes: ps, destino }) {
   const accion = destino.stalled
     ? `#${destino.issue} no tiene dueño del arm: \`stalled\`. architect-resolve: re-hornea el sentinel en el último eslabón real y arma el siguiente.`
     : `#${destino.issue} ya tiene dueño del arm (${destino.motivo}): sin \`stalled\`, nadie más lo arma. La auditoría la creará el merge del último eslabón si lleva su \`epic-audit\`; si no lleva sentinel, el guard de cola huérfana escala.`;
-  return `**epic-merge · epic-audit prematuro**: el sentinel de fin de cadena está en #${issueConSentinel} (intermedio); rango abierto: ${lista}. No se crea la auditoría. ${accion}\n\n${marcadorPrematuro(issueConSentinel)}`;
+  return `**epic-merge · epic-audit prematuro**: el sentinel de fin de cadena está en #${issueConSentinel} (intermedio); rango abierto: ${lista}. No se crea la auditoría. ${accion}\n\n${marcadorPrematuro(ps)}`;
 }
 
 // ¿El hilo de un panel contiene un veredicto del Auditor?
