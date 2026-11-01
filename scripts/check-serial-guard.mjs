@@ -231,7 +231,7 @@ const BANCO = [
       return w.esperas.length === 1 && w.esperas[0] === 5000
         && w.added.includes('11:serial-activo') && w.removed.includes('11:serial-activo')
         && w.added.includes('11:en-cola') && w.outputs.blocked === 'true'
-        && has(w, /post-verificación: el issue #10 \(run `100`, menor\)/) && has(w, /<!-- serial-toctou-cruzado -->/);
+        && has(w, /post-verificación: el issue #10 \(run 100, menor\) escribió el flag; este run cede y queda en-cola/) && has(w, /<!-- serial-toctou-cruzado -->/);
     }],
   ['sin runs evaluados con id menor ⇒ no hay espera (setTimeout no se invoca)',
     async () => {

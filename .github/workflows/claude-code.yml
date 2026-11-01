@@ -1423,7 +1423,7 @@ jobs:
                 }
                 if (cedeA) {
                   await github.rest.issues.removeLabel({ owner, repo, issue_number: issue.number, name: 'serial-activo' }).catch(() => {});
-                  await cederCruzado(`**claude-code · guard serial · cinturón cruzado (AP-122)**: post-verificación: el issue #${cedeA.number} (run \`${cedeA.run.id}\`, menor) escribió el flag; este run (\`${context.runId}\`) cede y queda \`en-cola\`. Se retira el \`serial-activo\` propio; lo arma el pop de cola cuando la serie quede libre.`);
+                  await cederCruzado(`**claude-code · guard serial · cinturón cruzado (AP-122)**: post-verificación: el issue #${cedeA.number} (run ${cedeA.run.id}, menor) escribió el flag; este run cede y queda en-cola. Este run es \`${context.runId}\`; se retira el \`serial-activo\` propio; lo arma el pop de cola cuando la serie quede libre.`);
                   core.warning(`Guard serial · post-verificación: run ${context.runId} (#${issue.number}) cede ante ${cedeA.run.id} (#${cedeA.number}).`);
                 } else {
                   core.setOutput('blocked', 'false');
