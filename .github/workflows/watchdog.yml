@@ -408,10 +408,12 @@ jobs:
 
       # central#314: módulo compartido de la cola serial
       # (`vendored/scripts/cola-prioridad.cjs`) para la lectura única de
-      # `pausa-cola` y el barrido de liberación del scan. Mismo patrón que el
-      # checkout sparse de epic-merge. `continue-on-error`: sin módulo, el scan
-      # se comporta como antes (sin pausa, sin barrido).
-      - name: Módulos vendored del central (cola-prioridad)
+      # `pausa-cola` y el barrido de liberación del scan, y (AP-125) el
+      # detector de rectificación en vuelo (`rect-en-vuelo.cjs`). Mismo patrón
+      # que el checkout sparse de epic-merge. `continue-on-error`: sin módulo,
+      # el scan se comporta como antes (sin pausa, sin barrido) y el detector
+      # de rectificación en vuelo (AP-055) queda inerte, con `::warning`.
+      - name: Módulos vendored del central (cola-prioridad, rect-en-vuelo)
         if: steps.preflight.outputs.dead != 'true'
         continue-on-error: true
         uses: actions/checkout@v4

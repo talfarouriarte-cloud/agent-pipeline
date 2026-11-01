@@ -8,7 +8,8 @@
 // Dos capas: (1) el módulo (clave en sus DOS formas, dedupe por clave, PR que
 // no cita); (2) el gate de merge REAL de epic-merge sobre un PR `lgtm` +
 // `ci-verde`: con una rectificación del ADR citado sin marcador NO mergea,
-// retira `lgtm` y re-convoca; con el marcador ya puesto, mergea. Más las
+// retira `lgtm` y re-convoca; con el marcador ya puesto, mergea solo si hay
+// un veredicto del Reviewer POSTERIOR al marcador (review de PR #383, 🔴). Más las
 // costuras con los dos llamadores. Cuelga del piggyback de
 // `check-embedded-js.mjs`. Verde: exit 0.
 import { existsSync, mkdtempSync, readFileSync, symlinkSync } from 'fs';
@@ -82,8 +83,8 @@ if (existsSync(EM)) {
   const epicMerge = cargarStep(emStep.with.script, 'epic-merge');
   const WS = mkdtempSync(join(tmpdir(), 'rv-ws-'));
   symlinkSync(process.cwd(), join(WS, '.epic-merge-central'));
-  async function gate({ prComments = [] } = {}) {
-    const w = { merged: false, labels: ['lgtm', 'ci-verde'], comments: [...prComments], added: [], removed: [] };
+  async function gate({ prComments = [], labels = ['lgtm', 'ci-verde'] } = {}) {
+    const w = { merged: false, labels: [...labels], comments: [...prComments], added: [], removed: [] };
     const pr = { number: 50, state: 'open', merged: false, draft: false, title: 'feat: rank (ADR-5)', body: 'Refs #40', head: { ref: 'claude/issue-40-x', sha: 'h1' }, base: { ref: 'main', sha: 'b0' }, labels: w.labels.map(name => ({ name })) };
     const issue = { number: 40, state: 'open', title: 'Issue 40', body: '', labels: [{ name: 'epica' }] };
     const conocidos = {
@@ -114,8 +115,22 @@ if (existsSync(EM)) {
   const g1 = await gate();
   caso('gate real: rectificación de ADR citado sin marcador ⇒ NO mergea, retira `lgtm`, re-aplica `needs-review`, marcador con clave',
     !g1.merged && g1.removed.includes('lgtm') && g1.added.includes('needs-review') && g1.comments.some(c => c.body.includes(RV.marcador('ADR-5·R·1'))));
-  const g2 = await gate({ prComments: [{ id: 99, body: `aviso previo\n${RV.marcador('ADR-5·R·1')}`, user: { login: 'x' } }] });
-  caso('gate real: clave ya marcada (cap 1 por clave) ⇒ mergea', g2.merged && !g2.removed.includes('lgtm'));
+  const REV = 'talfarouriarte-cloud';
+  const MARCA = { id: 99, body: `aviso previo\n${RV.marcador('ADR-5·R·1')}`, user: { login: 'x' } };
+  const reAvisos = w => w.comments.filter(c => c.body.includes('aterrizada EN VUELO')).length;
+  const LGTM = (id) => ({ id, body: 'LGTM\nok', user: { login: REV } });
+  const g2 = await gate({ prComments: [LGTM(98), MARCA, LGTM(100)] });
+  caso('gate real: clave ya marcada + LGTM POSTERIOR al marcador ⇒ mergea sin volver a comentar', g2.merged && !g2.removed.includes('lgtm') && reAvisos(g2) === 0);
+  const g3 = await gate({ prComments: [LGTM(98), MARCA], labels: ['ci-verde'] });
+  caso('gate real: clave ya marcada, LGTM solo ANTERIOR al marcador, sin label `lgtm` (respaldo de GATE 2) ⇒ NO mergea y no re-comenta',
+    !g3.merged && reAvisos(g3) === 0 && g3.comments.some(c => c.body.includes('sin veredicto del Reviewer POSTERIOR al marcador')));
+  const g4 = await gate({ prComments: [LGTM(98), MARCA] });
+  caso('gate real: clave ya marcada, label `lgtm` re-puesta sin veredicto posterior ⇒ NO mergea', !g4.merged && reAvisos(g4) === 0);
+  // Módulo: `consumida` con la relación de orden.
+  caso('`consumida`: veredicto anterior al marcador ⇒ false', RV.consumida([LGTM(1), MARCA], 'ADR-5·R·1', REV) === false);
+  caso('`consumida`: REVIEW posterior ⇒ true', RV.consumida([MARCA, { body: 'REVIEW\nx', user: { login: REV } }], 'ADR-5·R·1', REV) === true);
+  caso('`consumida`: LGTM posterior de OTRO login ⇒ false', RV.consumida([MARCA, { body: 'LGTM', user: { login: 'y' } }], 'ADR-5·R·1', REV) === false);
+  caso('`consumida`: sin marcador ⇒ false', RV.consumida([LGTM(1)], 'ADR-5·R·1', REV) === false);
 }
 
 if (fallos.length) {

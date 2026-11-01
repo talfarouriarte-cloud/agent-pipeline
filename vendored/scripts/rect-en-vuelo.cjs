@@ -33,6 +33,20 @@ const rectCand = t => {
 
 const marcador = (clave) => `${RECT_MARK}: ${clave} -->`;
 const yaMarcada = (comments, clave) => (comments || []).some((c) => (c.body || '').includes(marcador(clave)));
+// ¿Hay un veredicto del Reviewer (`login`) POSTERIOR al último marcador de la
+// clave? `comments` en orden cronológico (el de `listComments` paginado). Sin
+// esto, una clave ya marcada dejaba pasar el merge: el marcador retira `lgtm`,
+// pero el respaldo por comentarios de GATE 2 de epic-merge resucita el LGTM
+// ANTERIOR a la rectificación (review de PR #383, 🔴). Misma relación de orden
+// que el guard del belt `watchdog-lgtm-rematerialize` (AP-024).
+const VEREDICTO_RE = /^\s*(LGTM|REVIEW|NITS)\b/;
+const consumida = (comments, clave, login) => {
+  const cs = comments || [];
+  let iMarca = -1;
+  cs.forEach((c, i) => { if ((c.body || '').includes(marcador(clave))) iMarca = i; });
+  if (iMarca < 0) return false;
+  return cs.slice(iMarca + 1).some((c) => c.user && c.user.login === login && VEREDICTO_RE.test(c.body || ''));
+};
 
 // [{ clave, linea }] de las rectificaciones añadidas en la base desde el punto
 // de partida del PR (`pr.base.sha…pr.base.ref`) atribuidas a un ADR/AP que el
@@ -117,4 +131,4 @@ async function detectar({ github, O, pr, warn = () => {}, info = () => {} }) {
   return [...rects.values()].map((r) => ({ clave: r.key, linea: r.head }));
 }
 
-module.exports = { RECT_MARK, RECT_MARK_RE, ADR_HEAD, RECT_ORD, RECT_VOCAB, RECT_DATE, rectCand, marcador, yaMarcada, detectar };
+module.exports = { RECT_MARK, RECT_MARK_RE, ADR_HEAD, RECT_ORD, RECT_VOCAB, RECT_DATE, rectCand, marcador, yaMarcada, consumida, detectar };

@@ -1363,19 +1363,25 @@ jobs:
               // clave SIN marcador en el PR: comentario con su marcador (cap 1
               // por clave), retirar `lgtm`, `needs-review` por PAT (remove+add)
               // salvo draft o `REVIEW`/`NITS` vigente (excepciones de AP-055), y
-              // no mergeo. Sin módulo o con la lectura caída: aviso y el merge
-              // sigue como antes (el Watchdog conserva su detector).
+              // no mergeo. Clave YA marcada: el merge exige un veredicto del
+              // Reviewer POSTERIOR al marcador (`RV.consumida`); sin él, espero
+              // sin volver a comentar (el cap 1 por clave se mantiene). Sin esa
+              // relación de orden, el respaldo por comentarios de GATE 2
+              // resucita el LGTM anterior a la rectificación y el merge pasa.
+              // Sin módulo o con la lectura caída: aviso y el merge sigue como
+              // antes (el Watchdog conserva su detector).
               {
                 let RV = null;
                 try { RV = require(`${process.env.GITHUB_WORKSPACE}/.epic-merge-central/vendored/scripts/rect-en-vuelo.cjs`); }
                 catch (e) { core.warning(`[epic-merge] rect-en-vuelo no disponible (${e.message}) — gate de rectificación inactivo (statu quo).`); }
                 if (RV) {
-                  let nuevos = [], rcs = [];
+                  let nuevos = [], sinVeredicto = [], rcs = [];
                   try {
                     const rects = await RV.detectar({ github, O: { owner, repo }, pr: pf || pr, warn: (m) => core.warning(m), info: (m) => core.info(m) });
                     if (rects.length) {
                       rcs = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: prNumber, per_page: 100 });
                       nuevos = rects.filter(r => !RV.yaMarcada(rcs, r.clave));
+                      sinVeredicto = rects.filter(r => RV.yaMarcada(rcs, r.clave) && !RV.consumida(rcs, r.clave, REVIEWER_LOGIN));
                     }
                   } catch (e) { core.warning(`[epic-merge] rect-en-vuelo #${prNumber}: ${e.message} — gate de rectificación no evaluado; el Watchdog conserva su detector.`); }
                   if (nuevos.length) {
@@ -1392,6 +1398,11 @@ jobs:
                     }
                     await setStatus(prNumber, reconvoca ? 'estado:esperando-reviewer' : 'estado:esperando-creator');
                     await diag(prNumber, `rectificación ${nuevos.map(r => '`' + r.clave + '`').join(', ')} aterrizada tras el LGTM; ${reconvoca ? 're-convoco al Reviewer' : 'turno del Creator'}. No mergeo.`);
+                    return;
+                  }
+                  if (sinVeredicto.length) {
+                    await setStatus(prNumber, 'estado:esperando-reviewer');
+                    await diag(prNumber, `rectificación ${sinVeredicto.map(r => '`' + r.clave + '`').join(', ')} ya marcada sin veredicto del Reviewer POSTERIOR al marcador; el LGTM vigente es anterior. No mergeo.`);
                     return;
                   }
                 }
