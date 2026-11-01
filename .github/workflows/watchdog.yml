@@ -456,6 +456,12 @@ jobs:
             // 5-whys del Auditor atribuya el fallo a la capa correcta
             // (workflow_run=capa 2; schedule=capa 3; workflow_dispatch=heartbeat/humano).
             const CAPA = `<!-- watchdog-capa: ${context.eventName} -->`;
+            // AP-130: candidatos al merge mecánico append-only del registro
+            // (modo PR-dirty, abajo). Se inicializa aquí para que una salida
+            // temprana (gate 0) no deje el output vacío ⇒ los steps de
+            // materialización no corren.
+            const adrAppend = [];
+            core.setOutput('adr_append', '[]');
             const STALL_MIN = 5;  // ADR-217 §3: bound de liveness (física de materialización de runs), no envejecimiento heurístico — la detección es de estado, el tiempo solo evita carreras
             const ARM_WINDOW_H = 72;       // ventana de arms relevantes
             const now = Date.now();
@@ -1190,14 +1196,19 @@ jobs:
                 // Nota: el gate 0 (runs activos => no hacer nada) ya cubre la
                 // reparación en curso; aquí solo cap de reintentos via marca.
                 if (rebases < 2) {
-                  // Con el PAT (central#268): con el GITHUB_TOKEN el ping nacía de
-                  // `github-actions[bot]` y el anti-loop de GitHub impedía que su
-                  // mención de arm disparase claude-code.yml — 3 de 3 pings
-                  // estériles en la historia del marcador, cap 2 quemado en 6 min.
-                  await patCall('POST', `/issues/${pr.number}/comments`, {
-                    body: `${REBASE_MARK}\n@claude rebasa esta rama sobre \`origin/${process.env.IN_DEFAULT_BRANCH}\` y resuelve los conflictos (watchdog: PR en conflicto sin checks posibles — sin merge-ref no corren CI ni Reviewer). Alcance intacto: solo rebase + resolución. <!-- ping-creator -->\n${CAPA}`,
-                  });
-                  core.notice(`PR #${pr.number}: dirty sin checks; ping de rebase ${rebases + 1}/2.`);
+                  // AP-130 (central#370): el ping LLM ya no sale de aquí. El PR
+                  // pasa como candidato a los steps «Merge append-only del
+                  // registro» y «Materializar rebase append-only»: si el único
+                  // conflicto es un append al registro de decisiones, merge
+                  // mecánico + push con el PAT; en CUALQUIER otro caso (también
+                  // si el camino mecánico falla) el ping de rebase LLM de
+                  // siempre, con el PAT (central#268) y el mismo cap 2.
+                  adrAppend.push({ number: pr.number, head_ref: pr.head.ref, head_sha: pr.head.sha, rebases });
+                  // Output escrito en el acto: si el scan muere más abajo, los
+                  // steps de materialización (`always()`) siguen recibiendo el
+                  // candidato y el PR no se queda sin dueño.
+                  core.setOutput('adr_append', JSON.stringify(adrAppend));
+                  core.notice(`PR #${pr.number}: dirty sin checks; candidato a merge append-only (si no aplica, ping de rebase ${rebases + 1}/2).`);
                 } else if (rebases >= 2) {
                   anomalies.push({ type: 'pr-dirty-persistent', number: pr.number,
                     branch: pr.head.ref, rebases, labels: pr.labels.map(l => l.name) });
@@ -1611,6 +1622,7 @@ jobs:
               });
             }
 
+            core.setOutput('adr_append', JSON.stringify(adrAppend));
             const found = anomalies.length > 0;
             core.setOutput('found', String(found));
             core.setOutput('anomalies', JSON.stringify(anomalies));
@@ -1619,6 +1631,130 @@ jobs:
               core.info(JSON.stringify(anomalies, null, 2));
             } else {
               core.notice('Sin anomalías.');
+            }
+
+      # ── AP-130 (central#370): merge mecánico append-only del registro de
+      # decisiones en el modo PR-dirty. El scan ya no publica el ping de rebase
+      # LLM: entrega los PRs `dirty` con cap disponible en `adr_append`. Si el
+      # ÚNICO conflicto es un append al registro (ruta por `adr-lint.config.json`,
+      # AP-111) por los dos lados sobre el mismo ancestro, `adr-append-merge.mjs`
+      # hace un commit de MERGE de dos padres (sin reescritura, push
+      # fast-forward con el PAT ⇒ dispara CI). Cualquier otro caso, y todo fallo
+      # del camino mecánico, cae al ping LLM de siempre en «Materializar rebase
+      # append-only» (invariante de fail-open: todo candidato recibe en el mismo
+      # tick o un `watchdog-rebase-append` o un ping LLM). El gate 0 del scan
+      # garantiza que no hay sesión del Creator viva sobre la rama.
+      - name: Checkout del consumidor (merge append-only, AP-130)
+        if: steps.scan.outputs.adr_append != '' && steps.scan.outputs.adr_append != '[]'
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          path: .repo
+          fetch-depth: 0
+          token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+
+      - name: Merge append-only del registro (AP-130)
+        id: adr_append
+        if: steps.scan.outputs.adr_append != '' && steps.scan.outputs.adr_append != '[]'
+        continue-on-error: true
+        env:
+          CANDS: ${{ steps.scan.outputs.adr_append }}
+          IN_DEFAULT_BRANCH: ${{ inputs.default_branch }}
+        run: |
+          # Sin `-e`: el output `resultados` se escribe SIEMPRE (trap EXIT); un
+          # candidato sin entrada lo trata el step siguiente como `sin-resultado`.
+          set +e
+          MOD=.cola-central/vendored/scripts/adr-append-merge.mjs
+          RES=$(mktemp)
+          echo '{}' > "$RES"
+          trap 'echo "resultados=$(cat "$RES")" >> "$GITHUB_OUTPUT"' EXIT
+          put() {
+            node -e 'const fs=require("fs");const [f,n,v]=process.argv.slice(1);const o=JSON.parse(fs.readFileSync(f,"utf8"));let r;try{r=JSON.parse(v)}catch(e){r={ok:false,na:"merge-error",detalle:String(v).slice(0,300)}}o[n]=r;fs.writeFileSync(f,JSON.stringify(o));' "$RES" "$1" "$2"
+          }
+          LISTA=$(node -e 'for (const c of JSON.parse(process.env.CANDS || "[]")) console.log(c.number + "\t" + c.head_ref)')
+          while IFS=$'\t' read -r NUM REF; do
+            [ -z "$NUM" ] && continue
+            if [ ! -f "$MOD" ]; then put "$NUM" '{"ok":false,"na":"modulo-ausente"}'; continue; fi
+            if [ ! -d .repo/.git ]; then put "$NUM" '{"ok":false,"na":"checkout-fallido"}'; continue; fi
+            OUT=$(node "$MOD" --repo .repo --base "$IN_DEFAULT_BRANCH" --head "$REF")
+            echo "PR #$NUM ($REF): $OUT"
+            if printf '%s' "$OUT" | grep -q '"ok":true'; then
+              # Fast-forward sobre la rama del PR; rechazo (el Creator empujó
+              # entre el tick y el push, o cualquier otro) ⇒ camino LLM.
+              if ! git -C .repo push origin "HEAD:refs/heads/$REF"; then
+                put "$NUM" '{"ok":false,"na":"push-rechazado"}'; continue
+              fi
+            fi
+            put "$NUM" "$OUT"
+          done <<< "$LISTA"
+          exit 0
+
+      - name: Materializar rebase append-only
+        if: always() && steps.scan.outputs.adr_append != '' && steps.scan.outputs.adr_append != '[]'
+        uses: actions/github-script@v7
+        env:
+          ARM_PAT: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          CANDS: ${{ steps.scan.outputs.adr_append }}
+          RESULTADOS: ${{ steps.adr_append.outputs.resultados }}
+          IN_DEFAULT_BRANCH: ${{ inputs.default_branch }}
+        with:
+          script: |
+            const O = { owner: context.repo.owner, repo: context.repo.repo };
+            const CAPA = `<!-- watchdog-capa: ${context.eventName} -->`;
+            const REBASE_MARK = '<!-- watchdog-rebase -->';
+            const verdictRe = /^\s*(LGTM|REVIEW|NITS)\b/;
+            // Todas las escrituras con el PAT: el ping arma al Creator
+            // (central#268) y la `needs-review` debe disparar reviewer.yml (un
+            // `labeled` por GITHUB_TOKEN no lo hace).
+            const patCall = async (method, path, body) => {
+              const res = await fetch(`https://api.github.com/repos/${O.owner}/${O.repo}${path}`,
+                { method, headers: { Authorization: `Bearer ${process.env.ARM_PAT}`,
+                                     Accept: 'application/vnd.github+json' },
+                  body: body ? JSON.stringify(body) : undefined });
+              if (!res.ok && res.status !== 404) throw new Error(`HTTP ${res.status} ${path}`);
+              return res;
+            };
+            let cands = [], resultados = {};
+            try { cands = JSON.parse(process.env.CANDS || '[]'); } catch (e) { core.warning(`adr_append ilegible: ${e.message}`); }
+            try { resultados = JSON.parse(process.env.RESULTADOS || '{}') || {}; } catch (e) { core.warning(`resultados ilegibles: ${e.message} — todos los candidatos van a sin-resultado.`); }
+            for (const c of cands) {
+              try {
+                const r0 = resultados[String(c.number)];
+                const ok = !!(r0 && r0.ok === true && /^[0-9a-f]{7,40}$/.test(String(r0.sha || '')));
+                if (ok) {
+                  const MARK = `<!-- watchdog-rebase-append: ${r0.sha} -->`;
+                  const cs = await github.paginate(github.rest.issues.listComments, { ...O, issue_number: c.number, per_page: 100 });
+                  if (cs.some(x => (x.body || '').includes(MARK))) { core.info(`PR #${c.number}: ${r0.sha.slice(0, 7)} ya materializado — no-op.`); continue; }
+                  // Estado LEÍDO en vivo, no el del listado del scan: el bloque
+                  // AP-055 del mismo tick puede haber retirado `lgtm`.
+                  const { data: pf } = await github.rest.pulls.get({ ...O, pull_number: c.number });
+                  const labels = (pf.labels || []).map(l => l.name || l);
+                  const hadLgtm = labels.includes('lgtm');
+                  const vs = cs.filter(x => verdictRe.test((x.body || '').trim()));
+                  const lastV = vs.length ? (vs[vs.length - 1].body || '').trim().split(/\s/)[0].replace(':', '') : null;
+                  const turnoCreator = lastV === 'REVIEW' || lastV === 'NITS';
+                  const reconvoca = !pf.draft && !turnoCreator;
+                  // El veredicto previo NUNCA sobrevive al merge mecánico: lo
+                  // que entra desde la base puede ser una rectificación de una
+                  // ADR citada que AP-055 no ve en `layout: "dir"`.
+                  if (hadLgtm) await patCall('DELETE', `/issues/${c.number}/labels/lgtm`);
+                  if (reconvoca) {
+                    await patCall('DELETE', `/issues/${c.number}/labels/needs-review`).catch(() => {});
+                    await patCall('POST', `/issues/${c.number}/labels`, { labels: ['needs-review'] });
+                  }
+                  const que = `${hadLgtm ? 'Retirada la label `lgtm`: el veredicto previo no vio lo que entró desde la base. ' : ''}${reconvoca ? 'Re-aplicada `needs-review` por PAT: el Reviewer juzga el HEAD nuevo.' : pf.draft ? 'Sin `needs-review`: el PR está en draft (el Reviewer entrará por `ready`).' : `Sin \`needs-review\`: el veredicto vigente es \`${lastV}\`, el turno es del Creator y la próxima review consume el HEAD nuevo.`}`;
+                  await patCall('POST', `/issues/${c.number}/comments`, {
+                    body: `**watchdog · merge append-only del registro (AP-130)**: el único conflicto con \`origin/${process.env.IN_DEFAULT_BRANCH}\` era un append por los dos lados al final de \`${r0.ruta || 'registro'}\`. Resuelto sin sesión LLM con un commit de merge de dos padres (${r0.sha.slice(0, 7)}): ancestro + bloque de la base + bloque del PR, sin reescritura de historia. ${que}\n\n${MARK}\n${CAPA}` });
+                  core.notice(`PR #${c.number}: merge append-only ${r0.sha.slice(0, 7)} — lgtm ${hadLgtm ? 'retirada' : 'ausente'}, needs-review ${reconvoca ? 're-aplicada' : pf.draft ? 'omitida (draft)' : `omitida (turno del Creator: ${lastV})`}.`);
+                } else {
+                  const na = String((r0 && r0.na) || 'sin-resultado').replace(/[^a-z-]/g, '') || 'sin-resultado';
+                  if (r0 && r0.detalle) core.info(`PR #${c.number}: na ${na} — ${r0.detalle}`);
+                  await patCall('POST', `/issues/${c.number}/comments`, {
+                    body: `${REBASE_MARK}\n@claude rebasa esta rama sobre \`origin/${process.env.IN_DEFAULT_BRANCH}\` y resuelve los conflictos (watchdog: PR en conflicto sin checks posibles — sin merge-ref no corren CI ni Reviewer). Alcance intacto: solo rebase + resolución. <!-- ping-creator -->\n<!-- watchdog-rebase-append-na: ${na} -->\n${CAPA}`,
+                  });
+                  core.notice(`PR #${c.number}: dirty sin checks (append-only: ${na}); ping de rebase ${(Number(c.rebases) || 0) + 1}/2.`);
+                }
+              } catch (e) { core.warning(`append-only #${c.number}: ${e.message}`); }
             }
 
       # RED de PR huérfano (v1.2, incidentes wmcb #7 y #6, 2026-07-11): el
