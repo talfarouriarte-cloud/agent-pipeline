@@ -643,6 +643,20 @@ jobs:
                 await github.rest.issues.update({ owner, repo, issue_number: issueNumber, state: 'closed', state_reason: 'completed' });
               } catch (e) { core.info('cerrar issue falló: ' + e.message); }
 
+              // AP-122 (central#307): absorción con consumidor mecánico. Cada
+              // `Absorbe #N` (línea anclada) del body de este PR mergeado cierra
+              // #N por estado (`estado:cierre-pendiente-humano` + marcador +
+              // `completed`); su `issues:[closed]` lo procesa `postStateClose`.
+              // Fail-soft: sin módulo o con error, aviso y el merge sigue.
+              try {
+                const ABS = require(`${process.env.GITHUB_WORKSPACE}/.epic-merge-central/vendored/scripts/absorcion.cjs`);
+                const absorbidos = ABS.leerAbsorbidos(prBody).filter(n => n !== Number(issueNumber));
+                if (absorbidos.length) {
+                  const hechos = await ABS.materializarAbsorcion({ github, owner, repo, prNumber, issues: absorbidos, warn: (m) => core.warning(m) });
+                  core.notice(`[epic-merge] absorción (AP-122) del PR #${prNumber}: ${hechos.length ? hechos.map(n => '#' + n).join(', ') + ' cerrados' : 'nada abierto que cerrar'}.`);
+                }
+              } catch (e) { core.warning('[epic-merge] absorción (AP-122): ' + e.message); }
+
               // ENCADENAR
               const body = issue.body || '';
 
@@ -1002,7 +1016,23 @@ jobs:
               // ── Camino MANUAL: pull_request closed(merged) por humano.
               if (context.eventName === 'pull_request' && context.payload.action === 'closed') {
                 const p = context.payload.pull_request;
-                if (!p.merged) return; // cerrado sin merge: nada que procesar
+                if (!p.merged) {
+                  // Cerrado sin merge: lo único que procesar es la absorción
+                  // (AP-122, central#307): cada `Absorbe #N` del body cuyo #N
+                  // lleve el marcador `cola-absorbida` de este PR (o de su issue)
+                  // vuelve a `en-cola`. Fail-soft.
+                  try {
+                    const ABS = require(`${process.env.GITHUB_WORKSPACE}/.epic-merge-central/vendored/scripts/absorcion.cjs`);
+                    const absorbidos = ABS.leerAbsorbidos(p.body || '');
+                    if (absorbidos.length) {
+                      const mo = (p.head.ref || '').match(/issue-(\d+)/);
+                      const hechos = await ABS.cancelarAbsorcion({ github, owner, repo, prNumber: p.number,
+                        origenes: mo ? [Number(mo[1])] : [], issues: absorbidos, warn: (m) => core.warning(m) });
+                      core.notice(`[epic-merge] absorción cancelada (AP-122) del PR #${p.number}: ${hechos.length ? hechos.map(n => '#' + n).join(', ') + ' vuelven a en-cola' : 'nada que devolver'}.`);
+                    }
+                  } catch (e) { core.warning('[epic-merge] cancelar absorción (AP-122): ' + e.message); }
+                  return;
+                }
                 prNumber = p.number;
                 await setStatus(prNumber, null, 'manual'); // limpiar estado:* + espejo verde
                 const mb = (p.head.ref || '').match(/issue-(\d+)/);

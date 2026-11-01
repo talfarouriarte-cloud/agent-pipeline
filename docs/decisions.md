@@ -2452,7 +2452,7 @@ Si algún item sale con ≥2, el humano lo verá pasar a `human-needed` en el pr
 
 **Falsable.** `check-patches` reporta el parche `ancla VIGENTE`. Al aplicar el humano el parche y desplegar, el siguiente tick superviviente del Watchdog sobre un `stalled` de auditoría/process-proposal huérfano deja rastro en su log, y ese rastro tiene DOS desenlaces posibles según el conteo de doble rebote del item (ambos falsan la ausencia actual): (a) con <2 `autonomous-decision`, la línea `#N: stalled re-derivado del estado (AP-038)` + la anomalía `stalled-autonomous-resolve` (el caso normal, hoy AUSENTE para esos items: es esa ausencia en los ≥12 runs de finplan#1810 lo que confirma que el gate de `:372` lo saltaba); (b) con ≥2 `autonomous-decision` HISTÓRICOS, la línea `#N: doble rebote (scan) ⇒ human-needed` (`watchdog.yml:381`) + la label `human-needed` — el efecto que la §Blast radius manda enumerar ANTES de aplicar. Cualquiera de las dos líneas, sobre un item que hoy no las tiene, confirma que el gate dejó de saltarlo. Discrimina esta corrección del belt retirado: no aparece marcador `stalled-rederivado-por-estado` alguno; el rescate lo firma el rastro de AP-038.
 
-<!-- ancla-espejo: AP-086-watchdog-stalled-rederive.patch = 44a70f226be4d77f1a8341bbc4c7b38e0dc4e7a2 -->
+<!-- ancla-espejo: AP-086-watchdog-stalled-rederive.patch = 8ae4089ba3348f34a1d8f3899cd7066b81324a7f -->
 
 ## AP-087 — Bump del pin de `anthropics/claude-code-action` a v1.0.233 (CLI 2.1.281) y paso de Creator y Reviewer a `claude-opus-5-5` en el mismo PR (2026-09-25)
 
