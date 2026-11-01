@@ -220,6 +220,10 @@ await caso('(f8) output resultados vacío (step (ii) muerto/skipped) ⇒ na sin-
 });
 await caso('(f9) marcador con el mismo sha ya presente ⇒ no-op total', async () => {
   const l = await iii({ cands: [C], resultados: OK, live: { labels: ['lgtm'] }, comments: [{ body: `x\n<!-- watchdog-rebase-append: ${SHA} -->` }] });
+await caso('(f9b) solo una CITA del marcador entre backticks ⇒ NO es no-op (materializa)', async () => {
+  const l = await iii({ cands: [C], resultados: OK, live: { labels: ['lgtm'] }, comments: [{ body: `ver \`<!-- watchdog-rebase-append: ${SHA} -->\`` }] });
+  return l.calls.length > 0 || j(l);
+});
   return l.calls.length === 0 || j(l);
 });
 await caso('(f10) el marcador append no cuenta para el tope de watchdog-rebase', async () =>
@@ -301,6 +305,17 @@ await caso('(j5) REVIEW posterior al merge mecánico ⇒ NO mergea', async () =>
   return !w.merged || j(w);
 });
 
+await caso('(j6) LGTM POSTERIOR que CITA el marcador (en línea propia y entre backticks) ⇒ mergea', async () => {
+  const cita = { ...vd('LGTM', 30), body: `LGTM\n- marcador \`<!-- watchdog-rebase-append: ${SHA} -->\` presente\n<!-- watchdog-rebase-append: ${SHA} -->` };
+  const w = await gateEM({ comments: [vd('LGTM', 0), marcaAppend(11), cita], commits: [cm(SUBJ, 10)], labels: ['ci-verde'] });
+  return w.merged || j(w);
+});
+await caso('(j7) comentario no-veredicto que CITA el marcador entre backticks no desplaza el ancla ⇒ el LGTM posterior al marcador mergea', async () => {
+  const nota = { id: 40, body: `nota: \`<!-- watchdog-rebase-append: ${SHA} -->\``, user: { login: REV }, created_at: T(40) };
+  const w = await gateEM({ comments: [vd('LGTM', 0), marcaAppend(11), vd('LGTM', 30), nota], commits: [cm(SUBJ, 10)], labels: ['ci-verde'] });
+  return w.merged || j(w);
+});
+
 // ── (k) red por estado del scan ─────────────────────────────────────────────
 const scanRun = cargarStep(steps.find(s => s.id === 'scan').with.script, 'scan');
 const SC_WS = mkdtempSync(join(tmpdir(), 'aam-wd-'));
@@ -333,6 +348,10 @@ await caso('(k1) HEAD = merge mecánico sin marcador ⇒ candidato `materializar
 await caso('(k2) HEAD = merge mecánico CON su marcador ⇒ sin candidato', async () => {
   const { cands } = await scanRed({ msg: SUBJ, comments: [{ body: '<!-- watchdog-rebase-append: feedbeef0000 -->', user: { login: REV }, created_at: T(-20) }] });
   return (Array.isArray(cands) && cands.length === 0) || j(cands);
+});
+await caso('(k4) HEAD = merge mecánico y solo una CITA del marcador entre backticks ⇒ candidato `materializar`', async () => {
+  const { cands, HEAD } = await scanRed({ msg: SUBJ, comments: [{ body: 'ver `<!-- watchdog-rebase-append: feedbeef0000 -->`', user: { login: REV }, created_at: T(-20) }] });
+  return (Array.isArray(cands) && cands.length === 1 && cands[0].materializar === HEAD) || j(cands);
 });
 await caso('(k3) HEAD normal ⇒ sin candidato', async () => {
   const { cands } = await scanRed({ msg: 'feat: algo' });
