@@ -21,6 +21,23 @@
 // por superconjunto (Reviewer concurrente), re-arm del gate 3 en un PR en
 // espera, marcador citado, rechazo ⇒ `human-needed`, foto pre-sesión y costuras
 // (incluidas las copias de TRUSTED y del regex en `check_flight`).
+//
+// Casos de central#348 (ruling mensual 2026-11-01, punto 5), prefijo `348`:
+//  (a) acuse en el body del PR por `claude[bot]` ⇒ pendientes vacío en entrega,
+//      Reviewer y gate 3; por autor no TRUSTED ⇒ no cuenta;
+//  (b) fixture asesoramiento#2909: 4 disparos distintos en 24 h ⇒ el 4.º da
+//      `rearm`, nunca `tope`;
+//  (c) enmienda sin acuse en 3 re-arms solapados ⇒ `tope` + `human-needed` en
+//      los tres consumidores; 3 re-arms de otros conjuntos ⇒ no cuentan;
+//  (d) disparo en `enmiendas-entregadas` TRUSTED ⇒ entregado; no TRUSTED ⇒ no;
+//  (d2) dos pings diferidos sin foto ⇒ ambos pendientes, un re-arm con los dos;
+//  (d3) entrega con sesión `success` y `disparos_foto` ⇒ publica
+//      `enmiendas-entregadas` y no re-arma ese disparo en el mismo step; sin
+//      `success` ⇒ no publica y sigue pendiente;
+//  (e) `check_flight` con evento sin línea de ping ⇒ cede con `disparo-sin-ping`;
+//      con el sentinel `ping-creator` ⇒ `disparo-pendiente`;
+//  (f) costura: `PING_RE` y `despojarCodigo` de `check_flight` son literales a
+//      los del módulo.
 // Cuelga del piggyback de `check-embedded-js.mjs` como sus hermanos.
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, symlinkSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
@@ -31,6 +48,7 @@ import { cargarStep } from './lib/github-script.mjs';
 
 const require = createRequire(import.meta.url);
 const ENM = require(resolve('vendored/scripts/enmiendas.cjs'));
+const RCF = require(resolve('vendored/scripts/resolve-cross-issue-failsafe.cjs'));
 const RAIZ = process.cwd();
 
 const stepsDe = (f) => {
@@ -62,6 +80,10 @@ for (const d of ['.cola-central', '.enmiendas-central', '.epic-merge-central']) 
 mkdirSync(join(WS, '.git', 'info'), { recursive: true });
 const EXEC = join(WS, 'claude-execution-output.json');
 writeFileSync(EXEC, '[]');
+const EXEC_OK = join(WS, 'claude-execution-ok.json');
+writeFileSync(EXEC_OK, JSON.stringify([{ type: 'system', subtype: 'init' }, { type: 'result', subtype: 'success', is_error: false }]));
+const EXEC_KO = join(WS, 'claude-execution-ko.json');
+writeFileSync(EXEC_KO, JSON.stringify([{ type: 'system', subtype: 'init' }, { type: 'result', subtype: 'error_max_turns', is_error: true }]));
 
 // ── Mundo en memoria ──────────────────────────────────────────────────────────
 const ISSUE = 40, PR = 50, RAMA = 'claude/issue-40-20261006-0900', PAT_LOGIN = 'talfarouriarte-cloud';
@@ -75,11 +97,12 @@ const com = (item, body, { assoc = 'OWNER', login = PAT_LOGIN, min = 5, id } = {
 const enmienda = (item = ISSUE, extra = {}) => com(item, 'Cambia X por Y.\n\n<!-- enmienda -->', extra);
 const acuse = (id, tipo = 'aplicada', extra = {}) => com(PR, `Hecho.\n\n<!-- enmienda-${tipo}: ${id} -->`, { assoc: 'NONE', login: 'claude[bot]', ...extra });
 
-function mundo({ comentarios = [], labels = {}, conPR = true } = {}) {
+function mundo({ comentarios = [], labels = {}, conPR = true, prBody = null, prAutor = { login: 'claude[bot]', assoc: 'NONE' } } = {}) {
   const w = { comentarios: [...comentarios], labels: { [ISSUE]: [...(labels[ISSUE] || [])], [PR]: [...(labels[PR] || [])] },
     creados: [], añadidas: [], quitadas: [], merges: 0, fetches: [] };
   const prObj = () => ({ number: PR, state: 'open', merged: false, draft: false, title: 'feat (#40)', created_at: HACE(600),
-    head: { ref: RAMA, sha: 'abc123' }, labels: w.labels[PR].map((name) => ({ name })), mergeable_state: 'clean' });
+    head: { ref: RAMA, sha: 'abc123' }, labels: w.labels[PR].map((name) => ({ name })), mergeable_state: 'clean',
+    body: prBody, user: { login: prAutor.login }, author_association: prAutor.assoc, html_url: `https://github.com/o/r/pull/${PR}` });
   const crear = (n, body) => {
     const c = com(n, body, { min: 0 });
     w.comentarios.push(c); w.creados.push(c);
@@ -124,10 +147,10 @@ function mundo({ comentarios = [], labels = {}, conPR = true } = {}) {
 const core = (w) => ({ setOutput: (k, v) => { (w.outputs ||= {})[k] = String(v); }, notice() {}, warning() {}, info() {}, setFailed: (m) => { w.failed = m; } });
 const rearms = (w) => w.creados.filter((c) => /^[ \t]*<!--\s*rearm-enmienda:/m.test(c.body));
 
-async function correrEntrega(w, { item = PR, sesion = true, runId = 777 } = {}) {
+async function correrEntrega(w, { item = PR, sesion = true, runId = 777, exec = EXEC, disparosFoto = '' } = {}) {
   const payload = item === PR ? { issue: { number: PR, pull_request: {} } } : { issue: { number: ISSUE } };
   await entrega({ github: w.github, context: { repo: { owner: 'o', repo: 'r' }, runId, payload }, core: core(w) },
-    { env: { EXEC_FILE: sesion ? EXEC : join(WS, 'no-existe.json'), GITHUB_WORKSPACE: WS } });
+    { env: { EXEC_FILE: sesion ? exec : join(WS, 'no-existe.json'), GITHUB_WORKSPACE: WS, DISPAROS_FOTO: disparosFoto } });
 }
 // `pasos[run_id]` = { sesion: 'in_progress'|'success'|'skipped', entrega: 'pending'|'in_progress'|'success'|'skipped' }.
 const PASO = {
@@ -245,15 +268,16 @@ const VEREDICTO_LGTM = () => com(PR, 'LGTM\n\nTodo bien.', { min: 1 });
   await correrEntrega(wc, { runId: 779 });
   check(rearms(wc).length === 2 && !wc.añadidas.length, '(c) conjunto nuevo (otra enmienda) ⇒ un re-arm más');
 }
-// ── (d) tope 3/24 h ⇒ human-needed ──
+// ── (d) tope 3/24 h ⇒ human-needed (central#348: re-arms SOLAPADOS con lo pendiente) ──
 {
-  const previos = [1, 2, 3].map((k) => com(PR, `@claude\n<!-- rearm-enmienda: ${k} -->`, { min: 60 * k }));
-  const w = mundo({ comentarios: [...previos, enmienda()] });
+  const e = enmienda(ISSUE, { id: 4242 });
+  const previos = [1, 2, 3].map((k) => com(PR, `@claude\n<!-- rearm-enmienda: ${k},4242 -->`, { min: 60 * k }));
+  const w = mundo({ comentarios: [...previos, e, enmienda(PR)] });
   await correrEntrega(w);
   check(rearms(w).length === 0 && w.añadidas.includes(`${PR}:human-needed`) && w.creados.some((c) => /<!-- rearm-enmienda-tope -->/.test(c.body)),
     '(d) 3 re-arms en 24 h ⇒ human-needed + comentario, sin re-arm');
-  const viejos = [1, 2, 3].map((k) => com(PR, `@claude\n<!-- rearm-enmienda: ${k} -->`, { min: 60 * 25 }));
-  const w2 = mundo({ comentarios: [...viejos, enmienda()] });
+  const viejos = [1, 2, 3].map((k) => com(PR, `@claude\n<!-- rearm-enmienda: ${k},4242 -->`, { min: 60 * 25 }));
+  const w2 = mundo({ comentarios: [...viejos, e, enmienda(PR)] });
   await correrEntrega(w2);
   check(rearms(w2).length === 1, '(d) 3 re-arms de hace más de 24 h ⇒ re-arm normal');
   const w3 = mundo({ comentarios: [enmienda()], labels: { [PR]: ['human-needed'] } });
@@ -306,8 +330,8 @@ const VEREDICTO_LGTM = () => com(PR, 'LGTM\n\nTodo bien.', { min: 1 });
     '(f) PR en espera sin Creator en vuelo: el gate 3 re-arma al Creator (PAT) con la enmienda enlazada');
   await correrEpicMerge(w);
   check(w.merges === 0 && rearms(w).length === 1, '(f) segunda evaluación con el mismo conjunto ⇒ sin segundo re-arm (dedupe)');
-  const previos = [1, 2, 3].map((k) => com(PR, `@claude\n<!-- rearm-enmienda: ${k} -->`, { min: 60 * k }));
-  const wt = mundo({ comentarios: [...previos, e, VEREDICTO_LGTM()], labels: { [PR]: ['ci-verde', 'lgtm'] } });
+  const previos = [1, 2, 3].map((k) => com(PR, `@claude\n<!-- rearm-enmienda: ${k},${e.id} -->`, { min: 60 * k }));
+  const wt = mundo({ comentarios: [...previos, e, enmienda(PR), VEREDICTO_LGTM()], labels: { [PR]: ['ci-verde', 'lgtm'] } });
   await correrEpicMerge(wt);
   check(wt.merges === 0 && rearms(wt).length === 0 && wt.añadidas.includes(`${PR}:human-needed`), '(f) gate 3 con el tope agotado ⇒ human-needed, sin re-arm');
 }
@@ -398,6 +422,128 @@ const VEREDICTO_LGTM = () => com(PR, 'LGTM\n\nTodo bien.', { min: 1 });
   const w2 = mundo({ comentarios: [e, acuse(e.id)] });
   await foto({ github: w2.github, context: { repo: { owner: 'o', repo: 'r' }, payload: { issue: { number: ISSUE } } }, core: core(w2) }, { env: { GITHUB_WORKSPACE: WS } });
   check(!existsSync(ruta), 'foto pre-sesión: nada pendiente ⇒ sin fichero (se borra el de antes)');
+  const w3 = mundo({ comentarios: [e, com(PR, '<!-- disparo-pendiente: 9701 -->', { assoc: 'NONE', login: 'github-actions[bot]' })] });
+  await foto({ github: w3.github, context: { repo: { owner: 'o', repo: 'r' }, payload: { issue: { number: PR, pull_request: {} } } }, core: core(w3) }, { env: { GITHUB_WORKSPACE: WS } });
+  check(w3.outputs && w3.outputs.disparos_foto === '9701', '348 foto pre-sesión: `outputs.disparos_foto` = ids de los disparos de la foto (no las enmiendas)');
+}
+// ── central#348 (a) acuse en el body del PR ──
+{
+  const e = enmienda(ISSUE, { min: 30 });
+  const body = (login, assoc) => ({ prBody: `Resumen del PR.\n\n<!-- full-pr -->\nCloses #40\n<!-- enmienda-aplicada: ${e.id} -->`, prAutor: { login, assoc } });
+  const w = mundo({ comentarios: [e], ...body('claude[bot]', 'NONE') });
+  await correrEntrega(w);
+  check(rearms(w).length === 0 && !w.añadidas.length, '348(a) acuse en el body del PR por claude[bot] ⇒ entrega sin re-arm');
+  const wr = mundo({ comentarios: [e, VEREDICTO_LGTM()], ...body('claude[bot]', 'NONE') });
+  await correrReviewer(wr);
+  check(wr.labels[PR].includes('lgtm') && rearms(wr).length === 0, '348(a) acuse en el body ⇒ el Reviewer escribe `lgtm`');
+  const wm = mundo({ comentarios: [e, VEREDICTO_LGTM()], labels: { [PR]: ['ci-verde', 'lgtm'] }, ...body('claude[bot]', 'NONE') });
+  await correrEpicMerge(wm);
+  check(wm.merges === 1, '348(a) acuse en el body ⇒ el gate 3 mergea');
+  const wa = mundo({ comentarios: [e], ...body('mallory', 'NONE') });
+  await correrEntrega(wa);
+  check(rearms(wa).length === 1, '348(a) acuse en el body de autor no TRUSTED ⇒ no cuenta (re-arm)');
+  const wb = mundo({ comentarios: [], prBody: 'Body.\n\n<!-- enmienda -->\n<!-- disparo-pendiente: 77 -->', prAutor: { login: 'talfarouriarte-cloud', assoc: 'OWNER' } });
+  await correrEntrega(wb);
+  check(wb.creados.length === 0, '348(a) en el body solo cuentan acuses: un `enmienda`/`disparo-pendiente` en el body no crea pendientes');
+  const cuerpoR = ENM.cuerpoRearm(ENM.pendientes(ENM.escanear([e])), String(e.id), 'entrega');
+  const fotoTxt = ENM.fotoPendientes([e]);
+  check(/comentario NUEVO con `gh api`, no en tu comentario de seguimiento/.test(cuerpoR) && /comentario NUEVO con `gh api`, no en tu comentario de seguimiento/.test(fotoTxt),
+    '348(a) re-arm y foto mandan acusar en un comentario NUEVO por `gh api`, no en el de seguimiento');
+}
+// ── central#348 (b) fixture asesoramiento#2909: 4 disparos distintos en 24 h ──
+{
+  const dis = (id, min) => com(PR, `<!-- disparo-pendiente: ${id} -->`, { assoc: 'NONE', login: 'github-actions[bot]', min });
+  const re = (id, min) => com(PR, `@claude\n<!-- rearm-enmienda: ${id} -->`, { min });
+  const w = mundo({ comentarios: [dis(6098734781, 300), re(6098734781, 290), dis(6098862984, 200), re(6098862984, 190),
+    dis(6099034690, 100), re(6099034690, 90), dis(6099074770, 30)] });
+  const plan = ENM.planificar(ENM.escanear(w.comentarios), { origen: 'entrega' });
+  check(plan.accion === 'rearm' && plan.ids.join(',') === '6099074770', '348(b) 4.º disparo distinto en 24 h ⇒ `rearm` (el contador no se hereda), nunca `tope`');
+  await correrEntrega(w);
+  check(rearms(w).length === 1 && !w.añadidas.length && !w.creados.some((c) => /rearm-enmienda-tope/.test(c.body)), '348(b) la entrega re-arma el 4.º disparo sin `human-needed`');
+  const t = ENM.cuerpoTope({ recientes: 3, pendientes: { enmiendas: [], disparos: [] } });
+  check(!/re-armar con un ping explícito/.test(t) && /enmiendas-entregadas/.test(t) && /gh api/.test(t), '348(b) `cuerpoTope` ya no ofrece «re-armar con un ping explícito»: nombra lo que limpia cada pendiente');
+}
+// ── central#348 (c) tope por solapamiento en los tres consumidores ──
+{
+  const e = enmienda(ISSUE, { id: 5151, min: 400 });
+  const sol = [1, 2, 3].map((k) => com(PR, `@claude\n<!-- rearm-enmienda: ${k},5151 -->`, { min: 60 * k }));
+  const otros = [1, 2, 3].map((k) => com(PR, `@claude\n<!-- rearm-enmienda: ${k} -->`, { min: 60 * k }));
+  const w = mundo({ comentarios: [e, enmienda(PR), ...sol] });
+  await correrEntrega(w);
+  check(rearms(w).length === 0 && w.añadidas.includes(`${PR}:human-needed`) && w.creados.some((c) => /<!-- rearm-enmienda-tope -->/.test(c.body)), '348(c) entrega: 3 re-arms solapados ⇒ tope + human-needed');
+  const wr = mundo({ comentarios: [e, enmienda(PR), ...sol, VEREDICTO_LGTM()], labels: { [PR]: ['lgtm'] } });
+  await correrReviewer(wr);
+  check(rearms(wr).length === 0 && wr.labels[PR].includes('human-needed') && !wr.labels[PR].includes('lgtm'), '348(c) Reviewer: 3 re-arms solapados ⇒ tope + human-needed');
+  const wm = mundo({ comentarios: [e, enmienda(PR), ...sol, VEREDICTO_LGTM()], labels: { [PR]: ['ci-verde', 'lgtm'] } });
+  await correrEpicMerge(wm);
+  check(wm.merges === 0 && rearms(wm).length === 0 && wm.añadidas.includes(`${PR}:human-needed`), '348(c) gate 3: 3 re-arms solapados ⇒ tope + human-needed');
+  const wo = mundo({ comentarios: [e, ...otros] });
+  await correrEntrega(wo);
+  check(rearms(wo).length === 1 && !wo.añadidas.length, '348(c) 3 re-arms de otros conjuntos ⇒ no cuentan: re-arm normal');
+  const wor = mundo({ comentarios: [e, ...otros, VEREDICTO_LGTM()] });
+  await correrReviewer(wor);
+  check(rearms(wor).length === 1 && !wor.labels[PR].includes('human-needed'), '348(c) Reviewer: re-arms de otros conjuntos ⇒ no cuentan');
+}
+// ── central#348 (d) `enmiendas-entregadas` ──
+{
+  const dis = (id, min) => com(PR, `<!-- disparo-pendiente: ${id} -->`, { assoc: 'NONE', login: 'github-actions[bot]', min });
+  const w = mundo({ comentarios: [dis(9301, 60), com(PR, '<!-- enmiendas-entregadas: 9301 -->', { min: 30 })] });
+  await correrEntrega(w);
+  check(w.creados.length === 0, '348(d) disparo en `enmiendas-entregadas` TRUSTED ⇒ entregado, sin re-arm');
+  const wa = mundo({ comentarios: [dis(9301, 60), com(PR, '<!-- enmiendas-entregadas: 9301 -->', { assoc: 'NONE', login: 'mallory', min: 30 })] });
+  await correrEntrega(wa);
+  check(rearms(wa).length === 1, '348(d) `enmiendas-entregadas` de autor no TRUSTED ⇒ no cuenta (re-arm)');
+  const we = enmienda(ISSUE, { id: 9311, min: 60 });
+  const wenm = mundo({ comentarios: [we, com(PR, '<!-- enmiendas-entregadas: 9311 -->', { min: 30 })] });
+  await correrEntrega(wenm);
+  check(rearms(wenm).length === 1, '348(d) `enmiendas-entregadas` no acusa enmiendas (solo disparos)');
+  // (d2) dos pings diferidos con Creator en vuelo, sin foto ⇒ ambos pendientes.
+  const w2 = mundo();
+  for (const id of [9401, 9402]) {
+    const ping = com(PR, '@claude haz otra cosa', { id, min: 3 });
+    w2.comentarios.push(ping);
+    await correrFlight(w2, { trigger: ping, runs: [777, 800] });
+  }
+  const p2 = ENM.pendientes(ENM.escanear(w2.comentarios)).disparos.map((d) => d.id);
+  check(p2.join(',') === '9401,9402', '348(d2) dos pings diferidos sin foto ⇒ los dos pendientes (un ping diferido no entrega al anterior)');
+  await correrEntrega(w2, { exec: EXEC_OK, disparosFoto: '' });
+  check(rearms(w2).length === 1 && /<!-- rearm-enmienda: 9401,9402 -->/.test(rearms(w2)[0].body), '348(d2) …y un único re-arm con ambos ids');
+  // (d3) foto + sesión success ⇒ entregadas, sin re-arm en el mismo step.
+  const w3 = mundo({ comentarios: [dis(9501, 60)] });
+  await correrEntrega(w3, { exec: EXEC_OK, disparosFoto: '9501' });
+  const ent = w3.creados.find((c) => /<!-- enmiendas-entregadas: 9501 -->/.test(c.body));
+  check(!!ent && ent.author_association === 'OWNER' && rearms(w3).length === 0, '348(d3) sesión `success` con `disparos_foto=[P1]` ⇒ publica `enmiendas-entregadas: P1` (PAT) y no lo re-arma en el mismo step');
+  await correrEntrega(w3, { runId: 778 });
+  check(rearms(w3).length === 0 && w3.creados.length === 1, '348(d3) el siguiente cierre tampoco lo re-entrega');
+  const w4 = mundo({ comentarios: [dis(9501, 60)] });
+  await correrEntrega(w4, { exec: EXEC_KO, disparosFoto: '9501' });
+  check(!w4.creados.some((c) => /enmiendas-entregadas/.test(c.body)) && rearms(w4).length === 1, '348(d3) sesión no `success` ⇒ no publica y P1 sigue pendiente (re-arm)');
+  const w5 = mundo({ comentarios: [dis(9501, 60), com(PR, '@claude\n<!-- rearm-enmienda: 9501 -->', { min: 50 })] });
+  await correrEntrega(w5, { exec: EXEC_OK, disparosFoto: '9501' });
+  check(w5.creados.length === 0, '348(d3) disparo de la foto ya entregado por re-arm ⇒ sin marcador redundante');
+}
+// ── central#348 (e) `check_flight` solo difiere pings ──
+{
+  const w = mundo();
+  const veredicto = com(PR, 'NITS\n\nEl Creator (`@claude`) dejó un typo; nota para @claude: nada más.', { id: 9601, min: 1 });
+  w.comentarios.push(veredicto);
+  const out = await correrFlight(w, { trigger: veredicto, runs: [777, 800] });
+  const c = w.comentarios.find((x) => x.user.login === 'github-actions[bot]');
+  check(out.blocked === 'true' && !!c && /<!-- disparo-sin-ping: 9601 -->/.test(c.body) && !/disparo-pendiente/.test(c.body) && /sin línea de ping|no tiene línea de ping/.test(c.body),
+    '348(e) evento sin línea de ping con Creator en vuelo ⇒ cede, `disparo-sin-ping`, sin `disparo-pendiente`');
+  await correrEntrega(w, { exec: EXEC_OK });
+  check(rearms(w).length === 0, '348(e) `disparo-sin-ping` es terminal: la entrega no lo re-arma');
+  const w2 = mundo();
+  const sent = com(PR, 'REVIEW\naplica X <!-- ping-creator -->', { id: 9602, min: 1 });
+  w2.comentarios.push(sent);
+  await correrFlight(w2, { trigger: sent, runs: [777, 800] });
+  check(w2.comentarios.some((x) => /<!-- disparo-pendiente: 9602 -->/.test(x.body)), '348(e) con el sentinel `ping-creator` ⇒ `disparo-pendiente` como hoy');
+  const w3 = mundo();
+  const cit = com(PR, 'Ojo:\n```\n@claude haz X\n```', { id: 9603, min: 1 });
+  w3.comentarios.push(cit);
+  await correrFlight(w3, { trigger: cit, runs: [777, 800] });
+  check(w3.comentarios.some((x) => /<!-- disparo-sin-ping: 9603 -->/.test(x.body)), '348(e) ping CITADO en bloque de código ⇒ no es ping (despojo)');
+  check(ENM.esPing('REVIEW\n@claude aplica <!-- ping-creator -->') && !ENM.esPing('cita a @claude en prosa'), '348(e) módulo: `esPing` coincide con el filtro');
 }
 // ── Costuras ──
 {
@@ -416,6 +562,10 @@ const VEREDICTO_LGTM = () => com(PR, 'LGTM\n\nTodo bien.', { min: 1 });
   const fl = porId(CC, 'check_flight').with.script;
   check(fl.includes(`[${[...ENM.TRUSTED].map((x) => `'${x}'`).join(', ')}]`), 'costura: el gate TRUSTED de `check_flight` es el de enmiendas.cjs');
   check(fl.includes(String(ENM.REARM_RUN_RE)), 'costura: el regex `rearm-enmienda-run` de `check_flight` es el de enmiendas.cjs');
+  check(fl.includes(String(ENM.PING_RE)), '348(f) costura: el regex de ping de `check_flight` es el `PING_RE` de enmiendas.cjs');
+  check(fl.includes(String(RCF.despojarCodigo)), '348(f) costura: `check_flight` lleva copia literal de `despojarCodigo` (resolve-cross-issue-failsafe.cjs)');
+  const en = porId(CC, 'entrega_enmiendas');
+  check(/steps\.foto_enmiendas\.outputs\.disparos_foto/.test(String(en.env && en.env.DISPAROS_FOTO)), '348 costura: la entrega recibe `disparos_foto` del step de foto');
   check(/^Entregar enmiendas y disparos diferidos/.test(porId(CC, 'entrega_enmiendas').name) && fl.includes('/^Entregar enmiendas y disparos diferidos/'),
     'costura: `check_flight` reconoce el step de entrega por su nombre real');
 }
