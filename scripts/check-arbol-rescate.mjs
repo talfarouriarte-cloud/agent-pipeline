@@ -7,13 +7,16 @@
 // Casos mínimos del ruling (punto 8):
 //  1. árbol sucio con PR ⇒ commit WIP + push + comentario con marcador +
 //     `estado:esperando-architect` + `stalled`;
-//  2. árbol sucio SOLO con rutas AP-097 ⇒ nada;
+//  2′. rutas AP-097 sucias con el contenido de la base (la reversión de la
+//     action) ⇒ nada (central#341 redefine el caso 2: ya no basta el nombre);
 //  3. rama virgen con árbol sucio ⇒ push SIN PR;
 //  4. fallo de push ⇒ comentario de error (sin el token) y step rojo.
 // Más: residual de solo commits sigue abriendo PR (central#46), rama fuera de
 // claude/* intacta, fallo tras el push (comentario/etiquetado) que dice «SÍ
 // está en la rama» y reintenta los labels, la foto pre-sesión (`arbol_pre`)
-// que resta la suciedad heredada, y las cesiones de Auto-label/turn-close-failsafe y de
+// que resta la suciedad heredada, el discriminador por blob de las rutas AP-097
+// (central#341: casos (a) igual a base, (b) edición de la sesión, (c) base
+// avanzada durante la sesión, (d) igual a la foto), y las cesiones de Auto-label/turn-close-failsafe y de
 // «Materializar muerte del Creator sin PR».
 //
 // Ejecuta el `run:` y los scripts EMBEBIDOS reales (no copias): el bash sobre
@@ -54,6 +57,8 @@ const check = (ok, msg) => { console.log(`${ok ? '  ok ' : '  ROJO'} ${msg}`); i
   const graft = all.findIndex(s => /graft-vendored/.test(s.uses || ''));
   check(graft >= 0 && idx(arbolPre) > graft && idx(arbolPre) < idx(byId('creator')) && arbolPre.env.PRE_SNAPSHOT === rescate.env.PRE_SNAPSHOT,
     'la foto pre-sesión (`arbol_pre`) va tras el graft y antes de la sesión, al mismo fichero que lee `rescate`');
+  check(arbolPre.env.RESTORE_REF_FILE && arbolPre.env.RESTORE_REF_FILE === rescate.env.RESTORE_REF_FILE && /inputs\.default_branch/.test(arbolPre.env.BASE || ''),
+    '`arbol_pre` fija `restore-ref` (base de la restauración) en el fichero que lee `rescate`');
   check(/steps\.rescate\.outputs\.wip != 'true'/.test(byName('Materializar review en la apertura del PR (open-review-failsafe)').if), 'open-review-failsafe cede con WIP rescatado');
   check(/secrets\.WORKFLOWS_PUSH_TOKEN \|\| secrets\.REVIEWER_GITHUB_TOKEN/.test(rescate.env.PUSH_TOKEN), 'token de push = WORKFLOWS_PUSH_TOKEN, si no REVIEWER_GITHUB_TOKEN (corre en consumidores)');
   check(!/git add (-A|\.|--all)/.test(rescate.run) && !/commit -a/.test(rescate.run), 'el rescate jamás usa `git add -A`/`.`/`commit -a`');
@@ -74,7 +79,7 @@ if [ "$1 $2" = "pr comment" ] && [ -n "\${FAKE_RESC_COMMENT_FAIL:-}" ] && printf
 exit 0
 `);
 chmodSync(join(tmp, 'bin', 'gh'), 0o755);
-sh('git init -q --bare -b main remote.git && git init -q -b main seed && cd seed && echo a > a.ts && printf "base\\n" > CLAUDE.md && echo "{}" > .mcp.json && git add . && git commit -qm init && git remote add origin ../remote.git && git push -q origin main');
+sh('git init -q --bare -b main remote.git && git init -q -b main seed && cd seed && echo a > a.ts && printf "base\\n" > CLAUDE.md && echo "{}" > .mcp.json && mkdir -p .claude/skills/x && echo skill-base > .claude/skills/x/SKILL.md && git add . && git commit -qm init && git remote add origin ../remote.git && git push -q origin main');
 
 let k = 0;
 // Prepara un clon en `branch`; `published` ⇒ la rama existe ya en el remoto.
@@ -84,13 +89,13 @@ function clone(branch, { published = true, remote = 'remote.git' } = {}) {
   if (published) sh(`cd ${wt} && git commit -q --allow-empty -m hito && git push -q origin ${branch}`);
   return join(tmp, wt);
 }
-function runRescate(wt, { pr = '', remote = 'remote.git', eventIssue = '', eventIsPr = 'false', eventPr = '', prFail = '', apiFail = '', commentFail = '', snapshot = '' } = {}) {
+function runRescate(wt, { pr = '', remote = 'remote.git', eventIssue = '', eventIsPr = 'false', eventPr = '', prFail = '', apiFail = '', commentFail = '', snapshot = '', restoreRef = '' } = {}) {
   const log = join(tmp, `gh-${k}.log`), out = join(tmp, `out-${k}`);
   writeFileSync(log, ''); writeFileSync(out, '');
   const env = { ...process.env, PATH: `${join(tmp, 'bin')}:${process.env.PATH}`, GH_LOG: log, FAKE_PR: pr,
     GITHUB_OUTPUT: out, GITHUB_REPOSITORY: 'o/r', GITHUB_RUN_ID: '777', GITHUB_SERVER_URL: 'https://github.com',
     PUSH_TOKEN: TOKEN, GH_TOKEN: 'pat', IN_DEFAULT_BRANCH: 'main', EVENT_ISSUE: eventIssue, EVENT_IS_PR: eventIsPr, EVENT_PR: eventPr, FAKE_PR_FAIL: prFail,
-    FAKE_API_FAIL: apiFail, FAKE_RESC_COMMENT_FAIL: commentFail, PRE_SNAPSHOT: snapshot,
+    FAKE_API_FAIL: apiFail, FAKE_RESC_COMMENT_FAIL: commentFail, PRE_SNAPSHOT: snapshot, RESTORE_REF_FILE: restoreRef,
     GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: `url.${join(tmp, remote)}.insteadOf`, GIT_CONFIG_VALUE_0: URL,
     GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
   for (const v of Object.keys(gitEnv)) delete env[v];
@@ -99,12 +104,13 @@ function runRescate(wt, { pr = '', remote = 'remote.git', eventIssue = '', event
   const outputs = Object.fromEntries(readFileSync(out, 'utf8').split('\n').filter(Boolean).map(l => l.split('=')));
   return { status: r.status, stdout: r.stdout, stderr: r.stderr, calls, outputs };
 }
-// Ejecuta el `run:` real de la foto pre-sesión en `wt`; devuelve la ruta de la foto.
+// Ejecuta el `run:` real de la foto pre-sesión en `wt` (incluye fijar
+// `restore-ref`); devuelve las rutas de la foto y de `restore-ref`.
 function foto(wt) {
-  const f = join(tmp, `foto-${k}.z`);
-  const r = spawnSync('bash', ['-c', arbolPre.run], { cwd: wt, env: { ...process.env, PRE_SNAPSHOT: f }, encoding: 'utf8' });
+  const f = join(tmp, `foto-${k}.z`), rr = join(tmp, `restore-ref-${k}`);
+  const r = spawnSync('bash', ['-c', arbolPre.run], { cwd: wt, env: { ...process.env, PRE_SNAPSHOT: f, RESTORE_REF_FILE: rr, BASE: 'main' }, encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`foto pre-sesión falló: ${r.stderr}`);
-  return f;
+  return { f, rr };
 }
 const remoteHead = (branch, remote = 'remote.git') => { try { return sh(`git --git-dir=${remote} log -1 --format=%s ${branch}`); } catch { return null; } };
 const remoteFiles = (branch, remote = 'remote.git') => sh(`git --git-dir=${remote} show --name-only --format= ${branch}`).split('\n').filter(Boolean).sort();
@@ -115,12 +121,14 @@ try {
   {
     const br = 'claude/issue-40-1';
     const wt = clone(br);
-    sh('echo b > a.ts && mkdir -p "dir" && echo n > "dir/b c.ts" && echo rev > CLAUDE.md && mkdir -p .claude && echo x > .claude/s.md && echo "{\\"x\\":1}" > .mcp.json && git add .mcp.json', wt);
+    // La rama del PR cambió CLAUDE.md y .mcp.json; la action los revierte a la base (staged y sin stagear).
+    sh('printf "pr\\n" > CLAUDE.md && echo "{\\"x\\":1}" > .mcp.json && git commit -qam "pr: config" && git push -q origin HEAD', wt);
+    sh('echo b > a.ts && mkdir -p "dir" && echo n > "dir/b c.ts" && git show origin/main:CLAUDE.md > CLAUDE.md && git checkout origin/main -- .mcp.json', wt);
     const r = runRescate(wt, { pr: '50' });
     check(r.status === 0, `(1) árbol sucio con PR ⇒ exit 0 (got ${r.status}: ${r.stderr.trim().split('\n').pop()})`);
     check(/^wip\(creator\): árbol sin pushear al cierre de la sesión — rescatado por estado \(run 777\)$/.test(remoteHead(br) || ''), '(1) commit WIP pusheado con el mensaje del ruling');
     check(JSON.stringify(remoteFiles(br)) === JSON.stringify(['a.ts', 'dir/b c.ts']), `(1) el WIP lleva SOLO rutas fuera de AP-097 (got ${remoteFiles(br)})`);
-    check(/M CLAUDE\.md/.test(sh('git status --porcelain', wt)) && /M  \.mcp\.json/.test(sh('git status --porcelain', wt)), '(1) CLAUDE.md y .mcp.json staged (AP-097) quedan fuera del commit');
+    check(/M CLAUDE\.md/.test(sh('git status --porcelain', wt)) && /M  \.mcp\.json/.test(sh('git status --porcelain', wt)), '(1) CLAUDE.md y .mcp.json (AP-097) revertidos a la base, staged o no, quedan fuera del commit');
     const com = has(r.calls, 'pr', 'comment', '50');
     check(com.length === 1 && /<!-- arbol-rescatado-por-estado -->/.test(com[0].join(' ')) && /dir\/b c\.ts/.test(com[0].join(' ')) && /no rehagas/.test(com[0].join(' ')), '(1) comentario en el PR con marcador, lista de ficheros y «no rehagas»');
     const lab = r.calls.filter(c => c[0] === 'api').map(c => c.join(' '));
@@ -128,14 +136,66 @@ try {
     check(!has(r.calls, 'pr', 'create').length, '(1) no se abre PR');
     check(r.outputs.wip === 'true' && r.outputs.pr === '50', '(1) outputs wip=true pr=50');
   }
-  // 2. Árbol sucio SOLO con rutas AP-097 (y sin commits residuales).
+  // 2′. Rutas AP-097 sucias CON EL CONTENIDO DE LA BASE: la reversión que hace
+  //     la action sobre un PR que las cambió (incluye borrar lo que la base no
+  //     tiene y un enlace simbólico nuevo) ⇒ nada.
   {
     const br = 'claude/issue-41-2';
     const wt = clone(br);
+    sh('printf "pr\\n" > CLAUDE.md && echo "{\\"x\\":2}" > .mcp.json && mkdir -p .claude && echo pr > .claude/solo-pr.md && git add . && git commit -qm "pr: config" && git push -q origin HEAD', wt);
     const before = remoteHead(br);
-    sh('echo rev > CLAUDE.md && echo l > CLAUDE.local.md && mkdir -p .claude .husky && echo x > .claude/s.md && echo h > .husky/pre-commit && echo r > .ripgreprc && echo "{}" > .claude.json && echo "[x]" > .gitmodules && echo "{\\"x\\":2}" > .mcp.json', wt);
-    const r = runRescate(wt, { pr: '51' });
-    check(r.status === 0 && r.calls.length === 0 && remoteHead(br) === before && r.outputs.wip === 'false', '(2) solo rutas AP-097 sucias ⇒ nada (sin commit, sin push, sin gh)');
+    const { f, rr } = foto(wt);
+    sh('git checkout origin/main -- CLAUDE.md .mcp.json && rm .claude/solo-pr.md && mkdir -p .husky && ln -s ../a.ts .husky/enlace', wt);
+    const r = runRescate(wt, { pr: '51', snapshot: f, restoreRef: rr });
+    check(r.status === 0 && r.calls.length === 0 && remoteHead(br) === before && r.outputs.wip === 'false', `(2′) rutas AP-097 con el blob de la base, borrado y enlace ⇒ nada (sin commit, sin push, sin gh) (got ${r.status}: ${r.stdout.trim().split('\n').pop()})`);
+    check(/AP-097 CLAUDE\.md: igual a base/.test(r.stdout) && /AP-097 \.claude\/solo-pr\.md: borrado o enlace/.test(r.stdout) && /AP-097 \.husky\/enlace: borrado o enlace/.test(r.stdout), '(2′) el log imprime la decisión de cada ruta AP-097');
+  }
+  // (a) `.claude/skills/x/SKILL.md` con el blob de la base (el PR lo cambió; la action lo restaura) ⇒ no rescatado.
+  {
+    const br = 'claude/issue-60-a';
+    const wt = clone(br);
+    sh('echo skill-pr > .claude/skills/x/SKILL.md && git commit -qam "pr: skill" && git push -q origin HEAD', wt);
+    const before = remoteHead(br);
+    const { f, rr } = foto(wt);
+    sh('echo skill-base > .claude/skills/x/SKILL.md', wt);
+    const r = runRescate(wt, { pr: '60', snapshot: f, restoreRef: rr });
+    check(r.status === 0 && r.calls.length === 0 && remoteHead(br) === before && /SKILL\.md: igual a base/.test(r.stdout), '(a) SKILL.md == blob de la base ⇒ no rescatado');
+  }
+  // (b) Edición de skill de la sesión (≠ base, ≠ restore-ref, sin entrada en la foto) ⇒ rescatada y listada.
+  {
+    const br = 'claude/issue-61-b';
+    const wt = clone(br);
+    const { f, rr } = foto(wt);
+    sh('echo skill-sesion > .claude/skills/x/SKILL.md && echo fix > a.ts && printf "base\\n" > CLAUDE.md', wt);
+    const r = runRescate(wt, { pr: '61', snapshot: f, restoreRef: rr });
+    check(r.status === 0 && JSON.stringify(remoteFiles(br)) === JSON.stringify(['.claude/skills/x/SKILL.md', 'a.ts']), `(b) SKILL.md editado por la sesión ⇒ entra en el WIP (got ${remoteFiles(br)})`);
+    const com = has(r.calls, 'pr', 'comment', '61');
+    check(com.length === 1 && /\.claude\/skills\/x\/SKILL\.md/.test(com[0].join(' ')) && /SKILL\.md: rescatada/.test(r.stdout), '(b) el comentario `arbol-rescatado-por-estado` lista la skill rescatada');
+  }
+  // (c) Base avanzada durante la sesión: `CLAUDE.md` cambia en main DESPUÉS de fijar restore-ref.
+  {
+    sh('git clone -q --bare remote.git remote-c.git');
+    const br = 'claude/issue-62-c';
+    const wt = clone(br, { remote: 'remote-c.git' });
+    sh('printf "pr\\n" > CLAUDE.md && git commit -qam "pr: claude" && git push -q origin HEAD', wt);
+    const before = remoteHead(br, 'remote-c.git');
+    const { f, rr } = foto(wt);
+    sh('git clone -q remote-c.git seed-c && cd seed-c && printf "base2\\n" > CLAUDE.md && git commit -qam avanza && git push -q origin main');
+    sh('git show "$(cat ' + rr + '):CLAUDE.md" > CLAUDE.md', wt);
+    const r1 = runRescate(wt, { pr: '62', remote: 'remote-c.git', snapshot: f, restoreRef: rr });
+    check(r1.status === 0 && r1.calls.length === 0 && remoteHead(br, 'remote-c.git') === before && /CLAUDE\.md: igual a base/.test(r1.stdout), '(c) CLAUDE.md == restore-ref con la base ya avanzada ⇒ no rescatado (reversión)');
+    sh('printf "base2\\n" > CLAUDE.md', wt);
+    const r2 = runRescate(wt, { pr: '62', remote: 'remote-c.git', snapshot: f, restoreRef: rr });
+    check(r2.status === 0 && r2.calls.length === 0 && remoteHead(br, 'remote-c.git') === before, '(c) CLAUDE.md == base nueva ⇒ tampoco');
+  }
+  // (d) `.claude/s.md` ya sucio ANTES de la sesión y sin tocar ⇒ la foto manda.
+  {
+    const br = 'claude/issue-63-d';
+    const wt = clone(br);
+    sh('mkdir -p .claude && echo heredado > .claude/s.md', wt);
+    const { f, rr } = foto(wt);
+    const r = runRescate(wt, { pr: '63', snapshot: f, restoreRef: rr });
+    check(r.status === 0 && r.calls.length === 0 && /s\.md: igual a foto/.test(r.stdout), '(d) ruta AP-097 idéntica a la foto pre-sesión ⇒ no rescatada');
   }
   // 3. Rama virgen con árbol sucio, sin PR.
   {
@@ -217,7 +277,7 @@ try {
     const br = 'claude/issue-49-11';
     const wt = clone(br);
     sh('echo g > residuo-graft.txt && echo pre > a.ts', wt);
-    const f = foto(wt);
+    const { f } = foto(wt);
     const quieto = runRescate(wt, { pr: '59', snapshot: f });
     check(quieto.status === 0 && quieto.calls.length === 0 && quieto.outputs.wip === 'false', '(11) solo suciedad idéntica a la foto pre-sesión ⇒ nada (sin WIP, sin re-arm)');
     sh('echo sesion > a.ts && echo n > nuevo.ts', wt);
