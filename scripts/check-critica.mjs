@@ -125,8 +125,10 @@ const arms = (w) => w.creados.filter((c) => C.esArm(c.body));
   check(E(['critica:lgtm'], '@claude', '').exento, 'exención: critica:lgtm');
   check(E(['auditoria'], '@claude', '').exento, 'exención: auditoría');
   check(E(['critica-na'], '@claude', '').exento, 'exención: critica-na');
-  check(E(['correctivo', 'epica'], '@claude', '<!-- correctivo-auditor -->\nEvidencia…').exento, 'exención: correctivo del Auditor (marcador en la 1.ª línea)');
-  check(!E(['correctivo', 'epica'], '@claude', 'Evidencia…\n<!-- correctivo-auditor -->').exento, 'sin exención: marcador fuera de la 1.ª línea (posicional)');
+  check(E(['correctivo', 'epica'], '@claude', '<!-- correctivo-auditor: #77 -->\nEvidencia… auditoría #77').exento, 'exención: correctivo del Auditor (`correctivo-auditor: #<panel>` en la 1.ª línea, literal del ruling)');
+  check(E(['correctivo', 'epica'], '@claude', '<!-- correctivo-auditor -->\nEvidencia…').exento, 'exención: correctivo-auditor sin número de panel también vale');
+  check(!E(['epica'], '@claude', '<!-- correctivo-auditor: #77 -->\nx').exento, 'sin exención: marcador sin label correctivo');
+  check(!E(['correctivo', 'epica'], '@claude', 'Evidencia…\n<!-- correctivo-auditor: #77 -->').exento, 'sin exención: marcador fuera de la 1.ª línea (posicional)');
   check(!E(['correctivo'], '@claude', 'Correctivo del Architect').exento, 'sin exención: correctivo sin marcador (caso #2933)');
   check(E(['epica'], '@claude\n<!-- epic-partial-relaunch -->', '').exento, 'exención: epic-partial-relaunch');
   check(E(['epica', 'critica:hallazgos'], '@claude\n<!-- epic-partial-relaunch-por-estado -->', '').exento, 'exención: variante epic-partial-relaunch-por-estado');
@@ -165,7 +167,7 @@ const arms = (w) => w.creados.filter((c) => C.esArm(c.body));
   check(o.blocked === 'true' && w.añadidas.includes('10:critica:pendiente') && /<!-- arm-retenido: manual -->/.test(w.creados[0]?.body || '') && /<!-- critica-gate -->/.test(w.creados[0]?.body || ''),
     'gate: ping sin crítica ⇒ retenido, critica:pendiente y arm-retenido: manual');
 
-  w = mundo({ issues: { 11: { labels: ['correctivo', 'epica'], body: '<!-- correctivo-auditor -->\nauditoría #9' } } });
+  w = mundo({ issues: { 11: { labels: ['correctivo', 'epica'], body: '<!-- correctivo-auditor: #9 -->\nauditoría #9' } } });
   o = await correrGate(w, 11, '@claude');
   check(o.blocked === 'false' && w.creados.length === 0, 'gate: correctivo con correctivo-auditor ⇒ exento');
 

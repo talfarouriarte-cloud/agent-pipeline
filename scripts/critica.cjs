@@ -34,7 +34,7 @@
 //    los eslabones que cubre la crítica).
 //  - `<!-- arm-reemitido: <origen> -->` (post-step, en el arm re-emitido: el
 //    contador de re-arms del Watchdog no lo cuenta — hallazgo G/D de la ronda 3).
-//  - `<!-- correctivo-auditor -->` (Auditor, PRIMERA línea del body del
+//  - `<!-- correctivo-auditor: #<panel> -->` (Auditor, PRIMERA línea del body del
 //    correctivo: lo exime del gate).
 
 // ── copia-gate:inicio ── (copia LITERAL en `check_critica` de claude-code.yml; el banco compara el texto)
@@ -56,10 +56,10 @@ const origenArm = (body) => {
   for (const m of CRITICA_REARM) if (new RegExp(`<!--\\s*${m}(?![\\w-])[^>]*-->`).test(t)) return m;
   return 'manual';
 };
-// Correctivo del Auditor: label `correctivo` + `<!-- correctivo-auditor -->` como
+// Correctivo del Auditor: label `correctivo` + `<!-- correctivo-auditor: #<panel> -->` como
 // PRIMERA línea no vacía del body (regla posicional AP-011).
 const esCorrectivoAuditor = (labels, issueBody) => labels.includes('correctivo')
-  && /^\s*<!--\s*correctivo-auditor\s*-->[ \t]*$/m.test((String(issueBody || '').split('\n').find((l) => l.trim()) || ''));
+  && /^\s*<!--\s*correctivo-auditor(?::\s*#?\d+)?\s*-->[ \t]*$/m.test((String(issueBody || '').split('\n').find((l) => l.trim()) || ''));
 // Exenciones del gate AP-116, en este orden (AP-128 pieza 2(c)). `exento`
 // ⇒ el arm continúa. Si no, `mecanico` dice si el arm entrante es un re-arm
 // mecánico retenido con la crítica en curso (no abre ronda).
