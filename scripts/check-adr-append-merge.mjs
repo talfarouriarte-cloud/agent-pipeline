@@ -11,9 +11,14 @@
 //   de la API cuyo `pulls.get` devuelve labels VIVAS distintas de las del scan.
 //   Además, (i) la costura del scan: el bloque PR-dirty entrega candidatos y ya
 //   no publica el ping él mismo.
+//   (j): el gate REAL de epic-merge (step «Evaluar y mergear») tras un merge
+//   mecánico: el LGTM anterior no cuenta, ni por label ni por el respaldo de
+//   comentarios de GATE 2 (review de #389 🔴).
+//   (k): la red por estado del scan: HEAD = merge mecánico sin marcador ⇒
+//   candidato `materializar` (review de #389 🟡).
 //
 // Cuelga del piggyback de `check-embedded-js.mjs`.
-import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, existsSync, symlinkSync } from 'fs';
 import { createRequire } from 'module';
 import { spawnSync } from 'child_process';
 import { tmpdir } from 'os';
@@ -220,6 +225,120 @@ await caso('(f9) marcador con el mismo sha ya presente ⇒ no-op total', async (
 await caso('(f10) el marcador append no cuenta para el tope de watchdog-rebase', async () =>
   !`<!-- watchdog-rebase-append: ${SHA} -->`.includes('<!-- watchdog-rebase -->') && !'<!-- watchdog-rebase-append-na: x -->'.includes('<!-- watchdog-rebase -->'));
 
+await caso('(f11) candidato `materializar` (red del scan) sin resultados ⇒ marcador del sha del HEAD, sin ping LLM', async () => {
+  const l = await iii({ cands: [{ ...C, materializar: SHA }], resultados: null, live: { labels: ['lgtm'] } });
+  const b = post(l);
+  return (b.length === 1 && b[0].includes(`<!-- watchdog-rebase-append: ${SHA} -->`) && !b[0].includes('<!-- watchdog-rebase -->')
+    && b[0].includes('Materialización tardía') && has(l, 'DELETE', '/issues/5/labels/lgtm') && addNR(l)) || j(l);
+});
+
+// ── (j) gate REAL de epic-merge tras un merge mecánico ──────────────────────
+const emWf = yaml.load(readFileSync('.github/workflows/epic-merge.yml', 'utf8'));
+let emStep = null;
+for (const job of Object.values(emWf.jobs || {})) for (const s of job.steps || []) if (s.name === 'Evaluar y mergear') emStep = s;
+if (!emStep) { console.error('check-adr-append-merge ROJO: step «Evaluar y mergear» no encontrado en epic-merge.yml'); process.exit(1); }
+const epicMerge = cargarStep(emStep.with.script, 'epic-merge');
+const EM_WS = mkdtempSync(join(tmpdir(), 'aam-em-'));
+symlinkSync(process.cwd(), join(EM_WS, '.epic-merge-central'));
+const REV = 'talfarouriarte-cloud';
+const T = min => new Date(Date.parse('2026-11-01T12:00:00Z') + min * 60000).toISOString();
+const SUBJ = `merge(registro): append-only de ${ADR} (watchdog, AP-130)`;
+const cm = (msg, min) => ({ sha: 's' + min, commit: { message: msg, committer: { date: T(min) } } });
+const vd = (v, min) => ({ id: min, body: `${v}\nok`, user: { login: REV }, created_at: T(min) });
+const marcaAppend = min => ({ id: 1000 + min, body: `**watchdog · merge append-only**\n\n<!-- watchdog-rebase-append: ${SHA} -->`, user: { login: REV }, created_at: T(min) });
+async function gateEM({ comments = [], commits = [], labels = ['lgtm', 'ci-verde'] } = {}) {
+  const w = { merged: false, diags: [] };
+  const pr = { number: 50, state: 'open', merged: false, draft: false, title: 'feat: algo', body: 'Refs #40', head: { ref: 'claude/issue-40-x', sha: 'h1' }, base: { ref: 'main', sha: 'b0' }, labels: labels.map(name => ({ name })) };
+  const conocidos = {
+    issues: {
+      get: async p => ({ data: p.issue_number === 40 ? { number: 40, state: 'open', title: 'Issue 40', body: '', labels: [{ name: 'epica' }] } : { number: p.issue_number, labels: [], body: '' } }),
+      listComments: async p => ({ data: p.issue_number === 50 ? comments : [] }),
+      createComment: async p => { w.diags.push(p.body); return { data: { id: 1 } }; },
+    },
+    pulls: {
+      get: async () => ({ data: { ...pr, mergeable_state: 'clean' } }),
+      listCommits: async () => ({ data: commits }),
+      merge: async () => { w.merged = true; return { data: {} }; },
+    },
+    users: { getAuthenticated: async () => ({ data: { login: REV } }) },
+  };
+  const vacio = async () => ({ data: [] });
+  const rest = new Proxy({}, { get: (_, ns) => new Proxy({}, { get: (_, m) => (conocidos[ns] && conocidos[ns][m]) || vacio }) });
+  const github = { rest, paginate: async (fn, p) => { const r = await fn(p); return Array.isArray(r.data) ? r.data : []; } };
+  const fetch = async (url, o) => { if (o && o.body) w.diags.push(String(o.body)); return { ok: true, status: 200, json: async () => ({}), text: async () => '' }; };
+  const core = { setOutput() {}, notice() {}, info: m => w.diags.push(String(m)), warning() {}, setFailed() {} };
+  await epicMerge({ github, context: { repo: { owner: 'o', repo: 'r' }, runId: 1, eventName: 'pull_request', payload: { action: 'labeled', label: { name: 'lgtm' }, pull_request: pr } }, core },
+    { env: { GITHUB_WORKSPACE: EM_WS, IN_AUTOMERGE: 'true', IN_EPIC_LABEL: 'epica', IN_CI_WORKFLOW_NAME: 'CI', STATUS_TOKEN: 'job', IN_LOOSE_AUDIT: 'false',
+      IN_PARTIAL_ROUND_CAP: '3', IN_PARTIAL_LIFETIME_CAP: '6', IN_DEFAULT_BRANCH: 'main' }, globales: { fetch } });
+  return w;
+}
+await caso('(j0) control: sin merge mecánico, label lgtm ⇒ mergea (el doble llega al merge)', async () => {
+  const w = await gateEM({ comments: [vd('LGTM', 0)], commits: [cm('feat', -5)] });
+  return w.merged || j(w);
+});
+await caso('(j0b) control: sin merge mecánico ni label, LGTM por comentario (respaldo de GATE 2) ⇒ mergea', async () => {
+  const w = await gateEM({ comments: [vd('LGTM', 0)], commits: [cm('feat', -5)], labels: ['ci-verde'] });
+  return w.merged || j(w);
+});
+await caso('(j1) merge mecánico + marcador, sin label, LGTM solo ANTERIOR (respaldo de GATE 2) ⇒ NO mergea', async () => {
+  const w = await gateEM({ comments: [vd('LGTM', 0), marcaAppend(11)], commits: [cm('feat', -5), cm(SUBJ, 10)], labels: ['ci-verde'] });
+  return !w.merged || j(w);
+});
+await caso('(j2) merge mecánico SIN marcador (iii no terminó), sin label, LGTM anterior ⇒ NO mergea', async () => {
+  const w = await gateEM({ comments: [vd('LGTM', 0)], commits: [cm('feat', -5), cm(SUBJ, 10)], labels: ['ci-verde'] });
+  return !w.merged || j(w);
+});
+await caso('(j3) label `lgtm` superviviente (DELETE fallido) con LGTM anterior al merge mecánico ⇒ NO mergea', async () => {
+  const w = await gateEM({ comments: [vd('LGTM', 0), marcaAppend(11)], commits: [cm(SUBJ, 10)] });
+  return !w.merged || j(w);
+});
+await caso('(j4) LGTM POSTERIOR al merge mecánico y al marcador ⇒ mergea', async () => {
+  const w = await gateEM({ comments: [vd('LGTM', 0), marcaAppend(11), vd('LGTM', 30)], commits: [cm(SUBJ, 10)] });
+  return w.merged || j(w);
+});
+await caso('(j5) REVIEW posterior al merge mecánico ⇒ NO mergea', async () => {
+  const w = await gateEM({ comments: [vd('LGTM', 0), marcaAppend(11), vd('REVIEW', 30)], commits: [cm(SUBJ, 10)], labels: ['ci-verde'] });
+  return !w.merged || j(w);
+});
+
+// ── (k) red por estado del scan ─────────────────────────────────────────────
+const scanRun = cargarStep(steps.find(s => s.id === 'scan').with.script, 'scan');
+const SC_WS = mkdtempSync(join(tmpdir(), 'aam-wd-'));
+symlinkSync(process.cwd(), join(SC_WS, '.cola-central'));
+async function scanRed({ msg, comments = [] }) {
+  const out = {};
+  const HEAD = 'feedbeef0000';
+  const pr = { number: 5, title: 'x', body: '', draft: false, head: { ref: HEAD_REF, sha: HEAD }, base: { ref: 'main' }, labels: [], created_at: T(-60), updated_at: T(-60), user: { login: 'claude[bot]' } };
+  const conocidos = {
+    pulls: { list: async () => ({ data: [pr] }), get: async () => ({ data: { ...pr, mergeable: true, mergeable_state: 'clean' } }) },
+    repos: { getCommit: async p => ({ data: { sha: p.ref, commit: { message: p.ref === HEAD ? msg : 'x', committer: { date: T(-30) } } } }) },
+    issues: { listComments: async p => ({ data: p.issue_number === 5 ? comments : [] }) },
+    actions: { listWorkflowRunsForRepo: async () => ({ data: { workflow_runs: [] } }), listJobsForWorkflowRun: async () => ({ data: { total_count: 0, jobs: [] } }) },
+  };
+  const vacio = async () => ({ data: [] });
+  const rest = new Proxy({}, { get: (_, ns) => new Proxy({}, { get: (_, m) => (conocidos[ns] && conocidos[ns][m]) || vacio }) });
+  const github = { rest, paginate: async (fn, p) => { const r = await fn(p); return Array.isArray(r.data) ? r.data : (r.data && (r.data.workflow_runs || r.data.items)) || []; } };
+  const fetch = async () => ({ ok: true, status: 200, json: async () => ([]), text: async () => '' });
+  const core = { setOutput: (k, v) => { out[k] = String(v); }, notice() {}, warning() {}, info() {} };
+  await scanRun({ github, context: { repo: { owner: 'o', repo: 'r' }, eventName: 'schedule', payload: {}, runId: 1 }, core },
+    { env: { GITHUB_WORKSPACE: SC_WS, STATUS_TOKEN: 'x', ARM_PAT: 'x', IN_CREATOR_WF: 'Claude Code', IN_REVIEWER_WF: 'Opus Reviewer', IN_CI_WF: 'CI',
+      IN_EPIC_MERGE_WF: 'Epic merge', IN_EXTRA_WFS: '', IN_LOOKBACK_MIN: '45', IN_SKIP_LABELS: 'human-needed,pause-agents', IN_AUTOMERGE: 'true', IN_DEFAULT_BRANCH: 'main' },
+      globales: { fetch } });
+  return { cands: JSON.parse(out.adr_append || 'null'), HEAD };
+}
+await caso('(k1) HEAD = merge mecánico sin marcador ⇒ candidato `materializar` con el sha del HEAD', async () => {
+  const { cands, HEAD } = await scanRed({ msg: `${SUBJ}\n` });
+  return (Array.isArray(cands) && cands.length === 1 && cands[0].number === 5 && cands[0].materializar === HEAD) || j(cands);
+});
+await caso('(k2) HEAD = merge mecánico CON su marcador ⇒ sin candidato', async () => {
+  const { cands } = await scanRed({ msg: SUBJ, comments: [{ body: '<!-- watchdog-rebase-append: feedbeef0000 -->', user: { login: REV }, created_at: T(-20) }] });
+  return (Array.isArray(cands) && cands.length === 0) || j(cands);
+});
+await caso('(k3) HEAD normal ⇒ sin candidato', async () => {
+  const { cands } = await scanRed({ msg: 'feat: algo' });
+  return (Array.isArray(cands) && cands.length === 0) || j(cands);
+});
+
 // ── (i) costura del scan y de los steps ─────────────────────────────────────
 await caso('(i) el modo PR-dirty entrega candidatos y no publica el ping; steps nuevos tras el scan', async () => {
   const scan = steps.find(s => s.id === 'scan').with.script;
@@ -231,7 +350,8 @@ await caso('(i) el modo PR-dirty entrega candidatos y no publica el ping; steps 
   const mg = steps[iMg] || {};
   return (dirty.includes('adrAppend.push(') && !dirty.includes('@claude') && /core\.setOutput\('adr_append', '\[\]'\)/.test(scan)
     && iScan < iCo && iCo < iMg && iMg < iMat && steps[iCo]['continue-on-error'] === true && mg['continue-on-error'] === true
-    && /^always\(\) && /.test(st.if) && /trap .*resultados=/.test(mg.run) && mg.run.includes('vendored/scripts/adr-append-merge.mjs'))
+    && /^always\(\) && /.test(st.if) && /trap .*resultados=/.test(mg.run) && mg.run.includes('vendored/scripts/adr-append-merge.mjs')
+    && mg.run.includes('if (!c.materializar)'))
     || j({ iScan, iCo, iMg, iMat });
 });
 
@@ -240,4 +360,4 @@ if (fallos.length) {
   for (const f of fallos) console.error('  - ' + f);
   process.exit(1);
 }
-console.log(`check-adr-append-merge verde: ${casos} casos sobre vendored/scripts/adr-append-merge.mjs y el step «Materializar rebase append-only» de watchdog.yml (AP-130).`);
+console.log(`check-adr-append-merge verde: ${casos} casos sobre vendored/scripts/adr-append-merge.mjs, el step «Materializar rebase append-only» y la red por estado del scan de watchdog.yml, y GATE 2 de epic-merge.yml (AP-130).`);
