@@ -127,7 +127,7 @@ Lo que **NO incluir**:
 - Justificación exhaustiva del cambio → va en el ADR (referenciar el ADR, no repetirlo).
 - Pseudo-código de cada línea → suficiente con interface/firma + descripción.
 
-## Enmiendas en vuelo: léelas al arrancar y acusa cada una (central#327)
+## Al arrancar: enmiendas en vuelo y hallazgos de crítica sin resolver (central#327, AP-128)
 
 Un humano o el Architect puede enmendar el encargo mientras trabajas, o antes de que tu eslabón se arme, con un comentario de confianza que lleva el marcador `enmienda` en línea propia (sobre el issue o sobre su PR, sin ping). Tu contexto NO ve el marcador: la action quita los comentarios HTML del prompt. Por eso el arranque es mecánico:
 
@@ -135,6 +135,7 @@ Un humano o el Architect puede enmendar el encargo mientras trabajas, o antes de
 2. **Aplica cada enmienda** como parte del encargo. Prevalece sobre el issue y sobre el ruling donde difieran, salvo que diga otra cosa.
 3. **Acusa CADA id SIEMPRE en un comentario NUEVO con `gh api`** (mismo canal que `pr-body-declarado`), **nunca en tu comentario de seguimiento**: ahí la action quita los comentarios HTML y el marcador se pierde (AP-028), así que el acuse no cuenta y el turno se re-arma NULO (central#348). Cada id en línea propia y como comentario HTML: `enmienda-aplicada: <id>`. Copia además esa misma línea, en línea propia, en el body del PR en cada `gh pr edit` **y dentro del bloque `pr-body-declarado`** si el body lo publica el post-step a partir de ese bloque: el body del PR también cuenta como acuse (mismo gate: `claude[bot]` o TRUSTED). Si no puedes o no debes aplicarla, usa `enmienda-rechazada: <id>` y explica el motivo en prosa. El post-step pasa entonces el turno al humano con `human-needed`. Sin acuse, la enmienda sigue pendiente: al acabar tu turno se re-arma (una vez por conjunto; tope 3 en 24 h por conjunto que se solapa con lo pendiente, no por ítem), un `LGTM` no cuenta y `epic-merge` no mergea.
 4. Un **re-arm** (`rearm-enmienda`) llega como ping normal y enlaza lo pendiente. Un **disparo diferido** es un ping que llegó con otro Creator tuyo en vuelo: el guard de vuelo único lo difirió en vez de descartarlo, y se entrega al cerrar el turno. Atiéndelo como cualquier ping. Solo se difieren pings (una línea que empieza por la mención de arm, o el sentinel `ping-creator`); un evento sin ping deja `disparo-sin-ping` y no se entrega. Si tu sesión termina `success`, los disparos que traía tu foto pre-sesión quedan entregados (`enmiendas-entregadas`) y no se re-arman (central#348).
+5. **Hallazgos de crítica sin resolver (AP-128, central#371).** Si tu arm es el de ronda 3 del Critic («Arm tras ronda 3 bloqueante», el issue lleva `critica-na`), ese comentario lista los hallazgos «(ronda 3, sin resolver)» y «(nuevo)», uno por línea. **Antes de tocar código** publica con `gh api` (no en tu comentario de seguimiento: ahí se pierde el HTML, AP-028) un comentario cuya primera línea sea `<!-- critica-leida -->` y, por hallazgo, una línea `[Letra] aplico` o `[Letra] no aplico: <por qué>`. Aplicar un hallazgo es ejecutarlo sin decidir diseño; si exige una decisión que el issue no toma, es «no aplico» con la decisión que falta, y sigues por resolver-protocol. Sin ronda 3-bis ni `human-needed`: la declaración es lo que la mensual mide.
 
 ## Decisiones de diseño a mitad de issue (resolver-protocol)
 

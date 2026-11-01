@@ -3,7 +3,7 @@
 
 ---
 name: talla-issue
-description: Rúbrica común de talla de un issue (S/M/L/XL = 1/2/4/8 puntos) con criterios anclados y 7 ejemplos calibrados de finplan. Leer SIEMPRE antes de publicar una talla pre o post (Auditor, AP-099) o de dimensionar un issue contra ella.
+description: Rúbrica común de talla de un issue (S/M/L/XL = 1/2/4/8 puntos) con criterios anclados y 7 ejemplos calibrados de finplan. Leer SIEMPRE antes de publicar una talla pre (Critic, AP-128) o post (Auditor, AP-099) o de dimensionar un issue contra ella.
 ---
 
 # talla-issue — rúbrica común de talla (AP-099, central#281)
@@ -77,12 +77,15 @@ finplan#2090 es de 1 línea y el de finplan#1847 de ~100, y la diferencia de
 talla viene de la DoD, los módulos y el test, no de las líneas;
 finplan#2101 es XL por la fórmula, no por sus 15 ficheros).
 
-## Talla pre y talla post (el Auditor, `epic-auditor.md`)
+## Talla pre (el Critic, `critic.md`) y talla post (el Auditor, `epic-auditor.md`)
 
 - **Talla pre**: con el issue tal como se escribió, ANTES de abrir su PR o
-  su diff. Mide lo PROMETIDO. No leas ninguna talla que otro actor haya
-  declarado: la independencia respecto del Architect consiste en que el
-  Auditor no copia su dimensionamiento.
+  su diff. Mide lo PROMETIDO. La carga el Critic en su LGTM o en la ronda 3
+  (AP-128, que la separa del Auditor); el Auditor solo la publica, con la
+  nota «pre tardía», para un issue del rango que no pasó por el Critic. No
+  leas ninguna talla que otro actor haya declarado: la independencia
+  respecto del Architect consiste en que quien la puntúa no copia su
+  dimensionamiento.
 - **Talla post**: la misma rúbrica sobre lo realmente MERGEADO — C1 cuenta
   solo los criterios de DoD que verificaste entregados; C2 los módulos que
   el diff tocó de verdad; C3–C5 lo que hace el código mergeado, no lo que el
