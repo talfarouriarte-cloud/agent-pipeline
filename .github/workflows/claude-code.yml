@@ -1854,8 +1854,12 @@ jobs:
                   [ -n "$RESTORE_REF$BASE_REF" ] || { echo "AP-097 $q: sin base verificable"; continue; }
                   h=$(hashof "$q")
                   if [ -n "${PRE[$q]+x}" ] && [ "${PRE[$q]}" = "$h" ]; then echo "AP-097 $q: igual a foto"; continue; fi
-                  if [ -n "$RESTORE_REF" ] && [ "$(blobof "$RESTORE_REF" "$q")" = "$h" ]; then echo "AP-097 $q: igual a base"; continue; fi
-                  if [ -n "$BASE_REF" ] && [ "$(blobof "$BASE_REF" "$q")" = "$h" ]; then echo "AP-097 $q: igual a base"; continue; fi
+                  # Contra la base, el hash FILTRADO (lo que `git add` almacenaría):
+                  # la restauración aplica el smudge (eol=crlf, encoding, LFS) y el
+                  # blob de la base es contenido ya limpio; crudo ≠ blob sin ser edición.
+                  hb=$(git hash-object --path="$q" -- "$q" 2>/dev/null || echo '?')
+                  if [ -n "$RESTORE_REF" ] && [ "$(blobof "$RESTORE_REF" "$q")" = "$hb" ]; then echo "AP-097 $q: igual a base"; continue; fi
+                  if [ -n "$BASE_REF" ] && [ "$(blobof "$BASE_REF" "$q")" = "$hb" ]; then echo "AP-097 $q: igual a base"; continue; fi
                   echo "AP-097 $q: rescatada"; FILES+=("$q"); continue;;
               esac
               if [ -n "${PRE[$q]+x}" ] && [ "${PRE[$q]}" = "$(hashof "$q")" ]; then PRESKIP=$((PRESKIP + 1)); continue; fi

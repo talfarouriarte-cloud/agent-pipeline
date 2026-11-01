@@ -16,7 +16,8 @@
 // está en la rama» y reintenta los labels, la foto pre-sesión (`arbol_pre`)
 // que resta la suciedad heredada, el discriminador por blob de las rutas AP-097
 // (central#341: casos (a) igual a base, (b) edición de la sesión, (c) base
-// avanzada durante la sesión, (d) igual a la foto), y las cesiones de Auto-label/turn-close-failsafe y de
+// avanzada durante la sesión, (d) igual a la foto, (e) conversión `eol=crlf`:
+// hash filtrado contra la base), y las cesiones de Auto-label/turn-close-failsafe y de
 // «Materializar muerte del Creator sin PR».
 //
 // Ejecuta el `run:` y los scripts EMBEBIDOS reales (no copias): el bash sobre
@@ -196,6 +197,23 @@ try {
     const { f, rr } = foto(wt);
     const r = runRescate(wt, { pr: '63', snapshot: f, restoreRef: rr });
     check(r.status === 0 && r.calls.length === 0 && /s\.md: igual a foto/.test(r.stdout), '(d) ruta AP-097 idéntica a la foto pre-sesión ⇒ no rescatada');
+  }
+  // (e) Consumidor con conversión (`eol=crlf`): la restauración aplica el smudge
+  //     (CRLF en el árbol) y el blob de la base es LF ⇒ igual a base por el hash
+  //     filtrado, no rescatado; una edición de la sesión con la misma conversión, sí.
+  {
+    const br = 'claude/issue-64-e';
+    const wt = clone(br);
+    sh('printf "CLAUDE.md text eol=crlf\\n.claude/** text eol=crlf\\n" > .git/info/attributes && printf "pr\\n" > CLAUDE.md && git commit -qam "pr: claude" && git push -q origin HEAD', wt);
+    const before = remoteHead(br);
+    const { f, rr } = foto(wt);
+    sh('git checkout origin/main -- CLAUDE.md', wt);
+    const r = runRescate(wt, { pr: '64', snapshot: f, restoreRef: rr });
+    check(/\r\n$/.test(readFileSync(join(wt, 'CLAUDE.md'), 'utf8')) && r.status === 0 && r.calls.length === 0 && remoteHead(br) === before && /CLAUDE\.md: igual a base/.test(r.stdout),
+      `(e) CLAUDE.md restaurado con CRLF (eol=crlf) ⇒ igual a base, no rescatado (got ${r.status}: ${r.stdout.trim().split('\n').pop()})`);
+    sh('echo skill-sesion > .claude/skills/x/SKILL.md', wt);
+    const r2 = runRescate(wt, { pr: '64', snapshot: f, restoreRef: rr });
+    check(r2.status === 0 && JSON.stringify(remoteFiles(br)) === JSON.stringify(['.claude/skills/x/SKILL.md']), `(e) edición de la sesión con eol=crlf ⇒ rescatada sola (got ${remoteFiles(br)})`);
   }
   // 3. Rama virgen con árbol sucio, sin PR.
   {
