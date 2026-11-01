@@ -96,6 +96,15 @@ La revisión mensual **decide TODO de una vez** y deja la cola montada; no hay �
 
 Al arrancar la siguiente mensual: primero el estado de la cola anterior (qué se mergeó, qué criterio falsable venció y con qué resultado), después las nuevas. Una propuesta nueva del mismo eje que una `mensual:aprobada` pendiente se funde en ella, no abre otra.
 
+### Crítica de los rulings y vigilancia de la cola (AP-121, 2026-11-01)
+
+El ruling es la especificación que ejecuta el Creator del central, con automerge y blast radius de flota: pasa por el Critic como cualquier issue de consumidor, **antes del arm y con el Architect aún en el loop**. Secuencia, tras el OK del propietario a la propuesta de la mensual:
+
+1. Publicas los rulings (todos, de una vez) y pones `critica:pendiente` en cada `mensual:aprobada`. `self-critic.yml` critica cada uno en paralelo (un run por issue), también con PRs de la cola anterior abiertos; el Critic nunca arma un `mensual:aprobada` (critic.md § 4).
+2. **Sigues la crítica hasta que todos tengan `critica:lgtm`**: vigilancia por labels cada 5 min (`gh issue list --label mensual:aprobada` y las `critica:*`). Un `critica:hallazgos` lo atiendes tú: corriges el ruling (comentario nuevo que empieza por «Ruling de la revisión mensual … (corregido tras crítica ronda N)», el ruling vigente es el último) y vuelves a poner `critica:pendiente`. Tope de 3 rondas (AP-119): en la 3.ª bloqueante el Critic pone `critica-na` y el ruling se arma igual, con los hallazgos como rastro.
+3. `self-mensual-queue.yml` solo arma rulings con `critica:lgtm`/`critica-na`, por posición, uno en vuelo; se dispara también con el LGTM del Critic, así que la cabeza de la cola arranca sin esperar a un merge.
+4. **Con PRs en vuelo, vigilancia cada 30 min** hasta vaciar la cola: `stalled`/`human-needed` en los issues y PRs del central, PR sin Reviewer, CI rojo, serie ocupada sin PR. Desbloqueas tú (re-arm, enmienda en vuelo, ruling de resolve); solo escalas al propietario lo que no puedas decidir dentro del ruling.
+
 ### Función objetivo de la revisión mensual (AP-099, central#281, 2026-09-30)
 
 Criterio con el que se decide cada propuesta de la cola. Tres términos, y no pesan igual:

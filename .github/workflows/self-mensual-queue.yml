@@ -5,18 +5,29 @@
 # Solo arma lo APROBADO en la revisión mensual: la cola se detiene sola cuando
 # no queda ninguna con la label. El arm lo publica el PAT (actor humano; el
 # token default no dispara workflows). El merge sigue siendo humano.
+# AP-121 (2026-11-01): solo se arma un ruling CRITICADO (`critica:lgtm`, o
+# `critica-na` como override humano); los demás esperan al Critic. El LGTM del
+# Critic sobre un `mensual:aprobada` también dispara este workflow, para que la
+# cabeza de la cola no espere a un merge que no va a llegar.
 name: Cola mensual
 on:
   pull_request:
     types: [closed]
     branches: [main]
+  issues:
+    types: [labeled]
   workflow_dispatch:
 permissions:
   issues: write
   pull-requests: read
 jobs:
   next:
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    if: |
+      github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
+      || (github.event_name == 'issues'
+          && (github.event.label.name == 'critica:lgtm' || github.event.label.name == 'critica-na')
+          && contains(github.event.issue.labels.*.name, 'mensual:aprobada'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v7
@@ -55,8 +66,14 @@ jobs:
               issues = issues.filter(i => i.number !== n);
             }
             if (!issues.length) { core.notice('cola mensual: vacía — nada que armar.'); return; }
+            // AP-121: sin crítica no se arma. Las que esperan al Critic se listan
+            // y no cuentan como «en vuelo» ni como cabeza de cola.
+            const criticada = i => (i.labels || []).some(l => ['critica:lgtm', 'critica-na'].includes(l.name));
+            const esperando = issues.filter(i => !criticada(i));
+            if (esperando.length) core.notice(`cola mensual: #${esperando.map(i => i.number).join(', #')} sin crítica (critica:lgtm/critica-na) — no se arman.`);
             const info = [];
             for (const i of issues) {
+              if (!criticada(i)) continue;
               const { data: cs } = await github.rest.issues.listComments({ owner, repo, issue_number: i.number, per_page: 100 });
               const all = cs.map(c => c.body || '').join('\n');
               const m = /<!--\s*cola-mensual:\s*(\d+)\s*-->/.exec(all);
@@ -64,6 +81,7 @@ jobs:
             }
             const inflight = info.filter(x => x.armed);
             if (inflight.length) { core.notice(`cola mensual: #${inflight.map(x => x.n).join(', #')} en vuelo — no se arma otra.`); return; }
+            if (!info.length) { core.notice('cola mensual: ninguna aprobada con crítica — nada que armar todavía.'); return; }
             info.sort((a, b) => a.pos - b.pos || a.n - b.n);
             const next = info[0];
             const body = [

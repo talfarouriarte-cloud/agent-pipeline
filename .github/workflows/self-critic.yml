@@ -1,0 +1,26 @@
+# STUB del CENTRAL (AP-121, 2026-11-01): el Critic critica los RULINGS de la
+# cola mensual antes de que la cola los arme. El Architect del central publica
+# cada ruling y pone `critica:pendiente`; el Critic critica (en paralelo, un
+# run por issue) y con LGTM pone `critica:lgtm` SIN armar (critic.md § 4,
+# excepción `mensual:aprobada`): el arm lo hace `self-mensual-queue.yml` por
+# posición. Los hallazgos los atiende el Architect del central (sesión de chat)
+# corrigiendo el ruling y re-poniendo `critica:pendiente`.
+name: Critic
+on:
+  issues:
+    types: [labeled]
+permissions:
+  contents: read
+  issues: write
+concurrency:
+  group: critic-${{ github.event.issue.number }}
+  cancel-in-progress: false
+jobs:
+  call:
+    uses: talfarouriarte-cloud/agent-pipeline/.github/workflows/critic.yml@main
+    with:
+      runner: ubuntu-latest
+      default_branch: main
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      REVIEWER_GITHUB_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
