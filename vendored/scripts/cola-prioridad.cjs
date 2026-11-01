@@ -81,8 +81,21 @@ function ordenarCola(items, suspendidos) {
 // suspensión (los urgentes ya son nivel 1: leerlos no cambiaría nada). Un
 // fallo de lectura degrada ESE ítem a su nivel por labels (nunca bloquea la
 // cola: el peor caso es el FIFO de antes).
+// AP-126 (central#375/#338): ANTES de ordenar, `sinDependenciasAbiertas` saca
+// del array a los candidatos con una dependencia `depende-de` abierta o con
+// `pause-agents` (se saltan, no se reordenan: siguen `en-cola`). Cada ítem
+// devuelto lleva `saltados` (la misma lista en todos) para que `describir`
+// los cite en el comentario de arm. Todos saltados ⇒ `[]` y la lista por
+// `warn` (único canal del módulo).
 async function ordenarConSuspension({ github, owner, repo, items, warn }) {
-  const issues = (items || []).filter((i) => i && !i.pull_request);
+  const filtro = await sinDependenciasAbiertas({ github, owner, repo, items, warn });
+  const issues = filtro.items;
+  const { saltados } = filtro;
+  if (!issues.length && saltados.length && warn) {
+    warn(`cola: ${saltados.length} candidatos saltados — ${saltados.map((x) => (x.motivo === PAUSE_AGENTS
+      ? `#${x.number} (${PAUSE_AGENTS})`
+      : `#${x.number} (depende de ${x.dependeDe.map((n) => `#${n}`).join(', ')})`)).join(', ')}`);
+  }
   const suspendidos = new Set();
   for (const i of issues) {
     if (nombresLabels(i).includes(URGENTE)) continue;
@@ -93,7 +106,7 @@ async function ordenarConSuspension({ github, owner, repo, items, warn }) {
       if (warn) warn(`cola-prioridad: comentarios de #${i.number} ilegibles (${e.message}) — se ordena por sus labels.`);
     }
   }
-  return ordenarCola(issues, suspendidos);
+  return ordenarCola(issues, suspendidos).map((i) => ({ ...i, saltados }));
 }
 
 // Lectura de la cola completa (la de los cuatro puntos): `per_page` 100, no 5 —
@@ -124,8 +137,12 @@ function cuerpoSuspension({ siguiente, urgente, origen, origenNum }) {
 // que comentario: si el comentario falla, #N queda en cola como normal (vivo,
 // solo peor ordenado), nunca perdido. Los errores se propagan: el llamante
 // decide (hoy: aviso y arm por la cadena, el comportamiento de antes).
-async function cederEslabon({ github, owner, repo, siguiente, origen, origenNum }) {
-  const urg = urgenteParaCeder(await leerCola({ github, owner, repo }), siguiente);
+// AP-126: la cola se filtra con `sinDependenciasAbiertas` antes de elegir la
+// urgente — una urgente con dependencia abierta o con `pause-agents` no
+// provoca suspensión (los pops la saltarían: suspensión espuria). `warn`
+// opcional (sin él, el aviso de lectura fallida se descarta).
+async function cederEslabon({ github, owner, repo, siguiente, origen, origenNum, warn }) {
+  const urg = urgenteParaCeder((await sinDependenciasAbiertas({ github, owner, repo, items: await leerCola({ github, owner, repo }), warn })).items, siguiente);
   if (!urg) return null;
   await github.rest.issues.addLabels({ owner, repo, issue_number: Number(siguiente), labels: [EN_COLA] });
   await github.rest.issues.createComment({ owner, repo, issue_number: Number(siguiente),
@@ -231,6 +248,122 @@ async function retenerArm({ github, owner, repo, issue, cadena, pausa, comentari
   return true;
 }
 
+// ── Dependencias entre issues sueltos y pausa POR ÍTEM (AP-126, central#375,
+// funde #338; ruling mensual 2026-11-01, posición 5). La dependencia se
+// declara en el BODY del issue con `<!-- depende-de: #N -->`, en línea propia
+// y fuera de código (misma lectura que `eslabon-suspendido`); varias, una por
+// línea (se tolera `#N, #M` en una). Una dependencia está ABIERTA si y solo si
+// `issues.get(N).state === 'open'` (issue o PR: un PR cerrado sin merge o un
+// issue `not_planned` cuentan como cerrados; para mantener el bloqueo, el
+// Architect re-apunta el marcador). El salto es por ESTADO, no por marcador:
+// nada lo retira al cerrarse #N. Lectura fallida ⇒ FAIL-OPEN por dependencia
+// (cerrada + `warn`): la cola nunca se bloquea por un 5xx; el guard serial
+// (`retenerPorDependencia`) hace su propia lectura como cinturón.
+const PAUSE_AGENTS = 'pause-agents';
+const DEPENDE_RE = /^[ \t]*<!--\s*depende-de:\s*(#?\d+(?:\s*,\s*#?\d+)*)\s*-->[ \t]*$/gm;
+// Rastro del guard serial, con las dependencias abiertas: `<!-- depende-de-retenido: #N -->`
+// (`#N, #M` si son varias). Al leer, la lista es opcional.
+const marcaRetenidoDependencia = (abiertas) => ((abiertas || []).length
+  ? `<!-- depende-de-retenido: ${abiertas.map((n) => `#${n}`).join(', ')} -->`
+  : '<!-- depende-de-retenido -->');
+const RETENIDO_DEP_RE = /^[ \t]*<!--\s*depende-de-retenido(?::\s*#?\d+(?:\s*,\s*#?\d+)*)?\s*-->[ \t]*$/m;
+
+// Números declarados con `depende-de` en un body (sin duplicados ni el propio).
+function dependenciasDeclaradas(body, propio) {
+  const out = [];
+  for (const mt of despojarCodigo(body || '').matchAll(DEPENDE_RE)) {
+    for (const n of mt[1].split(',').map((x) => Number(x.trim().replace(/^#/, '')))) {
+      if (n > 0 && n !== Number(propio) && !out.includes(n)) out.push(n);
+    }
+  }
+  return out;
+}
+
+// Las dependencias ABIERTAS de un issue. `cache`: Map número→abierta, para
+// leer cada #N una sola vez por llamada.
+async function dependenciasAbiertas({ github, owner, repo, issue, warn, cache }) {
+  const memo = cache || new Map();
+  const abiertas = [];
+  for (const n of dependenciasDeclaradas(issue && issue.body, issue && issue.number)) {
+    if (!memo.has(n)) {
+      try {
+        const { data } = await github.rest.issues.get({ owner, repo, issue_number: n });
+        memo.set(n, data.state === 'open');
+      } catch (e) {
+        if (warn) warn(`cola-prioridad: dependencia #${n} de #${issue.number} ilegible (${e.message}) — fail-open: cuenta como cerrada.`);
+        memo.set(n, false);
+      }
+    }
+    if (memo.get(n)) abiertas.push(n);
+  }
+  return abiertas;
+}
+
+// Filtro de candidatos de la cola: fuera los que tienen alguna dependencia
+// abierta o la label `pause-agents` (la pausa por ítem es del humano; al
+// retirarla, la cola lo arma por su orden). `pausa-cola` NO se mira aquí: es
+// el interruptor GLOBAL y los puntos de cola lo leen antes de llegar al orden.
+async function sinDependenciasAbiertas({ github, owner, repo, items, warn }) {
+  const cache = new Map();
+  const keep = [];
+  const saltados = [];
+  for (const i of (items || []).filter((x) => x && !x.pull_request)) {
+    if (nombresLabels(i).includes(PAUSE_AGENTS)) { saltados.push({ number: i.number, motivo: PAUSE_AGENTS, dependeDe: [] }); continue; }
+    const abiertas = await dependenciasAbiertas({ github, owner, repo, issue: i, warn, cache });
+    if (abiertas.length) { saltados.push({ number: i.number, motivo: 'depende-de', dependeDe: abiertas }); continue; }
+    keep.push(i);
+  }
+  return { items: keep, saltados };
+}
+
+const describirSaltados = (saltados) => (saltados || []).map((x) => (x.motivo === PAUSE_AGENTS
+  ? `#${x.number} (${PAUSE_AGENTS})`
+  : `#${x.number} (depende de ${x.dependeDe.map((n) => `#${n}`).join(', ')} abierto)`)).join(', ');
+
+// Guard serial del Creator (ruling, pieza 3): un arm desde ISSUE cuyo body
+// declara una dependencia ABIERTA no arranca sesión; el issue queda `en-cola`
+// con `<!-- depende-de-retenido: #N -->` (UNA vez por episodio: retenido posterior
+// al último `arm-de-cola`), sin `stalled` y sin tocar `serial-activo`. Calcada
+// de `retenerArm`, incluido `cadena`: un re-arm de cadena retenido lleva además
+// `eslabon-suspendido`, para que su salida por `arm-de-cola` conserve la
+// exención de los guards de cadena y de panel (crítica ronda 3, central#375).
+// Pasa sin retener el trabajo EN VUELO: `serial-activo` o PR
+// `claude/issue-N-*` abierto (o `pulls.list` fallida: en vuelo desconocido,
+// decide el guard serial). `comentarios` opcional (si falta, se leen; si la
+// lectura falla, sin dedup). Devuelve { retenido, abiertas, comentado, motivo }.
+async function retenerPorDependencia({ github, owner, repo, issue, cadena, comentarios, warn }) {
+  if (!issue || !dependenciasDeclaradas(issue.body, issue.number).length) return { retenido: false, abiertas: [], comentado: false, motivo: 'sin depende-de' };
+  if (nombresLabels(issue).includes('serial-activo')) return { retenido: false, abiertas: [], comentado: false, motivo: 'en vuelo (serial-activo)' };
+  try {
+    const { data: prs } = await github.rest.pulls.list({ owner, repo, state: 'open', per_page: 100 });
+    const propio = (prs || []).find((p) => ((p.head && p.head.ref) || '').startsWith(`claude/issue-${issue.number}-`));
+    if (propio) return { retenido: false, abiertas: [], comentado: false, motivo: `en vuelo (PR #${propio.number} abierto)` };
+  } catch (e) {
+    if (warn) warn(`depende-de: pulls.list falló (${e.message}); en vuelo desconocido, pasa al guard serial.`);
+    return { retenido: false, abiertas: [], comentado: false, motivo: 'en vuelo desconocido' };
+  }
+  const abiertas = await dependenciasAbiertas({ github, owner, repo, issue, warn });
+  if (!abiertas.length) return { retenido: false, abiertas, comentado: false, motivo: 'dependencias cerradas' };
+  await github.rest.issues.addLabels({ owner, repo, issue_number: Number(issue.number), labels: [EN_COLA] });
+  let cs = comentarios;
+  if (!cs) {
+    try { cs = (await github.rest.issues.listComments({ owner, repo, issue_number: Number(issue.number), per_page: 100 })).data; }
+    catch (e) { if (warn) warn(`depende-de: comentarios de #${issue.number} ilegibles (${e.message}); sin dedup.`); cs = []; }
+  }
+  let ultimoArmCola = -1;
+  let ultimoRetenido = -1;
+  (cs || []).forEach((c, i) => {
+    if (!c) return;
+    if (ARM_DE_COLA_RE.test(c.body || '')) ultimoArmCola = i;
+    if (TRUSTED.has(c.author_association) && RETENIDO_DEP_RE.test(despojarCodigo(c.body))) ultimoRetenido = i;
+  });
+  if (ultimoRetenido > ultimoArmCola) return { retenido: true, abiertas, comentado: false, motivo: 'ya retenido en este episodio' };
+  const lista = abiertas.map((n) => `#${n}`).join(', ');
+  await github.rest.issues.createComment({ owner, repo, issue_number: Number(issue.number),
+    body: `**claude-code · dependencia abierta** (central#375): el body de este issue declara \`depende-de\` y sigue abierto: ${lista}. Este arm NO arranca sesión y el issue queda \`${EN_COLA}\` (sin \`stalled\`): la cola lo salta mientras la dependencia siga abierta y lo arma sola, por su orden, cuando se cierre. Si la dependencia ya no aplica, re-apunta o retira el marcador del body.\n\n${marcaRetenidoDependencia(abiertas)}${cadena ? `\n${marcaSuspendido()}` : ''}` });
+  return { retenido: true, abiertas, comentado: true, motivo: `depende de ${lista} abierto` };
+}
+
 // Barrido de LIBERACIÓN del Watchdog (ruling, punto 6): determinista, sin LLM.
 // Arma la cabeza de la cola (orden de central#313) con el `arm-de-cola` normal
 // SOLO con identificación positiva de: pausa LEÍDA y ausente (consulta
@@ -266,9 +399,11 @@ async function liberarCola({ github, owner, repo, armar, warn, ahora }) {
 }
 
 // Texto de la razón de un arm de cola según el nivel del elegido.
+// AP-126: con candidatos saltados (dependencia abierta, `pause-agents`), los lista.
 function describir(issue) {
   if (!issue || !issue.nivelCola) return 'Eras el más antiguo en `en-cola`.';
-  return `Eras el primero de \`en-cola\` (nivel ${issue.nivelCola}: ${NIVELES[issue.nivelCola]}; orden urgente → eslabón suspendido → alta → normal, por antigüedad dentro de cada nivel).`;
+  const sal = (issue.saltados && issue.saltados.length) ? ` Saltados: ${describirSaltados(issue.saltados)}.` : '';
+  return `Eras el primero de \`en-cola\` (nivel ${issue.nivelCola}: ${NIVELES[issue.nivelCola]}; orden urgente → eslabón suspendido → alta → normal, por antigüedad dentro de cada nivel).${sal}`;
 }
 
 module.exports = {
@@ -277,4 +412,6 @@ module.exports = {
   urgenteParaCeder, cuerpoSuspension, cederEslabon, yaSuspendido, describir,
   PAUSA, RETENIDO_RE, marcaRetenido, leerPausa, describirPausa, esRetenido,
   retenerEslabon, retenerArm, liberarCola,
+  PAUSE_AGENTS, DEPENDE_RE, RETENIDO_DEP_RE, marcaRetenidoDependencia, dependenciasDeclaradas,
+  dependenciasAbiertas, sinDependenciasAbiertas, describirSaltados, retenerPorDependencia,
 };

@@ -33,6 +33,7 @@ Sirve para corregir o ampliar un encargo mientras el Creator trabaja en él, o a
 - **El perdedor de un arranque cruzado queda `en-cola`** (marcador `serial-toctou-cruzado`, AP-122): no hace falta re-armarlo, lo arma el pop de cola cuando la serie quede libre.
 - **`pausa-cola`** en cualquier issue abierto: la serie no arma nada nuevo y lo que está en vuelo termina. Al quitarla, la cola sigue sola (AP-103). La pone y la quita el humano.
 - **`pause-agents`** es por ítem y solo actúa AL ARRANCAR un run: no mata una sesión en vuelo. En un PR va en el PR, no en el issue. Sirve de hold de intervención: ponla, espera a que acaben los runs del ítem, escribe y quítala con un único disparo explícito. Para corregir un encargo en vuelo, la herramienta preferente es la enmienda (§ 1).
+- **`depende-de`.** Toda dependencia entre issues sueltos se declara en el body con `<!-- depende-de: #N -->` (línea propia, una por dependencia) además de la prosa: la cola salta al dependiente mientras #N esté abierto, la cesión a urgente lo ignora, y el guard serial retiene cualquier arm suyo (`en-cola`, sin `stalled`). La prosa no ordena la cola. Si #N se cierra sin resolver la dependencia (PR cerrado sin merge, `not_planned`), cuenta como cerrada: re-apunta el marcador. `pause-agents` en un issue `en-cola` también lo salta (AP-126).
 - **`serial-ok`** en el issue: override del hard stop serial. Arma aunque haya otro Creator en vuelo, bajo responsabilidad del que la pone.
 
 ## 3. Armar y pingar

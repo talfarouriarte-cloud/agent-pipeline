@@ -195,6 +195,15 @@ jobs:
 
       # Kill-switch: si el issue/PR tiene la label `pause-agents`,
       # aborta sin correr el agente. ADR-063.
+      # AP-126 (central#338, fundido en #375): cinturón del aborto que entra
+      # por `arm-de-cola` — el pop ya retiró `en-cola`; sin devolverla, el
+      # issue quedaba sin cola, sin sesión y fuera del radar del Watchdog. Se
+      # DEVUELVE `en-cola` con un rastro `pause-agents-devuelto-a-cola`, y NO
+      # hay pop: AP-062 §3-ter prohíbe armar desde una parada (el pop llega por
+      # el barrido de cierre del siguiente job o por `liberarCola`). Con el
+      # filtro `pause-agents` del selector (`sinDependenciasAbiertas`) solo se
+      # alcanza si el módulo no cargó o en la carrera label↔pop. Token default
+      # del job: su comentario no dispara nada, que es lo que se quiere.
       - name: Check pause-agents kill-switch
         id: check_pause
         uses: actions/github-script@v7
@@ -206,6 +215,17 @@ jobs:
             const paused = labels.some(l => l.name === 'pause-agents');
             if (paused) {
               core.notice('Label `pause-agents` presente. Abortando Creator.');
+              const issueN = context.payload.issue?.number;
+              if (context.eventName === 'issue_comment' && issueN && !context.payload.issue.pull_request
+                && /<!--\s*arm-de-cola\s*-->/.test(context.payload.comment?.body || '')) {
+                try {
+                  const { owner, repo } = context.repo;
+                  await github.rest.issues.addLabels({ owner, repo, issue_number: issueN, labels: ['en-cola'] });
+                  await github.rest.issues.createComment({ owner, repo, issue_number: issueN,
+                    body: 'kill-switch: `pause-agents` presente al salir de la cola — `en-cola` devuelta (sin pop; la cola lo arma por su orden al retirar la pausa). <!-- pause-agents-devuelto-a-cola -->' });
+                  core.notice(`#${issueN}: aborto por pause-agents entrando por arm-de-cola — en-cola devuelta (AP-126).`);
+                } catch (e) { core.warning(`kill-switch: no pude devolver en-cola a #${issueN} (${e.message}).`); }
+              }
             }
             core.setOutput('paused', paused);
 
@@ -824,15 +844,16 @@ jobs:
             // bloqueada (asesoramiento-financiero#2706 por la auditoría #2732).
             // Exento: (i) el arm de la cola (`<!-- arm-de-cola -->` en el
             // armBody); (ii) un issue con comentario de confianza `arm-de-cola`
-            // POSTERIOR a su encolado (marcador de confianza `serial-guard` o
-            // `pausa-cola-retenido`, escritos tras pasar este guard) — cubre el
+            // POSTERIOR a su encolado (marcador de confianza `serial-guard`,
+            // `pausa-cola-retenido` o `depende-de-retenido` (AP-126), escritos
+            // tras pasar este guard) — cubre el
             // `watchdog-rearm` y los re-arms de architect-resolve de un issue
             // que ya salió de la cola. Mismo patrón de lectura TRUSTED que
             // `isResumption`, sobre la misma lectura `issueComments`. Hueco
             // transitorio ACEPTADO: los encolados previos a este despliegue
             // entraron en cola sin el orden garantizado y salen exentos igual.
             const RE_ARM_COLA = /<!--\s*arm-de-cola\s*-->/;
-            const RE_ENCOLADO = /<!--\s*(?:serial-guard|pausa-cola-retenido(?::\s*#?\d+)?)\s*-->/;
+            const RE_ENCOLADO = /<!--\s*(?:serial-guard|depende-de-retenido(?::\s*#?\d+(?:\s*,\s*#?\d+)*)?|pausa-cola-retenido(?::\s*#?\d+)?)\s*-->/;
             const trusted = issueComments.filter(c => TRUSTED.has(c.author_association));
             const encolados = trusted.filter(c => RE_ENCOLADO.test(c.body || '')).map(c => Date.parse(c.created_at || ''));
             const primerEncolado = encolados.length ? Math.min(...encolados) : NaN;
@@ -1071,6 +1092,39 @@ jobs:
                   core.warning(`pausa-cola (${COLA.describirPausa(pausa)}): arm de #${issue.number} retenido en cola, sin sesión.`);
                   return;
                 }
+              }
+            }
+            // ── Dependencia abierta (AP-126, central#375; ruling mensual
+            // 2026-11-01, pieza 3). Un arm desde ISSUE cuyo body declara
+            // `<!-- depende-de: #N -->` con #N ABIERTO no arranca sesión: el
+            // issue queda `en-cola` con `<!-- depende-de-retenido: #N -->` (una vez
+            // por episodio), SIN `stalled`. Vale para todo arm que llegue aquí
+            // (manual, `arm-de-cola` como cinturón del fail-open del selector,
+            // `watchdog-rearm`, `epic-auto-launch`, `rearm-enmienda`). Un re-arm
+            // de cadena retenido lleva además `eslabon-suspendido` (como la
+            // pausa) para conservar la exención de cadena al salir por la cola.
+            // Va ANTES de `serial-ok`: el override serial no salta una
+            // precondición de corrección. Pasa el trabajo en vuelo
+            // (`serial-activo`, PR propio abierto). FAIL-OPEN: módulo ausente o
+            // lectura fallida ⇒ guard de siempre.
+            {
+              let COLA = null;
+              for (const p of [`${process.env.GITHUB_WORKSPACE}/.cola-central/vendored/scripts/cola-prioridad.cjs`, `${process.env.GITHUB_WORKSPACE}/scripts/cola-prioridad.cjs`]) {
+                try { COLA = require(p); break; } catch (e) { /* siguiente ubicación */ }
+              }
+              if (COLA && COLA.retenerPorDependencia) {
+                try {
+                  const armBody = context.payload.comment?.body || '';
+                  const ls = (issue.labels || []).map(l => l.name);
+                  const cadena = !!process.env.IN_EPIC_LABEL && ls.includes(process.env.IN_EPIC_LABEL)
+                    && (armBody.includes('epic-auto-launch') || armBody.includes('watchdog-rearm'));
+                  const r = await COLA.retenerPorDependencia({ github, owner, repo, issue, cadena, warn: (m) => core.warning(m) });
+                  if (r.retenido) {
+                    core.setOutput('blocked', 'true');
+                    core.warning(`depende-de: arm de #${issue.number} retenido en cola (${r.motivo}), sin sesión.`);
+                    return;
+                  }
+                } catch (e) { core.warning(`depende-de: la retención falló (${e.message}); fail-open, guard de siempre.`); }
               }
             }
             if ((issue.labels || []).some(l => l.name === 'serial-ok')) {

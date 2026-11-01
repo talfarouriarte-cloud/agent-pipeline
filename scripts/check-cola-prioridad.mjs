@@ -12,10 +12,18 @@
 // texto cuando los workflows existen (en el central; en el consumidor llegan
 // por `workflow_call` y se omite).
 //
+// AP-126 (central#375, funde #338; ruling mensual 2026-11-01, posición 5):
+// casos NUEVOS (e)–(o) del marcador `depende-de` y de `pause-agents` en el
+// selector, la cesión y el guard serial; (k)/(m)/(n)/(o) corren los steps
+// REALES de `claude-code.yml` por el cargador compartido (`cargarStep`,
+// central#318). Los casos (a)–(d) del orden AP-102 no cambian.
+//
 // Verde: exit 0. Rojo: el comportamiento real cambió y el banco lo nota.
 import { existsSync, readFileSync } from 'fs';
 import { createRequire } from 'module';
 import { resolve } from 'path';
+import yaml from 'js-yaml';
+import { cargarStep } from './lib/github-script.mjs';
 
 const require = createRequire(import.meta.url);
 
@@ -38,12 +46,25 @@ const fallos = [];
 const caso = (nombre, ok) => { if (!ok) fallos.push(nombre); };
 
 // ── API de GitHub en memoria ────────────────────────────────────────────────
-function repoFalso(issues) {
+// `prs`: PRs abiertos (`pulls.list`). `getRoto`: `issues.get` lanza (5xx).
+function repoFalso(issues, { prs = [], getRoto = false } = {}) {
   const st = new Map();
-  for (const i of issues) st.set(i.number, { state: 'open', comments: [], ...i, labels: [...(i.labels || [])] });
-  const vista = (i) => ({ number: i.number, state: i.state, created_at: i.created_at, labels: i.labels.map((name) => ({ name })) });
+  for (const i of issues) st.set(i.number, { state: 'open', comments: [], body: '', ...i, labels: [...(i.labels || [])] });
+  const vista = (i) => ({ number: i.number, state: i.state, state_reason: i.state_reason || null, created_at: i.created_at,
+    body: i.body, labels: i.labels.map((name) => ({ name })), ...(i.pull_request ? { pull_request: {} } : {}) });
   let cid = 1000;
-  const github = { rest: { issues: {
+  const github = { paginate: async (fn, p) => (await fn(p)).data, rest: {
+    pulls: { async list() { return { data: prs.map((x) => ({ ...x })) }; } },
+    actions: {
+      async listWorkflowRunsForRepo() { return { data: { workflow_runs: [] } }; },
+      async listJobsForWorkflowRun() { return { data: { jobs: [] } }; },
+    },
+    issues: {
+    async get({ issue_number }) {
+      if (getRoto) throw new Error('502 Bad Gateway');
+      if (!st.has(issue_number)) { const e = new Error('Not Found'); e.status = 404; throw e; }
+      return { data: vista(st.get(issue_number)) };
+    },
     async listForRepo({ state, labels }) {
       const data = [...st.values()]
         .filter((i) => (!state || i.state === state) && (!labels || i.labels.includes(labels)))
@@ -64,7 +85,7 @@ function repoFalso(issues) {
     },
     async createComment({ issue_number, body }) {
       // El PAT del propietario: autor de confianza, como en producción.
-      st.get(issue_number).comments.push({ id: cid++, body, author_association: 'OWNER' });
+      st.get(issue_number).comments.push({ id: cid++, body, author_association: 'OWNER', created_at: new Date().toISOString() });
       return { data: {} };
     },
   } } };
@@ -204,6 +225,218 @@ const coment = (i, R) => R.st.get(i).comments.map((c) => c.body).join('\n');
   caso('comentarios ilegibles ⇒ orden por labels y aviso, sin excepción', orden.map((i) => i.number).join() === '3,2' && avisos.length === 2);
 }
 
+// ══ AP-126 · `depende-de` y `pause-agents` en el selector (central#375/#338) ══
+const DEP = (...ns) => ns.map((n) => `<!-- depende-de: #${n} -->`).join('\n');
+
+// ── (e) dependencia abierta ⇒ se salta; `[0]` es el siguiente y el arm lo dice
+{
+  const R = repoFalso([
+    { number: 50, created_at: T(1), labels: [] },                                  // dependencia, abierta
+    { number: 51, created_at: T(2), labels: ['en-cola'], body: `Depende de #50.\n\n${DEP(50)}` },
+    { number: 52, created_at: T(3), labels: ['en-cola'] },
+  ]);
+  const orden = await m.ordenarConSuspension({ ...R, items: await m.leerCola(R) });
+  caso('(e) `depende-de: #50` con #50 abierto ⇒ #51 fuera del orden', !orden.some((i) => i.number === 51));
+  caso('(e) …la cabeza es el siguiente, #52', orden[0] && orden[0].number === 52);
+  caso('(e) …y `describir` lista el saltado: «Saltados: #51 (depende de #50 abierto)»', /Saltados: #51 \(depende de #50 abierto\)/.test(m.describir(orden[0])));
+  const armado = await pop(R);
+  caso('(e) …el pop arma #52 y #51 conserva `en-cola`, sin comentario', armado === 52 && lbl(51, R).includes('en-cola') && coment(51, R) === '');
+  caso('(e) …el comentario de arm de #52 lista el saltado', /Saltados: #51 \(depende de #50 abierto\)/.test(coment(52, R)));
+  // Marcador citado (backticks / bloque cercado) ⇒ no es dependencia (AP-063).
+  caso('(e) marcador citado entre backticks o en bloque cercado ⇒ no declara dependencia',
+    m.dependenciasDeclaradas('`<!-- depende-de: #50 -->`\n```\n<!-- depende-de: #50 -->\n```', 51).length === 0);
+  caso('(e) varias dependencias, una por línea o `#N, #M` ⇒ todas', m.dependenciasDeclaradas(`${DEP(4)}\n<!-- depende-de: #5, #6 -->`, 9).join() === '4,5,6');
+}
+
+// ── (f) dependencia cerrada (completed) ⇒ se arma
+{
+  const R = repoFalso([
+    { number: 50, created_at: T(1), labels: [], state: 'closed', state_reason: 'completed' },
+    { number: 51, created_at: T(2), labels: ['en-cola'], body: DEP(50) },
+    { number: 52, created_at: T(3), labels: ['en-cola'] },
+  ]);
+  caso('(f) #50 cerrado `completed` ⇒ #51 (más antiguo) se arma', (await pop(R)) === 51);
+  caso('(f) …sin línea de saltados en el arm', !/Saltados/.test(coment(51, R)));
+}
+
+// ── (g) `not_planned` y PR cerrado sin merge ⇒ cuentan como cerrados
+{
+  const R = repoFalso([
+    { number: 50, created_at: T(1), labels: [], state: 'closed', state_reason: 'not_planned' },
+    { number: 60, created_at: T(1), labels: [], state: 'closed', pull_request: {} },   // PR cerrado sin merge
+    { number: 51, created_at: T(2), labels: ['en-cola'], body: DEP(50, 60) },
+  ]);
+  caso('(g) dependencias `not_planned` y PR cerrado sin merge ⇒ cerradas: #51 se arma', (await pop(R)) === 51);
+}
+
+// ── (h) dos dependencias, una abierta ⇒ saltado
+{
+  const R = repoFalso([
+    { number: 50, created_at: T(1), labels: [], state: 'closed' },
+    { number: 60, created_at: T(1), labels: [], pull_request: {} },                   // PR abierto
+    { number: 51, created_at: T(2), labels: ['en-cola'], body: DEP(50, 60) },
+    { number: 52, created_at: T(3), labels: ['en-cola'] },
+  ]);
+  const orden = await m.ordenarConSuspension({ ...R, items: await m.leerCola(R) });
+  caso('(h) dos dependencias, una abierta (PR #60) ⇒ #51 saltado, sale #52', orden[0].number === 52 && !orden.some((i) => i.number === 51));
+  caso('(h) …el saltado cita SOLO la abierta', /#51 \(depende de #60 abierto\)/.test(m.describir(orden[0])));
+}
+
+// ── (i) `issues.get` lanza ⇒ fail-open: se arma y `warn` recibe el aviso
+{
+  const R = repoFalso([
+    { number: 51, created_at: T(2), labels: ['en-cola'], body: DEP(50) },
+    { number: 52, created_at: T(3), labels: ['en-cola'] },
+  ], { getRoto: true });
+  const avisos = [];
+  const orden = await m.ordenarConSuspension({ ...R, items: await m.leerCola(R), warn: (w) => avisos.push(w) });
+  caso('(i) `issues.get` falla ⇒ fail-open: #51 sale el primero', orden[0].number === 51);
+  caso('(i) …y `warn` recibe el aviso de la dependencia ilegible', avisos.some((w) => /dependencia #50 de #51 ilegible/.test(w)));
+}
+
+// ── (j) `pause-agents` ⇒ excluido del selector y conserva `en-cola`
+{
+  const R = repoFalso([
+    { number: 51, created_at: T(1), labels: ['en-cola', 'pause-agents'] },
+    { number: 52, created_at: T(3), labels: ['en-cola'] },
+  ]);
+  caso('(j) candidato con `pause-agents` ⇒ saltado, sale #52', (await pop(R)) === 52);
+  caso('(j) …#51 conserva `en-cola`, sin comentario', lbl(51, R).includes('en-cola') && coment(51, R) === '');
+  caso('(j) …el arm de #52 lo lista como `pause-agents`', /Saltados: #51 \(pause-agents\)/.test(coment(52, R)));
+}
+
+// ── (j-bis) todos saltados ⇒ `[]` y `warn` con la lista
+{
+  const R = repoFalso([
+    { number: 50, created_at: T(1), labels: [] },
+    { number: 51, created_at: T(2), labels: ['en-cola'], body: DEP(50) },
+    { number: 53, created_at: T(3), labels: ['en-cola', 'pause-agents'] },
+  ]);
+  const avisos = [];
+  const orden = await m.ordenarConSuspension({ ...R, items: await m.leerCola(R), warn: (w) => avisos.push(w) });
+  caso('(j-bis) todos los candidatos saltados ⇒ `[]`', orden.length === 0);
+  caso('(j-bis) …y `warn` con la lista completa', avisos.some((w) => w === 'cola: 2 candidatos saltados — #51 (depende de #50), #53 (pause-agents)'));
+}
+
+// ── (l) cesión: una urgente con dependencia abierta NO suspende el eslabón
+{
+  const R = repoFalso([
+    { number: 50, created_at: T(1), labels: [] },
+    { number: 8, created_at: T(2), labels: ['en-cola', 'prioridad:urgente'], body: DEP(50) },
+    { number: 11, created_at: T(3), labels: ['epica'] },
+  ]);
+  const urg = await m.cederEslabon({ ...R, siguiente: 11, origen: 'merge de #10', origenNum: 10 });
+  caso('(l) urgente #8 con dependencia abierta ⇒ `cederEslabon` devuelve null', urg === null);
+  caso('(l) …el eslabón #11 NO recibe `en-cola` ni comentario de suspensión', !lbl(11, R).includes('en-cola') && coment(11, R) === '');
+  R.st.get(50).state = 'closed';
+  const urg2 = await m.cederEslabon({ ...R, siguiente: 11, origen: 'merge de #10', origenNum: 10 });
+  caso('(l) misma urgente con #50 cerrado ⇒ cede como hoy (`en-cola` + `cuerpoSuspension`)',
+    urg2 === 8 && lbl(11, R).includes('en-cola') && /^<!-- eslabon-suspendido: #10 -->$/m.test(coment(11, R)));
+  const Rp = repoFalso([
+    { number: 8, created_at: T(2), labels: ['en-cola', 'prioridad:urgente', 'pause-agents'] },
+    { number: 11, created_at: T(3), labels: ['epica'] },
+  ]);
+  caso('(l) urgente con `pause-agents` ⇒ tampoco suspende el eslabón',
+    (await m.cederEslabon({ ...Rp, siguiente: 11, origen: 'merge de #10', origenNum: 10 })) === null && coment(11, Rp) === '');
+}
+
+// ── Steps REALES de claude-code.yml por el cargador compartido (central#318) ──
+const CCW = '.github/workflows/claude-code.yml';
+const steps = {};
+if (existsSync(CCW)) {
+  const wf = yaml.load(readFileSync(CCW, 'utf8'));
+  for (const job of Object.values(wf.jobs || {})) for (const st of job.steps || []) if (st.id) steps[st.id] = st.with && st.with.script;
+  caso('claude-code: steps `check_serial`, `check_pause` y `check_chain` presentes', !!(steps.check_serial && steps.check_pause && steps.check_chain));
+}
+// `require` inyectado: cualquier ruta a `cola-prioridad.cjs` resuelve al módulo fuente.
+const reqInyectado = (p) => (String(p).endsWith('cola-prioridad.cjs') ? m : require(p));
+async function correrStep(id, R, issueNumber, armBody, { epica = false } = {}) {
+  const run = cargarStep(steps[id], id);
+  const i = R.st.get(issueNumber);
+  const issue = { number: issueNumber, title: `Issue ${issueNumber}`, created_at: i.created_at, body: i.body,
+    labels: [...i.labels, ...(epica ? ['epica'] : [])].map((name) => ({ name })) };
+  const out = { outputs: {}, warnings: [] };
+  const context = { repo: { owner: R.owner, repo: R.repo }, runId: 500, workflow: 'Claude Code', eventName: 'issue_comment',
+    payload: { issue, comment: { body: armBody, created_at: new Date().toISOString() } } };
+  const core = { setOutput: (k, v) => { out.outputs[k] = String(v); }, setFailed: (f) => { out.failed = f; }, notice() {}, info() {}, warning: (w) => out.warnings.push(String(w)) };
+  await run({ github: R.github, context, core, require: reqInyectado }, { env: { IN_EPIC_LABEL: 'epica' } });
+  return out;
+}
+const retenidos = (i, R) => R.st.get(i).comments.filter((c) => /^<!-- depende-de-retenido: #\d+(?:, #\d+)* -->$/m.test(c.body)).length;
+
+// ── (k) guard serial: arm manual con dependencia abierta ⇒ retenido en cola
+if (steps.check_serial) {
+  const R = repoFalso([
+    { number: 50, created_at: T(1), labels: [] },
+    { number: 70, created_at: T(2), labels: [], body: `Depende de #50.\n\n${DEP(50)}` },
+  ]);
+  const w = await correrStep('check_serial', R, 70, '@claude arranca');
+  caso('(k) arm manual con dependencia abierta ⇒ `blocked === true` (sin sesión)', w.outputs.blocked === 'true');
+  caso('(k) …`en-cola` puesta y un comentario con `<!-- depende-de-retenido: #50 -->` en línea propia', lbl(70, R).includes('en-cola') && retenidos(70, R) === 1 && /^<!-- depende-de-retenido: #50 -->$/m.test(coment(70, R)));
+  caso('(k) …SIN `stalled` y SIN `serial-activo`', !lbl(70, R).includes('stalled') && !lbl(70, R).includes('serial-activo'));
+  caso('(k) …un arm suelto NO lleva `eslabon-suspendido`', !/eslabon-suspendido/.test(coment(70, R)));
+  // (k-ter) segundo arm en el mismo episodio ⇒ sin segundo comentario.
+  const w2 = await correrStep('check_serial', R, 70, '@claude otra vez');
+  caso('(k-ter) segundo arm en el mismo episodio ⇒ retenido, SIN segundo comentario', w2.outputs.blocked === 'true' && retenidos(70, R) === 1);
+  // (k-bis) `serial-ok` NO salta la dependencia.
+  const Rok = repoFalso([
+    { number: 50, created_at: T(1), labels: [] },
+    { number: 71, created_at: T(2), labels: ['serial-ok'], body: DEP(50) },
+  ]);
+  const wok = await correrStep('check_serial', Rok, 71, '@claude');
+  caso('(k-bis) `serial-ok` NO salta la dependencia abierta', wok.outputs.blocked === 'true' && lbl(71, Rok).includes('en-cola') && retenidos(71, Rok) === 1);
+  // (k-quater) issue con `serial-activo` (en vuelo) ⇒ pasa al guard de siempre sin retener.
+  const Rv = repoFalso([
+    { number: 50, created_at: T(1), labels: [] },
+    { number: 72, created_at: T(2), labels: ['serial-activo'], body: DEP(50) },
+  ]);
+  await correrStep('check_serial', Rv, 72, '@claude').catch(() => null);
+  caso('(k-quater) issue con `serial-activo` ⇒ NO se retiene por dependencia (sin `depende-de-retenido`, sin `en-cola`)',
+    retenidos(72, Rv) === 0 && !lbl(72, Rv).includes('en-cola'));
+  // Dependencia cerrada ⇒ el guard no retiene.
+  const Rc = repoFalso([
+    { number: 50, created_at: T(1), labels: [], state: 'closed' },
+    { number: 73, created_at: T(2), labels: [], body: DEP(50) },
+  ]);
+  await correrStep('check_serial', Rc, 73, '@claude').catch(() => null);
+  caso('(k) dependencia cerrada ⇒ el guard serial no retiene', retenidos(73, Rc) === 0);
+}
+
+// ── (o) re-arm de cadena retenido ⇒ conserva la exención de cadena al salir por la cola
+// (crítica ronda 3, central#375): un eslabón no-primero sin bloque de
+// invariantes llega por `epic-auto-launch` con dependencia abierta; al salir
+// después por `arm-de-cola`, el guard de cadena lo reconoce (sin `stalled`).
+if (steps.check_serial && steps.check_chain) {
+  const R = repoFalso([
+    { number: 50, created_at: T(1), labels: [] },
+    { number: 74, created_at: T(2), labels: [], body: `Eslabón 2 de la épica.\n\n${DEP(50)}` },
+  ]);
+  const w = await correrStep('check_serial', R, 74, '@claude\n\nArranque automático de épica tras merge de #9.\n\n<!-- epic-auto-launch -->', { epica: true });
+  caso('(o) `epic-auto-launch` con dependencia abierta ⇒ retenido y con `eslabon-suspendido`',
+    w.outputs.blocked === 'true' && retenidos(74, R) === 1 && m.esSuspendido(R.st.get(74).comments));
+  R.st.get(50).state = 'closed';
+  const armCola = '@claude arranca — turno de cola.\n\n<!-- arm-de-cola -->';
+  R.st.get(74).labels = R.st.get(74).labels.filter((l) => l !== 'en-cola');
+  R.st.get(74).comments.push({ id: 1, body: armCola, author_association: 'OWNER', created_at: new Date().toISOString() });
+  const wc = await correrStep('check_chain', R, 74, armCola, { epica: true });
+  caso('(o) …salida posterior por `arm-de-cola` ⇒ el guard de cadena NO lo rompe (sin `stalled`)',
+    wc.outputs.broken === 'false' && !lbl(74, R).includes('stalled') && !wc.failed);
+}
+
+// ── (m)/(n) kill-switch: aborto por `pause-agents` entrando por `arm-de-cola`
+if (steps.check_pause) {
+  const R = repoFalso([{ number: 80, created_at: T(2), labels: ['pause-agents'] }]);
+  const w = await correrStep('check_pause', R, 80, '@claude arranca — turno de cola.\n\n<!-- arm-de-cola -->');
+  caso('(m) `pause-agents` + disparo `arm-de-cola` ⇒ `paused === true`', w.outputs.paused === 'true');
+  caso('(m) …`en-cola` devuelta y comentario `<!-- pause-agents-devuelto-a-cola -->`',
+    lbl(80, R).includes('en-cola') && /<!-- pause-agents-devuelto-a-cola -->/.test(coment(80, R)));
+  caso('(m) …sin pop: ningún `arm-de-cola` ni `@claude` nuevo', !/@claude/.test(coment(80, R)));
+  const Rn = repoFalso([{ number: 81, created_at: T(2), labels: ['pause-agents'] }]);
+  const wn = await correrStep('check_pause', Rn, 81, '@claude arranca');
+  caso('(n) `pause-agents` + disparo SIN `arm-de-cola` ⇒ `paused === true` y cero escrituras',
+    wn.outputs.paused === 'true' && !lbl(81, Rn).includes('en-cola') && coment(81, Rn) === '');
+}
+
 // ── Costura con los workflows (solo en el central) ─────────────────────────
 const EM = '.github/workflows/epic-merge.yml';
 const CC = '.github/workflows/claude-code.yml';
@@ -244,6 +477,11 @@ if (existsSync(EM) && existsSync(CC)) {
   // del módulo) aceptan el literal que el módulo emite.
   const inl = [...cc.matchAll(/\/(\^\[ \\t\]\*<!--\\s\*eslabon-suspendido[^/]*)\/m\.test\(/g)].map((x) => new RegExp(x[1], 'm'));
   caso('claude-code: las DOS regex en línea de los guards aceptan `<!-- eslabon-suspendido: #N -->`', inl.length === 2 && inl.every((re) => re.test(m.marcaSuspendido(42))));
+  const guardSerial = cuerpo(cc, '- name: Guard serial — un solo Creator en vuelo', '- name: ');
+  const iPausa = guardSerial.indexOf('COLA.retenerArm('), iDep = guardSerial.indexOf('COLA.retenerPorDependencia('), iOk = guardSerial.indexOf("l.name === 'serial-ok'");
+  caso('claude-code guard serial (AP-126): `retenerPorDependencia` entre el bloque de pausa y `serial-ok`', iPausa !== -1 && iPausa < iDep && iDep < iOk);
+  caso('claude-code guard de panel (AP-126): `depende-de-retenido` cuenta como encolado (exención de salida de cola)',
+    /const RE_ENCOLADO = [^\n]*depende-de-retenido/.test(cuerpo(cc, '- name: Check panel consumed', '- name: Checkout repository')));
   caso('claude-code guard de panel: `eslabon-suspendido` cuenta como reanudación',
     /const isResumption[^;]*eslabon-suspendido/.test(cuerpo(cc, '- name: Check panel consumed', '- name: Checkout repository')));
   // Ningún punto de cola conserva la lectura FIFO de 5 ítems (con prioridades,
@@ -252,6 +490,18 @@ if (existsSync(EM) && existsSync(CC)) {
   const lecturas5 = [...(em + cc).matchAll(/labels: 'en-cola'[^\n]*per_page: 5\b/g)].length;
   caso('solo el filtro de existencia de `sweepQueueAtExit` lee `en-cola` con `per_page: 5`', lecturas5 === 1
     && /labels: 'en-cola'[^\n]*per_page: 5\b/.test(cuerpo(em, 'async function sweepQueueAtExit(', '// Helper: label de estado')));
+}
+// Watchdog (review PR #385, 🟡 1): el dependiente con `depende-de` abierto es
+// espera legítima en el detector `issue-armed-no-pr`, ANTES de la sospecha de
+// `cola-huerfana`, y solo sin el propio PR huérfano (AP-048 intacto).
+const WD = '.github/workflows/watchdog.yml';
+if (existsSync(WD)) {
+  const wd = readFileSync(WD, 'utf8');
+  const a = wd.indexOf('- name: Scan for stalled work');
+  const scan = a === -1 ? '' : wd.slice(a, wd.indexOf('- name: Harvest flaky candidates', a + 1));
+  const iOwn = scan.indexOf('const ownOrphanPR'), iDep = scan.indexOf('COLA.dependenciasAbiertas('), iSos = scan.indexOf('if (!freshSuspicion)');
+  caso('watchdog scan (AP-126): `en-cola` con `depende-de` abierto se salta ANTES de la sospecha/`cola-huerfana`', iOwn !== -1 && iOwn < iDep && iDep < iSos);
+  caso('watchdog scan (AP-126): la exención no aplica con el propio PR huérfano (interbloqueo AP-048)', /if \(!ownOrphanPR && COLA && COLA\.dependenciasAbiertas\)/.test(scan));
 }
 
 // ── Copias: la del consumidor (`scripts/`) es la del central ───────────────
