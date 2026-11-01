@@ -179,7 +179,7 @@ const payIssue = { issue: { number: 40 }, comment: { created_at: TRIG } };
   check(wsin.added.length === 0 && !wsin.threw, '(int) sin PR abierto de la sesión ⇒ nada', wsin);
 }
 
-async function muerte({ outcome = 'success', workspace = ws, ...m }) {
+async function muerte({ outcome = 'success', jobStatus = '', workspace = ws, ...m }) {
   const { w, github, core, fetch } = mundo(m);
   const dir = mkdtempSync(join(tmpdir(), 'escalada-exec-'));
   const exec = join(dir, 'claude-execution-output.json');
@@ -187,7 +187,7 @@ async function muerte({ outcome = 'success', workspace = ws, ...m }) {
   const context = { repo: { owner: 'o', repo: 'r' }, runId: 1, payload: { issue: { number: 40, title: 'x', labels: [] }, comment: { created_at: TRIG } } };
   try {
     await runMuerte({ github, context, core, require }, {
-      env: { GITHUB_WORKSPACE: workspace, EXEC_FILE: exec, STEP_CREATOR_OUTCOME: outcome, IN_DEFAULT_BRANCH: 'main', RESCUE_WIP: '', RESCUE_PR: '', DEFAULT_GH_TOKEN: 't' },
+      env: { GITHUB_WORKSPACE: workspace, EXEC_FILE: exec, STEP_CREATOR_OUTCOME: outcome, JOB_STATUS: jobStatus, IN_DEFAULT_BRANCH: 'main', RESCUE_WIP: '', RESCUE_PR: '', DEFAULT_GH_TOKEN: 't' },
       globales: { fetch } });
   } catch (e) { w.threw = e.message; } finally { rmSync(dir, { recursive: true, force: true }); }
   w.ready = w.fetches.some(f => /graphql/.test(f));
@@ -206,6 +206,24 @@ async function muerte({ outcome = 'success', workspace = ws, ...m }) {
   const wf2 = await muerte({ outcome: 'failure', comentarios: { 50: [ESCALADA] } });
   check(!wf2.ready && wf2.added.join() === '50:estado:esperando-architect,50:stalled' && wf2.comments.some(c => /creator-escalated-materializado/.test(c)) && !wf2.added.some(l => /needs-review/.test(l)),
     '(int) materializador de ready: draft + failure + escalada ⇒ stalled + estado (creator-escalated no corre), sin ready', wf2);
+  // Pre-reviewer 2: la sesión en success pero el JOB en rojo (post-step anterior) ⇒ creator-escalated no correrá.
+  const wj = await muerte({ jobStatus: 'failure', comentarios: { 50: [ESCALADA] } });
+  check(!wj.ready && wj.added.join() === '50:estado:esperando-architect,50:stalled', '(int) materializador de ready: sesión success pero job.status failure + escalada ⇒ stalled + estado aquí', wj);
+  const wjs = await muerte({ jobStatus: 'success', comentarios: { 50: [ESCALADA] } });
+  check(!wjs.ready && wjs.added.length === 0, '(int) materializador de ready: job.status success + escalada ⇒ cede sin materializar (lo hace creator-escalated)', wjs);
+  // Pre-reviewer 1: un marcador `-materializado` de una escalada ANTERIOR (fuera de la ventana) no deduplica.
+  const viejo = { user: { login: 'pat' }, created_at: '2026-10-05T09:00:00Z', body: 'x\n\n<!-- creator-escalated-materializado -->' };
+  const wm = await muerte({ outcome: 'failure', comentarios: { 50: [viejo, ESCALADA] } });
+  check(wm.added.join() === '50:estado:esperando-architect,50:stalled', '(int) materializador de ready: marcador de una escalada anterior a la ventana ⇒ no deduplica, materializa', wm);
+  const fresco = { ...viejo, created_at: '2026-10-05T10:31:00Z' };
+  const wmf = await muerte({ outcome: 'failure', comentarios: { 50: [ESCALADA, fresco] } });
+  check(wmf.added.length === 0 && wmf.comments.length === 0, '(int) materializador de ready: marcador fresco ⇒ no duplica', wmf);
+  // Pre-reviewer 3: PR ya ready + escalada + job no success ⇒ materializa y devuelve a draft.
+  const wrf = await muerte({ outcome: 'failure', pr: { ...prBase, draft: false, labels: [{ name: 'needs-review' }] }, comentarios: { 50: [ESCALADA] } });
+  check(wrf.added.join() === '50:estado:esperando-architect,50:stalled' && wrf.graphql.includes('convertPullRequestToDraft') && wrf.removed.includes('50:needs-review'),
+    '(int) materializador de ready: PR ya ready + failure + escalada ⇒ stalled + estado + vuelta a draft + retira needs-review', wrf);
+  const wrs = await muerte({ pr: { ...prBase, draft: false }, comentarios: { 50: [ESCALADA] } });
+  check(wrs.added.length === 0 && wrs.graphql.length === 0 && !wrs.ready, '(int) materializador de ready: PR ya ready + success + escalada ⇒ nada aquí (creator-escalated lo materializa)', wrs);
   // (d, 1.er ruling) draft + success SIN escalada ⇒ actúa como hoy.
   const wc = await muerte({});
   check(wc.ready && wc.added.includes('50:needs-review') && wc.comments.some(c => /creator-muerto-draft-materializado-ready/.test(c)), '(int, control) draft + success sin escalada ⇒ ready + needs-review (AP-047 intacto)', wc);
