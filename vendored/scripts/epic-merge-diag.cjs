@@ -131,7 +131,21 @@ function popYaEmitido({ sticky, comentariosSiguiente, next, pr, login }) {
   return hit ? `#${next} ya tiene el arm de cola de este merge (${hit.html_url || hit.id})` : null;
 }
 
+// Reintento del merge ante «Base branch was modified» (central#333, AP-125).
+// El `catch` del merge publicaba `MERGE FALLÓ` y salía: nada re-evaluaba el PR
+// y quedaba verde, con `lgtm` y la serie ocupada. Con este mensaje y menos de
+// `MERGE_RETRY_CAP` reintentos previos (marcadores en el PR, que sobreviven
+// entre jobs) ⇒ `update-branch` (el reusable actualiza la rama y re-entra por
+// el CI, como `behind`); agotados ⇒ `stalled`; otro mensaje ⇒ `diag` (hoy).
+const MERGE_RETRY_MARK = '<!-- merge-retry-base-modified -->';
+const MERGE_RETRY_CAP = 3;
+function decidirReintentoMerge({ mensaje, reintentosPrevios }) {
+  if (!/Base branch was modified/i.test(String(mensaje || ''))) return { accion: 'diag' };
+  return (Number(reintentosPrevios) || 0) < MERGE_RETRY_CAP ? { accion: 'update-branch' } : { accion: 'stalled' };
+}
+
 module.exports = {
   MARKER, esStickyPropio, seleccionarSticky, estadoDe, stickyMergeado,
   construirCuerpo, marcadoresPop, popYaEmitido,
+  MERGE_RETRY_MARK, MERGE_RETRY_CAP, decidirReintentoMerge,
 };
