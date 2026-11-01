@@ -1401,6 +1401,7 @@ jobs:
                 }
               } catch (e) { core.warning(`barrido de liberación falló (${e.message}); sigue el detector de siempre.`); }
             }
+            const depCache = new Map();  // AP-126: cada #N se lee una vez por tick
             for (const issue of issues) {
               if (issue.pull_request) continue;        // solo issues puros
               if (skip(issue.labels)) continue;
@@ -1525,6 +1526,22 @@ jobs:
                 const premiseNote = ownOrphanPR
                   ? `la serie sólo la ocupa el PROPIO PR huérfano #${ownOrphanPR.number} (\`${ownOrphanPR.head.ref}\`) — sin run activo ni sesión de Creator viva (interbloqueo AP-048: \`en-cola\` sólo se desencola al merge o al terminal del Creator, y no hay ninguno)`
                   : 'la serie está LIBRE (sin `serial-activo` ni PR `claude/*` abierto)';
+                // AP-126 (review PR #385, 🟡 1): un dependiente con `depende-de`
+                // abierto espera legítimamente con la serie libre — el pop lo
+                // salta —, igual que la cola en `pausa-cola`: ni sospecha ni
+                // `cola-huerfana` (si no, a los ~2 ticks architect-resolve lo
+                // re-armaría contra `retenerPorDependencia` hasta el tope de
+                // re-arms). Con el PROPIO PR huérfano sigue el detector
+                // (interbloqueo AP-048). Lectura fallida ⇒ cerrada (fail-open
+                // del módulo) ⇒ sigue el detector de siempre.
+                if (!ownOrphanPR && COLA && COLA.dependenciasAbiertas) {
+                  const depAbiertas = await COLA.dependenciasAbiertas({ github, owner: O.owner, repo: O.repo,
+                    issue, warn: (m) => core.warning(m), cache: depCache });
+                  if (depAbiertas.length) {
+                    core.notice(`#${issue.number}: en-cola, espera legítima por depende-de ${depAbiertas.map(n => `#${n}`).join(', ')} abierto — sin sospecha ni cola-huerfana.`);
+                    continue;
+                  }
+                }
                 if (!freshSuspicion) {
                   // Fail-soft (AP-056): el marcador es diagnóstico — si no se
                   // puede escribir, se avisa y se sigue; el producto del scan
