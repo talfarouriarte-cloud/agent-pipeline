@@ -21,10 +21,22 @@
 //   <!-- rearm-enmienda-run: <run_id> -->   va con el re-arm de la entrega: `check_flight`
 //                                           no cuenta ese run (ya en post-steps) como
 //                                           Creator en vuelo contra su propio re-arm.
-//   <!-- enmienda-aplicada: <id> -->        acuse del Creator (`claude[bot]` o TRUSTED).
+//   <!-- enmienda-aplicada: <id> -->        acuse del Creator (`claude[bot]` o TRUSTED), en
+//                                           un comentario NUEVO por `gh api` o en línea
+//                                           propia del body del PR (central#348: el
+//                                           tracking comment pierde el HTML, AP-028).
 //   <!-- enmienda-rechazada: <id> -->       acuse con rechazo ⇒ `human-needed`.
 //   <!-- enmienda-rechazo-escalado: <ids> --> el post-step ya pasó esos rechazos al humano.
-//   <!-- rearm-enmienda-tope -->            tope de re-arms superado ⇒ `human-needed`.
+//   <!-- rearm-enmienda-tope -->            tope de re-arms superado ⇒ `human-needed`. El
+//                                           tope cuenta solo los re-arms cuyo conjunto se
+//                                           solapa con lo pendiente (central#348).
+//   <!-- enmiendas-entregadas: <ids> run=<runId> -->
+//                                           lo publica la entrega (PAT ⇒ TRUSTED) tras una
+//                                           sesión `success` cuya foto pre-sesión listaba
+//                                           esos disparos: ya llegaron a una sesión
+//                                           (central#348). Solo disparos, nunca enmiendas.
+//   <!-- disparo-sin-ping: <id> -->         lo deja `check_flight` al ceder ante un evento
+//                                           sin línea de ping: terminal, no se entrega.
 //   <!-- enmienda-sin-acuse-tras-rearm -->  un turno real acabó sin acusar un conjunto ya
 //                                           re-armado ⇒ `human-needed` (sin bloqueo mudo).
 //
@@ -32,8 +44,9 @@
 // dos exclusiones acotadas de contendiente (enmienda 2026-10-06 de AP-100 §1):
 // el run que publica su propio re-arm y el que ya pasó su step de entrega (o
 // nunca tuvo sesión). `check_flight` corre antes del checkout y no puede hacer
-// `require` de este módulo: su gate TRUSTED y su regex de `rearm-enmienda-run`
-// son copias que el banco compara con las de aquí (costura en check-enmiendas).
+// `require` de este módulo: su gate TRUSTED, su regex de `rearm-enmienda-run`,
+// su regex de ping (`PING_RE`) y su `despojarCodigo` son copias que el banco
+// compara con las de aquí (costura en check-enmiendas).
 //
 // POR QUÉ VIVE AQUÍ (AP-068): el cuerpo embebido en `.github/workflows/**` no lo
 // puede pushear un agente ni lo ejecuta un banco; aquí lo gatea el CI del central
@@ -54,6 +67,11 @@ const REARM_RE = /^[ \t]*<!--\s*rearm-enmienda:\s*(\d+(?:\s*,\s*\d+)*)\s*-->[ \t
 const ACK_RE = /^[ \t]*<!--\s*enmienda-(aplicada|rechazada):\s*(\d+(?:\s*,\s*\d+)*)\s*-->[ \t]*$/gm;
 const ESCALADO_RE = /^[ \t]*<!--\s*enmienda-rechazo-escalado:\s*(\d+(?:\s*,\s*\d+)*)\s*-->[ \t]*$/gm;
 const TOPE_RE = /^[ \t]*<!--\s*rearm-enmienda-tope\s*-->[ \t]*$/m;
+const ENTREGADAS_RE = /^[ \t]*<!--\s*enmiendas-entregadas:\s*(\d+(?:\s*,\s*\d+)*)(?:\s+run=\d+)?\s*-->[ \t]*$/gm;
+// Copia literal en `check_flight` (claude-code.yml): mantener en sincronía. Un
+// evento es un ping si su cuerpo despojado de código tiene una línea que empieza
+// por la mención de arm o lleva el sentinel `ping-creator` (central#348, punto 3).
+const PING_RE = /^[ \t]*@claude(?![\w-])|<!--\s*ping-creator\s*-->/m;
 // Copia literal en `check_flight` (claude-code.yml): mantener en sincronía.
 const REARM_RUN_RE = /^[ \t]*<!--\s*rearm-enmienda-run:\s*(\d+)\s*-->[ \t]*$/m;
 
@@ -67,13 +85,18 @@ const todos = (re, txt) => [...txt.matchAll(re)];
 
 const marcaDisparo = (id) => `<!-- disparo-pendiente: ${Number(id)} -->`;
 const marcaRearm = (lista) => `<!-- rearm-enmienda: ${clave(lista)} -->`;
+const marcaEntregadas = (lista, runId) => `<!-- enmiendas-entregadas: ${clave(lista)}${Number(runId) > 0 ? ` run=${Number(runId)}` : ''} -->`;
+const esPing = (body) => PING_RE.test(despojarCodigo(body));
 
 // Lectura única de los comentarios de un ítem (issue + su PR). Cada comentario
-// llega con `item` (número donde vive). Devuelve el estado de enmiendas.
+// llega con `item` (número donde vive). Devuelve el estado de enmiendas. El body
+// del PR llega como pseudo-comentario (`esBody`, de `leer()`): en él solo cuentan
+// los acuses (mismo gate `deCreator`); ningún otro marcador vive en un body.
 function escanear(comentarios) {
   const enmiendas = [];
   const disparos = [];
   const rearms = [];
+  const entregadas = new Set();      // ids de disparos ya recibidos por una sesión
   const acuses = new Map();          // id → 'aplicada' | 'rechazada'
   const acuseItems = new Map();      // id → Set(items donde consta el acuse)
   const escalados = new Set();
@@ -81,13 +104,14 @@ function escanear(comentarios) {
   for (const c of comentarios || []) {
     if (!c) continue;
     const txt = despojarCodigo(c.body);
-    if (confiable(c) && ENMIENDA_RE.test(txt)) {
+    if (!c.esBody && confiable(c) && ENMIENDA_RE.test(txt)) {
       enmiendas.push({ id: Number(c.id), url: c.html_url || '', item: c.item, at: c.created_at });
     }
-    if (deJob(c)) {
+    if (!c.esBody && deJob(c)) {
       for (const m of todos(DISPARO_RE, txt)) disparos.push({ id: Number(m[1]), url: c.html_url || '', item: c.item, at: c.created_at });
     }
-    if (confiable(c)) {
+    if (!c.esBody && confiable(c)) {
+      for (const m of todos(ENTREGADAS_RE, txt)) for (const id of ids(m[1])) entregadas.add(id);
       for (const m of todos(REARM_RE, txt)) rearms.push({ ids: ids(m[1]), clave: clave(ids(m[1])), at: c.created_at, item: c.item });
       for (const m of todos(ESCALADO_RE, txt)) for (const id of ids(m[1])) escalados.add(id);
       if (TOPE_RE.test(txt)) topes++;
@@ -104,7 +128,7 @@ function escanear(comentarios) {
       }
     }
   }
-  return { enmiendas, disparos, rearms, acuses, acuseItems, escalados, topes };
+  return { enmiendas, disparos, rearms, entregadas, acuses, acuseItems, escalados, topes };
 }
 
 // Acuses de enmiendas del ISSUE que solo constan en su PR. Un PR posterior del
@@ -131,11 +155,12 @@ function cuerpoReflejo(r, pr) {
   ].join('\n');
 }
 
-// Lo que sigue pendiente: enmiendas sin acuse, disparos nunca entregados
-// (su id no figura en ningún `rearm-enmienda` de confianza) y rechazos aún no
+// Lo que sigue pendiente: enmiendas sin acuse, disparos nunca entregados (su id
+// no figura en ningún `rearm-enmienda` ni `enmiendas-entregadas` de confianza:
+// la entrega se materializa, no se infiere — central#348) y rechazos aún no
 // pasados al humano.
 function pendientes(estado) {
-  const entregados = new Set(estado.rearms.flatMap((r) => r.ids));
+  const entregados = new Set([...estado.rearms.flatMap((r) => r.ids), ...(estado.entregadas || [])]);
   const enmiendas = estado.enmiendas.filter((e) => !estado.acuses.has(e.id));
   const vistos = new Set();
   const disparos = estado.disparos.filter((d) => {
@@ -153,7 +178,11 @@ function pendientes(estado) {
 //                  (dedupe por superconjunto: el Reviewer y el gate de merge, que
 //                  solo miran enmiendas, no re-arman lo que la entrega ya re-armó
 //                  junto con un disparo; un disparo NUEVO sí da conjunto nuevo);
-//   'tope'       — ≥ TOPE re-arms en la ventana ⇒ `human-needed`, sin re-arm;
+//   'tope'       — ≥ TOPE re-arms en la ventana CUYO CONJUNTO SE SOLAPA con lo
+//                  pendiente ⇒ `human-needed`, sin re-arm (central#348: un
+//                  disparo o enmienda nuevos no heredan el contador de conjuntos
+//                  ya entregados; un disparo no lo alcanza nunca, porque entra en
+//                  un re-arm y queda entregado);
 //   'rearm'      — un comentario de re-arm con ping (cuerpo en `cuerpo`).
 // `soloEnmiendas` (Reviewer): los disparos diferidos los entrega el cierre del
 // turno del Creator, no el Reviewer ni el gate de merge. `runId`: el run que
@@ -165,7 +194,8 @@ function planificar(estado, { ahora = Date.now(), tope = TOPE, ventanaMs = VENTA
   if (!lista.length) return { accion: 'nada', ids: [], pendientes: p };
   const k = clave(lista);
   if (estado.rearms.some((r) => lista.every((id) => r.ids.includes(id)))) return { accion: 'duplicado', ids: k.split(',').map(Number), pendientes: p };
-  const recientes = estado.rearms.filter((r) => ahora - new Date(r.at).getTime() < ventanaMs).length;
+  const recientes = estado.rearms.filter((r) => ahora - new Date(r.at).getTime() < ventanaMs
+    && r.ids.some((id) => lista.includes(id))).length;
   if (recientes >= tope) return { accion: 'tope', ids: k.split(',').map(Number), recientes, pendientes: p };
   return { accion: 'rearm', ids: k.split(',').map(Number), pendientes: p, cuerpo: cuerpoRearm(p, k, origen, runId) };
 }
@@ -190,7 +220,7 @@ function cuerpoRearm(p, k, origen, runId = null) {
     '',
     listado(p),
     '',
-    'Lee cada enlace COMPLETO (por API: el marcador no llega a tu contexto), aplícalo y acusa CADA id en tu comentario de seguimiento, en línea propia: `enmienda-aplicada: <id>` (o `enmienda-rechazada: <id>` + motivo, que pasa el turno al humano), envuelto en un comentario HTML. Un disparo diferido es un ping normal: atiéndelo como tal. Nada mergea mientras quede una enmienda sin acuse.',
+    'Lee cada enlace COMPLETO (por API: el marcador no llega a tu contexto), aplícalo y acusa CADA id en un comentario NUEVO con `gh api`, no en tu comentario de seguimiento (ahí el comentario HTML se pierde), en línea propia: `enmienda-aplicada: <id>` (o `enmienda-rechazada: <id>` + motivo, que pasa el turno al humano), envuelto en un comentario HTML; cópialo también, en línea propia, en el body del PR (y en el bloque `pr-body-declarado` si lo publicas). Un disparo diferido es un ping normal: atiéndelo como tal. Nada mergea mientras quede una enmienda sin acuse.',
     '',
     '<!-- ping-creator -->',
     marcaRearm(k.split(',')),
@@ -200,11 +230,11 @@ function cuerpoRearm(p, k, origen, runId = null) {
 
 function cuerpoTope(plan) {
   return [
-    `**Enmiendas en vuelo (central#327) — tope de re-arms**: ya hubo ${plan.recientes} \`rearm-enmienda\` en 24 h sobre este ítem y sigue pendiente:`,
+    `**Enmiendas en vuelo (central#327) — tope de re-arms**: ya hubo ${plan.recientes} \`rearm-enmienda\` en 24 h sobre este ítem con lo que sigue pendiente:`,
     '',
     listado(plan.pendientes),
     '',
-    'No se re-arma más: `human-needed`. El humano decide (aplicar a mano, re-armar con un ping explícito o retirar la enmienda).',
+    'No se re-arma más: `human-needed`. Lo que de verdad limpia cada enmienda pendiente: su acuse (`enmienda-aplicada: <id>` o `enmienda-rechazada: <id>` en línea propia, como comentario HTML, en un comentario NUEVO por `gh api` o en el body del PR; nunca en el comentario de seguimiento) o su retirada (editar el comentario de la enmienda quitando el marcador). Un disparo diferido queda entregado cuando entra en un re-arm o cuando una sesión `success` lo recibe en su foto pre-sesión (`enmiendas-entregadas`).',
     '',
     '<!-- rearm-enmienda-tope -->',
   ].join('\n');
@@ -228,7 +258,7 @@ function cuerpoRechazo(rechazadas) {
     '',
     ...rechazadas.map((e) => `- enmienda \`${e.id}\`: ${e.url}`),
     '',
-    'El motivo está en el comentario de seguimiento del Creator. Al resolverlo, retira `human-needed` y re-arma con un ping explícito.',
+    'El motivo está en el comentario de acuse del Creator. Al resolverlo, retira `human-needed` y re-arma con un ping explícito.',
     '',
     `<!-- enmienda-rechazo-escalado: ${clave(rechazadas.map((e) => e.id))} -->`,
   ].join('\n');
@@ -259,14 +289,24 @@ async function resolverItems({ github, owner, repo, numero, esPR, headRef, warn 
   return { issue, pr };
 }
 
-// Comentarios del issue y del PR, marcados con su `item`. Lanza si una lectura
-// falla: cada consumidor decide su modo de fallo (el gate de merge, cerrado).
+// Comentarios del issue y del PR, marcados con su `item`, más el body del PR
+// como pseudo-comentario (`id: 0`, `esBody`): un acuse copiado en el body lo ven
+// los cuatro consumidores sin que ninguno lea el body por su cuenta (central#348,
+// punto 1). Lanza si una lectura falla: cada consumidor decide su modo de fallo
+// (el gate de merge, cerrado).
 async function leer({ github, owner, repo, issue, pr }) {
   const out = [];
   for (const n of [issue, pr]) {
     if (!n) continue;
     const cs = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: n, per_page: 100 });
     for (const c of cs) out.push({ ...c, item: n });
+  }
+  if (pr) {
+    const { data: p } = await github.rest.pulls.get({ owner, repo, pull_number: pr });
+    if (p && p.body) {
+      out.push({ id: 0, body: p.body, user: p.user, author_association: p.author_association,
+        item: pr, esBody: true, created_at: p.created_at, html_url: p.html_url || '' });
+    }
   }
   return out;
 }
@@ -278,12 +318,19 @@ async function estadoDe(opts) {
   return { items, estado: escanear(comentarios) };
 }
 
+// Ids de los disparos que lista la foto pre-sesión: mismos `pendientes()` del
+// mismo estado que alimenta `fotoPendientes` (no se parsea el `.md`). La entrega
+// los marca `enmiendas-entregadas` si la sesión termina `success` (central#348).
+function disparosFoto(comentarios) {
+  return pendientes(escanear(comentarios)).disparos.map((d) => d.id);
+}
+
 // Foto pre-sesión para el Creator: enmiendas sin acuse con su cuerpo íntegro.
 function fotoPendientes(comentarios) {
   const estado = escanear(comentarios);
   const p = pendientes(estado);
   if (!p.enmiendas.length && !p.disparos.length) return '';
-  const porId = new Map((comentarios || []).map((c) => [Number(c.id), c]));
+  const porId = new Map((comentarios || []).filter((c) => c && !c.esBody).map((c) => [Number(c.id), c]));
   const bloques = p.enmiendas.map((e) => {
     const c = porId.get(e.id);
     return [`## enmienda ${e.id} (#${e.item}, ${e.at || ''})`, e.url, '', String((c && c.body) || '').trim(), ''].join('\n');
@@ -292,7 +339,7 @@ function fotoPendientes(comentarios) {
   return [
     '# Enmiendas sin acuse (foto pre-sesión, central#327)',
     '',
-    'Aplica cada una y acusa CADA id en tu comentario de seguimiento, en línea propia, como comentario HTML: `enmienda-aplicada: <id>` o `enmienda-rechazada: <id>` + motivo.',
+    'Aplica cada una y acusa CADA id en un comentario NUEVO con `gh api`, no en tu comentario de seguimiento (ahí el comentario HTML se pierde), en línea propia, como comentario HTML: `enmienda-aplicada: <id>` o `enmienda-rechazada: <id>` + motivo. Cópialo también, en línea propia, en el body del PR (y en el bloque `pr-body-declarado` si lo publicas).',
     '',
     ...bloques,
     ...(disp.length ? ['## disparos diferidos', ...disp, ''] : []),
@@ -300,9 +347,9 @@ function fotoPendientes(comentarios) {
 }
 
 module.exports = {
-  TRUSTED, CREATOR_LOGIN, JOB_LOGIN, TOPE, VENTANA_MS, REARM_RUN_RE,
-  ENMIENDA_RE, marcaDisparo, marcaRearm, clave,
+  TRUSTED, CREATOR_LOGIN, JOB_LOGIN, TOPE, VENTANA_MS, REARM_RUN_RE, PING_RE,
+  ENMIENDA_RE, marcaDisparo, marcaRearm, marcaEntregadas, clave, esPing,
   escanear, pendientes, planificar, cuerpoRearm, cuerpoTope, cuerpoRechazo, cuerpoSinAcuse,
   acusesAReflejar, cuerpoReflejo,
-  resolverItems, leer, estadoDe, fotoPendientes,
+  resolverItems, leer, estadoDe, fotoPendientes, disparosFoto,
 };

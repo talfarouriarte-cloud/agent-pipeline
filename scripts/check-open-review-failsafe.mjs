@@ -14,6 +14,9 @@
 // ready ⇒ no cuenta; run en `failure` ⇒ no cuenta (AP-025); Creator con el job
 // `skipped` o fantasma >6 h ⇒ no cede; PR nacido no-draft ⇒ ventana desde su creación;
 // >50 runs ajenos más nuevos que el del Reviewer ⇒ pagina; tope agotado ⇒ no decide.
+//  (g) central#348 (ruling 2026-11-01, punto 4): el comentario de materialización
+//      lleva la línea `diagnóstico:` con la ventana, los runs vistos y el filtro
+//      `name` (rastro de #339, parte 1); con un run del Reviewer vivo, no materializa.
 // Ejecuta el script EMBEBIDO real con el cargador compartido (EXACTAMENTE los
 // argumentos de github-script@v7). Cuelga del piggyback de check-embedded-js.
 import { readFileSync } from 'fs';
@@ -150,6 +153,16 @@ const check = (ok, msg, w) => {
   check(!tope.fired && tope.warnings.some(m => /no se decide/.test(m)), 'tope de páginas agotado sin match ⇒ lectura no fiable, no dispara', tope);
   const draft = await caso({ pr: { ...PR, draft: true } });
   check(!draft.fired && draft.fetches.length === 0, 'PR en draft ⇒ no toca nada (AP-047)', draft);
+}
+// (g) rastro de diagnóstico (central#348, punto 4).
+{
+  const ajeno = (id) => rev(id, { name: 'CI', conclusion: 'skipped' });
+  const w = await caso({ reviewers: [ajeno(70001), ajeno(70002)] });
+  const c = w.comments.find(x => /<!-- open-review-failsafe -->/.test(x)) || '';
+  check(w.fired && /^diagnóstico: ventana=branch=claude%2Fissue-40-20261005-0700&created=%3E%3D2026-10-05T10%3A16%3A18Z · runs vistos=2 · filtro name=Opus Reviewer$/m.test(c),
+    '(g) 2 runs ajenos y ninguno del Reviewer ⇒ materializa con `diagnóstico: ventana=… · runs vistos=2 · filtro name=…`', w);
+  const vivo = await caso({ reviewers: [ajeno(70001), rev(70003, { status: 'in_progress', conclusion: null })] });
+  check(!vivo.fired && vivo.comments.length === 0, '(g) run del Reviewer vivo en la ventana ⇒ no materializa (sin cambio)', vivo);
 }
 
 if (fails) { console.error(`CHECK-OPEN-REVIEW-FAILSAFE ROJO: ${fails} caso(s) fallan.`); process.exit(1); }
