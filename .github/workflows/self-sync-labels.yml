@@ -1,0 +1,33 @@
+# Sync de labels plantilla → repos (AP-132, central#319). Crea en el central y
+# en los dos consumidores las labels de templates/labels.json que falten y
+# alinea color y descripción de las que difieran; nunca borra ni toca labels
+# ajenas a la plantilla (las dinámicas estado:*, rondas:N quedan intactas).
+# Lógica y banco: scripts/sync-labels.mjs, scripts/check-sync-labels.mjs.
+# Token: LABELS_SYNC_TOKEN (PAT fine-grained, Issues: write en los tres repos,
+# lo crea el propietario); sin él, el script hace no-op con notice.
+name: Sync labels
+on:
+  push:
+    branches: [main]
+    paths:
+      - templates/labels.json
+      - scripts/sync-labels.mjs
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+concurrency:
+  group: self-sync-labels
+  cancel-in-progress: false
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node scripts/sync-labels.mjs
+        env:
+          LABELS_SYNC_TOKEN: ${{ secrets.LABELS_SYNC_TOKEN }}

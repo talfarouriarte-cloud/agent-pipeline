@@ -87,7 +87,7 @@
   {
     "name": "serial-activo",
     "color": "d93f0b",
-    "description": "Creator en vuelo lanzado desde este issue (guard serial); lo libera el Creator al abrir PR o el watchdog si murió"
+    "description": "Creator en vuelo desde este issue (guard serial); lo libera el Creator al abrir PR o el Watchdog"
   },
   {
     "name": "serial-ok",
@@ -97,27 +97,27 @@
   {
     "name": "process-review-pendiente",
     "color": "d93f0b",
-    "description": "El process-review de este panel no se materializó; re-armar retirando y re-aplicando auditoria-completa (PAT)"
+    "description": "Process-review no materializado; re-armar retirando y re-aplicando auditoria-completa (PAT)"
   },
   {
     "name": "en-cola",
     "color": "bfdadc",
-    "description": "Arm bloqueado por la serie; se arma al liberarse por orden de prioridad (urgente → eslabón suspendido → alta → normal; antigüedad dentro de cada nivel)"
+    "description": "Arm bloqueado por la serie; se arma al liberarse por prioridad: urgente, suspendido, alta, normal"
   },
   {
     "name": "prioridad:urgente",
     "color": "b60205",
-    "description": "Cola serial: se cuela en el siguiente límite entre eslabones (nunca en paralelo). La pone el humano o el Architect a petición suya"
+    "description": "Cola serial: se cuela en el siguiente límite entre eslabones. La pone el humano o el Architect"
   },
   {
     "name": "prioridad:alta",
     "color": "d93f0b",
-    "description": "Cola serial: sale antes que lo normal, pero espera al fin de la épica en marcha. La pone el humano o el Architect a petición suya"
+    "description": "Cola serial: antes que lo normal, tras la épica en marcha. La pone el humano o el Architect"
   },
   {
     "name": "pausa-cola",
     "color": "5319e7",
-    "description": "Interruptor global: con un issue abierto con esta label la serie no arma nada nuevo (lo en vuelo termina). La pone y la retira el humano"
+    "description": "Interruptor global: con un issue abierto con esta label la serie no arma nada nuevo. Humano"
   },
   {
     "name": "auto-archivada",
