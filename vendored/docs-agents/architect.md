@@ -52,6 +52,7 @@ Regla común de escritura (central#325, AP-106):
 - Tras el corte a `layout: "dir"` (central#331, AP-109), una rectificación se AÑADE al final del fichero de su ADR, nunca en medio. Lo vigila `adr-lint --append-only-vs <ref>`, con `<ref>` = el estado previo al push (el mismo que en `--ids-vs`), nunca un ref fijo como el tag del corte: con un ref fijo, un override eximiría su ADR para siempre; una edición deliberada dentro de un fichero existente lleva en el mensaje del commit `adr-append-override: ADR-NNN — <motivo>`.
 - Actualizar la línea **Estado:** de una ADR (o de una rectificación) no requiere override (central#334, AP-110): `--append-only-vs` compara esas líneas enmascaradas. Añadir, quitar o mover una línea **Estado:** en el tramo existente sí es rojo.
 - En `layout: "dir"`, el índice (`adr-index.mjs`) trae por ADR «citada en»: las otras ADR y rectificaciones que la nombran. Úsalo para ver qué condiciona una ADR antes de diseñar sobre ella (central#336, AP-111).
+- Una rectificación que RETIRA una épica sin construir (o la sustituye por otra ADR) mueve en el MISMO commit su `.claude/skills/epic-context-<ADR>/SKILL.md` a `docs/archive/<nombre>-SKILL.md`, rename puro, contenido idéntico: la MISMA convención y el MISMO destino que `epic-auditor.md` §8 usa al cerrar los libros. No se borra y no hay otro destino (central#344, AP-131).
 
 ## 5. Reglas de trabajo del Architect
 
@@ -112,3 +113,16 @@ Cuando el propietario dice «adelante con ADR-NNN» (o equivalente), esto es lo 
 
 Lo que NO cambia: gate humano para publicar la ADR y la épica por primera vez (el «adelante» ES ese gate); jamás la mención de arm fuera de un ping; verificación sobre reconstrucción en cada tick que lea algo.
 
+## 9. Plantilla del issue suelto (AP-131)
+
+Un suelto horneado desde una ADR copiaba en su alcance las cláusulas positivas y se dejaba la negativa, la sub-cláusula sin consumidor o la fuente de una cifra que muestra la UI (central#302: `R·2 (5)`, `A2`, `§2`, `(2)/A7`, ninguna numerada `D<k>`). Lo pagaba una ronda extra del Reviewer o un relanzamiento. Esta plantilla obliga a hacer el inventario al hornear. Las secciones van en este orden y con estos encabezados literales, porque el Critic las lee por nombre (check Q, `critic.md` §2):
+
+- **Título:** `<verbo> <qué> (ADR-NNN <cláusulas>)` si hay ADR; sin ADR, sin paréntesis.
+- `## Alcance`: qué entrega y qué NO.
+- `## Cláusulas del ADR que este suelto consume` (solo si cita ADR): **una línea por cada cláusula normativa del ADR citado y de sus rectificaciones `·R·N` vigentes**, no solo las `D<k>`. Cláusula normativa es toda frase del ADR o de una `·R·N` que obligue, prohíba o fije un valor. El identificador de la línea es la etiqueta literal con que el ADR nombra la cláusula (`D3`, `A2`, `§2`, `R·2 (5)`, `(2)/A7`); si no tiene etiqueta, su primera frase literal entre comillas, de 12 palabras como mucho. Formato literal: `<id o "cita">: entrega | no aplica — <por qué> | otra issue #N`. Las cláusulas negativas («no se hace Z») van igual, marcadas `entrega` (el issue las respeta) o `no aplica`.
+- `## Fuente de cada magnitud mostrada` (solo si la UI muestra un número): una línea por magnitud, `<campo/etiqueta> ← <función|fixture|campo del motor> (file:línea)`. Sin fuente conocida: `INCÓGNITA — el Creator la localiza y la declara en el PR`.
+- `## Invariantes funcionales`: formato del guard AP-029 (`pre-épica: rojo|verde — …` a inicio de línea) o `<!-- invariantes-na -->` con motivo. Lo que dice § 5 («Horneado de épicas») sobre `pre-épica:` vale aquí tal cual y no se repite.
+- `## DoD`: verificable por un actor del pipeline (check I del Critic).
+- `## Contexto de decisión (no normativa)`: por AP-114, si hay ADR, referencia a la sección `## Suelto #N` de `epic-context-<ADR>`; si no, la sección en el body.
+
+Las épicas y sus eslabones no usan esta plantilla: siguen § 8 y se critican con J–N (AP-115).
