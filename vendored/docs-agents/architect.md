@@ -30,6 +30,7 @@ Sirve para corregir o ampliar un encargo mientras el Creator trabaja en él, o a
 
 - **`prioridad:urgente`** se cuela entre eslabones: en el siguiente límite de eslabón se arma la urgente y el eslabón queda suspendido hasta que se cierre. **`prioridad:alta`** sale de la cola antes que lo normal, pero espera al fin de la épica en marcha (AP-102). Solo las pones a petición expresa del propietario.
 - **Una etiqueta de prioridad NO encola.** Ordena lo que ya está `en-cola`. Para que entre en la cola hay que armarlo (el guard serial lo encola si la serie está ocupada).
+- **El perdedor de un arranque cruzado queda `en-cola`** (marcador `serial-toctou-cruzado`, AP-122): no hace falta re-armarlo, lo arma el pop de cola cuando la serie quede libre.
 - **`pausa-cola`** en cualquier issue abierto: la serie no arma nada nuevo y lo que está en vuelo termina. Al quitarla, la cola sigue sola (AP-103). La pone y la quita el humano.
 - **`pause-agents`** es por ítem y solo actúa AL ARRANCAR un run: no mata una sesión en vuelo. En un PR va en el PR, no en el issue. Sirve de hold de intervención: ponla, espera a que acaben los runs del ítem, escribe y quítala con un único disparo explícito. Para corregir un encargo en vuelo, la herramienta preferente es la enmienda (§ 1).
 - **`serial-ok`** en el issue: override del hard stop serial. Arma aunque haya otro Creator en vuelo, bajo responsabilidad del que la pone.

@@ -121,7 +121,11 @@ finplan#1544, 16:31:37Z cancelled; ningún tick posterior la recogía). Desde
 AP-038 el scan del detect re-deriva la anomalía del ESTADO en cada tick: todo
 issue/PR abierto con `stalled` no excluido (cortacircuito de doble rebote
 replicado) entra como `stalled-autonomous-resolve` aunque su evento haya muerto.
-El evento es la vía rápida; el estado es la garantía.
+El evento es la vía rápida; el estado es la garantía. Desde AP-122 (central#285)
+los dos caminos de `stalled` corren DELANTE del Gate 0 del detect: con otra
+cadena en vuelo, un `stalled` llega a esta etapa en el primer tick (antes
+esperaba a que el repo callara). Puedes correr con Creators en vuelo: un re-arm
+tuyo sobre serie ocupada lo encola el guard serial.
 
 **Cierre autónomo de completitud por-estado (`estado:cierre-pendiente-humano`,
 AP-037 — rectifica AP-019 «opción A sin necesidad» y el «NO stalled» de
@@ -146,6 +150,35 @@ detect cierra por FIRMA en el siguiente tick (`cierre-materializado-por-estado`)
 allowlist SOLO para este caso: jamás cierres un issue sin la label ni sin haber
 publicado la verificación. Gate humano restante: doble rebote, veto asíncrono y
 verificación visual de épica.
+
+**«El alcance ya está en la rama base» ⇒ cierra en esta corrida (AP-122,
+central#307).** Si al diagnosticar un `stalled` concluyes que el alcance del
+issue YA está en la rama base (absorbido por otro PR mergeado, o entregado por
+un PR parcial propio) y se cumplen LAS TRES condiciones —(i) no hay PR abierto
+ni rama `claude/issue-N-*` viva para el issue, (ii) no hay run del Creator
+activo sobre él, (iii) tu verificación lleva ancla `file:line` fresca por cada
+ítem de la DoD—, NO re-armes al Creator para que lo declare: pon tú
+`estado:cierre-pendiente-humano`, publica el comentario de verificación con el
+formato del párrafo anterior (AP-037) terminado en `<!-- cierre-verificado -->`
+en línea propia, retira `stalled` y cierra `completed` con `gh issue close` en
+esta misma corrida. El handler AP-031 consume los sentinels (guard: la label);
+si tu `close` muere, el belt `cierre-materializado-por-estado` del detect lo
+cierra por firma. Si falta cualquiera de las tres condiciones: camino de siempre
+(re-arm con el hueco anclado).
+
+**Adendas que absorben alcance de otro issue encolado (`cola-absorbida`,
+AP-122).** Cuando una adenda o ruling tuyo instruye a un PR a absorber el
+alcance de otro issue encolado #N, publica en #N un comentario con el marcador
+`<!-- cola-absorbida: #<X> -->` en línea propia (X = número del PR que absorbe;
+si aún no existe, el del issue que absorbe) y retírale `en-cola` (nadie lo arma
+mientras el PR vive). El PR declara `Absorbe #N` (mandato del Creator); al
+mergearlo, `epic-merge` cierra #N por estado; si se cierra sin merge, #N vuelve
+a `en-cola`.
+
+**Perdedor del cinturón cruzado (`serial-toctou-cruzado`, AP-122).** Desde
+AP-122 el perdedor de un arranque cruzado queda `en-cola` (no `stalled`): lo arma
+el pop de cola, no tú. Un `stalled` con ese marcador anterior al cambio lo
+resuelves como siempre.
 
 **Épica sin bloque de invariantes (`sin-invariantes-stall`, AP-021).** Si el
 `stalled` viene del guard de horneado (`claude-code.yml` materializó el marcador
