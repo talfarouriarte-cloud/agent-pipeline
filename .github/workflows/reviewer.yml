@@ -629,7 +629,7 @@ jobs:
             --model ${{ vars.PIPELINE_REVIEWER_MODEL || inputs.reviewer_model }}
             --effort medium
             --max-turns ${{ steps.budget.outputs.max_turns || 80 }}
-            --allowedTools "Read,Glob,Grep,Write,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*)"
+            --allowedTools "Read,Glob,Grep,Write,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh pr checks:*),Bash(gh issue view:*)"
 
           prompt: |
             REPO: ${{ github.repository }}
