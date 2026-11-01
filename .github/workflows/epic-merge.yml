@@ -1439,7 +1439,15 @@ jobs:
                 if (RV) {
                   let nuevos = [], sinVeredicto = [], rcs = [];
                   try {
-                    const rects = await RV.detectar({ github, O: { owner, repo }, pr: pf || pr, warn: (m) => core.warning(m), info: (m) => core.info(m) });
+                    // AP-135 (central#393): config de registro de la base; `layout:
+                    // "dir"` ⇒ también `<dir>/ADR-N.md`. Graft viejo sin `cargarCfg`
+                    // o `null` ⇒ filtro heredado (statu quo).
+                    let cfg = null;
+                    if (typeof RV.cargarCfg === 'function') {
+                      cfg = await RV.cargarCfg({ github, O: { owner, repo }, ref: (pf || pr).base.ref });
+                      if (!cfg) core.info(`[epic-merge] rect-en-vuelo: sin \`adr-lint.config.json\` con layout "dir" en ${(pf || pr).base.ref} — filtro heredado \`*decisions*.md\`.`);
+                    }
+                    const rects = await RV.detectar({ github, O: { owner, repo }, pr: pf || pr, cfg, warn: (m) => core.warning(m), info: (m) => core.info(m) });
                     if (rects.length) {
                       rcs = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: prNumber, per_page: 100 });
                       nuevos = rects.filter(r => !RV.yaMarcada(rcs, r.clave));
