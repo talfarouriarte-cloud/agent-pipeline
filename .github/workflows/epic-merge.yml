@@ -149,6 +149,12 @@ jobs:
             let EAG = null;
             try { EAG = require(`${process.env.GITHUB_WORKSPACE}/.epic-merge-central/vendored/scripts/epic-audit-guard.cjs`); }
             catch (e) { core.warning(`[epic-merge] epic-audit-guard no disponible (${e.message}) — sin guard de rango ni dedupe por veredicto (statu quo).`); }
+            // central#362 (AP-129): `[LAUNCH-HOLD]` del LGTM ⇒ el PR mergea pero
+            // su `launch-next` NO se consume (`launch-hold.cjs`, mismo checkout
+            // sparse). Sin módulo: se lanza como siempre, con aviso.
+            let LH = null;
+            try { LH = require(`${process.env.GITHUB_WORKSPACE}/.epic-merge-central/vendored/scripts/launch-hold.cjs`); }
+            catch (e) { core.warning(`[epic-merge] launch-hold no disponible (${e.message}) — un LGTM con [LAUNCH-HOLD] lanzaría el siguiente eslabón (statu quo).`); }
             // central#314: interruptor global `pausa-cola` — lectura ÚNICA del
             // módulo (`COLA.leerPausa`), fail-open: si la consulta falla, aviso
             // y comportamiento de antes. Sin módulo, sin pausa (statu quo).
@@ -888,6 +894,31 @@ jobs:
               if (absorbidosCerrados.includes(next)) {
                 serieTomada = true;
                 await diag(prNumber, `MERGEADO; launch-next #${next} absorbido por este PR (\`Absorbe #${next}\`) y cerrado por estado: no se arma; su \`launch-next\` lo consume el cierre por estado.`);
+                return;
+              }
+              // central#362 (AP-129): el LGTM llevaba `[LAUNCH-HOLD]` (label
+              // `launch-hold` puesta por el post-step del Reviewer): el PR es
+              // correcto y ya está mergeado, pero el eslabón siguiente depende
+              // de una decisión del Architect. NO se arma: `stalled` +
+              // `estado:esperando-architect` + la decisión citada en #next ⇒
+              // architect-resolve por evento decide y arma él. El sentinel
+              // `launch-next` queda sin consumir a propósito; la serie queda
+              // libre, como en `cola-huerfana`. Va ANTES del des-bloqueo (que
+              // retiraría el `stalled` que este camino acaba de poner).
+              // Las labels salen del parámetro `pr` (los dos llamadores lo pasan
+              // con `labels`), no del `prLabels` de otro bloque.
+              const prLabelsLH = (pr.labels || []).map(l => l.name);
+              if (LH && LH.decidir({ prLabels: prLabelsLH })) {
+                try {
+                  const texto = LH.textoHold((await comentariosDe(prNumber)) || []);
+                  await LH.retener({ github, owner, repo, siguiente: next, prNumber, texto });
+                  await diag(prNumber, `MERGEADO; launch-next #${next} RETENIDO por launch-hold (decisión pendiente del Architect: «${texto}»).`);
+                } catch (e) {
+                  // Fail-closed: con hold declarado NO se lanza aunque retener
+                  // falle; el modo (c) del detect del Watchdog lo recoge.
+                  core.warning(`[epic-merge] launch-hold: retener #${next} falló (${e.message}) — no se lanza.`);
+                  await diag(prNumber, `MERGEADO; launch-next #${next} RETENIDO por launch-hold, pero marcar #${next} falló: ${e.message}`);
+                }
                 return;
               }
               // Des-bloqueo mecánico del destino (2026-07-08, #1120): un

@@ -883,6 +883,26 @@ jobs:
                 verdictForHead = new Date(lastVc.created_at) > new Date(hc.commit.committer.date);
               } catch (e) { core.info(`AP-025 head-check: ${e.message} (fail-closed a veredicto presente)`); verdictForHead = true; }
             }
+            // AP-129 (central#362, #308): la cabecera del veredicto vigente se
+            // materializa por estado — `[NEEDS-HUMAN]:` ⇒ `human-needed` sin
+            // sesión del Creator; `[LAUNCH-HOLD]:` en un LGTM ⇒ label
+            // `launch-hold` (la consume epic-merge). Módulo
+            // `reviewer-header-terminals.cjs`, mismas ubicaciones que
+            // `enmiendas.cjs`. Fail-open anunciado: sin módulo, la cabecera
+            // vuelve a ser prosa (statu quo).
+            if (lastVc && verdictForHead) {
+              let RH = null;
+              const WSH = process.env.GITHUB_WORKSPACE || process.cwd();
+              for (const p of [`${WSH}/.enmiendas-central/vendored/scripts/reviewer-header-terminals.cjs`, `${WSH}/scripts/reviewer-header-terminals.cjs`]) {
+                try { RH = require(p); break; } catch (e) { /* siguiente ubicación */ }
+              }
+              if (!RH) core.warning('reviewer-header-terminals.cjs no disponible — [NEEDS-HUMAN]/[LAUNCH-HOLD] de la cabecera NO se materializan en esta corrida.');
+              else {
+                try {
+                  await RH.run({ github, core, prNumber: n, lastVc, prLabels: (context.payload.pull_request.labels || []).map(l => l.name), pat: process.env.ARM_PAT });
+                } catch (e) { core.warning(`reviewer-header: ${e.message} — cabecera sin materializar.`); }
+              }
+            }
             const patCall = async (method, path, body) => {
               const res = await fetch(`https://api.github.com/repos/${O.owner}/${O.repo}${path}`, {
                 method, headers: { Authorization: `Bearer ${process.env.ARM_PAT}`, Accept: 'application/vnd.github+json' },
