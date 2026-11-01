@@ -92,7 +92,9 @@ async function ordenarConSuspension({ github, owner, repo, items, warn }) {
   const issues = filtro.items;
   const { saltados } = filtro;
   if (!issues.length && saltados.length && warn) {
-    warn(`cola: ${saltados.length} candidato(s) saltados, ninguno armable — ${describirSaltados(saltados)}.`);
+    warn(`cola: ${saltados.length} candidatos saltados — ${saltados.map((x) => (x.motivo === PAUSE_AGENTS
+      ? `#${x.number} (${PAUSE_AGENTS})`
+      : `#${x.number} (depende de ${x.dependeDe.map((n) => `#${n}`).join(', ')})`)).join(', ')}`);
   }
   const suspendidos = new Set();
   for (const i of issues) {
@@ -259,8 +261,12 @@ async function retenerArm({ github, owner, repo, issue, cadena, pausa, comentari
 // (`retenerPorDependencia`) hace su propia lectura como cinturón.
 const PAUSE_AGENTS = 'pause-agents';
 const DEPENDE_RE = /^[ \t]*<!--\s*depende-de:\s*(#?\d+(?:\s*,\s*#?\d+)*)\s*-->[ \t]*$/gm;
-const marcaRetenidoDependencia = () => '<!-- depende-de-retenido -->';
-const RETENIDO_DEP_RE = /^[ \t]*<!--\s*depende-de-retenido\s*-->[ \t]*$/m;
+// Rastro del guard serial, con las dependencias abiertas: `<!-- depende-de-retenido: #N -->`
+// (`#N, #M` si son varias). Al leer, la lista es opcional.
+const marcaRetenidoDependencia = (abiertas) => ((abiertas || []).length
+  ? `<!-- depende-de-retenido: ${abiertas.map((n) => `#${n}`).join(', ')} -->`
+  : '<!-- depende-de-retenido -->');
+const RETENIDO_DEP_RE = /^[ \t]*<!--\s*depende-de-retenido(?::\s*#?\d+(?:\s*,\s*#?\d+)*)?\s*-->[ \t]*$/m;
 
 // Números declarados con `depende-de` en un body (sin duplicados ni el propio).
 function dependenciasDeclaradas(body, propio) {
@@ -316,7 +322,7 @@ const describirSaltados = (saltados) => (saltados || []).map((x) => (x.motivo ==
 
 // Guard serial del Creator (ruling, pieza 3): un arm desde ISSUE cuyo body
 // declara una dependencia ABIERTA no arranca sesión; el issue queda `en-cola`
-// con `<!-- depende-de-retenido -->` (UNA vez por episodio: retenido posterior
+// con `<!-- depende-de-retenido: #N -->` (UNA vez por episodio: retenido posterior
 // al último `arm-de-cola`), sin `stalled` y sin tocar `serial-activo`. Calcada
 // de `retenerArm`, incluido `cadena`: un re-arm de cadena retenido lleva además
 // `eslabon-suspendido`, para que su salida por `arm-de-cola` conserve la
@@ -354,7 +360,7 @@ async function retenerPorDependencia({ github, owner, repo, issue, cadena, comen
   if (ultimoRetenido > ultimoArmCola) return { retenido: true, abiertas, comentado: false, motivo: 'ya retenido en este episodio' };
   const lista = abiertas.map((n) => `#${n}`).join(', ');
   await github.rest.issues.createComment({ owner, repo, issue_number: Number(issue.number),
-    body: `**claude-code · dependencia abierta** (central#375): el body de este issue declara \`depende-de\` y sigue abierto: ${lista}. Este arm NO arranca sesión y el issue queda \`${EN_COLA}\` (sin \`stalled\`): la cola lo salta mientras la dependencia siga abierta y lo arma sola, por su orden, cuando se cierre. Si la dependencia ya no aplica, re-apunta o retira el marcador del body.\n\n${marcaRetenidoDependencia()}${cadena ? `\n${marcaSuspendido()}` : ''}` });
+    body: `**claude-code · dependencia abierta** (central#375): el body de este issue declara \`depende-de\` y sigue abierto: ${lista}. Este arm NO arranca sesión y el issue queda \`${EN_COLA}\` (sin \`stalled\`): la cola lo salta mientras la dependencia siga abierta y lo arma sola, por su orden, cuando se cierre. Si la dependencia ya no aplica, re-apunta o retira el marcador del body.\n\n${marcaRetenidoDependencia(abiertas)}${cadena ? `\n${marcaSuspendido()}` : ''}` });
   return { retenido: true, abiertas, comentado: true, motivo: `depende de ${lista} abierto` };
 }
 

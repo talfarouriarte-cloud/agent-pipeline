@@ -315,7 +315,7 @@ const DEP = (...ns) => ns.map((n) => `<!-- depende-de: #${n} -->`).join('\n');
   const avisos = [];
   const orden = await m.ordenarConSuspension({ ...R, items: await m.leerCola(R), warn: (w) => avisos.push(w) });
   caso('(j-bis) todos los candidatos saltados ⇒ `[]`', orden.length === 0);
-  caso('(j-bis) …y `warn` con la lista completa', avisos.some((w) => /2 candidato\(s\) saltados/.test(w) && /#51 \(depende de #50 abierto\)/.test(w) && /#53 \(pause-agents\)/.test(w)));
+  caso('(j-bis) …y `warn` con la lista completa', avisos.some((w) => w === 'cola: 2 candidatos saltados — #51 (depende de #50), #53 (pause-agents)'));
 }
 
 // ── (l) cesión: una urgente con dependencia abierta NO suspende el eslabón
@@ -362,7 +362,7 @@ async function correrStep(id, R, issueNumber, armBody, { epica = false } = {}) {
   await run({ github: R.github, context, core, require: reqInyectado }, { env: { IN_EPIC_LABEL: 'epica' } });
   return out;
 }
-const retenidos = (i, R) => R.st.get(i).comments.filter((c) => /^<!-- depende-de-retenido -->$/m.test(c.body)).length;
+const retenidos = (i, R) => R.st.get(i).comments.filter((c) => /^<!-- depende-de-retenido: #\d+(?:, #\d+)* -->$/m.test(c.body)).length;
 
 // ── (k) guard serial: arm manual con dependencia abierta ⇒ retenido en cola
 if (steps.check_serial) {
@@ -372,7 +372,7 @@ if (steps.check_serial) {
   ]);
   const w = await correrStep('check_serial', R, 70, '@claude arranca');
   caso('(k) arm manual con dependencia abierta ⇒ `blocked === true` (sin sesión)', w.outputs.blocked === 'true');
-  caso('(k) …`en-cola` puesta y un comentario con `<!-- depende-de-retenido -->` en línea propia', lbl(70, R).includes('en-cola') && retenidos(70, R) === 1);
+  caso('(k) …`en-cola` puesta y un comentario con `<!-- depende-de-retenido: #50 -->` en línea propia', lbl(70, R).includes('en-cola') && retenidos(70, R) === 1 && /^<!-- depende-de-retenido: #50 -->$/m.test(coment(70, R)));
   caso('(k) …SIN `stalled` y SIN `serial-activo`', !lbl(70, R).includes('stalled') && !lbl(70, R).includes('serial-activo'));
   caso('(k) …un arm suelto NO lleva `eslabon-suspendido`', !/eslabon-suspendido/.test(coment(70, R)));
   // (k-ter) segundo arm en el mismo episodio ⇒ sin segundo comentario.
