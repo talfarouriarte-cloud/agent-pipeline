@@ -1,0 +1,496 @@
+From e934c16579b2f4511c91d9f27b368c2e3bd9636f Mon Sep 17 00:00:00 2001
+From: "claude[bot]" <41898282+claude[bot]@users.noreply.github.com>
+Date: Sun, 1 Nov 2026 10:53:33 +0000
+Subject: [PATCH] =?UTF-8?q?AP-122=20=C2=B7=20review=20#380:=20absorci?=
+ =?UTF-8?q?=C3=B3n=20vigente=20fuera=20de=20issue-armed-no-pr,=20launch-ne?=
+ =?UTF-8?q?xt=20absorbido=20sin=20arm,=20protegidos=20sin=20cierre?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- 🔴 1: el detector issue-armed-no-pr del scan (watchdog.yml) salta un #N con
+  cola-absorbida vigente mientras el absorbente siga abierto (notice «espera
+  legítima»); absorcion.cjs exporta absorcionVigente.
+- 🟡 2: ENCADENAR (epic-merge.yml, postMerge) no arma un launch-next que el
+  mismo merge acaba de cerrar por absorción; lo consume su postStateClose.
+- 🟡 3: materializarAbsorcion no cierra un #N con serial-activo, human-needed,
+  pause-agents, auditoria o auditoria-completa; la asimetría con la
+  cancelación queda declarada en AP-122 «Riesgos aceptados».
+- Bancos: check-watchdog-gate0 (+5, detector sin runs en vuelo) y
+  check-absorcion (+4, con el postMerge real de epic-merge.yml); ROJOS contra
+  el código previo.
+
+Co-authored-by: talfarouriarte-cloud <266813632+talfarouriarte-cloud@users.noreply.github.com>
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .github/workflows/epic-merge.yml | 14 +++++
+ .github/workflows/watchdog.yml   | 32 ++++++++++++
+ docs/decisions.md                |  6 +--
+ scripts/check-absorcion.mjs      | 88 +++++++++++++++++++++++++++++++-
+ scripts/check-watchdog-gate0.mjs | 78 ++++++++++++++++++++--------
+ vendored/docs-agents/protocol.md |  2 +-
+ vendored/docs-agents/watchdog.md | 12 +++--
+ vendored/scripts/absorcion.cjs   | 32 +++++++++++-
+ 8 files changed, 231 insertions(+), 33 deletions(-)
+
+diff --git a/.github/workflows/epic-merge.yml b/.github/workflows/epic-merge.yml
+index 1040464..e5809e8 100644
+--- a/.github/workflows/epic-merge.yml
++++ b/.github/workflows/epic-merge.yml
+@@ -648,11 +648,14 @@ jobs:
+               // #N por estado (`estado:cierre-pendiente-humano` + marcador +
+               // `completed`); su `issues:[closed]` lo procesa `postStateClose`.
+               // Fail-soft: sin módulo o con error, aviso y el merge sigue.
++              // `absorbidosCerrados` lo lee ENCADENAR (review PR #380, 🟡 2).
++              let absorbidosCerrados = [];
+               try {
+                 const ABS = require(`${process.env.GITHUB_WORKSPACE}/.epic-merge-central/vendored/scripts/absorcion.cjs`);
+                 const absorbidos = ABS.leerAbsorbidos(prBody).filter(n => n !== Number(issueNumber));
+                 if (absorbidos.length) {
+                   const hechos = await ABS.materializarAbsorcion({ github, owner, repo, prNumber, issues: absorbidos, warn: (m) => core.warning(m) });
++                  absorbidosCerrados = hechos;
+                   core.notice(`[epic-merge] absorción (AP-122) del PR #${prNumber}: ${hechos.length ? hechos.map(n => '#' + n).join(', ') + ' cerrados' : 'nada abierto que cerrar'}.`);
+                 }
+               } catch (e) { core.warning('[epic-merge] absorción (AP-122): ' + e.message); }
+@@ -742,6 +745,17 @@ jobs:
+                 return;
+               }
+               const next = Number(lm[1]);
++              // AP-122 (review PR #380, 🟡 2): el `launch-next` es un issue que
++              // ESTE merge acaba de cerrar por absorción. No se arma (sería un
++              // Creator sobre trabajo absorbido y un arm sobre un issue cerrado):
++              // su `issues:[closed]` entra en `postStateClose` y arma SU sucesor.
++              // La serie la decide ese job (sucesor o barrido de su `finally`),
++              // así que aquí cuenta como tomada: este barrido no compite con él.
++              if (absorbidosCerrados.includes(next)) {
++                serieTomada = true;
++                await diag(prNumber, `MERGEADO; launch-next #${next} absorbido por este PR (\`Absorbe #${next}\`) y cerrado por estado: no se arma; su \`launch-next\` lo consume el cierre por estado.`);
++                return;
++              }
+               // Des-bloqueo mecánico del destino (2026-07-08, #1120): un
+               // eslabón re-armado por su cadena está por definición
+               // desbloqueado — si llevaba `stalled`/`human-needed` era por
+diff --git a/.github/workflows/watchdog.yml b/.github/workflows/watchdog.yml
+index bf467b6..a1448a1 100644
+--- a/.github/workflows/watchdog.yml
++++ b/.github/workflows/watchdog.yml
+@@ -1443,6 +1443,12 @@ jobs:
+             for (const p of [`${process.env.GITHUB_WORKSPACE}/.cola-central/vendored/scripts/cola-prioridad.cjs`, `${process.env.GITHUB_WORKSPACE}/scripts/cola-prioridad.cjs`]) {
+               try { COLA = require(p); break; } catch (e) { /* siguiente ubicación */ }
+             }
++            // AP-122 (review PR #380, 🔴 1): módulo de absorción, del mismo
++            // checkout sparse. Sin módulo, el detector de issues sigue como antes.
++            let ABS = null;
++            for (const p of [`${process.env.GITHUB_WORKSPACE}/.cola-central/vendored/scripts/absorcion.cjs`, `${process.env.GITHUB_WORKSPACE}/scripts/absorcion.cjs`]) {
++              try { ABS = require(p); break; } catch (e) { /* siguiente ubicación */ }
++            }
+             let pausaCola = null;     // objeto de pausa si el repo está EN PAUSA
+             let colaLiberada = null;  // nº armado por el barrido de este tick
+             if (COLA && COLA.liberarCola) {
+@@ -1514,6 +1520,32 @@ jobs:
+               if (!lastArm) continue;
+               if (ageMin(lastArm.created_at) > ARM_WINDOW_H * 60) continue;
+ 
++              // ── Absorción vigente (AP-122, review PR #380 🔴 1). Un #N cuyo
++              // alcance absorbe otro PR queda abierto, armado y SIN `en-cola`
++              // (el resolver se la retira al publicar `cola-absorbida: #X`): sin
++              // este salto caía en `issue-armed-no-pr` y architect-resolve lo
++              // re-armaba — el «pop de cola arma trabajo hecho» de #307 por otra
++              // puerta. Espera legítima mientras el absorbente #X siga abierto;
++              // su merge o su cierre sin merge los consume `epic-merge`. Con #X
++              // cerrado la absorción no se materializó y sigue el detector; un
++              // marcador sin número (o un `issues.get` fallido) cuenta como
++              // absorbente abierto.
++              const absorcion = ABS ? ABS.absorcionVigente(comments) : null;
++              if (absorcion) {
++                let absorbenteAbierto = true;
++                if (absorcion.origen) {
++                  try {
++                    const { data: x } = await github.rest.issues.get({ ...O, issue_number: absorcion.origen });
++                    absorbenteAbierto = x.state === 'open';
++                  } catch (e) { core.warning(`#${issue.number}: no pude leer el absorbente #${absorcion.origen} (${e.message}); lo trato como abierto.`); }
++                }
++                if (absorbenteAbierto) {
++                  core.notice(`#${issue.number}: espera legítima: absorbido por #${absorcion.origen ?? '?'} (cola-absorbida vigente) — sin anomalía.`);
++                  continue;
++                }
++                core.notice(`#${issue.number}: cola-absorbida de #${absorcion.origen}, pero #${absorcion.origen} está cerrado y la absorción no se materializó — sigue el detector.`);
++              }
++
+               // ── Chequeo de premisa de serie para ítems `en-cola` (AP-039,
+               // NO exclusión ciega). Un ítem encolado por el guard serial no es
+               // anomalía mientras la premisa de la cola se sostenga: si la serie
+diff --git a/docs/decisions.md b/docs/decisions.md
+index 1ed02ee..f81b3d3 100644
+--- a/docs/decisions.md
++++ b/docs/decisions.md
+@@ -3220,13 +3220,13 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
+ 1. **Cinturón cruzado** (`claude-code.yml`, step `check_serial`): (a) mapa título → número sacado del listado de issues abiertos; un candidato sin número cuenta como contendiente. (b) Relectura FUERTE de un candidato con guard pasado: `issues.get` de su número; se descarta solo si responde y no lleva el flag; error ⇒ contendiente. (c) Cada run de `run_id` menor deja `core.notice` con su motivo (`fuera-de-ventana`, `pr-title`, `exento`, `mismo-issue`, `rama-claude`, `evento-no-arm`, `guard-pasado-sin-flag`, `contendiente`). (d) Post-verificación: el ganador aparente, tras escribir `serial-activo`, si hubo candidatos descartados por `guard-pasado-sin-flag`, espera 5 s y los relee por número; si alguno lleva el flag, cede (retira el suyo, `en-cola`, marcador). Sin esos candidatos no hay espera. La regla del ganador no cambia (menor `run_id`), así que nunca ceden los dos. (e) El perdedor de los dos cinturones queda **`en-cola`** (no `stalled`), con el mismo marcador `serial-toctou-cruzado` y su dedup AP-018 §1: lo arma el pop de cola (`armQueue`/`popQueue`/barridos/`liberarCola`), que ya es determinista. No hay predicado nuevo de re-arm.
+ 2. **`stalled` antes del Gate 0** (`watchdog.yml`, step `scan`): el camino por evento `labeled=stalled` y la re-derivación AP-038 (con el `pulls.list` que usa) se mueven delante del Gate 0. Con `inFlight`, el gate emite solo los `stalled-autonomous-resolve` recogidos y termina; sin `inFlight`, sigue como antes. El `const anomalies` queda entre el Modo e y los caminos de `stalled`, donde lo fija el ruling.
+ 3. **Resolver: «ya en la rama base» cierra** (`vendored/docs-agents/watchdog.md`): con las tres condiciones (sin PR ni rama `claude/issue-N-*` viva, sin run del Creator activo, ancla `file:line` por ítem de la DoD) pone `estado:cierre-pendiente-humano`, publica la verificación AP-037 con `cierre-verificado`, retira `stalled` y cierra en la misma corrida. Sin alguna de las tres: re-arm como siempre.
+-4. **Absorción con consumidor** (`vendored/scripts/absorcion.cjs`, `epic-merge.yml`): el resolver marca el absorbido con `cola-absorbida: #<X>` y le retira `en-cola`; el PR declara `Absorbe #N` a inicio de línea (`creator.md`); al merge (`postMerge`, tras cerrar el issue del PR) cada #N abierto se cierra por estado (`estado:cierre-pendiente-humano` + marcador + `completed`, y `postStateClose` consume sus sentinels); al cerrar sin merge vuelve a `en-cola` el #N con marcador de ese PR o de su issue.
+-5. **Bancos**: `check-serial-guard.mjs` (24 casos; el caso de #373 sale ROJO contra el guard previo), `check-watchdog-gate0.mjs` y `check-absorcion.mjs` nuevos, en el piggyback de `check-embedded-js.mjs`.
++4. **Absorción con consumidor** (`vendored/scripts/absorcion.cjs`, `epic-merge.yml`): el resolver marca el absorbido con `cola-absorbida: #<X>` y le retira `en-cola`; el PR declara `Absorbe #N` a inicio de línea (`creator.md`); al merge (`postMerge`, tras cerrar el issue del PR) cada #N abierto se cierra por estado (`estado:cierre-pendiente-humano` + marcador + `completed`, y `postStateClose` consume sus sentinels); al cerrar sin merge vuelve a `en-cola` el #N con marcador de ese PR o de su issue. Tres costuras (review del PR #380): (a) el detector `issue-armed-no-pr` del scan de `watchdog.yml` salta un #N con `cola-absorbida` vigente (sin `cola-absorbida-cancelada` posterior) mientras el absorbente #X siga abierto, con notice «espera legítima»; con #X cerrado sin materializar, sigue el detector; (b) `materializarAbsorcion` no cierra un #N con `serial-activo`, `human-needed`, `pause-agents`, `auditoria` o `auditoria-completa` (aviso y sigue); (c) en `postMerge`, si el `launch-next` del issue mergeado es un #N que este mismo merge acaba de cerrar por absorción, ENCADENAR no lo arma (lo consume su `postStateClose`, que arma el sucesor de #N) y la serie cuenta como tomada.
++5. **Bancos**: `check-serial-guard.mjs` (24 casos; el caso de #373 sale ROJO contra el guard previo), `check-watchdog-gate0.mjs` (también el detector de issues ante una absorción vigente) y `check-absorcion.mjs` (también el `postMerge` real de `epic-merge.yml`) nuevos, en el piggyback de `check-embedded-js.mjs`.
+ 6. Anotaciones append-only en `protocol.md` (filas `serial-toctou-cruzado`, `stalled`, `cierre-verificado`; fila nueva `cola-absorbida`) y una línea en `architect.md` § 2. `docs/patches/AP-086-…patch` se regenera contra el bloque movido (mismo contenido, ancla nueva).
+ 
+ **Qué NO.** No cambia el mutex (flag por label) ni la regla del ganador. No se añade cola ni predicado de re-arm. No se toca `cola-prioridad.cjs`. El resolver no cierra nada sin la label, sin las tres condiciones y sin `cierre-verificado`. Los `stalled` con `serial-toctou-cruzado` anteriores a este cambio los resuelve el resolver como hasta ahora. No se arregla aquí el `ReferenceError` latente del Modo e (`anomalies.push` antes del `const`, tragado por su `catch`): queda señalado para el Architect. Sin cambio de superficie `workflow_call`.
+ 
+-**Riesgos aceptados.** (a) `architect-resolve` puede correr con Creators en vuelo: ajenos, o el PROPIO run que puso `stalled` en un post-step y aún no ha terminado (p. ej. «Materializar muerte del Creator sin PR» seguido de «Launch next» y «Barrido de cola»); un re-arm suyo sobre serie ocupada lo encola el guard serial. (b) La post-verificación añade 5 s al arm solo cuando hubo un candidato cruzado con guard pasado (pop de cola con el holder aún en sus post-steps). (c) Si un mismo issue pierde dos arranques cruzados, el marcador deduplicado no abre una ventana nueva de asentamiento de `cola-huerfana`; impacto bajo (hace falta serie libre y nada en vuelo). (d) La absorción no cubre el merge PARCIAL del PR absorbente (`postMerge` sale antes): el PR que complete el issue repite `Absorbe #N`.
++**Riesgos aceptados.** (a) `architect-resolve` puede correr con Creators en vuelo: ajenos, o el PROPIO run que puso `stalled` en un post-step y aún no ha terminado (p. ej. «Materializar muerte del Creator sin PR» seguido de «Launch next» y «Barrido de cola»); un re-arm suyo sobre serie ocupada lo encola el guard serial. (b) La post-verificación añade 5 s al arm solo cuando hubo un candidato cruzado con guard pasado (pop de cola con el holder aún en sus post-steps). (c) Si un mismo issue pierde dos arranques cruzados, el marcador deduplicado no abre una ventana nueva de asentamiento de `cola-huerfana`; impacto bajo (hace falta serie libre y nada en vuelo). (d) La absorción no cubre el merge PARCIAL del PR absorbente (`postMerge` sale antes): el PR que complete el issue repite `Absorbe #N`. (e) Asimetría productor/consumidor: la cancelación exige el marcador `cola-absorbida` del PR o de su issue, pero la materialización no lo exige (§4: basta `Absorbe #N` en el body de un PR que llega a merge). Una línea `Absorbe #N` errónea cierra #N sin la verificación AP-037; lo acotan la exclusión de §4 (b) y el cierre por `estado:cierre-pendiente-humano`, que deja el rastro visible y reversible (reabrir). (f) Un marcador `cola-absorbida` sin número, o un absorbente ilegible, deja #N fuera del detector `issue-armed-no-pr` hasta el merge del absorbente o un `cola-absorbida-cancelada` posterior (la cancelación automática solo actúa sobre marcadores con número).
+ 
+ **Criterio falsable** (process-reviewer, lotes de noviembre; mensual de diciembre). (1) 0 pares de Creators en vuelo sobre issues distintos, y todo arranque cruzado deja marcador `serial-toctou-cruzado` o notice `contendiente`/`guard-pasado-sin-flag` en el log del guard. (2) 0 issues con `serial-toctou-cruzado` que reciban `stalled` o un `watchdog-rearm`/`autonomous-decision` por ese motivo. (3) Un `stalled` puesto con otra cadena en vuelo produce `stalled-autonomous-resolve` en el primer tick (≤ 1 tick). (4) 0 corridas del Creator cuyo único acto sea `[ALCANCE-COMPLETO]` tras un diagnóstico del resolver de «ya en la rama base»; 0 arms de cola sobre un issue con `cola-absorbida` vigente. (5) Bancos verdes en el piggyback, con el caso de #373 ROJO contra el guard previo.
+ 
+diff --git a/scripts/check-absorcion.mjs b/scripts/check-absorcion.mjs
+index c7f8f87..8441230 100644
+--- a/scripts/check-absorcion.mjs
++++ b/scripts/check-absorcion.mjs
+@@ -7,9 +7,12 @@
+ // comentarios). La costura con `epic-merge.yml` (que `postMerge` y la rama
+ // `closed` sin merge carguen el módulo) se comprueba por texto. Cuelga del
+ // piggyback de `check-embedded-js.mjs`.
+-import { readFileSync } from 'fs';
++import { mkdtempSync, readFileSync, symlinkSync } from 'fs';
+ import { createRequire } from 'module';
+-import { resolve } from 'path';
++import { tmpdir } from 'os';
++import { join, resolve } from 'path';
++import yaml from 'js-yaml';
++import { cargarStep } from './lib/github-script.mjs';
+ 
+ const require = createRequire(import.meta.url);
+ const ABS = require(resolve('vendored/scripts/absorcion.cjs'));
+@@ -38,6 +41,53 @@ function api(issues) {
+   return { github, w, db, O: { owner: 'o', repo: 'r' } };
+ }
+ 
++// ── `postMerge` REAL de epic-merge.yml (review PR #380 🟡 2) ────────────────
++// Merge MANUAL (`pull_request: closed`, merged) del PR 50 de #40 (`epica`). El
++// mundo en memoria guarda issues, labels y comentarios; lo no doblado devuelve
++// vacío (el caso mira la absorción y ENCADENAR, no el resto del job).
++let emStep = null;
++for (const job of Object.values(yaml.load(readFileSync('.github/workflows/epic-merge.yml', 'utf8')).jobs || {}))
++  for (const st of job.steps || []) if (st.name === 'Evaluar y mergear') emStep = st;
++const epicMerge = emStep ? cargarStep(emStep.with.script, 'epic-merge') : null;
++const WS = mkdtempSync(join(tmpdir(), 'abs-ws-'));
++for (const d of ['.cola-central', '.epic-merge-central']) symlinkSync(process.cwd(), join(WS, d));
++
++async function mergeManual({ prBody, issues }) {
++  const db = new Map(issues.map(i => [i.number, { state: 'open', labels: [], comments: [], body: '', title: `Issue ${i.number}`, ...i }]));
++  db.set(50, { number: 50, state: 'closed', labels: [], comments: [], body: prBody, title: 'feat (#40)', pull_request: {} });
++  const get = n => { const i = db.get(n); if (!i) throw new Error('404'); return i; };
++  const conLabels = i => ({ ...i, labels: i.labels.map(name => ({ name })) });
++  let cid = 1;
++  const crear = (n, body) => { const c = { id: cid++, body, user: { login: 'talfarouriarte-cloud' }, created_at: new Date().toISOString(), html_url: `https://github.com/o/r/issues/${n}#issuecomment-${cid}` }; get(n).comments.push(c); return { data: c }; };
++  const conocidos = {
++    issues: {
++      get: async p => ({ data: conLabels(get(p.issue_number)) }),
++      listComments: async p => ({ data: get(p.issue_number).comments }),
++      createComment: async p => crear(p.issue_number, p.body),
++      updateComment: async p => { for (const i of db.values()) for (const c of i.comments) if (c.id === p.comment_id) c.body = p.body; return { data: {} }; },
++      addLabels: async p => { const i = get(p.issue_number); i.labels = [...new Set([...i.labels, ...p.labels])]; return { data: [] }; },
++      removeLabel: async p => { const i = get(p.issue_number); if (!i.labels.includes(p.name)) throw new Error('404 label'); i.labels = i.labels.filter(l => l !== p.name); return { data: [] }; },
++      listLabelsOnIssue: async p => ({ data: get(p.issue_number).labels.map(name => ({ name })) }),
++      update: async p => { const i = get(p.issue_number); if (p.state) i.state = p.state; return { data: {} }; },
++      listForRepo: async p => ({ data: [...db.values()].filter(i => i.state === 'open' && !i.pull_request
++        && (!p.labels || p.labels.split(',').every(n => i.labels.includes(n)))).map(conLabels) }),
++    },
++    users: { getAuthenticated: async () => ({ data: { login: 'talfarouriarte-cloud' } }) },
++  };
++  const vacio = async () => ({ data: [] });
++  const rest = new Proxy({}, { get: (_, ns) => new Proxy({}, { get: (_, m) => (conocidos[ns] && conocidos[ns][m]) || vacio }) });
++  const github = { rest, paginate: async (fn, p) => { const r = await fn(p); return Array.isArray(r.data) ? r.data : (r.data && (r.data.workflow_runs || r.data.items)) || []; } };
++  const fetch = async () => ({ ok: true, status: 200, json: async () => ({}), text: async () => '' });
++  const pull_request = { number: 50, state: 'closed', merged: true, body: prBody, head: { ref: 'claude/issue-40-20261101-1200', sha: 'abc' }, labels: [] };
++  const avisos = [];
++  const core = { setOutput() {}, notice() {}, info() {}, warning: m => avisos.push(String(m)), setFailed: m => avisos.push(String(m)) };
++  await epicMerge({ github, context: { repo: { owner: 'o', repo: 'r' }, runId: 1, eventName: 'pull_request', payload: { action: 'closed', pull_request } }, core },
++    { env: { GITHUB_WORKSPACE: WS, IN_AUTOMERGE: 'true', IN_EPIC_LABEL: 'epica', IN_CI_WORKFLOW_NAME: 'CI', STATUS_TOKEN: 'job', IN_LOOSE_AUDIT: 'false',
++      IN_PARTIAL_ROUND_CAP: '3', IN_PARTIAL_LIFETIME_CAP: '6', IN_DEFAULT_BRANCH: 'main' }, globales: { fetch } });
++  return { db, avisos };
++}
++const autoLaunch = (db, n) => db.get(n).comments.some(c => /<!-- epic-auto-launch -->/.test(c.body));
++
+ const BANCO = [
+   ['(a) leerAbsorbidos acepta `Absorbe #12` a inicio de línea (varias, sin duplicados)',
+     () => JSON.stringify(ABS.leerAbsorbidos('Closes #5\nAbsorbe #12\nAbsorbe #13  \r\nAbsorbe #12')) === '[12,13]'],
+@@ -90,6 +140,40 @@ const BANCO = [
+       const { github, O } = api([{ number: 12, comments: [{ body: 'ver `<!-- cola-absorbida: #40 -->`' }] }]);
+       return (await ABS.cancelarAbsorcion({ github, ...O, prNumber: 40, issues: [12] })).length === 0;
+     }],
++  ['(b) materialización: #N protegido (serial-activo / human-needed / pause-agents / auditoria / auditoria-completa) ⇒ aviso, no se toca',
++    async () => {
++      const prot = ABS.PROTEGIDAS.map((l, k) => ({ number: 20 + k, labels: [l] }));
++      const { github, w, db, O } = api([...prot, { number: 30, labels: ['en-cola'] }]);
++      const avisos = [];
++      const h = await ABS.materializarAbsorcion({ github, ...O, prNumber: 40, issues: [...prot.map(i => i.number), 30], warn: m => avisos.push(m) });
++      return ABS.PROTEGIDAS.length === 5 && JSON.stringify(h) === '[30]' && avisos.length === 5
++        && prot.every(i => db.get(i.number).state === 'open') && w.comments.every(c => c.n === 30) && w.closed.join() === '30:completed';
++    }],
++  ['(d) absorcionVigente: último marcador sin cancelación ⇒ {origen}; con cancelación posterior ⇒ null; re-marcado tras cancelar ⇒ vigente',
++    () => {
++      const m = x => ({ body: `<!-- cola-absorbida: #${x} -->` }), c = { body: '<!-- cola-absorbida-cancelada -->' };
++      return JSON.stringify(ABS.absorcionVigente([{ body: 'x' }, m(40)])) === '{"origen":40}'
++        && ABS.absorcionVigente([m(40), c]) === null
++        && JSON.stringify(ABS.absorcionVigente([m(40), c, m(55)])) === '{"origen":55}'
++        && JSON.stringify(ABS.absorcionVigente([{ body: '<!-- cola-absorbida -->' }])) === '{"origen":null}'
++        && ABS.absorcionVigente([]) === null
++        && ABS.absorcionVigente([{ body: '`<!-- cola-absorbida: #40 -->`' }]) === null;
++    }],
++  ['(e) postMerge: `Absorbe #41` sobre el launch-next #41 ⇒ #41 cerrado por estado y SIN epic-auto-launch; diag lo registra',
++    async () => {
++      if (!epicMerge) return false;
++      const { db } = await mergeManual({ prBody: '<!-- full-pr -->\nCloses #40\nAbsorbe #41',
++        issues: [{ number: 40, labels: ['epica'], body: 'x\n<!-- launch-next: #41 -->' }, { number: 41, labels: ['epica', 'en-cola'], body: 'y\n<!-- launch-next: #42 -->' }, { number: 42, labels: ['epica'] }] });
++      return db.get(41).state === 'closed' && db.get(41).labels.includes('estado:cierre-pendiente-humano') && !autoLaunch(db, 41)
++        && db.get(50).comments.some(c => /launch-next #41 absorbido por este PR/.test(c.body));
++    }],
++  ['(e) control: postMerge con launch-next NO absorbido (#42) ⇒ epic-auto-launch en #42 (el banco recorre ENCADENAR)',
++    async () => {
++      if (!epicMerge) return false;
++      const { db } = await mergeManual({ prBody: '<!-- full-pr -->\nCloses #40\nAbsorbe #41',
++        issues: [{ number: 40, labels: ['epica'], body: 'x\n<!-- launch-next: #42 -->' }, { number: 41, labels: ['epica', 'en-cola'] }, { number: 42, labels: ['epica'] }] });
++      return db.get(41).state === 'closed' && autoLaunch(db, 42) && !autoLaunch(db, 41);
++    }],
+   ['costura: epic-merge.yml carga absorcion.cjs en postMerge (materializar) y en closed sin merge (cancelar)',
+     () => {
+       const em = readFileSync('.github/workflows/epic-merge.yml', 'utf8');
+diff --git a/scripts/check-watchdog-gate0.mjs b/scripts/check-watchdog-gate0.mjs
+index c3ed8a5..b4b6fdf 100644
+--- a/scripts/check-watchdog-gate0.mjs
++++ b/scripts/check-watchdog-gate0.mjs
+@@ -10,7 +10,9 @@
+ // terminan en el Gate 0, así que el doble no necesita el resto del scan.
+ // Cuelga del piggyback de `check-embedded-js.mjs` por la misma razón que sus
+ // hermanos (patrón de `check-serial-guard.mjs`).
+-import { readFileSync } from 'fs';
++import { mkdtempSync, readFileSync, symlinkSync } from 'fs';
++import { tmpdir } from 'os';
++import { join } from 'path';
+ import yaml from 'js-yaml';
+ import { cargarStep } from './lib/github-script.mjs';
+ 
+@@ -22,42 +24,61 @@ for (const job of Object.values(wf.jobs || {})) {
+ if (!script) { console.error('CHECK-WATCHDOG-GATE0 ROJO: step `scan` no encontrado en watchdog.yml'); process.exit(1); }
+ const run = cargarStep(script, 'scan');
+ 
++// Workspace de pega: el scan carga los módulos de su checkout sparse `.cola-central`.
++const WS = mkdtempSync(join(tmpdir(), 'wd-ws-'));
++symlinkSync(process.cwd(), join(WS, '.cola-central'));
++
+ const CREATOR_WF = 'Claude Code';
+ const ENV = {
+-  STATUS_TOKEN: 'x', ARM_PAT: 'x',
++  GITHUB_WORKSPACE: WS, STATUS_TOKEN: 'x', ARM_PAT: 'x',
+   IN_CREATOR_WF: CREATOR_WF, IN_REVIEWER_WF: 'Opus Reviewer', IN_CI_WF: 'CI', IN_EPIC_MERGE_WF: 'Epic merge',
+   IN_EXTRA_WFS: '', IN_LOOKBACK_MIN: '45', IN_SKIP_LABELS: 'human-needed,pause-agents',
+   IN_AUTOMERGE: 'true', IN_DEFAULT_BRANCH: 'main',
+ };
+ const lbl = names => names.map(name => ({ name }));
+ const AUTO = { body: 'x\n<!-- autonomous-decision -->' };
++const HACE = min => new Date(Date.now() - min * 60000).toISOString();
++// Issue armado hace 2 h, sin `en-cola` ni PR, en silencio (> STALL_MIN).
++const ARMADO = n => ({ number: n, title: 'Absorbido', labels: lbl([]), body: '', created_at: HACE(300), updated_at: HACE(120) });
++const ARM = { body: '@claude arranca — turno de cola', user: { login: 'talfarouriarte-cloud' }, created_at: HACE(120) };
++const MARCA = x => ({ body: `adenda\n\n<!-- cola-absorbida: #${x} -->`, user: { login: 'talfarouriarte-cloud' }, created_at: HACE(110) });
++const CANCELADA = { body: 'vuelve\n<!-- cola-absorbida-cancelada -->', user: { login: 'github-actions[bot]' }, created_at: HACE(100) };
++const armedNoPr = (w, n) => (anomalias(w) || []).some(a => a.type === 'issue-armed-no-pr' && a.number === n);
+ 
+-async function scan(world, { eventName = 'schedule', payload = {} } = {}) {
++// `inFlight: false` deja pasar el Gate 0 y recorre el resto del scan (detector
++// de issues incluido, review PR #380 🔴 1): lo no doblado devuelve vacío.
++async function scan(world, { eventName = 'schedule', payload = {}, inFlight = true } = {}) {
+   const w = { added: [], comments: [], outputs: {}, warnings: [], notices: [] };
+   const enVuelo = { id: 500, name: CREATOR_WF, status: 'in_progress', created_at: new Date(Date.now() - 60000).toISOString() };
+-  const github = {
+-    paginate: async (fn, p) => (await fn(p)).data,
+-    rest: {
+-      pulls: { list: async () => ({ data: world.prs || [] }) },
+-      issues: {
+-        listForRepo: async p => ({ data: p.labels === 'stalled'
+-          ? (world.issues || []).filter(i => i.labels.some(l => l.name === 'stalled'))
+-          : (world.issues || []) }),
+-        listComments: async p => ({ data: (world.comments || {})[p.issue_number] || [] }),
+-        addLabels: async p => { w.added.push(...p.labels.map(l => `${p.issue_number}:${l}`)); },
+-        createComment: async p => { w.comments.push({ n: p.issue_number, body: p.body }); },
+-      },
+-      actions: {
+-        listWorkflowRunsForRepo: async p => ({ data: { workflow_runs: p.status === 'in_progress' ? [enVuelo] : [] } }),
+-        listJobsForWorkflowRun: async () => ({ data: { total_count: 1, jobs: [] } }),
+-        reRunWorkflowFailedJobs: async () => ({}),
++  const conocidos = {
++    pulls: { list: async () => ({ data: world.prs || [] }) },
++    issues: {
++      get: async p => {
++        const i = (world.issues || []).find(x => x.number === p.issue_number) || (world.otros || {})[p.issue_number];
++        if (!i) throw new Error('404');
++        return { data: { state: 'open', ...i } };
+       },
++      listForRepo: async p => ({ data: (world.issues || []).filter(i => !p.labels
++        || p.labels.split(',').every(n => i.labels.some(l => l.name === n))) }),
++      listComments: async p => ({ data: (world.comments || {})[p.issue_number] || [] }),
++      addLabels: async p => { w.added.push(...p.labels.map(l => `${p.issue_number}:${l}`)); },
++      removeLabel: async () => ({}),
++      createComment: async p => { w.comments.push({ n: p.issue_number, body: p.body }); },
++    },
++    actions: {
++      listWorkflowRunsForRepo: async p => ({ data: { workflow_runs: inFlight && p.status === 'in_progress' ? [enVuelo] : [] } }),
++      listJobsForWorkflowRun: async () => ({ data: { total_count: 1, jobs: [] } }),
++      reRunWorkflowFailedJobs: async () => ({}),
+     },
+   };
++  const vacio = async () => ({ data: [] });
++  const rest = new Proxy({}, { get: (_, ns) => new Proxy({}, { get: (_, m) => (conocidos[ns] && conocidos[ns][m]) || vacio }) });
++  const github = { rest, paginate: async (fn, p) => { const r = await fn(p); return Array.isArray(r.data) ? r.data : (r.data && (r.data.workflow_runs || r.data.items)) || []; } };
++  const fetch = async () => ({ ok: true, status: 200, json: async () => ([]), text: async () => '' });
+   const context = { repo: { owner: 'o', repo: 'r' }, eventName, payload, runId: 1 };
+   const core = { setOutput: (k, v) => { w.outputs[k] = String(v); }, notice: m => w.notices.push(String(m)),
+     warning: m => w.warnings.push(String(m)), info() {} };
+-  await run({ github, context, core }, { env: ENV });
++  await run({ github, context, core }, { env: ENV, globales: { fetch } });
+   return w;
+ }
+ const anomalias = w => JSON.parse(w.outputs.anomalies || 'null');
+@@ -95,6 +116,21 @@ const BANCO = [
+       const w = await scan({ issues: [{ number: 6, title: 'W', labels: lbl(['stalled', 'human-needed']) }] });
+       return w.outputs.found === 'false' && anomalias(w).length === 0;
+     }],
++  // Review PR #380 🔴 1: issue absorbido (abierto, armado, SIN `en-cola`) y sin
++  // runs en vuelo. Contra el detector previo sale `issue-armed-no-pr` ⇒ ROJO.
++  ['(f) control: issue armado sin en-cola ni PR, sin runs en vuelo ⇒ issue-armed-no-pr (el banco llega al detector)',
++    async () => armedNoPr(await scan({ issues: [ARMADO(20)], comments: { 20: [ARM] } }, { inFlight: false }), 20)],
++  ['(f) issue con cola-absorbida vigente y absorbente #40 abierto ⇒ SIN anomalía + notice «absorbido por #40»',
++    async () => {
++      const w = await scan({ issues: [ARMADO(20)], comments: { 20: [ARM, MARCA(40)] }, otros: { 40: { number: 40, state: 'open', pull_request: {} } } }, { inFlight: false });
++      return !armedNoPr(w, 20) && w.notices.some(m => /#20: espera legítima: absorbido por #40/.test(m));
++    }],
++  ['(f) absorbente #40 cerrado sin materializar ⇒ issue-armed-no-pr (no se congela)',
++    async () => armedNoPr(await scan({ issues: [ARMADO(20)], comments: { 20: [ARM, MARCA(40)] }, otros: { 40: { number: 40, state: 'closed', pull_request: {} } } }, { inFlight: false }), 20)],
++  ['(f) cola-absorbida seguida de cola-absorbida-cancelada ⇒ issue-armed-no-pr',
++    async () => armedNoPr(await scan({ issues: [ARMADO(20)], comments: { 20: [ARM, MARCA(40), CANCELADA] }, otros: { 40: { number: 40, state: 'open' } } }, { inFlight: false }), 20)],
++  ['(f) marcador citado entre backticks no cuenta ⇒ issue-armed-no-pr',
++    async () => armedNoPr(await scan({ issues: [ARMADO(20)], comments: { 20: [ARM, { ...MARCA(40), body: 'ver `<!-- cola-absorbida: #40 -->`' }] }, otros: { 40: { number: 40, state: 'open' } } }, { inFlight: false }), 20)],
+ ];
+ 
+ const rojos = [];
+@@ -102,4 +138,4 @@ for (const [nombre, fn] of BANCO) {
+   try { if (!(await fn())) rojos.push(nombre); } catch (e) { rojos.push(`${nombre}: excepción ${e.message}`); }
+ }
+ if (rojos.length) { console.error('CHECK-WATCHDOG-GATE0 ROJO:'); rojos.forEach(e => console.error('  - ' + e)); process.exit(1); }
+-console.log(`check-watchdog-gate0 verde: ${BANCO.length} casos de stalled antes del Gate 0 (AP-122).`);
++console.log(`check-watchdog-gate0 verde: ${BANCO.length} casos de stalled antes del Gate 0 y de absorción vigente en el detector de issues (AP-122).`);
+diff --git a/vendored/docs-agents/protocol.md b/vendored/docs-agents/protocol.md
+index 4a9e544..5b47a74 100644
+--- a/vendored/docs-agents/protocol.md
++++ b/vendored/docs-agents/protocol.md
+@@ -103,7 +103,7 @@ En los tres casos, `node scripts/adr-lint.mjs` en verde antes de commitear.
+ | `<!-- serial-guard -->` | Guard serial de `claude-code.yml` al bloquear un arm desde issue: (a) la serie ya tiene un Creator en vuelo en OTRO issue/PR `claude/*` abierto; (b) **AP-033** el PROPIO issue ya tiene `serial-activo` puesto por su run vivo (re-arm concurrente — Watchdog/architect-resolve/arm manual/override); (c) **AP-033 Change B** dos ARRANQUES simultáneos leen ambos la serie libre y este run NO es el ganador determinista (menor `run_id` sobre el mismo issue) | Auditor/5-whys (rastro del encolado / auto-aborto); humano | (a) «serie ocupada ⇒ encolado» (AP-014, 2026-07-14): el issue NO se arma, se etiqueta SOLO `en-cola` (AP-039 retiró `stalled` del encolado: la espera de cola es legítima y no necesita ruling del resolutor; el watchdog la trata como `cola-huerfana` solo si la premisa de serie cae y persiste >1 tick); override `serial-ok`. **AP-048** (excepción fast-path de continuación mismo-issue): si el ÚNICO titular de la serie es un PR del PROPIO issue (`claude/issue-N-*`) y no hay otro run de Creator vivo sobre la serie (runs `in_progress`/`queued` vía API, mismo árbitro determinista de menor `run_id` que Change B; fail-closed si la API no responde ⇒ encola como hoy), NO se encola: se deja pasar como continuación de la MISMA unidad de trabajo (marcador `serial-continuacion`). La clase que motivó el hard stop (doble-arm de DOS issues DISTINTOS, finplan#1298/#1299) exige otro PR/otro `serial-activo`, así que la excepción no la reabre. (b)/(c) auto-aborto del run redundante SIN re-etiquetar (el issue está EN VUELO, no en cola) y SIN escribir/retirar `serial-activo` (lo posee/lo escribe el run ganador). Es lo que las menciones a «pop de cola» de otras filas des-hacen al liberarse la serie | Comentario en el ISSUE **Desde AP-097 (central#267, anotación append-only):** el cinturón (c) sigue arbitrando «sobre el mismo issue» con este marcador; dos arranques simultáneos de issues DISTINTOS los arbitra ahora el cinturón cruzado, con marcador propio `serial-toctou-cruzado` (ver su fila). Antes pasaban los dos y escribían `serial-activo` a la vez sin dejar marcador (asesoramiento#2324 y #2333). |
+ | `<!-- serial-continuacion -->` | Guard serial de `claude-code.yml` (**AP-048**, finplan#1603) al aplicar el fast-path de continuación mismo-issue: (deja-pasar) el ÚNICO titular de la serie es un PR del PROPIO issue (`claude/issue-N-*`) y no hay otro run de Creator vivo; (cede) dos continuaciones mismo-issue simultáneas y este run NO es el ganador determinista (menor `run_id`) | Auditor/5-whys (rastro del fast-path: el arm pasó por continuación, no por serie libre ni por override); humano | (deja-pasar) el arm NO se encola: retira `en-cola` si la tenía y procede — el PR abierto ES la señal de vuelo (no re-escribe `serial-activo`, que el post-step retiraría por existir PR). Backstop cuando NADIE aplica el fast-path: el detector `issue-armed-no-pr`/`cola-huerfana` del watchdog (AP-048) trata «serie ocupada SÓLO por el propio PR huérfano >1 tick» como premisa caída y le da dueño (architect-resolve). (cede) auto-aborto SIN re-etiquetar (el ganador arma ahora) | Comentario en el ISSUE |
+ | `<!-- serial-toctou-cruzado -->` | Guard serial de `claude-code.yml` (**AP-097**, central#267, ruling mensual 2026-09-30) en la rama «serie libre»: otro run de arm del mismo workflow caller, sobre un issue DISTINTO, arrancó en los 10 min anteriores (cota) con `run_id` MENOR, **todavía no ha pasado su guard** (su step de guard no está `completed`, o lo está y su issue lleva ahora `serial-activo`) y este run no es el ganador. Contendientes: evento de issue, `display_title` que no es un PR abierto ni un issue exento (`auditoria`/`auditoria-completa`/`serial-ok`). El holder que acaba de liberar la serie y hace el pop de cola NO es contendiente (rectificación en revisión, PR #292) | architect-resolve (vía `stalled`, re-arma cuando la serie quede libre); Auditor/5-whys (rastro del doble arranque); humano | El issue NO se arma: queda `stalled` (no `en-cola`, por el ruling) y NO escribe `serial-activo` (lo escribe el ganador, así el mutex nunca queda huérfano). **Dedup por marcador (AP-018 §1)**: se emite una vez y `stalled` se re-asegura idempotente. Degradación: sin lista de runs o de issues no hay cinturón cruzado (statu quo). Banco: `scripts/check-serial-guard.mjs` | Comentario en el ISSUE **Desde AP-122 (central#343/#373, anotación append-only):** el perdedor queda `en-cola`, no `stalled` (transición con dueño mecánico: lo arman `armQueue`/`popQueue`/barridos/`liberarCola`, no architect-resolve). La relectura de un candidato con guard pasado es por NÚMERO (`issues.get`; mapa título→número de los issues abiertos; sin número o con error ⇒ contendiente), cada run evaluado deja `core.notice` con su motivo, y el ganador post-verifica a los 5 s tras escribir `serial-activo` contra los candidatos de `run_id` menor descartados por «guard pasado sin flag»: si alguno lleva el flag, cede (retira el suyo, `en-cola`, mismo marcador). |
+-| `<!-- cola-absorbida: #<X> -->` | (a) architect-resolve (**AP-122**, central#307) al adendar/rular que un PR absorbe el alcance de otro issue encolado #N: lo publica en #N (X = PR absorbente, o su issue si el PR no existe aún) y retira `en-cola`; (b) `epic-merge.yml` (`postMerge`, `vendored/scripts/absorcion.cjs`) al mergear un PR cuyo body declara `Absorbe #N` a inicio de línea (con `<!-- cola-absorbida-mergeada -->`) | `epic-merge.yml`: al merge cierra #N por estado (retira `en-cola`/`stalled`, pone `estado:cierre-pendiente-humano`, cierra `completed`; `postStateClose` consume los sentinels); al cerrar el PR sin merge devuelve `en-cola` a los #N con marcador de ese PR/issue (`<!-- cola-absorbida-cancelada -->`) | «El alcance de #N lo entrega otro PR»: el pop de cola no arma trabajo ya absorbido. Línea `Absorbe #N` anclada, jamás substring ni entre backticks. No cubre el merge PARCIAL del PR absorbente (sale antes del cierre): el PR que complete el issue repite `Absorbe #N`. Banco: `scripts/check-absorcion.mjs` | Comentario en el ISSUE absorbido |
++| `<!-- cola-absorbida: #<X> -->` | (a) architect-resolve (**AP-122**, central#307) al adendar/rular que un PR absorbe el alcance de otro issue encolado #N: lo publica en #N (X = PR absorbente, o su issue si el PR no existe aún) y retira `en-cola`; (b) `epic-merge.yml` (`postMerge`, `vendored/scripts/absorcion.cjs`) al mergear un PR cuyo body declara `Absorbe #N` a inicio de línea (con `<!-- cola-absorbida-mergeada -->`) | `epic-merge.yml`: al merge cierra #N por estado (retira `en-cola`/`stalled`, pone `estado:cierre-pendiente-humano`, cierra `completed`; `postStateClose` consume los sentinels); al cerrar el PR sin merge devuelve `en-cola` a los #N con marcador de ese PR/issue (`<!-- cola-absorbida-cancelada -->`); `watchdog.yml` (scan, detector de issues): con el marcador vigente y #X abierto, #N no es `issue-armed-no-pr` | «El alcance de #N lo entrega otro PR»: el pop de cola no arma trabajo ya absorbido. Línea `Absorbe #N` anclada, jamás substring ni entre backticks. No cubre el merge PARCIAL del PR absorbente (sale antes del cierre): el PR que complete el issue repite `Absorbe #N`. No cierra un #N con `serial-activo`/kill-switch/auditoría ni arma un `launch-next` absorbido por el mismo merge. Bancos: `scripts/check-absorcion.mjs`, `scripts/check-watchdog-gate0.mjs` | Comentario en el ISSUE absorbido |
+ | `<!-- serial-holder-muerto -->` | Guard serial de `claude-code.yml` (**AP-049**, repesca finplan#1604) al encontrar `serial-activo` colgado con CERO runs del workflow en vuelo (excluido el arm entrante, que ES el run que va a nacer) y ningún PR `claude/*` abierto — LIVENESS DEL HOLDER por el lado LECTOR: la muerte DURA del runner entre el push y el post-step vació TODA la capa post-step de liberación a la vez (no un belt que falla — la capa que muere con el proceso), dejando el lock huérfano | Auditor/5-whys (rastro: el arm pasó porque el holder estaba MUERTO, no por serie libre ni override); humano | Retira `serial-activo` del/los issue(s) colgado(s) y DEJA PASAR el arm autorizado: el estado del lock se lee del lado LECTOR (Actions API), que sobrevive a la muerte del escritor — elimina la ventana ciega hasta el cron del Watchdog (~10 min, finplan#1604). **Fail-closed:** con CUALQUIER run vivo (atribución ambigua) o sin lista de runs (API caída) se mantiene el bloqueo/cola de hoy; el ganador determinista AP-033 (c) queda intacto. Cubre lo que #129/#130 (AP-047/AP-048) no alcanzan (capa post-step ENTERA muerta; arms cross-issue / pop de cola sobre el lock huérfano). Solo actúa con cero PRs `claude/*` abiertos (un PR abierto es unidad de trabajo con rama y commits cuyo estado NO lo decide la liveness de un run — su Creator espera al Reviewer entre rondas; des-huérfanas de PRs siguen siendo del Watchdog). El Watchdog conserva su 3ª mano | Comentario en el ISSUE |
+ | `<!-- arm-de-cola -->` | `popQueue` (`claude-code.yml`, en los terminales del Creator que liberan la serie: alcance completo, escalada, bloqueo, muerte-sin-PR) y `armQueue` (`epic-merge.yml`, al mergear) al arrancar el `en-cola` más antiguo (FIFO por `created`). **Segunda lectura (AP-062):** los DOS barridos de cierre de job —`sweepQueueAtExit` (`epic-merge.yml`, en el `finally` del cuerpo) y el step «Barrido de cola al cierre» (`claude-code.yml`, `always()`)— emiten el MISMO marcador con el motivo «el encolado no era visible en la lectura primaria». Los cuatro se citan por NOMBRE y no por `archivo:línea`: el ancla numérica de esta fila ya llegó rancia una vez (`claude-code.yml:980`) y nada la re-verifica; el nombre es estable y grepeable | Creator (vía el `@claude` del mismo comentario — es su turno de cola); Auditor/5-whys (atribución de capa: el arm salió de la cola, no de un horneado; el motivo del comentario distingue pop PRIMARIO de barrido de cierre, que es la firma de una ventana lectura-durante-escritura) | Materializa el **pop de cola** que otras filas mencionan: comentario de arranque del más antiguo encolado cuando la serie queda libre. Espejo popQueue↔armQueue (si tocas uno, toca el otro) — **el deber de espejo alcanza también a los barridos**: son la misma transición leída dos veces **Anotación (2026-10-05, AP-102):** el orden de salida ya no es FIFO puro: urgente → eslabón suspendido → alta → normal (FIFO dentro de cada nivel); ver filas `prioridad:*` y `eslabon-suspendido`. | Comentario en el ISSUE desencolado |
+ | `<!-- cola-huerfana -->` | epic-merge (`epic-merge.yml:441`) al mergear+cerrar un issue `epica` SIN sentinel (ni `launch-next` ni `epic-audit`) | architect-resolve (vía `stalled`, POR EVENTO — trigger `labeled`); Auditor | El fin legítimo de toda cadena es `epic-audit`: un merge sin sentinel es defecto de horneado, no un fin — se aplica `stalled` al issue (`:439`) y se escala a architect-resolve para cerrar el bucle (wmcb#6, 2026-07-11) | Comentario en el ISSUE mergeado |
+diff --git a/vendored/docs-agents/watchdog.md b/vendored/docs-agents/watchdog.md
+index 8651d67..de6f40f 100644
+--- a/vendored/docs-agents/watchdog.md
++++ b/vendored/docs-agents/watchdog.md
+@@ -170,10 +170,14 @@ cierra por firma. Si falta cualquiera de las tres condiciones: camino de siempre
+ AP-122).** Cuando una adenda o ruling tuyo instruye a un PR a absorber el
+ alcance de otro issue encolado #N, publica en #N un comentario con el marcador
+ `<!-- cola-absorbida: #<X> -->` en línea propia (X = número del PR que absorbe;
+-si aún no existe, el del issue que absorbe) y retírale `en-cola` (nadie lo arma
+-mientras el PR vive). El PR declara `Absorbe #N` (mandato del Creator); al
+-mergearlo, `epic-merge` cierra #N por estado; si se cierra sin merge, #N vuelve
+-a `en-cola`.
++si aún no existe, el del issue que absorbe) y retírale `en-cola`. Mientras el
++absorbente #X siga abierto, el detector `issue-armed-no-pr` del scan salta #N
++(notice «espera legítima: absorbido por #X»), así que nadie lo arma; con #X
++cerrado sin materializar, #N vuelve a ser candidato. El PR declara `Absorbe #N`
++(mandato del Creator); al mergearlo, `epic-merge` cierra #N por estado (salvo
++que lleve `serial-activo`, `human-needed`, `pause-agents`, `auditoria` o
++`auditoria-completa`) y no arma el `launch-next` que acaba de absorber; si se
++cierra sin merge, #N vuelve a `en-cola`.
+ 
+ **Perdedor del cinturón cruzado (`serial-toctou-cruzado`, AP-122).** Desde
+ AP-122 el perdedor de un arranque cruzado queda `en-cola` (no `stalled`): lo arma
+diff --git a/vendored/scripts/absorcion.cjs b/vendored/scripts/absorcion.cjs
+index 1d8438f..585a838 100644
+--- a/vendored/scripts/absorcion.cjs
++++ b/vendored/scripts/absorcion.cjs
+@@ -21,6 +21,16 @@
+ // del issue absorbente si el PR aún no existe al adendar). Al leer, el número
+ // es opcional; la cancelación solo actúa sobre los marcadores de ESE PR/issue.
+ //
++// ESPERA LEGÍTIMA (review PR #380, 🔴 1): un #N con absorción VIGENTE (último
++// marcador `cola-absorbida` sin `cola-absorbida-cancelada` posterior) está
++// abierto, armado y sin `en-cola`; el detector `issue-armed-no-pr` del Watchdog
++// lo salta con `absorcionVigente` mientras el absorbente siga abierto.
++//
++// PROTEGIDOS (review PR #380, 🟡 3): `materializarAbsorcion` no cierra un #N
++// con `serial-activo` (Creator en vuelo), kill-switch o de auditoría: aviso y
++// sigue. No exige el marcador del resolver (AP-122 §4: `Absorbe #N` basta);
++// la asimetría con la cancelación está declarada en AP-122 «Riesgos aceptados».
++//
+ // La declaración `Absorbe #N` se lee por LÍNEA ANCLADA sobre el cuerpo
+ // despojado de código (jamás substring: «no Absorbe #12», «`Absorbe #12`» o
+ // `Absorbe#12` no declaran nada — clase AP-063).
+@@ -33,7 +43,9 @@ const { despojarCodigo } = require('./resolve-cross-issue-failsafe.cjs');
+ const ABSORBE_RE = /^Absorbe #(\d+)\s*$/;
+ const MARCA_RE = /<!--\s*cola-absorbida(?::\s*#(\d+))?\s*-->/g;
+ const marcaAbsorbida = (x) => `<!-- cola-absorbida: #${Number(x)} -->`;
++const CANCELADA_RE = /<!--\s*cola-absorbida-cancelada\s*-->/;
+ const nombreLabel = (l) => (typeof l === 'string' ? l : (l && l.name) || '');
++const PROTEGIDAS = ['serial-activo', 'human-needed', 'pause-agents', 'auditoria', 'auditoria-completa'];
+ 
+ // Números de issue declarados con `Absorbe #N` (uno por línea), sin duplicados.
+ function leerAbsorbidos(body) {
+@@ -51,6 +63,20 @@ function origenesMarca(body) {
+   return [...despojarCodigo(body).matchAll(MARCA_RE)].map((m) => (m[1] ? Number(m[1]) : null));
+ }
+ 
++// Absorción VIGENTE en los comentarios de un issue: `{ origen }` (X del último
++// marcador `cola-absorbida`, `null` si no lleva número) cuando no hay un
++// `cola-absorbida-cancelada` posterior; `null` si no hay absorción vigente.
++function absorcionVigente(cs) {
++  let ultimo = -1, origen = null;
++  (cs || []).forEach((c, i) => {
++    const os = origenesMarca(c.body || '');
++    if (os.length) { ultimo = i; origen = os[os.length - 1]; }
++  });
++  if (ultimo < 0) return null;
++  if ((cs || []).slice(ultimo + 1).some((c) => CANCELADA_RE.test(despojarCodigo(c.body || '')))) return null;
++  return { origen };
++}
++
+ async function comentarios({ github, owner, repo, issue_number }) {
+   return github.paginate(github.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 });
+ }
+@@ -67,6 +93,8 @@ async function materializarAbsorcion({ github, owner, repo, prNumber, issues, wa
+     try {
+       const { data: it } = await github.rest.issues.get({ owner, repo, issue_number: n });
+       if (it.state !== 'open' || it.pull_request) continue;
++      const protegida = (it.labels || []).map(nombreLabel).find((l) => PROTEGIDAS.includes(l));
++      if (protegida) { warn(`absorción #${n} (PR #${prNumber}): lleva \`${protegida}\` — no se cierra (trabajo vivo, kill-switch o auditoría).`); continue; }
+       await quitar({ github, owner, repo }, n, 'en-cola');
+       await quitar({ github, owner, repo }, n, 'stalled');
+       await github.rest.issues.addLabels({ owner, repo, issue_number: n, labels: ['estado:cierre-pendiente-humano'] });
+@@ -98,7 +126,7 @@ async function cancelarAbsorcion({ github, owner, repo, prNumber, origenes = [],
+       let ultimo = -1;
+       cs.forEach((c, i) => { if (origenesMarca(c.body).some((o) => validos.includes(o))) ultimo = i; });
+       if (ultimo < 0) continue;
+-      if (cs.slice(ultimo + 1).some((c) => /<!--\s*cola-absorbida-cancelada\s*-->/.test(c.body || ''))) continue;
++      if (cs.slice(ultimo + 1).some((c) => CANCELADA_RE.test(c.body || ''))) continue;
+       if (!(it.labels || []).some((l) => nombreLabel(l) === 'en-cola')) {
+         await github.rest.issues.addLabels({ owner, repo, issue_number: n, labels: ['en-cola'] });
+       }
+@@ -110,4 +138,4 @@ async function cancelarAbsorcion({ github, owner, repo, prNumber, origenes = [],
+   return hechos;
+ }
+ 
+-module.exports = { leerAbsorbidos, origenesMarca, marcaAbsorbida, materializarAbsorcion, cancelarAbsorcion };
++module.exports = { leerAbsorbidos, origenesMarca, marcaAbsorbida, absorcionVigente, PROTEGIDAS, materializarAbsorcion, cancelarAbsorcion };
+-- 
+2.56.0
+
