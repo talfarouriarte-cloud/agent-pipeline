@@ -1315,6 +1315,22 @@ jobs:
                 } catch (e) { core.info('consulta directa de CI falló: ' + e.message); }
               }
               if (!ciOk) { await setStatus(prNumber, 'estado:esperando-ci'); await diag(prNumber, `CI no confirmado verde (trigger=${run ? run.name + '/' + run.conclusion : 'labeled:lgtm'}); espero al otro evento.`); return; }
+              // GATE de escalada abierta (AP-136, central#392, aud. asesoramiento#3361):
+              // un PR con `estado:esperando-architect` espera un ruling del Architect;
+              // un LGTM sobre él no mergea. Sin tocar labels (las limpia
+              // architect-resolve al re-armar). Lógica en
+              // `vendored/scripts/escalada-creator.cjs` (checkout sparse); módulo
+              // ausente ⇒ gate inactivo (statu quo), con aviso.
+              {
+                let ESC = null;
+                try { ESC = require(`${process.env.GITHUB_WORKSPACE}/.epic-merge-central/vendored/scripts/escalada-creator.cjs`); }
+                catch (e) { core.warning(`[epic-merge] escalada-creator no disponible (${e.message}) — gate de escalada abierta inactivo (statu quo).`); }
+                const labelsVivas = pf ? (pf.labels || []).map(l => l.name) : prLabels;
+                if (ESC && ESC.mergeBloqueadoPorEscalada(labelsVivas)) {
+                  await diag(prNumber, 'PR con `estado:esperando-architect`: escalada del Creator abierta, espera el ruling del Architect (AP-136) — no mergeo; architect-resolve limpia la label al re-armar.');
+                  return;
+                }
+              }
 
               // GATE 2: Reviewer LGTM. Hecho materializado primario (ADR-218):
               // label `lgtm` (post-step determinista de reviewer.yml; CI la

@@ -2421,6 +2421,30 @@ jobs:
             // salta) y se perdería (sin re-evento tras el ready). Dejar el ready a ese
             // post-step evita la doble costura.
             if (pr.draft) { core.notice(`open-review-failsafe: PR #${pr.number} de #${n} en DRAFT — la transición ready la materializa el post-step de muerte; no se aplica needs-review a un draft.`); return; }
+            // AP-136 (central#392, aud. asesoramiento#3384): el Creator marcó
+            // `ready` (paso (c) de AP-095) y escaló DESPUÉS al Architect. El turno
+            // es del Architect, no del Reviewer: cede ante una escalada fresca en
+            // el PR o en el issue, o ante `stalled`/`estado:esperando-architect`.
+            // Este step corre ANTES que creator-escalated: lee la ventana él
+            // mismo. Lógica en `vendored/scripts/escalada-creator.cjs` (AP-068);
+            // módulo ausente o lectura caída ⇒ statu quo, con aviso.
+            {
+              let ESC = null;
+              try { ESC = require(`${process.env.GITHUB_WORKSPACE}/scripts/escalada-creator.cjs`); }
+              catch (e) { core.warning(`open-review-failsafe: escalada-creator no injertado (${e.message}) — sin cesión ante escalada (statu quo).`); }
+              if (ESC) {
+                try {
+                  const desdeISO = context.payload.comment?.created_at || pr.created_at || null;
+                  const leer = num => github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: num, per_page: 100 });
+                  const fresca = ESC.escaladaFresca([...(await leer(pr.number)), ...(await leer(n))], desdeISO);
+                  const labelsPr = (pr.labels || []).map(l => (typeof l === 'string' ? l : l.name));
+                  if (ESC.cedeAnteEscalada({ labelsPr, fresca })) {
+                    core.notice(`open-review-failsafe: PR #${pr.number} de #${n} escalado al Architect (${fresca ? 'escalada fresca del Creator' : labelsPr.filter(l => l === 'stalled' || l === 'estado:esperando-architect').join(', ')}) — no se convoca al Reviewer (AP-136).`);
+                    return;
+                  }
+                } catch (e) { core.warning(`open-review-failsafe: lectura de la escalada falló (${e.message}) — sin cesión (statu quo).`); }
+              }
+            }
             // DEDUPE (condición de aplicabilidad): ¿nació algún run del Reviewer
             // para esta rama desde que el PR se volvió revisable? Central#318
             // (asesoramiento#2707): este post-step corre al cierre del Creator
@@ -2730,6 +2754,10 @@ jobs:
           # con 0 jobs; incidente 2026-07-17, PR #86). Mismo saneado que
           # epic-merge (Fase C): inputs y outputs de steps via env.
           STEP_CREATOR_OUTCOME: ${{ steps.creator.outcome }}
+          # AP-136: estado del JOB (no solo de la sesión). Si no es `success`, el
+          # post-step creator-escalated (gateado por `success()`) no correrá y la
+          # escalada del Creator la materializa este step.
+          JOB_STATUS: ${{ job.status }}
           IN_DEFAULT_BRANCH: ${{ inputs.default_branch }}
           # AP-101: el step `rescate` commiteó y pusheó un WIP del árbol sucio.
           RESCUE_WIP: ${{ steps.rescate.outputs.wip }}
@@ -2815,6 +2843,60 @@ jobs:
                 }
                 core.notice(`Creator de #${n}: árbol rescatado como WIP en PR #${openPr.number} (arbol-rescatado-por-estado) — turno del Creator; sin ready ni needs-review.`);
                 return;
+              }
+              // AP-136 (central#392, aud. asesoramiento#3361/#3369/#3373): el
+              // Creator escaló al Architect DENTRO de su PR. Un draft + `success`
+              // con escalada no es «olvidó `gh pr ready`»: cede en los DOS caminos
+              // (`ready-declarado-materializado` y `creator-muerto-draft-
+              // materializado-ready`) — ni `ready` ni `needs-review`. Este step
+              // corre ANTES que creator-escalated: lee él mismo la ventana del PR
+              // y del issue. Si el JOB no va en `success` (sesión caída o un
+              // post-step anterior en rojo), creator-escalated (gateado por
+              // `success()`) no correrá: la escalada se materializa aquí, con el
+              // mismo marcador (dedupe por ventana entre ambos) y, si el PR ya
+              // estaba `ready`, de vuelta a draft. Lógica en
+              // `vendored/scripts/escalada-creator.cjs`; módulo ausente o lectura
+              // caída ⇒ statu quo, con aviso.
+              {
+                let ESC = null;
+                try { ESC = require(`${process.env.GITHUB_WORKSPACE}/scripts/escalada-creator.cjs`); }
+                catch (e) { core.warning(`AP-136: escalada-creator no injertado (${e.message}) — el materializador de ready no cede ante escalada (statu quo).`); }
+                if (ESC) {
+                  let cede = false, fresca = false, labelsPr = [], prComments = [];
+                  const desdeISO = context.payload.comment?.created_at || openPr.created_at || null;
+                  try {
+                    prComments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: openPr.number, per_page: 100 });
+                    const issueComments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: n, per_page: 100 });
+                    fresca = ESC.escaladaFresca([...prComments, ...issueComments], desdeISO);
+                    labelsPr = (openPr.labels || []).map(l => (typeof l === 'string' ? l : l.name));
+                    cede = ESC.cedeAnteEscalada({ labelsPr, fresca });
+                  } catch (e) { core.warning(`AP-136: lectura de la escalada falló para PR #${openPr.number} (${e.message}) — sin cesión (statu quo).`); }
+                  if (cede) {
+                    const jobStatus = process.env.JOB_STATUS || process.env.STEP_CREATOR_OUTCOME;
+                    const desde = desdeISO ? new Date(desdeISO).getTime() : -Infinity;
+                    const yaMaterializada = prComments.some(c => new Date(c.created_at).getTime() >= desde
+                      && /<!--\s*creator-escalated-materializado\s*-->/.test(c.body || ''));
+                    if (fresca && jobStatus !== 'success' && !labelsPr.includes('stalled') && !yaMaterializada) {
+                      await github.rest.issues.addLabels({ owner, repo, issue_number: openPr.number, labels: ['estado:esperando-architect'] });
+                      await github.rest.issues.addLabels({ owner, repo, issue_number: openPr.number, labels: ['stalled'] });
+                      let aDraft = '';
+                      if (!openPr.draft) {
+                        try {
+                          await github.graphql(`mutation($id:ID!){ convertPullRequestToDraft(input:{pullRequestId:$id}){ pullRequest { number isDraft } } }`, { id: openPr.node_id });
+                          aDraft = ' El PR estaba `ready`: devuelto a DRAFT.';
+                        } catch (e) {
+                          aDraft = ' El PR estaba `ready` y `convertPullRequestToDraft` falló: sigue `ready`; el gate de epic-merge (`estado:esperando-architect`) cubre el merge.';
+                          core.warning(`AP-136: convertPullRequestToDraft falló para PR #${openPr.number} (${e.message}).`);
+                        }
+                        await github.rest.issues.removeLabel({ owner, repo, issue_number: openPr.number, name: 'needs-review' }).catch(() => {});
+                      }
+                      await github.rest.issues.createComment({ owner, repo, issue_number: openPr.number,
+                        body: `**claude-code · creator-escalated**: el Creator de #${n} escaló al Architect en su PR y el job no terminó en \`success\` (sesión \`${process.env.STEP_CREATOR_OUTCOME}\`, job \`${jobStatus}\`; el post-step creator-escalated no corre fuera de \`success()\`). Estado materializado por PAT desde el post-step de terminales (AP-136): \`stalled\` ⇒ architect-resolve por evento + \`estado:esperando-architect\`; sin \`needs-review\`.${aDraft}\n\n<!-- creator-escalated-materializado -->` });
+                    }
+                    core.notice(`AP-136: PR #${openPr.number} de #${n} con escalada al Architect (${fresca ? 'escalada fresca del Creator' : labelsPr.filter(l => l === 'stalled' || l === 'estado:esperando-architect').join(', ')}) — ni ready ni needs-review.`);
+                    return;
+                  }
+                }
               }
               if (!openPr.draft) {
                 core.notice(`Creator de #${n} concluyó con PR #${openPr.number} ya ready — flujo PR-driven gobierna; nada que materializar aquí.`);
@@ -3848,12 +3930,10 @@ jobs:
           && steps.check_panel.outputs.blocked != 'true'
           && steps.check_serial.outputs.blocked != 'true'
           && steps.check_flight.outputs.blocked != 'true'
-          && (
-            github.event_name == 'pull_request_review'
-            || github.event_name == 'pull_request_review_comment'
-            || (github.event_name == 'issue_comment'
-                && github.event.issue.pull_request)
-          )
+        # AP-136 (central#392): SIN filtro por tipo de evento. Una sesión armada
+        # desde el ISSUE (caso normal con draft-first) que escala en su draft
+        # quedaba `skipped` (aud. asesoramiento#3361/#3369/#3373/#3384). El PR se
+        # resuelve por ESTADO en el script (`resolverPr` de escalada-creator.cjs).
         uses: actions/github-script@v7
         with:
           # PAT (REVIEWER_GITHUB_TOKEN), NO el GITHUB_TOKEN default: la label
@@ -3865,19 +3945,46 @@ jobs:
           github-token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
           script: |
             const { owner, repo } = context.repo;
-            const prNumber = context.payload.issue?.number
-              || context.payload.pull_request?.number;
-            if (!prNumber) return;
+            // AP-136 (central#392): el PR se resuelve por ESTADO, sea cual sea el
+            // evento que armó la sesión (`resolverPr` de
+            // `vendored/scripts/escalada-creator.cjs`, servido por graft-vendored;
+            // mismo patrón de carga que `creator-turn-close-failsafe.cjs`, AP-068).
+            // Fail-open ANUNCIADO: sin módulo, solo los eventos de PR (statu quo).
+            let ESC = null;
+            try { ESC = require(`${process.env.GITHUB_WORKSPACE}/scripts/escalada-creator.cjs`); }
+            catch (e) { core.warning(`creator-escalated: escalada-creator no injertado (${e.message}) — solo sesiones armadas desde el PR (statu quo).`); }
+            const payload = context.payload;
+            // Sesión del ISSUE: el número del issue disparador (rama `claude/issue-<n>-`).
+            const issueN = payload.issue && !payload.issue.pull_request ? payload.issue.number : null;
+            let prNumber = null;
+            if (ESC) {
+              const prsAbiertos = issueN
+                ? await github.paginate(github.rest.pulls.list, { owner, repo, state: 'open', per_page: 100 })
+                : [];
+              prNumber = ESC.resolverPr({ payload, prsAbiertos, issueN });
+            } else if (payload.issue?.pull_request || payload.pull_request) {
+              prNumber = payload.issue?.number || payload.pull_request?.number;
+            }
+            if (!prNumber) { core.info('creator-escalated: sin PR abierto de la sesión — nada que materializar.'); return; }
             const { data: comments } = await github.rest.issues.listComments({
               owner, repo, issue_number: prNumber, per_page: 100 });
-            const botComments = comments.filter(c => c.user?.login === 'claude[bot]');
+            // AP-136: la escalada de una sesión del issue puede publicarse en el
+            // issue disparador; se leen los comentarios del PR Y del issue.
+            const issueComments = issueN
+              ? await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: issueN, per_page: 100 })
+              : [];
+            const allComments = [...comments, ...issueComments];
+            const botComments = allComments.filter(c => c.user?.login === 'claude[bot]');
             if (botComments.length === 0) return;
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
             // FRESHNESS CHECK (lección #180): solo cuenta el cierre del Creator
             // POSTERIOR al comment/review que disparó este job. Si no hay ninguno
             // posterior, trigger espurio (típ. substring `@claude` en backticks en
-            // prosa del Reviewer) ⇒ no materializar.
+            // prosa del Reviewer) ⇒ no materializar. AP-136: sin comentario
+            // disparador (arm por evento `issues`), la cota es la creación del PR
+            // resuelto (mismo precedente que el materializador de `ready`).
             const trigRaw = context.payload.comment?.created_at
-              || context.payload.review?.submitted_at || null;
+              || context.payload.review?.submitted_at || (issueN ? pr.created_at : null) || null;
             const freshBots = trigRaw
               ? botComments.filter(c => new Date(c.created_at) > new Date(trigRaw))
               : botComments;
@@ -3903,7 +4010,12 @@ jobs:
             // Grepea en TODOS los comentarios frescos, no solo el último. Detección
             // ANCLADA como HTML (clase PR #1133): jamás substring de prosa.
             // AP-035: token de texto anclado en OR con el HTML separado (belt).
-            if (!freshBots.some(c => /<!--\s*creator-escalated\s*-->/.test(c.body || '') || /^\[CREATOR-ESCALATED\]/m.test(c.body || ''))) return;
+            // AP-136: con módulo, `escaladaFresca` (mismo literal del token; belt
+            // HTML fuera de backticks) sobre PR + issue; sin módulo, statu quo.
+            const escalo = ESC
+              ? ESC.escaladaFresca(freshBots, trigRaw)
+              : freshBots.some(c => /<!--\s*creator-escalated\s*-->/.test(c.body || '') || /^\[CREATOR-ESCALATED\]/m.test(c.body || ''));
+            if (!escalo) return;
             // Materializa por ESTADO. Estado visible PRIMERO, `stalled` DESPUÉS:
             // así el `labeled=stalled` (con PAT) convoca a architect-resolve con
             // el `estado:esperando-architect` ya presente. `estado:*` es dinámica
@@ -3924,6 +4036,23 @@ jobs:
                 + 'AP-017).\n\n<!-- creator-escalated-materializado -->' });
             core.warning(`PR #${prNumber}: escalada del Creator materializada por estado `
               + `— stalled + estado:esperando-architect (creator-escalated).`);
+            // AP-136 (aud. asesoramiento#3373/#3384): el Creator ya marcó `ready`
+            // (paso (c) de AP-095) y escaló después. El PR vuelve a DRAFT (con el
+            // PAT) y se retira `needs-review`: ni el Reviewer ni un re-ready por
+            // estado lo recogen mientras espera al Architect. Si la conversión
+            // falla, el gate de epic-merge (`estado:esperando-architect`) cubre el
+            // merge.
+            if (!pr.draft) {
+              try {
+                await github.graphql(`mutation($id:ID!){ convertPullRequestToDraft(input:{pullRequestId:$id}){ pullRequest { number isDraft } } }`, { id: pr.node_id });
+                core.notice(`creator-escalated: PR #${prNumber} devuelto a draft (AP-136).`);
+              } catch (e) {
+                core.warning(`creator-escalated: convertPullRequestToDraft falló para PR #${prNumber} (${e.message}) — sigue ready; el gate de epic-merge cubre el merge.`);
+              }
+              if ((pr.labels || []).some(l => (typeof l === 'string' ? l : l.name) === 'needs-review')) {
+                await github.rest.issues.removeLabel({ owner, repo, issue_number: prNumber, name: 'needs-review' }).catch(() => {});
+              }
+            }
 
       # ───────────────────────────────────────────────────────────────────
       # Auto-lanzamiento de épica (ADR-193). Espejo del step `Auto-label`:
