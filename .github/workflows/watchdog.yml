@@ -1443,6 +1443,12 @@ jobs:
             for (const p of [`${process.env.GITHUB_WORKSPACE}/.cola-central/vendored/scripts/cola-prioridad.cjs`, `${process.env.GITHUB_WORKSPACE}/scripts/cola-prioridad.cjs`]) {
               try { COLA = require(p); break; } catch (e) { /* siguiente ubicación */ }
             }
+            // AP-122 (review PR #380, 🔴 1): módulo de absorción, del mismo
+            // checkout sparse. Sin módulo, el detector de issues sigue como antes.
+            let ABS = null;
+            for (const p of [`${process.env.GITHUB_WORKSPACE}/.cola-central/vendored/scripts/absorcion.cjs`, `${process.env.GITHUB_WORKSPACE}/scripts/absorcion.cjs`]) {
+              try { ABS = require(p); break; } catch (e) { /* siguiente ubicación */ }
+            }
             let pausaCola = null;     // objeto de pausa si el repo está EN PAUSA
             let colaLiberada = null;  // nº armado por el barrido de este tick
             if (COLA && COLA.liberarCola) {
@@ -1513,6 +1519,32 @@ jobs:
               }
               if (!lastArm) continue;
               if (ageMin(lastArm.created_at) > ARM_WINDOW_H * 60) continue;
+
+              // ── Absorción vigente (AP-122, review PR #380 🔴 1). Un #N cuyo
+              // alcance absorbe otro PR queda abierto, armado y SIN `en-cola`
+              // (el resolver se la retira al publicar `cola-absorbida: #X`): sin
+              // este salto caía en `issue-armed-no-pr` y architect-resolve lo
+              // re-armaba — el «pop de cola arma trabajo hecho» de #307 por otra
+              // puerta. Espera legítima mientras el absorbente #X siga abierto;
+              // su merge o su cierre sin merge los consume `epic-merge`. Con #X
+              // cerrado la absorción no se materializó y sigue el detector; un
+              // marcador sin número (o un `issues.get` fallido) cuenta como
+              // absorbente abierto.
+              const absorcion = ABS ? ABS.absorcionVigente(comments) : null;
+              if (absorcion) {
+                let absorbenteAbierto = true;
+                if (absorcion.origen) {
+                  try {
+                    const { data: x } = await github.rest.issues.get({ ...O, issue_number: absorcion.origen });
+                    absorbenteAbierto = x.state === 'open';
+                  } catch (e) { core.warning(`#${issue.number}: no pude leer el absorbente #${absorcion.origen} (${e.message}); lo trato como abierto.`); }
+                }
+                if (absorbenteAbierto) {
+                  core.notice(`#${issue.number}: espera legítima: absorbido por #${absorcion.origen ?? '?'} (cola-absorbida vigente) — sin anomalía.`);
+                  continue;
+                }
+                core.notice(`#${issue.number}: cola-absorbida de #${absorcion.origen}, pero #${absorcion.origen} está cerrado y la absorción no se materializó — sigue el detector.`);
+              }
 
               // ── Chequeo de premisa de serie para ítems `en-cola` (AP-039,
               // NO exclusión ciega). Un ítem encolado por el guard serial no es

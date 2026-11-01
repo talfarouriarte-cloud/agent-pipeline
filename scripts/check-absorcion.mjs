@@ -7,9 +7,12 @@
 // comentarios). La costura con `epic-merge.yml` (que `postMerge` y la rama
 // `closed` sin merge carguen el módulo) se comprueba por texto. Cuelga del
 // piggyback de `check-embedded-js.mjs`.
-import { readFileSync } from 'fs';
+import { mkdtempSync, readFileSync, symlinkSync } from 'fs';
 import { createRequire } from 'module';
-import { resolve } from 'path';
+import { tmpdir } from 'os';
+import { join, resolve } from 'path';
+import yaml from 'js-yaml';
+import { cargarStep } from './lib/github-script.mjs';
 
 const require = createRequire(import.meta.url);
 const ABS = require(resolve('vendored/scripts/absorcion.cjs'));
@@ -37,6 +40,53 @@ function api(issues) {
   };
   return { github, w, db, O: { owner: 'o', repo: 'r' } };
 }
+
+// ── `postMerge` REAL de epic-merge.yml (review PR #380 🟡 2) ────────────────
+// Merge MANUAL (`pull_request: closed`, merged) del PR 50 de #40 (`epica`). El
+// mundo en memoria guarda issues, labels y comentarios; lo no doblado devuelve
+// vacío (el caso mira la absorción y ENCADENAR, no el resto del job).
+let emStep = null;
+for (const job of Object.values(yaml.load(readFileSync('.github/workflows/epic-merge.yml', 'utf8')).jobs || {}))
+  for (const st of job.steps || []) if (st.name === 'Evaluar y mergear') emStep = st;
+const epicMerge = emStep ? cargarStep(emStep.with.script, 'epic-merge') : null;
+const WS = mkdtempSync(join(tmpdir(), 'abs-ws-'));
+for (const d of ['.cola-central', '.epic-merge-central']) symlinkSync(process.cwd(), join(WS, d));
+
+async function mergeManual({ prBody, issues }) {
+  const db = new Map(issues.map(i => [i.number, { state: 'open', labels: [], comments: [], body: '', title: `Issue ${i.number}`, ...i }]));
+  db.set(50, { number: 50, state: 'closed', labels: [], comments: [], body: prBody, title: 'feat (#40)', pull_request: {} });
+  const get = n => { const i = db.get(n); if (!i) throw new Error('404'); return i; };
+  const conLabels = i => ({ ...i, labels: i.labels.map(name => ({ name })) });
+  let cid = 1;
+  const crear = (n, body) => { const c = { id: cid++, body, user: { login: 'talfarouriarte-cloud' }, created_at: new Date().toISOString(), html_url: `https://github.com/o/r/issues/${n}#issuecomment-${cid}` }; get(n).comments.push(c); return { data: c }; };
+  const conocidos = {
+    issues: {
+      get: async p => ({ data: conLabels(get(p.issue_number)) }),
+      listComments: async p => ({ data: get(p.issue_number).comments }),
+      createComment: async p => crear(p.issue_number, p.body),
+      updateComment: async p => { for (const i of db.values()) for (const c of i.comments) if (c.id === p.comment_id) c.body = p.body; return { data: {} }; },
+      addLabels: async p => { const i = get(p.issue_number); i.labels = [...new Set([...i.labels, ...p.labels])]; return { data: [] }; },
+      removeLabel: async p => { const i = get(p.issue_number); if (!i.labels.includes(p.name)) throw new Error('404 label'); i.labels = i.labels.filter(l => l !== p.name); return { data: [] }; },
+      listLabelsOnIssue: async p => ({ data: get(p.issue_number).labels.map(name => ({ name })) }),
+      update: async p => { const i = get(p.issue_number); if (p.state) i.state = p.state; return { data: {} }; },
+      listForRepo: async p => ({ data: [...db.values()].filter(i => i.state === 'open' && !i.pull_request
+        && (!p.labels || p.labels.split(',').every(n => i.labels.includes(n)))).map(conLabels) }),
+    },
+    users: { getAuthenticated: async () => ({ data: { login: 'talfarouriarte-cloud' } }) },
+  };
+  const vacio = async () => ({ data: [] });
+  const rest = new Proxy({}, { get: (_, ns) => new Proxy({}, { get: (_, m) => (conocidos[ns] && conocidos[ns][m]) || vacio }) });
+  const github = { rest, paginate: async (fn, p) => { const r = await fn(p); return Array.isArray(r.data) ? r.data : (r.data && (r.data.workflow_runs || r.data.items)) || []; } };
+  const fetch = async () => ({ ok: true, status: 200, json: async () => ({}), text: async () => '' });
+  const pull_request = { number: 50, state: 'closed', merged: true, body: prBody, head: { ref: 'claude/issue-40-20261101-1200', sha: 'abc' }, labels: [] };
+  const avisos = [];
+  const core = { setOutput() {}, notice() {}, info() {}, warning: m => avisos.push(String(m)), setFailed: m => avisos.push(String(m)) };
+  await epicMerge({ github, context: { repo: { owner: 'o', repo: 'r' }, runId: 1, eventName: 'pull_request', payload: { action: 'closed', pull_request } }, core },
+    { env: { GITHUB_WORKSPACE: WS, IN_AUTOMERGE: 'true', IN_EPIC_LABEL: 'epica', IN_CI_WORKFLOW_NAME: 'CI', STATUS_TOKEN: 'job', IN_LOOSE_AUDIT: 'false',
+      IN_PARTIAL_ROUND_CAP: '3', IN_PARTIAL_LIFETIME_CAP: '6', IN_DEFAULT_BRANCH: 'main' }, globales: { fetch } });
+  return { db, avisos };
+}
+const autoLaunch = (db, n) => db.get(n).comments.some(c => /<!-- epic-auto-launch -->/.test(c.body));
 
 const BANCO = [
   ['(a) leerAbsorbidos acepta `Absorbe #12` a inicio de línea (varias, sin duplicados)',
@@ -89,6 +139,40 @@ const BANCO = [
     async () => {
       const { github, O } = api([{ number: 12, comments: [{ body: 'ver `<!-- cola-absorbida: #40 -->`' }] }]);
       return (await ABS.cancelarAbsorcion({ github, ...O, prNumber: 40, issues: [12] })).length === 0;
+    }],
+  ['(b) materialización: #N protegido (serial-activo / human-needed / pause-agents / auditoria / auditoria-completa) ⇒ aviso, no se toca',
+    async () => {
+      const prot = ABS.PROTEGIDAS.map((l, k) => ({ number: 20 + k, labels: [l] }));
+      const { github, w, db, O } = api([...prot, { number: 30, labels: ['en-cola'] }]);
+      const avisos = [];
+      const h = await ABS.materializarAbsorcion({ github, ...O, prNumber: 40, issues: [...prot.map(i => i.number), 30], warn: m => avisos.push(m) });
+      return ABS.PROTEGIDAS.length === 5 && JSON.stringify(h) === '[30]' && avisos.length === 5
+        && prot.every(i => db.get(i.number).state === 'open') && w.comments.every(c => c.n === 30) && w.closed.join() === '30:completed';
+    }],
+  ['(d) absorcionVigente: último marcador sin cancelación ⇒ {origen}; con cancelación posterior ⇒ null; re-marcado tras cancelar ⇒ vigente',
+    () => {
+      const m = x => ({ body: `<!-- cola-absorbida: #${x} -->` }), c = { body: '<!-- cola-absorbida-cancelada -->' };
+      return JSON.stringify(ABS.absorcionVigente([{ body: 'x' }, m(40)])) === '{"origen":40}'
+        && ABS.absorcionVigente([m(40), c]) === null
+        && JSON.stringify(ABS.absorcionVigente([m(40), c, m(55)])) === '{"origen":55}'
+        && JSON.stringify(ABS.absorcionVigente([{ body: '<!-- cola-absorbida -->' }])) === '{"origen":null}'
+        && ABS.absorcionVigente([]) === null
+        && ABS.absorcionVigente([{ body: '`<!-- cola-absorbida: #40 -->`' }]) === null;
+    }],
+  ['(e) postMerge: `Absorbe #41` sobre el launch-next #41 ⇒ #41 cerrado por estado y SIN epic-auto-launch; diag lo registra',
+    async () => {
+      if (!epicMerge) return false;
+      const { db } = await mergeManual({ prBody: '<!-- full-pr -->\nCloses #40\nAbsorbe #41',
+        issues: [{ number: 40, labels: ['epica'], body: 'x\n<!-- launch-next: #41 -->' }, { number: 41, labels: ['epica', 'en-cola'], body: 'y\n<!-- launch-next: #42 -->' }, { number: 42, labels: ['epica'] }] });
+      return db.get(41).state === 'closed' && db.get(41).labels.includes('estado:cierre-pendiente-humano') && !autoLaunch(db, 41)
+        && db.get(50).comments.some(c => /launch-next #41 absorbido por este PR/.test(c.body));
+    }],
+  ['(e) control: postMerge con launch-next NO absorbido (#42) ⇒ epic-auto-launch en #42 (el banco recorre ENCADENAR)',
+    async () => {
+      if (!epicMerge) return false;
+      const { db } = await mergeManual({ prBody: '<!-- full-pr -->\nCloses #40\nAbsorbe #41',
+        issues: [{ number: 40, labels: ['epica'], body: 'x\n<!-- launch-next: #42 -->' }, { number: 41, labels: ['epica', 'en-cola'] }, { number: 42, labels: ['epica'] }] });
+      return db.get(41).state === 'closed' && autoLaunch(db, 42) && !autoLaunch(db, 41);
     }],
   ['costura: epic-merge.yml carga absorcion.cjs en postMerge (materializar) y en closed sin merge (cancelar)',
     () => {

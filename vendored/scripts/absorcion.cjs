@@ -21,6 +21,16 @@
 // del issue absorbente si el PR aún no existe al adendar). Al leer, el número
 // es opcional; la cancelación solo actúa sobre los marcadores de ESE PR/issue.
 //
+// ESPERA LEGÍTIMA (review PR #380, 🔴 1): un #N con absorción VIGENTE (último
+// marcador `cola-absorbida` sin `cola-absorbida-cancelada` posterior) está
+// abierto, armado y sin `en-cola`; el detector `issue-armed-no-pr` del Watchdog
+// lo salta con `absorcionVigente` mientras el absorbente siga abierto.
+//
+// PROTEGIDOS (review PR #380, 🟡 3): `materializarAbsorcion` no cierra un #N
+// con `serial-activo` (Creator en vuelo), kill-switch o de auditoría: aviso y
+// sigue. No exige el marcador del resolver (AP-122 §4: `Absorbe #N` basta);
+// la asimetría con la cancelación está declarada en AP-122 «Riesgos aceptados».
+//
 // La declaración `Absorbe #N` se lee por LÍNEA ANCLADA sobre el cuerpo
 // despojado de código (jamás substring: «no Absorbe #12», «`Absorbe #12`» o
 // `Absorbe#12` no declaran nada — clase AP-063).
@@ -33,7 +43,9 @@ const { despojarCodigo } = require('./resolve-cross-issue-failsafe.cjs');
 const ABSORBE_RE = /^Absorbe #(\d+)\s*$/;
 const MARCA_RE = /<!--\s*cola-absorbida(?::\s*#(\d+))?\s*-->/g;
 const marcaAbsorbida = (x) => `<!-- cola-absorbida: #${Number(x)} -->`;
+const CANCELADA_RE = /<!--\s*cola-absorbida-cancelada\s*-->/;
 const nombreLabel = (l) => (typeof l === 'string' ? l : (l && l.name) || '');
+const PROTEGIDAS = ['serial-activo', 'human-needed', 'pause-agents', 'auditoria', 'auditoria-completa'];
 
 // Números de issue declarados con `Absorbe #N` (uno por línea), sin duplicados.
 function leerAbsorbidos(body) {
@@ -49,6 +61,20 @@ function leerAbsorbidos(body) {
 // despojado de código. `null` = marcador sin número.
 function origenesMarca(body) {
   return [...despojarCodigo(body).matchAll(MARCA_RE)].map((m) => (m[1] ? Number(m[1]) : null));
+}
+
+// Absorción VIGENTE en los comentarios de un issue: `{ origen }` (X del último
+// marcador `cola-absorbida`, `null` si no lleva número) cuando no hay un
+// `cola-absorbida-cancelada` posterior; `null` si no hay absorción vigente.
+function absorcionVigente(cs) {
+  let ultimo = -1, origen = null;
+  (cs || []).forEach((c, i) => {
+    const os = origenesMarca(c.body || '');
+    if (os.length) { ultimo = i; origen = os[os.length - 1]; }
+  });
+  if (ultimo < 0) return null;
+  if ((cs || []).slice(ultimo + 1).some((c) => CANCELADA_RE.test(despojarCodigo(c.body || '')))) return null;
+  return { origen };
 }
 
 async function comentarios({ github, owner, repo, issue_number }) {
@@ -67,6 +93,8 @@ async function materializarAbsorcion({ github, owner, repo, prNumber, issues, wa
     try {
       const { data: it } = await github.rest.issues.get({ owner, repo, issue_number: n });
       if (it.state !== 'open' || it.pull_request) continue;
+      const protegida = (it.labels || []).map(nombreLabel).find((l) => PROTEGIDAS.includes(l));
+      if (protegida) { warn(`absorción #${n} (PR #${prNumber}): lleva \`${protegida}\` — no se cierra (trabajo vivo, kill-switch o auditoría).`); continue; }
       await quitar({ github, owner, repo }, n, 'en-cola');
       await quitar({ github, owner, repo }, n, 'stalled');
       await github.rest.issues.addLabels({ owner, repo, issue_number: n, labels: ['estado:cierre-pendiente-humano'] });
@@ -98,7 +126,7 @@ async function cancelarAbsorcion({ github, owner, repo, prNumber, origenes = [],
       let ultimo = -1;
       cs.forEach((c, i) => { if (origenesMarca(c.body).some((o) => validos.includes(o))) ultimo = i; });
       if (ultimo < 0) continue;
-      if (cs.slice(ultimo + 1).some((c) => /<!--\s*cola-absorbida-cancelada\s*-->/.test(c.body || ''))) continue;
+      if (cs.slice(ultimo + 1).some((c) => CANCELADA_RE.test(c.body || ''))) continue;
       if (!(it.labels || []).some((l) => nombreLabel(l) === 'en-cola')) {
         await github.rest.issues.addLabels({ owner, repo, issue_number: n, labels: ['en-cola'] });
       }
@@ -110,4 +138,4 @@ async function cancelarAbsorcion({ github, owner, repo, prNumber, origenes = [],
   return hechos;
 }
 
-module.exports = { leerAbsorbidos, origenesMarca, marcaAbsorbida, materializarAbsorcion, cancelarAbsorcion };
+module.exports = { leerAbsorbidos, origenesMarca, marcaAbsorbida, absorcionVigente, PROTEGIDAS, materializarAbsorcion, cancelarAbsorcion };

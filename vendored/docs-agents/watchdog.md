@@ -170,10 +170,14 @@ cierra por firma. Si falta cualquiera de las tres condiciones: camino de siempre
 AP-122).** Cuando una adenda o ruling tuyo instruye a un PR a absorber el
 alcance de otro issue encolado #N, publica en #N un comentario con el marcador
 `<!-- cola-absorbida: #<X> -->` en línea propia (X = número del PR que absorbe;
-si aún no existe, el del issue que absorbe) y retírale `en-cola` (nadie lo arma
-mientras el PR vive). El PR declara `Absorbe #N` (mandato del Creator); al
-mergearlo, `epic-merge` cierra #N por estado; si se cierra sin merge, #N vuelve
-a `en-cola`.
+si aún no existe, el del issue que absorbe) y retírale `en-cola`. Mientras el
+absorbente #X siga abierto, el detector `issue-armed-no-pr` del scan salta #N
+(notice «espera legítima: absorbido por #X»), así que nadie lo arma; con #X
+cerrado sin materializar, #N vuelve a ser candidato. El PR declara `Absorbe #N`
+(mandato del Creator); al mergearlo, `epic-merge` cierra #N por estado (salvo
+que lleve `serial-activo`, `human-needed`, `pause-agents`, `auditoria` o
+`auditoria-completa`) y no arma el `launch-next` que acaba de absorber; si se
+cierra sin merge, #N vuelve a `en-cola`.
 
 **Perdedor del cinturón cruzado (`serial-toctou-cruzado`, AP-122).** Desde
 AP-122 el perdedor de un arranque cruzado queda `en-cola` (no `stalled`): lo arma

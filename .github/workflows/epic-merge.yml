@@ -648,11 +648,14 @@ jobs:
               // #N por estado (`estado:cierre-pendiente-humano` + marcador +
               // `completed`); su `issues:[closed]` lo procesa `postStateClose`.
               // Fail-soft: sin módulo o con error, aviso y el merge sigue.
+              // `absorbidosCerrados` lo lee ENCADENAR (review PR #380, 🟡 2).
+              let absorbidosCerrados = [];
               try {
                 const ABS = require(`${process.env.GITHUB_WORKSPACE}/.epic-merge-central/vendored/scripts/absorcion.cjs`);
                 const absorbidos = ABS.leerAbsorbidos(prBody).filter(n => n !== Number(issueNumber));
                 if (absorbidos.length) {
                   const hechos = await ABS.materializarAbsorcion({ github, owner, repo, prNumber, issues: absorbidos, warn: (m) => core.warning(m) });
+                  absorbidosCerrados = hechos;
                   core.notice(`[epic-merge] absorción (AP-122) del PR #${prNumber}: ${hechos.length ? hechos.map(n => '#' + n).join(', ') + ' cerrados' : 'nada abierto que cerrar'}.`);
                 }
               } catch (e) { core.warning('[epic-merge] absorción (AP-122): ' + e.message); }
@@ -742,6 +745,17 @@ jobs:
                 return;
               }
               const next = Number(lm[1]);
+              // AP-122 (review PR #380, 🟡 2): el `launch-next` es un issue que
+              // ESTE merge acaba de cerrar por absorción. No se arma (sería un
+              // Creator sobre trabajo absorbido y un arm sobre un issue cerrado):
+              // su `issues:[closed]` entra en `postStateClose` y arma SU sucesor.
+              // La serie la decide ese job (sucesor o barrido de su `finally`),
+              // así que aquí cuenta como tomada: este barrido no compite con él.
+              if (absorbidosCerrados.includes(next)) {
+                serieTomada = true;
+                await diag(prNumber, `MERGEADO; launch-next #${next} absorbido por este PR (\`Absorbe #${next}\`) y cerrado por estado: no se arma; su \`launch-next\` lo consume el cierre por estado.`);
+                return;
+              }
               // Des-bloqueo mecánico del destino (2026-07-08, #1120): un
               // eslabón re-armado por su cadena está por definición
               // desbloqueado — si llevaba `stalled`/`human-needed` era por
