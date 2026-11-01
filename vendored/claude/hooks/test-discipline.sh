@@ -51,9 +51,47 @@ fi
 if [ "${PIPELINE_VERIFY_AFTER_PUSH:-1}" != "0" ] && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)
   if [ -n "$upstream" ]; then
-    # .claude/** se excluye del conteo: el graft vendored puede dejarlo sucio
-    # al arrancar (central#271) y no es trabajo del Creator.
-    dirty=$(git status --porcelain 2>/dev/null | grep -Ev '^.. \.claude/' | wc -l | tr -d ' ')
+    # .claude/** cuenta por BLOB (AP-133), mismo criterio que la red de AP-124
+    # § Riesgos (e): el graft nunca sale en porcelain (exclude / skip-worktree,
+    # graft-vendored); lo que sale es la restauración AP-097 (blob de la base,
+    # `M` o `??`) o trabajo de la sesión (skill editada o nueva). Cuenta salvo
+    # borrado, enlace o hash filtrado igual a origin/<base>:<ruta>. Listado
+    # como la red: -z y --untracked-files=all (un fichero por entrada, nunca
+    # el directorio). Sin base resoluble: fail-open a la exclusión anterior.
+    dirty=0; base=""; base_state=""
+    while IFS= read -r -d '' ent; do
+      xy=${ent:0:2}; p=${ent:3}
+      case "$xy" in R*|C*) IFS= read -r -d '' _ || true;; esac
+      case "$p" in
+        .claude/*)
+          case "$xy" in *D*) continue;; esac
+          { [ -L "$p" ] || [ ! -f "$p" ]; } && continue
+          if [ -z "$base_state" ]; then
+            base_state=no
+            cache=$(git rev-parse --git-path pipeline-base 2>/dev/null || true)
+            base="${PIPELINE_BASE_BRANCH:-}"
+            if [ -z "$base" ] && [ -n "$cache" ] && [ -s "$cache" ]; then base=$(head -n1 "$cache"); fi
+            if [ -z "$base" ]; then
+              base=$(git remote show origin 2>/dev/null | sed -n 's/.*HEAD branch: //p' | head -n1)
+              [ "$base" = "(unknown)" ] && base=""
+              [ -z "$base" ] || [ -z "$cache" ] || printf '%s\n' "$base" > "$cache" 2>/dev/null || true
+            fi
+            if [ -n "$base" ] && ! git rev-parse -q --verify "refs/remotes/origin/$base" >/dev/null 2>&1; then
+              git fetch -q --depth=1 origin "+refs/heads/$base:refs/remotes/origin/$base" >/dev/null 2>&1 || true
+            fi
+            if [ -n "$base" ] && git rev-parse -q --verify "refs/remotes/origin/$base" >/dev/null 2>&1; then
+              base_state=ok
+            else
+              echo 'test-discipline: base no resoluble, .claude/** excluido como antes' >&2
+            fi
+          fi
+          [ "$base_state" = ok ] || continue
+          hb=$(git hash-object --path="$p" -- "$p" 2>/dev/null || echo '?')
+          [ "$(git rev-parse -q --verify "refs/remotes/origin/$base:$p" 2>/dev/null || true)" = "$hb" ] && continue
+          dirty=$((dirty + 1));;
+        *) dirty=$((dirty + 1));;
+      esac
+    done < <(git status --porcelain=v1 -z --untracked-files=all 2>/dev/null)
     ahead=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
     if [ "${dirty:-0}" -gt 0 ] || [ "${ahead:-0}" -gt 0 ]; then
       cat >&2 <<EOF2
@@ -65,9 +103,32 @@ EOF2
   fi
 fi
 
+tail=$(printf '%s' "$cmd" | sed -E 's#.*(vitest|'"$PNPM_TEST"'[^[:space:]]*|npm[[:space:]]+(run[[:space:]]+)?test)##')
+
+# ── Tope de rutas por invocación (AP-133). Un «afectados» de 100+ ficheros
+# (AP-124 (b) sobre un productor muy usado) es la suite en la práctica y mata
+# la sesión antes del push (aud. asesoramiento#3384). Una ruta = un token de
+# la cola con el predicado de abajo; no cuentan los flags, las redirecciones
+# (sueltas o pegadas) ni nada tras el primer `|`, `>`, `>>` o `2>`.
+# PIPELINE_MAX_TEST_PATHS (default 25; 0 desactiva).
+max_paths="${PIPELINE_MAX_TEST_PATHS:-25}"
+if [ "$max_paths" != "0" ] && [ "$max_paths" -eq "$max_paths" ] 2>/dev/null; then
+  npaths=0
+  read -r -a toks <<< "$tail" || true
+  for t in "${toks[@]+"${toks[@]}"}"; do
+    case "$t" in '|'*|'>'*|'>>'*|'2>'*) break;; -*|*'>'*) continue;; esac
+    if printf '%s' "$t" | grep -Eq '\.[cm]?[jt]sx?("|'"'"')?$|/'; then npaths=$((npaths + 1)); fi
+  done
+  if [ "$npaths" -gt "$max_paths" ]; then
+    cat >&2 <<EOF3
+BLOQUEADO (AP-133): ${npaths} rutas de test en una invocación es la suite en la práctica. Pushea y deja el gate al CI. En sesión corre solo los tests hermanos de los ficheros que tocaste (AP-124 (a)); los consumidores del símbolo (AP-124 (b)) los verifica el CI y se DECLARAN en el cierre (comando y número de ficheros), no se ejecutan.
+EOF3
+    exit 2
+  fi
+fi
+
 # Permitido si trae rutas de fichero (test scoped) DESPUÉS del runner:
 # extensión de fuente o ruta con «/» en la cola del comando.
-tail=$(printf '%s' "$cmd" | sed -E 's#.*(vitest|'"$PNPM_TEST"'[^[:space:]]*|npm[[:space:]]+(run[[:space:]]+)?test)##')
 if printf '%s' "$tail" | grep -Eq '\.[cm]?[jt]sx?([[:space:]]|$|"|'"'"')|[[:space:]][^-][^[:space:]]*/[^[:space:]]+'; then
   exit 0
 fi

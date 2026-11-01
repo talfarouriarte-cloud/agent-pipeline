@@ -68,10 +68,14 @@ import { spawnSync } from 'child_process';
 const HOOK = resolve(`${HOOKS}/test-discipline.sh`);
 const tmp = mkdtempSync(join(tmpdir(), 'td-'));
 const sh = (cmd, cwd) => execFileSync('bash', ['-lc', cmd], { cwd, stdio: 'pipe', env: { ...process.env, GIT_AUTHOR_NAME: 'x', GIT_AUTHOR_EMAIL: 'x@x', GIT_COMMITTER_NAME: 'x', GIT_COMMITTER_EMAIL: 'x@x' } });
-const run = (cmd, cwd) => spawnSync('bash', [HOOK], { cwd, input: JSON.stringify({ tool_input: { command: cmd } }), env: { ...process.env, CLAUDE_PROJECT_DIR: cwd }, encoding: 'utf8' }).status;
+const runFull = (cmd, cwd, env = {}) => spawnSync('bash', [HOOK], { cwd, input: JSON.stringify({ tool_input: { command: cmd } }), env: { ...process.env, CLAUDE_PROJECT_DIR: cwd, ...env }, encoding: 'utf8' });
+const run = (cmd, cwd, env) => runFull(cmd, cwd, env).status;
+// AP-133: listado con el MISMO modo que el hook (una entrada por fichero).
+const listed = (cwd, path) => sh('git status --porcelain=v1 -z --untracked-files=all', cwd).toString().split('\0').some(e => e.slice(3) === path);
+const paths = n => Array.from({ length: n }, (_, i) => `src/t${i}.test.ts`).join(' ');
 const bank = [];
 try {
-  sh('git init -q --bare remote.git && git init -q -b main wt && cd wt && git remote add origin ../remote.git && echo a > a.ts && git add . && git commit -qm init', tmp);
+  sh('git init -q --bare -b main remote.git && git init -q -b main wt && cd wt && git remote add origin ../remote.git && echo a > a.ts && git add . && git commit -qm init', tmp);
   const wt = join(tmp, 'wt');
   bank.push(['sin upstream, dirty, tests scoped ⇒ permite (pre-hito 1)', run('npx vitest run a.ts', wt), 0]);
   sh('git push -q -u origin main', wt);
@@ -90,8 +94,9 @@ try {
   bank.push(['upstream, ahead sin push, tests ⇒ BLOQUEA', run('npx vitest run a.ts', wt), 2]);
   sh('git push -q', wt);
   bank.push(['upstream, pusheado, tests ⇒ permite', run('npx vitest run a.ts', wt), 0]);
-  sh('mkdir -p .claude/skills && echo x > .claude/skills/S.md', wt);
-  bank.push(['upstream, solo .claude/ sucio (graft), tests ⇒ permite (central#271)', run('npx vitest run a.ts', wt), 0]);
+  // El graft registra lo injertado en .git/info/exclude: nunca sale en porcelain.
+  sh('mkdir -p .claude/skills && echo x > .claude/skills/S.md && echo .claude/skills/S.md >> .git/info/exclude', wt);
+  bank.push(['upstream, .claude/ injertado (exclude), tests ⇒ permite (central#271)', run('npx vitest run a.ts', wt), 0]);
   sh('rm -rf .claude', wt);
   bank.push(['pusheado, suite completa ⇒ BLOQUEA (check original intacto)', run('pnpm test', wt), 2]);
   bank.push(['pusheado, pnpm -F @scope/app test sin rutas ⇒ BLOQUEA (suite del paquete)', run('pnpm -F @scope/app test', wt), 2]);
@@ -100,6 +105,36 @@ try {
   bank.push(['pusheado, node node_modules/.bin/vitest scoped ⇒ permite', run('node node_modules/.bin/vitest run src/a.test.ts', wt), 0]);
   bank.push(['pusheado, pnpm -F app test scoped ⇒ permite', run('pnpm -F app test src/a.test.ts', wt), 0]);
   bank.push(['pusheado, pnpm -F app typecheck ⇒ permite (no es runner)', run('pnpm -F app typecheck', wt), 0]);
+  // ── AP-133: .claude/** por blob contra origin/<base> (base por `git remote show origin`).
+  sh('mkdir -p .claude/skills/T && echo v1 > .claude/skills/T/SKILL.md && git add . && git commit -qm skill && git push -q', wt);
+  sh('git checkout -qb feat && echo v2 > .claude/skills/T/SKILL.md && git commit -qam v2 && git push -q -u origin feat', wt);
+  sh('git checkout -q main && mkdir -p .claude/skills/E && echo base > .claude/skills/E/SKILL.md && git add . && git commit -qm E && git push -q && git checkout -q feat', wt);
+  writeFileSync(join(wt, '.claude/skills/T/SKILL.md'), 'v3\n');
+  bank.push(['AP-133 (a) skill M con blob ≠ base ⇒ BLOQUEA', run('npx vitest run a.ts', wt), 2]);
+  writeFileSync(join(wt, '.claude/skills/T/SKILL.md'), 'v1\n');
+  bank.push(['AP-133 (b) skill M con el blob de la base (AP-097) ⇒ permite', run('npx vitest run a.ts', wt), 0]);
+  sh('git checkout -q -- .claude && mkdir -p .claude/skills/N && echo nueva > .claude/skills/N/SKILL.md', wt);
+  bank.push(['AP-133 (c) untracked nuevo en dir nuevo, sin blob en base ⇒ BLOQUEA (entrada de FICHERO)', listed(wt, '.claude/skills/N/SKILL.md') ? run('npx vitest run a.ts', wt) : 'no-listado', 2]);
+  sh('rm -rf .claude/skills/N && mkdir -p .claude/skills/E && echo base > .claude/skills/E/SKILL.md', wt);
+  bank.push(["AP-133 (c′) ?? en dir ausente del HEAD con el blob de la base (AP-097) ⇒ permite", listed(wt, '.claude/skills/E/SKILL.md') ? run('npx vitest run a.ts', wt) : 'no-listado', 0]);
+  sh('rm -rf .claude/skills/E && ln -s /etc/hostname .claude/skills/L.md', wt);
+  bank.push(['AP-133 (h) enlace simbólico en .claude/ ⇒ no cuenta', run('npx vitest run a.ts', wt), 0]);
+  sh('rm -f .claude/skills/L.md && git remote set-url origin /nonexistent/remote.git && rm -f .git/pipeline-base', wt);
+  writeFileSync(join(wt, '.claude/skills/T/SKILL.md'), 'v3\n');
+  bank.push(["AP-133 (d′) PIPELINE_BASE_BRANCH=main, remoto inalcanzable, skill M ≠ base ⇒ BLOQUEA", run('npx vitest run a.ts', wt, { PIPELINE_BASE_BRANCH: 'main' }), 2]);
+  sh('git checkout -q -- .claude && git remote set-url origin ../remote.git', wt);
+  // Remoto cuyo HEAD apunta a una rama inexistente ⇒ `HEAD branch: (unknown)`.
+  sh('git init -q --bare -b nada remote2.git && git clone -q remote.git wt2 2>/dev/null && cd wt2 && git remote set-url origin ../remote2.git && git push -q -u origin main', tmp);
+  const wt2 = join(tmp, 'wt2');
+  writeFileSync(join(wt2, '.claude/skills/T/SKILL.md'), 'v9\n');
+  const d = runFull('npx vitest run a.ts', wt2);
+  bank.push(['AP-133 (d) base (unknown), sin env ni caché ⇒ permite (fail-open) + stderr', d.status === 0 && d.stderr.includes('test-discipline: base no resoluble, .claude/** excluido como antes') ? 0 : `${d.status}/${d.stderr.trim()}`, 0]);
+  // ── AP-133: tope de rutas por invocación (árbol limpio y pusheado).
+  bank.push(['AP-133 (e) 26 rutas ⇒ BLOQUEA', run(`npx vitest run ${paths(26)}`, wt), 2]);
+  bank.push(['AP-133 (f) 25 rutas ⇒ permite', run(`npx vitest run ${paths(25)}`, wt), 0]);
+  bank.push(['AP-133 (g) PIPELINE_MAX_TEST_PATHS=0 + 40 rutas ⇒ permite', run(`npx vitest run ${paths(40)}`, wt, { PIPELINE_MAX_TEST_PATHS: '0' }), 0]);
+  bank.push(['AP-133 (i) `> /tmp/out.log` no cuenta como ruta', run(`npx vitest run ${paths(25)} > /tmp/out.log`, wt), 0]);
+  bank.push(['AP-133 (i′) `>/tmp/out.log` pegado y `| tee /tmp/x.log` no cuentan', Math.max(run(`npx vitest run ${paths(25)} >/tmp/out.log`, wt), run(`npx vitest run ${paths(25)} 2>&1 | tee /tmp/x.log`, wt)), 0]);
   writeFileSync(join(wt, 'a.ts'), 'c');
   bank.push(['override PIPELINE_VERIFY_AFTER_PUSH=0 ⇒ permite', spawnSync('bash', [HOOK], { cwd: wt, input: JSON.stringify({ tool_input: { command: 'npx vitest run a.ts' } }), env: { ...process.env, CLAUDE_PROJECT_DIR: wt, PIPELINE_VERIFY_AFTER_PUSH: '0' }, encoding: 'utf8' }).status, 0]);
 } finally { rmSync(tmp, { recursive: true, force: true }); }
