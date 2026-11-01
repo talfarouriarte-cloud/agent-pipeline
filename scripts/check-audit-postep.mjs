@@ -31,6 +31,8 @@ const TALLA_PRE = { body: '#10 · M <!-- talla-pre: M --> · 1·1·1·1·1 = 5 �
 const PARCIAL_METRICAS = { body: '<!-- audit-parcial: metricas -->\n### Parcial · métricas de proceso\n(a) PRs por issue: 1\n' };
 const PARCIAL_BACKTICKS = { body: '<!-- audit-parcial: metricas -->\n### Parcial\nirá en el bloque `## Métricas de proceso` del informe final\n' };
 const INFORME = { body: '## Métricas de proceso\n(a) 1\n\n## Análisis de repescas (5 whys)\nSin repescas.' };
+// Informe final que, al reensamblar, arrastró la línea del marcador del parcial de métricas.
+const INFORME_CON_MARCADOR = { body: '<!-- audit-parcial: metricas -->\n' + INFORME.body };
 // Texto literal del comentario `informe-no-publicado` previo a AP-127 (citaba la cadena de HAS_REPORT).
 const INFORME_NO_PUBLICADO_ANTIGUO = { body: '**claude-code · post-step de auditoría**: la sesión del Auditor terminó SIN informe publicado (ningún comentario contiene el bloque `## Métricas de proceso`). NO se aplica `auditoria-completa` — el process-review no debe correr contra un panel vacío (clase informe-no-publicado, finplan#1296/#1295). Escalado vía `stalled`.\n\n<!-- informe-no-publicado -->' };
 const REARM = { body: '@claude retoma\n\n<!-- audit-rearm-auto -->' };
@@ -84,6 +86,8 @@ const BANCO = [
   ['(e) informe con `## Métricas de proceso` como encabezado ⇒ published=true, camino actual',
     { comments: [TALLA_PRE, INFORME] }, r => r.published && !r.rearm && !r.stalled
       && r.comments.some(c => /<!--\s*audit-verdict:\s*clean\s*-->/.test(c))],
+  ['(j) informe con `## Métricas de proceso` que arrastra el marcador audit-parcial ⇒ no publicado ⇒ re-arm (el informe final no lo lleva)',
+    { comments: [TALLA_PRE, INFORME_CON_MARCADOR] }, soloRearm],
 ];
 
 const rojos = [];
