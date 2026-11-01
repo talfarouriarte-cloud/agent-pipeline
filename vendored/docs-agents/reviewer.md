@@ -135,8 +135,10 @@ Estructura:
 1. **Cabecera de control de loop** (primeras líneas del comentario, ANTES de cualquier otro contenido):
 - Línea 1: veredicto en una palabra: `LGTM` / `NITS` / `REVIEW`.
 - Línea 2 (si el veredicto es `REVIEW`, o `NITS` en cualquier ronda — ADR-193): `@claude` seguido de una frase corta describiendo qué tiene que hacer el Creator + el sentinel `<!-- ping-creator -->` al final de la misma línea. NO aparece NUNCA en un `LGTM`, ni en épica ni en suelto: el merge lo hace `epic-merge` en ambos casos (derogación 2026-07-10 y AP-095, § «Cabecera de control de loop»). **ADR-193 (épicas autoencadenadas):** NITS pinga en cada ronda. El ping del LGTM en épica que ADR-193 introdujo está derogado: el merge es de `epic-merge`. El tope de rondas lo impone el `CAP` del workflow (escala a humano al agotarse). El sentinel es marca de máquina, invisible en el render, requerida para que el filtro del workflow dispare incluso si el action inyecta un zero-width joiner entre `@` y `claude`.
-- Línea 3, solo si reservas el merge al propietario (AP-095, § «Reservar el merge al propietario»): `[NEEDS-HUMAN]: <la decisión que solo el propietario puede tomar>`, abriendo su línea, con veredicto `REVIEW` en la línea 1.
-- Última línea de la cabecera (AP-092): `<!-- reviewer-presupuesto: N turnos -->`, con el N que te pasa el prompt (`PRESUPUESTO APLICADO`, escalón por tamaño del diff). Es HTML invisible y va DESPUÉS del veredicto (línea 1), del `@claude` si lo hay (línea 2) y de la línea `[NEEDS-HUMAN]` si la hay (línea 3): nunca los desplaza.
+- Línea 2, solo si reservas el merge al propietario (AP-095, enmendado por AP-129, § «Reservar el merge al propietario»): `[NEEDS-HUMAN]: <la decisión que solo el propietario puede tomar>`, abriendo su línea, con veredicto `REVIEW` en la línea 1 y **sin** línea de ping (este REVIEW no convoca al Creator).
+- Línea 2 opcional de un `LGTM` (AP-129, § «Condicionar el eslabón siguiente»): `[LAUNCH-HOLD]: <decisión del Architect antes de lanzar el eslabón siguiente>`, abriendo su línea.
+- Última línea de la cabecera (AP-092): `<!-- reviewer-presupuesto: N turnos -->`, con el N que te pasa el prompt (`PRESUPUESTO APLICADO`, escalón por tamaño del diff). Es HTML invisible y va DESPUÉS del veredicto (línea 1) y de la línea 2 si la hay (`@claude`, `[NEEDS-HUMAN]` o `[LAUNCH-HOLD]`): nunca los desplaza.
+- El post-step de `reviewer.yml` lee `[NEEDS-HUMAN]:` y `[LAUNCH-HOLD]:` SOLO dentro de la cabecera (hasta la primera línea en blanco) y solo si abren su línea: citados en el cuerpo o entre backticks no cuentan.
 - Línea en blanco separando la cabecera del resumen.
 1. **Resumen del PR** (2-3 líneas). Qué hace, en tus propias palabras.
 1. **Comentarios** (si los hay). Cada uno con:
@@ -202,14 +204,14 @@ El veredicto y el ping `@claude` (cuando aplica) van al PRINCIPIO del comentario
 
 Reglas:
 
-- `REVIEW` → la segunda línea es `@claude` + qué tiene que hacer el Creator + el sentinel `<!-- ping-creator -->` al final de la misma línea. Esto invoca al Creator vía el workflow `claude-code.yml` para aplicar las correcciones del loop.
+- `REVIEW` → la segunda línea es `@claude` + qué tiene que hacer el Creator + el sentinel `<!-- ping-creator -->` al final de la misma línea. Esto invoca al Creator vía el workflow `claude-code.yml` para aplicar las correcciones del loop. Excepción (AP-129): el `REVIEW` que reserva el merge al propietario lleva `[NEEDS-HUMAN]:` en la línea 2 y no pinga (§ «Reservar el merge al propietario»).
 - `NITS` → **en CUALQUIER ronda (ADR-193)** la segunda línea es `@claude aplica los nits` + el sentinel `<!-- ping-creator -->` al final de la misma línea. El Creator aplica los nits (todos: 🟡 y 🔵), cierra con `@reviewer`, y el workflow `claude-code.yml` re-añade `needs-review` para que tú reaudites. (Antes el ping era solo en la primera ronda NITS y el resto iba a humano; ADR-193 lo cambia para que la cadena converja sin intervención humana — el `CAP` del workflow escala si no converge.)
 - `LGTM` → **veredicto SOLO, en cualquier PR — jamás `@claude` en un LGTM** *(derogación 2026-07-10 del mecanismo de ADR-193, incidente PR #1204)*:
   - **PR con label `epica`:** `epic-merge.yml` consume tu LGTM vía `workflow_run` y hace TODO mecánicamente — merge (gate CI verde + LGTM + `epica`), borrado de rama y procesamiento del `launch-next` — en segundos y sin sesión de agente. La antigua segunda línea `@claude mergea…` (mecanismo original de ADR-193, anterior a epic-merge) despertaba una sesión de Creator de ~9 min y ~$2-3 por PR para hacer de mayordomo de lo que epic-merge ya mecaniza: fósil retirado. El humano NO mergea en épica.
   - **PR sin `epica` (issue suelto):** NO ping. **`epic-merge` también mergea los sueltos** con el gate `ci-verde` + `lgtm` y reclama su auditoría (`MERGEADO (suelto)`). Es el régimen desde `cadena-degradada-a-suelto` (central#36, 2026-07-15). El humano NO mergea, salvo en un repo con `automerge: false` en su stub de `epic-merge` (AP-012/AP-058: hoy solo el central), donde el merge es humano en ambos regímenes. *(Corregido por AP-095, central#262: hasta entonces aquí decía «el humano mergea directamente, como antes». En asesoramiento PR #2325, un LGTM que decía «el propietario tiene que decidir antes de mergear» se mergeó a los 6 min, antes de esa decisión.)*
 
 El `@claude` se emite cuando:
-- Veredicto `REVIEW` (siempre).
+- Veredicto `REVIEW`, salvo el que reserva el merge al propietario con `[NEEDS-HUMAN]` (AP-129: ese no pinga).
 - Veredicto `NITS` (cualquier ronda, ADR-193).
 
 Para `LGTM` — en CUALQUIER PR — la cabecera es sólo el veredicto en línea 1: JAMÁS `@claude` en un LGTM (mergea `epic-merge` mecánicamente, en épica y en suelto).
@@ -220,17 +222,39 @@ Para `LGTM` — en CUALQUIER PR — la cabecera es sólo el veredicto en línea 
 
 ```markdown
 REVIEW
-@claude reserva el merge al propietario: no cambies nada y cierra con el tag NEEDS-HUMAN citando la decisión de abajo <!-- ping-creator -->
 [NEEDS-HUMAN]: <la decisión exacta que el propietario tiene que tomar>
 <!-- reviewer-presupuesto: N turnos -->
 ```
 
+Sin `@claude` ni `<!-- ping-creator -->`: excepción explícita a la regla «REVIEW siempre pinga» de ADR-193 (AP-129, central#308). Un REVIEW que reserva el merge **no convoca al Creator**.
+
 Qué hace cada pieza, según la mecánica vigente:
 - **`REVIEW` en la línea 1** es lo que frena el merge. El post-step retira `lgtm` en cualquier veredicto que no sea `LGTM`, y el gate de `epic-merge` lo exige.
-- **El ping** hace que el Creator cierre su turno con `[NEEDS-HUMAN]` en su primera línea. Su Auto-label aplica entonces `human-needed`, que es el kill-switch de `epic-merge` y del Watchdog. Tu sesión no puede aplicar labels (`--allowedTools` del Reviewer), así que la label llega por esa vía.
-- **Tu línea `[NEEDS-HUMAN]`** deja la decisión en el hilo para el propietario y el Auditor.
+- **Tu línea `[NEEDS-HUMAN]`** (línea 2) deja la decisión en el hilo para el propietario y el Auditor, y la label la aplica el post-step del Reviewer al leer tu cabecera (AP-129): `human-needed` con el PAT y un comentario `needs-human-materializado` con tu razón citada. `human-needed` es el kill-switch de `epic-merge` y del Watchdog.
 
-Sin el ping, el Watchdog vería un `REVIEW` sin sesión del Creator y lo relanzaría igualmente, pero con un tick de retraso.
+Sin ping y con `human-needed` puesta por el post-step, el Watchdog no relanza nada (`watchdog.yml`, filtro de `human-needed`): el hilo queda en manos del propietario.
+
+Si tienes nits Y una decisión del propietario, primero la decisión: `REVIEW` + `[NEEDS-HUMAN]` sin ping. Los nits van en la ronda siguiente, cuando el propietario haya decidido.
+
+### Condicionar el eslabón siguiente: `[LAUNCH-HOLD]` (AP-129, central#362)
+
+Una divergencia que aceptas puede dejar una decisión pendiente que no afecta a la corrección de ESTE PR pero sí al eslabón siguiente de la cadena («esta decisión tiene que estar tomada antes de lanzar el 3/3»). Escrita en la prosa de un LGTM no la lee nadie: `epic-merge` mergea y lanza el siguiente eslabón en dos minutos (aud. asesoramiento#3046, PR #3044). Para eso la cabecera del LGTM lleva una línea 2:
+
+```markdown
+LGTM
+[LAUNCH-HOLD]: <decisión del Architect antes de lanzar el eslabón siguiente>
+<!-- reviewer-presupuesto: N turnos -->
+```
+
+El post-step pone la label `launch-hold` en el PR y publica `launch-hold-declarado` con tu texto. `epic-merge` mergea el PR igual, pero no consume su `launch-next`: deja el eslabón siguiente en `stalled` con tu decisión citada, y architect-resolve la decide y arma el eslabón.
+
+El tag solo tiene efecto en un eslabón de épica con `launch-next`. En un PR parcial, un suelto o el cierre de una épica, `epic-merge` sale por otro camino antes de leer el hold y el tag no retiene nada. Si la decisión condiciona un issue de la cola de sueltos, no uses `[LAUNCH-HOLD]`: escríbela en ese issue o usa `[NEEDS-HUMAN]`.
+
+La frontera con `[NEEDS-HUMAN]`:
+- **Decisión del propietario sobre ESTE PR** (su merge depende de ella): `REVIEW` + `[NEEDS-HUMAN]`.
+- **Decisión del Architect sobre el eslabón SIGUIENTE** que no afecta a la corrección de este PR: `LGTM` + `[LAUNCH-HOLD]`.
+
+Enmienda declarada de AP-095 («nunca un LGTM condicionado»): sigue valiendo para ESTE PR. `[LAUNCH-HOLD]` no condiciona el merge, condiciona el lanzamiento del siguiente. No lo uses para nits ni para deuda sin decisión pendiente: cada hold cuesta una corrida de architect-resolve y el Auditor los cuenta. En un `REVIEW` o un `NITS` la línea se ignora (ya frenan el merge).
 
 ### Sentinel `<!-- ping-creator -->` (ADR-086)
 

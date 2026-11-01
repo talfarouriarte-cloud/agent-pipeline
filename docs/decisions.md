@@ -1976,7 +1976,7 @@ Además de las dos de arriba (🟡 1, consumidor mecánico; 🟡 2, cuerpos verb
 
 ## AP-071 — El Δestado del Creator que NO es un push adquiere portador: rama `comment-only` en la cola del `turn-close-failsafe`, por delante de la escalada de AP-046 (repesca finplan#1724, aud. finplan#1736 §R1): EJECUTADA en el módulo y el banco · la invocación en `claude-code.yml` queda PENDIENTE DE APLICACIÓN HUMANA (parche adjunto)
 
-<!-- ancla-espejo: AP-071-turn-close-comment-only.patch = fd3a59a73898d8b11f3cc2d9f5b906c46c482d20 -->
+Espejo del ancla retirado en AP-129 (2026-11-01): el parche `AP-071-turn-close-comment-only.patch` (verificado-contra `fd3a59a7`) se aplicó al árbol en ese PR y se borró de `docs/patches/`, como pide `check-patches` para un parche ya aplicado.
 
 **Contexto (repesca R1 del 5-whys de la auditoría finplan#1736; issue central #177).** PR finplan#1724, épica ADR-232. El veredicto NITS de la ronda 2 pedía UNA cosa **sin diff**: re-publicar el sentinel `adr-divergence` por `gh api`, porque el tracking comment se lo había comido (AP-013). La sesión del Creator lo hizo en 1m 17s. Su Δestado fue un **COMENTARIO** —cero commits— y omitió el tag de cierre, como 8 de los 9 PRs de esa misma épica. La transición Creator→Reviewer se materializa hoy por **PUSH** (`turn-close-failsafe`) o por **TAG**; sin ninguno de los dos, la rama else de AP-046 clasificó la sesión como terminal NO-declarado y aplicó `stalled` + `estado:esperando-architect`. architect-resolve ruló 9 minutos después con `derived-decision`: re-convocar al Reviewer (re-aplicar `needs-review`). El PR mergeó 2 min más tarde.
 
@@ -3442,5 +3442,50 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 - pieza 5: 0 arms de ronda 3 sin `critica-leida`;
 - pieza 6: serie |pre−post| con ≥ 10 % de desacuerdo (si sigue ≤ 2 %, se retira en diciembre);
 - sobre el Critic: si más del 40 % de los arms de diseño salen por `critica-na`, o si la fuga de especificación del Auditor no baja, en diciembre se reduce a 1 ronda o se retira.
+
+**Fecha.** 2026-11-01.
+
+## AP-129 — La cabecera del Reviewer pasa a estado (`[NEEDS-HUMAN]` sin sesión del Creator, `[LAUNCH-HOLD]` que retiene el `launch-next`) y el turno sin push tras NITS/REVIEW vuelve al Reviewer por estado; parche AP-071 aplicado (2026-11-01)
+
+**Contexto.** central#362 (P0, aud. asesoramiento#3046 y cuatro ciclos más: #3084, #3087, #3090, #3093), fundidas #308 y #317. Ruling de la revisión mensual 2026-11-01, posición 8, tras tres rondas del Critic. Tres decisiones que el Reviewer o el Creator ya habían tomado viajaban como prosa sin consumidor mecánico:
+1. `[NEEDS-HUMAN]:` en la cabecera de un `REVIEW` solo llegaba a `human-needed` si el Creator, convocado por el ping, repetía el tag en su cierre. Era una sesión entera para copiar una línea (#308; asesoramiento PR #3380: 2 de 2 reservas REDUNDANTES).
+2. Una condición sobre el eslabón siguiente escrita en un `LGTM` no la leía nadie. `epic-merge` mergeaba y consumía `launch-next` en 2 min (#362: PR #3044 → #3039 lanzado sin la decisión ⇒ 🔴 sin válvula, correctivo sin armar, `human-needed`).
+3. Un turno del Creator convocado por NITS/REVIEW que respondía en el tracking comment o con `gh pr edit`, sin push y sin `@reviewer`, caía en `escalada-materializada-con-pr`: `stalled` y una corrida de architect-resolve (~118k ponderados) para acabar re-convocando al Reviewer (#317). La rama `comment-only` de AP-071 cubría el comentario propio por `gh api`, pero su invocación seguía en `docs/patches/` sin aplicar.
+
+**Decisión.**
+1. **Cabecera del Reviewer → estado.** Módulo `vendored/scripts/reviewer-header-terminals.cjs` (AP-068: `clasificarCabecera` pura + `run`), invocado en «Materializar estado del Reviewer» de `reviewer.yml` tras `verdictForHead` y antes de la rama `lgtm`. La cabecera son las líneas hasta la primera en blanco, y los tags cuentan solo si abren su línea (clase PR #1133).
+   - `[NEEDS-HUMAN]: <razón>` ⇒ `human-needed` con el PAT + `<!-- needs-human-materializado -->`.
+   - `[LAUNCH-HOLD]: <decisión>` en un `LGTM` ⇒ label `launch-hold` en el PR + `<!-- launch-hold-declarado -->`. En `REVIEW`/`NITS` se ignora con aviso.
+   - Dedupe por marcador posterior al veredicto. Fail-open anunciado si el módulo no carga.
+2. **`launch-hold` en `epic-merge`.** Módulo `vendored/scripts/launch-hold.cjs`. En `postMerge`, tras `const next` y antes del des-bloqueo del destino, con las labels sacadas del parámetro `pr`: si el PR lleva `launch-hold`, el merge se hace igual pero el `launch-next` no se consume. El eslabón siguiente recibe `estado:esperando-architect` + `stalled` + `<!-- launch-hold -->` con la decisión citada. architect-resolve la decide, retira las labels y arma con `watchdog-rearm` (`watchdog.md` § «Régimen autónomo»). El modo 3 del diagnóstico del Watchdog cede. Si `retener` falla, no se lanza (fail-closed). Label `launch-hold` en `templates/labels.json`. `estado:esperando-architect` es dinámica y no se declara.
+3. **Turno sin push tras NITS/REVIEW ⇒ Reviewer por estado.** Se aplica el parche AP-071 (`git apply --check` limpio): el inline de la rama ELSE con PR de `claude-code.yml` pasa a invocar `creator-turn-close-failsafe.cjs`, con dos parámetros nuevos: `trigBody` y `prLabels`. El parche se borra y se retira su espejo `ancla-espejo` del bloque AP-071. En el módulo entra la rama **4-bis `respuesta-sin-push`**, entre `comment-only` y la escalada. Exige estas condiciones:
+   - sin terminal anclado en la ventana fresca;
+   - sin comentario propio extra;
+   - trigger `REVIEW`/`NITS` anclado y con `ping-creator`;
+   - tracking comment sustantivo: ≥ 1 línea de ≥ 20 caracteres tras quitar la cabecera, las líneas vacías, `---`, `_Generated by`, `[View job`, `https://` y las líneas que son solo un enlace.
+
+   Si se cumplen, el job hace remove+add de `needs-review` y publica `<!-- turn-close-failsafe: respuesta-sin-push -->`. Con `human-needed`/`pause-agents` en el PR no escribe nada (`kill-switch`).
+4. **Bancos.**
+   - `scripts/check-reviewer-header.mjs` (nuevo, colgado de `check-embedded-js`) cubre: casos a–f de la cabecera, `run` contra un doble (PAT por `fetch`, dedupe, sin PAT), g–i de `launch-hold`, (j) la costura por texto de `postMerge` (`prLabelsLH` declarado antes de `LH.decidir`, y el hold antes del des-bloqueo) y (k) la costura de `reviewer.yml`.
+   - `scripts/check-turn-close-detection.mjs` cubre las fixtures A–F de `respuesta-sin-push`. Su costura deja de leer el parche y pasa a leer `claude-code.yml`, con los seis parámetros de datos.
+   - Mutaciones verificadas: quitar `trigBody` de la invocación, o la declaración `prLabelsLH`, pone ROJO su banco.
+
+**Enmiendas declaradas.**
+- **AP-095** («nunca un LGTM condicionado») sigue valiendo para ESTE PR. `[LAUNCH-HOLD]` no condiciona el merge, condiciona el lanzamiento del siguiente. Frontera en `reviewer.md`: una decisión del propietario sobre este PR va con `REVIEW` + `[NEEDS-HUMAN]`; una decisión del Architect sobre el eslabón siguiente va con `LGTM` + `[LAUNCH-HOLD]`.
+- **ADR-193** («REVIEW siempre pinga»): el `REVIEW` que reserva el merge lleva `[NEEDS-HUMAN]` en la línea 2 y **no pinga**.
+- **AP-071**: aplicado. `check-patches` pasa de 4 a 3 parches.
+
+**Qué NO.**
+- No cambian `CLAUDE.loop.md` ni el Auto-label del Creator: el Creator puede seguir cerrando con `[NEEDS-HUMAN]`, pero deja de hacer falta.
+- No hay gate de `human-needed` al arranque del Creator.
+- No se tocan la escalada sin PR (AP-036) ni el step `launch_next` de `claude-code.yml`.
+- No se aplican los parches AP-064, AP-067 ni AP-086.
+- El post-step no retira `launch-hold` si un veredicto posterior no la repite. Una vez puesta, solo la quita un humano o el merge. **Vigilancia:** un PR re-revisado con hold obsoleto retendría el siguiente eslabón sin necesidad; architect-resolve lo resolvería en una corrida.
+
+**Criterio falsable** (process-reviewer, lotes de noviembre; mensual de diciembre):
+1. `check-patches` reporta 3 parches; `check-labels`, `check-reviewer-header` y `check-turn-close-detection` verdes.
+2. El primer `[NEEDS-HUMAN]` de un Reviewer produce `needs-human-materializado` en el mismo run y ninguna sesión del Creator convocada por ese REVIEW. Además, 0 sesiones del Creator cuyo único acto sea repetir el tag.
+3. El primer `[LAUNCH-HOLD]` real produce `launch-hold-declarado` en el PR y `launch-hold` + `stalled` en el eslabón siguiente, y ese eslabón se arma por `watchdog-rearm` con la decisión citada. 0 `launch-next` consumidos con un hold vigente.
+4. 0 `escalada-materializada-con-pr` en un turno sin push convocado por NITS/REVIEW con tracking sustantivo. Una `respuesta-sin-push` que fuera una escalada en prosa cuenta como fuga y obliga a revisar el umbral.
 
 **Fecha.** 2026-11-01.

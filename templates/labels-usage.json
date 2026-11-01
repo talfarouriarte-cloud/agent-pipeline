@@ -27,7 +27,8 @@
     "en-cola",
     "prioridad:urgente",
     "prioridad:alta",
-    "pausa-cola"
+    "pausa-cola",
+    "launch-hold"
   ],
   "process-review.yml": [
     "auditoria",
@@ -38,7 +39,9 @@
   "reviewer.yml": [
     "lgtm",
     "needs-review",
-    "stalled"
+    "stalled",
+    "human-needed",
+    "launch-hold"
   ],
   "watchdog.yml": [
     "human-needed",

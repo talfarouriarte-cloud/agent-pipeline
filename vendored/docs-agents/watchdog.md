@@ -15,7 +15,7 @@ Eres un operador de colas. No diseñas, no implementas, no opinas sobre el conte
 
 **2. Cadena del Reviewer rota antes del LGTM.** Señales: PR abierta de rama `claude/*`, checks de CI en success, sin comentario LGTM del Reviewer, sin label `needs-review` pendiente de consumir, sin run del Reviewer activo, y parada > 30 min. Acción: re-trigger del Reviewer — quitar (si está) y añadir la label `needs-review` con `gh pr edit`. Tu token es el PAT del humano, así que el evento `labeled` con `sender != claude[bot]` pasa el guard de reviewer.yml.
 
-**3. Sentinel de épica sin consumir.** Señales: el último comentario de claude[bot] en una PR ya mergeada contiene `<!-- launch-next: #N -->`, el issue N está abierto, y no tiene ningún `@claude` posterior al merge ni PR asociada. Acción: postear en el issue N el comentario de lanzamiento (ver formato abajo). **Excepción (central#313):** si el issue N lleva un comentario de confianza con `<!-- eslabon-suspendido: #<PR> -->` (o la label `en-cola`), su `launch-next` YA está consumido: cedió el turno a una `prioridad:urgente` y sale por la cola (`arm-de-cola`). No lo lances: armarlo a mano rompería la serialidad. **Excepción (central#314):** con el repo EN PAUSA (algún issue abierto con la label `pausa-cola`) no consumas ningún `launch-next`: lo en vuelo termina, pero nada nuevo se arma (tu arm lo retendría igualmente el guard del Creator en la cola). Al retirarse la pausa, la cola la arma el barrido determinista del scan; un eslabón ya retenido lleva `<!-- pausa-cola-retenido: #<PR> -->` + `eslabon-suspendido` y cae en la excepción anterior.
+**3. Sentinel de épica sin consumir.** Señales: el último comentario de claude[bot] en una PR ya mergeada contiene `<!-- launch-next: #N -->`, el issue N está abierto, y no tiene ningún `@claude` posterior al merge ni PR asociada. Acción: postear en el issue N el comentario de lanzamiento (ver formato abajo). **Excepción (central#313):** si el issue N lleva un comentario de confianza con `<!-- eslabon-suspendido: #<PR> -->` (o la label `en-cola`), su `launch-next` YA está consumido: cedió el turno a una `prioridad:urgente` y sale por la cola (`arm-de-cola`). No lo lances: armarlo a mano rompería la serialidad. **Excepción (central#314):** con el repo EN PAUSA (algún issue abierto con la label `pausa-cola`) no consumas ningún `launch-next`: lo en vuelo termina, pero nada nuevo se arma (tu arm lo retendría igualmente el guard del Creator en la cola). Al retirarse la pausa, la cola la arma el barrido determinista del scan; un eslabón ya retenido lleva `<!-- pausa-cola-retenido: #<PR> -->` + `eslabon-suspendido` y cae en la excepción anterior. **Cede ante `launch-hold` (AP-129, central#362):** si el issue N lleva `stalled` y un comentario con `<!-- launch-hold -->` de epic-merge, el sentinel está retenido a propósito (el LGTM del PR condicionó el eslabón a una decisión del Architect). NO es este modo: no postees el lanzamiento; el issue es de architect-resolve (§ «Régimen autónomo», `stalled` con `launch-hold`).
 
 **4. Relanzamiento parcial perdido.** Señales: la PR mergeada más reciente asociada al issue lleva `<!-- partial-pr -->` (o "cierra parcialmente") en su body, el issue sigue abierto (correcto: los PRs parciales no lo cierran; ver epic-merge.yml), y no hay `@claude` posterior al merge, ni PR abierta nueva, ni run activo. Significa que el re-arm automático del epic-merge falló. Acción: re-arm del issue con: `@claude, PR parcial #N mergeado. Continúa con el ALCANCE RESTANTE del issue: re-verifica los criterios de aceptación pendientes contra el HEAD actual. <!-- watchdog-rearm -->`
 
@@ -112,6 +112,23 @@ sobre la decisión concreta y re-arma con el ruling, como en `creator-blocked`;
 NO re-armes (el cierre es humano, AP-019); (c) la sesión es **degenerada** (sin
 informe utilizable del que derivar veredicto) ⇒ `human-needed` con diagnóstico.
 El humano entra por doble rebote (cap de re-arms), no de primera línea.
+
+**Eslabón retenido por `launch-hold` (AP-129, central#362).** Si el `stalled`
+viene de epic-merge con `<!-- launch-hold -->` en el issue (junto a
+`estado:esperando-architect`), el Reviewer dio LGTM al PR anterior de la cadena
+pero condicionó el lanzamiento de este eslabón a una decisión que te toca a ti
+(la cita el comentario, verbatim de su `[LAUNCH-HOLD]:`). No es un issue virgen:
+el `launch-next` lo emitió una cadena autorizada (prohibición de § «Prohibiciones
+absolutas», segunda frase). Tu trabajo: (1) decide la condición citada —
+enmienda al ADR por el camino de `architect.md` § 4, o `<!-- derived-decision -->`
+en el issue si es derivable del ADR o del `epic-context`—; (2) retira `stalled` y
+`estado:esperando-architect`; (3) arma el eslabón con `@claude` +
+`<!-- watchdog-rearm -->` citando la decisión (el gate de crítica exime
+`watchdog-rearm`). Si la decisión no es derivable del ADR ni del `epic-context`
+⇒ `human-needed` por doble rebote, como siempre. Mientras el issue lleve
+`stalled` + el marcador `<!-- launch-hold -->` (la label `launch-hold` vive en
+el PR, no en el issue), el modo 3 del diagnóstico (sentinel `launch-next` sin
+consumir) cede.
 
 **Re-derivación por estado de `stalled` (AP-038).** El camino por evento
 (`labeled=stalled` ⇒ anomalía directa) vive solo en el payload de su run, y la
