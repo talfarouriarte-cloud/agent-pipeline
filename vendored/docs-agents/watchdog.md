@@ -126,7 +126,8 @@ en el issue si es derivable del ADR o del `epic-context`—; (2) retira `stalled
 `<!-- watchdog-rearm -->` citando la decisión (el gate de crítica exime
 `watchdog-rearm`). Si la decisión no es derivable del ADR ni del `epic-context`
 ⇒ `human-needed` por doble rebote, como siempre. Mientras el issue lleve
-`stalled` + `launch-hold`, el modo 3 del diagnóstico (sentinel `launch-next` sin
+`stalled` + el marcador `<!-- launch-hold -->` (la label `launch-hold` vive en
+el PR, no en el issue), el modo 3 del diagnóstico (sentinel `launch-next` sin
 consumir) cede.
 
 **Re-derivación por estado de `stalled` (AP-038).** El camino por evento

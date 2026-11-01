@@ -65,7 +65,7 @@ const params = firma.split(',').map((s) => s.trim()).filter(Boolean).sort();
 caso('costura: run acepta exactamente {github, core, prNumber, lastVc, prLabels, pat}',
   JSON.stringify(params) === JSON.stringify(['core', 'github', 'lastVc', 'pat', 'prLabels', 'prNumber']), JSON.stringify(params));
 
-async function correrRun({ body, previos = [], prLabels = [], pat = 'PAT' }) {
+async function correrRun({ body, previos = [], prLabels = [], pat = 'PAT', patStatus = 200 }) {
   const escrituras = [];
   const cuerpos = [];
   const avisos = [];
@@ -83,7 +83,7 @@ async function correrRun({ body, previos = [], prLabels = [], pat = 'PAT' }) {
   globalThis.fetch = async (url, opts) => {
     escrituras.push(`pat-label:${JSON.parse(opts.body).labels.join('+')}`);
     if (!String(opts.headers.Authorization).includes('PAT')) escrituras.push('pat-sin-token');
-    return { ok: true, status: 200 };
+    return { ok: patStatus < 300, status: patStatus };
   };
   const envPrev = process.env.GITHUB_REPOSITORY;
   process.env.GITHUB_REPOSITORY = 'o/r';
@@ -115,6 +115,13 @@ caso('run: label ya presente ⇒ solo comentario', eq(g.escrituras, ['createComm
 g = await correrRun({ body: 'LGTM\n[LAUNCH-HOLD]: D1\n\nx', pat: '' });
 caso('run: sin PAT ⇒ token del step + aviso', eq(g.escrituras, ['gh-addLabels:launch-hold', 'createComment'])
   && g.avisos.some((a) => a.includes('sin PAT')), JSON.stringify(g));
+
+g = await correrRun({ body: 'LGTM\n[LAUNCH-HOLD]: D1\n\nx', patStatus: 403 });
+caso('run: PAT 403 en launch-hold ⇒ SIN marcador + aviso «NO materializada»', eq(g.escrituras, ['pat-label:launch-hold'])
+  && g.out.via === 'launch-hold-sin-label' && g.avisos.some((a) => a.includes('cabecera NO materializada')), JSON.stringify(g));
+g = await correrRun({ body: 'REVIEW\n[NEEDS-HUMAN]: decide D2\n\nx', patStatus: 403 });
+caso('run: PAT 403 en NEEDS-HUMAN ⇒ SIN marcador', eq(g.escrituras, ['pat-label:human-needed'])
+  && g.out.via === 'needs-human-sin-label', JSON.stringify(g));
 
 // ── (g)–(i) launch-hold ─────────────────────────────────────────────────────
 caso('(g) decidir con label', LH.decidir({ prLabels: ['epica', 'lgtm', 'launch-hold'] }) === true);

@@ -248,6 +248,8 @@ LGTM
 
 El post-step pone la label `launch-hold` en el PR y publica `launch-hold-declarado` con tu texto. `epic-merge` mergea el PR igual, pero no consume su `launch-next`: deja el eslabón siguiente en `stalled` con tu decisión citada, y architect-resolve la decide y arma el eslabón.
 
+El tag solo tiene efecto en un eslabón de épica con `launch-next`. En un PR parcial, un suelto o el cierre de una épica, `epic-merge` sale por otro camino antes de leer el hold y el tag no retiene nada. Si la decisión condiciona un issue de la cola de sueltos, no uses `[LAUNCH-HOLD]`: escríbela en ese issue o usa `[NEEDS-HUMAN]`.
+
 La frontera con `[NEEDS-HUMAN]`:
 - **Decisión del propietario sobre ESTE PR** (su merge depende de ella): `REVIEW` + `[NEEDS-HUMAN]`.
 - **Decisión del Architect sobre el eslabón SIGUIENTE** que no afecta a la corrección de este PR: `LGTM` + `[LAUNCH-HOLD]`.

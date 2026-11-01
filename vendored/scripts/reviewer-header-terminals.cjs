@@ -78,11 +78,22 @@ async function ponerLabel({ github, core, O, prNumber, label, pat }) {
       headers: { Authorization: `Bearer ${pat}`, Accept: 'application/vnd.github+json' },
       body: JSON.stringify({ labels: [label] }),
     });
-    if (!res.ok) core.warning(`reviewer-header: label ${label} por PAT: HTTP ${res.status}`);
-    return;
+    if (!res.ok) { core.warning(`reviewer-header: label ${label} por PAT: HTTP ${res.status}`); return false; }
+    return true;
   }
   core.warning(`reviewer-header: sin PAT — ${label} se aplica con el token del step (su \`labeled\` no dispara workflows).`);
   await github.rest.issues.addLabels({ ...O, issue_number: prNumber, labels: [label] });
+  return true;
+}
+
+// Sin label no hay marcador (🟡 1 de la review de PR #388): el comentario
+// afirma un estado que `launch-hold.decidir` lee SOLO de la label, y el marcador
+// publicado deduplicaría el reintento de un re-run del post-step.
+async function asegurarLabel({ github, core, O, prNumber, label, pat, labels }) {
+  if (labels.includes(label)) return true;
+  if (await ponerLabel({ github, core, O, prNumber, label, pat })) return true;
+  core.warning(`PR #${prNumber}: cabecera NO materializada — ${label} no se aplicó; sin marcador, un re-run del post-step lo reintenta.`);
+  return false;
 }
 
 async function run({ github, core, prNumber, lastVc, prLabels, pat }) {
@@ -106,18 +117,20 @@ async function run({ github, core, prNumber, lastVc, prLabels, pat }) {
   if (cab.needsHuman) {
     if (cab.ping) core.warning('cabecera contradictoria: NEEDS-HUMAN con ping');
     if (!ya(MARK_NEEDS_HUMAN)) {
-      if (!labels.includes('human-needed')) await ponerLabel({ github, core, O, prNumber, label: 'human-needed', pat });
-      await github.rest.issues.createComment({ ...O, issue_number: prNumber,
-        body: `**reviewer · needs-human-materializado**: el Reviewer reservó el merge al propietario: «${cab.needsHuman}». Label aplicada por estado, sin sesión del Creator.\n\n${MARK_NEEDS_HUMAN}` });
-      hechos.push('needs-human');
+      if (await asegurarLabel({ github, core, O, prNumber, label: 'human-needed', pat, labels })) {
+        await github.rest.issues.createComment({ ...O, issue_number: prNumber,
+          body: `**reviewer · needs-human-materializado**: el Reviewer reservó el merge al propietario: «${cab.needsHuman}». Label aplicada por estado, sin sesión del Creator.\n\n${MARK_NEEDS_HUMAN}` });
+        hechos.push('needs-human');
+      } else hechos.push('needs-human-sin-label');
     }
   }
   if (cab.launchHold) {
     if (!ya(MARK_LAUNCH_HOLD)) {
-      if (!labels.includes(LABEL_HOLD)) await ponerLabel({ github, core, O, prNumber, label: LABEL_HOLD, pat });
-      await github.rest.issues.createComment({ ...O, issue_number: prNumber,
-        body: `**reviewer · launch-hold**: el LGTM condiciona el eslabón SIGUIENTE: «${cab.launchHold}». epic-merge mergea y NO lanza el siguiente eslabón.\n\n${MARK_LAUNCH_HOLD}` });
-      hechos.push('launch-hold');
+      if (await asegurarLabel({ github, core, O, prNumber, label: LABEL_HOLD, pat, labels })) {
+        await github.rest.issues.createComment({ ...O, issue_number: prNumber,
+          body: `**reviewer · launch-hold**: el LGTM condiciona el eslabón SIGUIENTE: «${cab.launchHold}». Si este PR es un eslabón de épica con \`launch-next\`, epic-merge mergea y NO lanza el siguiente eslabón; en cualquier otro camino (parcial, suelto, cierre de épica) el hold no tiene efecto.\n\n${MARK_LAUNCH_HOLD}` });
+        hechos.push('launch-hold');
+      } else hechos.push('launch-hold-sin-label');
     }
   }
   if (!hechos.length) core.notice(`PR #${prNumber}: cabecera del Reviewer ya materializada (marcador presente) — no duplico.`);
