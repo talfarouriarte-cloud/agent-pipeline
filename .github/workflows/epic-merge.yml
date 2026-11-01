@@ -1342,8 +1342,12 @@ jobs:
                     tAppend = Math.max(tAppend, Date.parse(c.commit.committer && c.commit.committer.date) || 1);
                 }
                 const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: prNumber, per_page: 100 });
+                // Marcador en su forma de máquina (línea propia, sha) y nunca en
+                // un veredicto: un LGTM que lo CITE no se bloquea a sí mismo
+                // (review de #389, ronda 2).
+                const MARCA_RE = /^<!-- watchdog-rebase-append: [0-9a-f]{7,40} -->$/m;
                 let iMarca = -1;
-                comments.forEach((c, i) => { if ((c.body || '').includes('<!-- watchdog-rebase-append: ')) iMarca = i; });
+                comments.forEach((c, i) => { if (!esVeredicto(c) && MARCA_RE.test(c.body || '')) iMarca = i; });
                 if (tAppend || iMarca >= 0) {
                   const posteriores = comments.filter((c, i) => i > iMarca && esVeredicto(c)
                     && (!tAppend || Date.parse(c.created_at) > tAppend));

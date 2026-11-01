@@ -1227,7 +1227,7 @@ jobs:
                 const subj = ((hc && hc.commit && hc.commit.message) || '').split('\n')[0];
                 if (/^merge\(registro\): append-only de .+ \(watchdog, AP-\d+\)$/.test(subj)) {
                   const mcs = await github.paginate(github.rest.issues.listComments, { ...O, issue_number: pr.number, per_page: 100 });
-                  if (!mcs.some(c => (c.body || '').includes(`<!-- watchdog-rebase-append: ${pr.head.sha} -->`))) {
+                  if (!mcs.some(c => new RegExp(`^<!-- watchdog-rebase-append: ${pr.head.sha} -->$`, 'm').test(c.body || ''))) {
                     adrAppend.push({ number: pr.number, head_ref: pr.head.ref, head_sha: pr.head.sha, rebases: 0, materializar: pr.head.sha });
                     core.setOutput('adr_append', JSON.stringify(adrAppend));
                     core.notice(`PR #${pr.number}: HEAD ${pr.head.sha.slice(0, 7)} es un merge append-only sin marcador — re-materializo (AP-130).`);
@@ -1749,7 +1749,9 @@ jobs:
                 if (ok) {
                   const MARK = `<!-- watchdog-rebase-append: ${r0.sha} -->`;
                   const cs = await github.paginate(github.rest.issues.listComments, { ...O, issue_number: c.number, per_page: 100 });
-                  if (cs.some(x => (x.body || '').includes(MARK))) { core.info(`PR #${c.number}: ${r0.sha.slice(0, 7)} ya materializado — no-op.`); continue; }
+                  // Forma de máquina (línea propia): una cita del marcador no hace no-op.
+                  const MARK_RE = new RegExp(`^${MARK}$`, 'm');
+                  if (cs.some(x => MARK_RE.test(x.body || ''))) { core.info(`PR #${c.number}: ${r0.sha.slice(0, 7)} ya materializado — no-op.`); continue; }
                   // Estado LEÍDO en vivo, no el del listado del scan: el bloque
                   // AP-055 del mismo tick puede haber retirado `lgtm`.
                   const { data: pf } = await github.rest.pulls.get({ ...O, pull_number: c.number });
