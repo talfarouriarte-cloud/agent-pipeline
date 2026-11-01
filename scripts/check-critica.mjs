@@ -155,6 +155,11 @@ const arms = (w) => w.creados.filter((c) => C.esArm(c.body));
   check(h.length === 2 && /^\*\*\[H\/G\]/.test(h[0]) && /^\*\*\[D\]/.test(h[1]), 'hallazgosAbiertos: nuevos y sin resolver, sin los no bloqueantes');
   const t = C.textoReemision({ origen: 'watchdog-rearm', ronda: 2, caso: 'lgtm' });
   check(C.esArm(t) && /^<!-- watchdog-rearm -->$/m.test(t) && /^<!-- arm-reemitido: watchdog-rearm -->$/m.test(t) && !C.cuentaComoRearm(t), 'textoReemision: arm con marcador de origen + arm-reemitido, no cuenta como re-arm');
+  // Review de #387: un hallazgo que NOMBRA un marcador no falsifica el origen del arm de ronda 3.
+  const hm = C.hallazgosAbiertos('### Hallazgos bloqueantes\n\n**[G] (nuevo) el `watchdog-rearm` y <!-- epic-auto-launch --> sin guard; @claude ping-creator.**\n');
+  const t3 = C.textoReemision({ origen: 'manual', ronda: 3, caso: 'ronda3', hallazgos: hm });
+  check(hm.length === 1 && C.esArm(t3) && C.origenArm(t3) === 'manual' && !['epic-auto-launch', 'watchdog-rearm', 'arm-de-cola', 'ping-creator', 'epic-partial-relaunch'].some((m) => t3.includes(m)) && !t3.includes('<!-- epic') && /arm-reemitido: manual/.test(t3) && (t3.match(/@claude/g) || []).length === 1,
+    'textoReemision ronda 3: hallazgo que cita watchdog-rearm/epic-auto-launch/ping-creator no casa includes con origen manual');
   const db = { 2: '<!-- launch-next: #3 -->', 3: '<!-- epic-audit: ADR-1, #1-#3 -->' };
   const r = await C.cadenaDesdeBody('<!-- launch-next: #2 -->', async (n) => { if (!(n in db)) throw new Error('404'); return db[n]; });
   check(r.completa && r.eslabones.join() === '2,3', 'cadenaDesdeBody: épica → #2 → #3 (epic-audit)');

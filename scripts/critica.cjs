@@ -165,6 +165,18 @@ function hallazgosAbiertos(body) {
   return out;
 }
 
+// Línea de hallazgo copiada al arm de ronda 3, desactivada (review de #387):
+// los guards de `claude-code.yml` leen el origen por substring sin anclar
+// (`isChainRearm`, `ping-creator`), y un hallazgo que NOMBRA `watchdog-rearm`
+// falsificaría el origen del arm. Se quitan los comentarios HTML y los
+// literales de marcador llevan guion no separable (U+2011): se leen igual y no
+// casan `includes`. Una mención `@claude` citada lleva un espacio de ancho cero.
+const MARCADORES_COPIA = [...CRITICA_REARM, 'epic-partial-relaunch', 'ping-creator', 'arm-reemitido', 'arm-retenido', 'critica-gate'];
+const neutralizarHallazgo = (l) => MARCADORES_COPIA.reduce(
+  (t, m) => t.split(m).join(m.replace(/-/g, '\u2011')),
+  String(l || '').replace(/<!--[\s\S]*?-->/g, ' ').replace(/<!--|-->/g, ' '),
+).replace(/@claude/g, '@\u200bclaude');
+
 // Texto del arm re-emitido. Conserva el marcador de ORIGEN (un relaunch sigue
 // siendo relaunch para los guards de cadena y serial) y añade `arm-reemitido`,
 // que el contador de re-arms del Watchdog excluye: la re-emisión no gasta cap.
@@ -173,7 +185,7 @@ function textoReemision({ origen, ronda, caso, aps = 'AP-128', hallazgos = [] })
   if (caso === 'ronda3') {
     lineas.push(`Arm tras ronda 3 bloqueante (ronda ${ronda}, AP-117/119, ${aps}): \`critica-na\`. Hallazgos sin resolver de la crítica: ANTES de tocar código publica con \`gh api\` un comentario que empiece por el marcador \`critica-leida\` y declara, por hallazgo, «aplico» o «no aplico: <por qué>» (\`creator.md\` § «Al arrancar»).`);
     lineas.push('');
-    for (const h of (hallazgos.length ? hallazgos : ['(la crítica no lista hallazgos con letra: léela entera)'])) lineas.push(`- ${h}`);
+    for (const h of (hallazgos.length ? hallazgos : ['(la crítica no lista hallazgos con letra: léela entera)'])) lineas.push(`- ${neutralizarHallazgo(h)}`);
   } else if (caso === 'fail-open') {
     lineas.push(`Arm tras fail-open del Critic (AP-117, ronda ${ronda}): crítica no realizada.`);
   } else {
@@ -213,6 +225,6 @@ module.exports = {
   CRITICA_TRUSTED, CRITICA_REARM, CRITICA_EN_CURSO, CRITICA_PING_RE, HOLDS,
   VEREDICTO_RE, CUBRE_RE, RETENIDO_RE, REEMITIDO_RE,
   critDespojar, esArm, origenArm, esCorrectivoAuditor, exencionGate,
-  leerVeredicto, planLabels, armRetenido, hallazgosAbiertos, textoReemision,
+  leerVeredicto, planLabels, armRetenido, hallazgosAbiertos, neutralizarHallazgo, textoReemision,
   cadenaDesdeBody, cedeAlCritic, cuentaComoRearm,
 };

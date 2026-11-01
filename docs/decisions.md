@@ -3432,6 +3432,8 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 - (a) Con la crítica en curso, el Watchdog cede: un issue que se quede en `critica:hallazgos` sin Architect no lo rescata nadie automáticamente. Es lo aceptado en «Qué NO».
 - (b) Una mención de arm de un autor no de confianza posterior al `arm-retenido` suprime la re-emisión. Falla del lado de no duplicar arms.
 - (c) P mira `epic-context` en `inputs.default_branch` del stub (finplan `develop`, wmcb `main`); un stub que pase otra rama daría un falso bloqueante.
+- (d) *(review de #387)* `esArm` sobre el body en el Watchdog estrecha el arm-base: antes bastaba `@claude` en cualquier posición; ahora la mención tiene que abrir línea. Un body con la mención a mitad de frase dispara al Creator (el trigger es substring), pero el detector `issue-armed-no-pr` ya no lo ve armado: es la clase del stall que motivó el arm-base. No está medido que todos los bodies de los consumidores abran la mención en línea propia. **Vigilancia:** un stall de un issue con `@claude` a mitad de frase en el body ⇒ volver a `includes` solo para el body.
+- (e) *(review de #387)* El arm de ronda 3 copia líneas de hallazgo del Critic, y los guards de `claude-code.yml` leen el origen por substring (`isChainRearm`, `ping-creator`). Para que un hallazgo que nombra `watchdog-rearm` no falsifique el origen, `textoReemision` quita los comentarios HTML de esas líneas y escribe los literales de marcador con guion no separable (U+2011). El banco lo cubre.
 
 **Criterio falsable** (process-reviewer, lotes de noviembre; mensual de diciembre). Los del ruling:
 - piezas 1–2: 0 architect-resolve por transición de `critica:*` y 0 arms de Creator sobre un issue con `critica:hallazgos`;
