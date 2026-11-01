@@ -1580,8 +1580,20 @@ jobs:
         continue-on-error: true
         env:
           PRE_SNAPSHOT: ${{ runner.temp }}/arbol-pre-sesion.z
+          # central#341: SHA de la base más cercano al que usará la restauración
+          # AP-097 de la action (su fetch es segundos después). El rescate no
+          # sube una ruta AP-097 cuyo blob sea el de esta base.
+          RESTORE_REF_FILE: ${{ runner.temp }}/restore-ref
+          BASE: ${{ inputs.default_branch }}
         run: |
           set -euo pipefail
+          : > "$RESTORE_REF_FILE"
+          if git fetch -q origin "+refs/heads/$BASE:refs/remotes/origin/$BASE" 2>/dev/null \
+            && git rev-parse -q --verify "origin/$BASE^{commit}" > "$RESTORE_REF_FILE" 2>/dev/null; then
+            echo "base de la restauración (restore-ref): $(cat "$RESTORE_REF_FILE")"
+          else
+            : > "$RESTORE_REF_FILE"; echo "::warning::no pude fijar restore-ref (fetch de origin/$BASE); el rescate AP-097 comparará solo contra la base al cierre"
+          fi
           : > "$PRE_SNAPSHOT"
           while IFS= read -r -d '' e; do
             xy=${e:0:2}; set -- "${e:3}"
@@ -1765,6 +1777,8 @@ jobs:
         #    WIP con `git add` SOLO de esas rutas (jamás -A: subiría la
         #    reversión de config de la base) y se pushean con los residuales;
         #    se restan las rutas idénticas a la foto pre-sesión (`arbol_pre`);
+        #    desde central#341 entra también la ruta AP-097 cuyo blob difiere de
+        #    la foto y de la base (al arrancar y al cerrar): edición de la sesión;
         #  - con WIP NO se abre PR (el `opened` convocaría al Reviewer sobre un
         #    WIP): rama virgen ⇒ una línea en el issue; PR abierto ⇒ comentario
         #    con marcador `arbol-rescatado-por-estado` + `estado:esperando-architect`
@@ -1787,6 +1801,8 @@ jobs:
           EVENT_PR: ${{ github.event.pull_request.number || (github.event.issue.pull_request && github.event.issue.number) || '' }}
           # Foto pre-sesión (step `arbol_pre`): lo que sigue idéntico no se rescata.
           PRE_SNAPSHOT: ${{ runner.temp }}/arbol-pre-sesion.z
+          # Base fijada por `arbol_pre` antes de la restauración AP-097 (central#341).
+          RESTORE_REF_FILE: ${{ runner.temp }}/restore-ref
         run: |
           set -euo pipefail
           echo "wip=false" >> "$GITHUB_OUTPUT"
@@ -1804,7 +1820,19 @@ jobs:
           # (R/C traen la ruta de origen como entrada siguiente).
           # Se resta además la foto pre-sesión (`arbol_pre`): una ruta que sigue
           # con el mismo hash que antes de la sesión no la produjo el Creator.
+          # central#341 (asesoramiento#2840: edición de skill perdida): una ruta
+          # AP-097 SÍ se rescata si es un fichero regular cuyo blob difiere de la
+          # foto, de la base al arrancar (`restore-ref`) y de la base al cerrar
+          # (`origin/$BASE` re-fetchado arriba): igual a una base ES la
+          # restauración. Borrados y enlaces de AP-097 nunca se rescatan. Sin
+          # ninguna base verificable, AP-097 queda fuera entero (como antes).
           hashof() { if [ -f "$1" ] || [ -L "$1" ]; then git hash-object --no-filters -- "$1" 2>/dev/null || echo '?'; else echo -; fi; }
+          blobof() { git rev-parse -q --verify "$1:$2" 2>/dev/null || true; }
+          RESTORE_REF=""
+          if [ -n "${RESTORE_REF_FILE:-}" ] && [ -s "$RESTORE_REF_FILE" ]; then RESTORE_REF=$(head -n1 "$RESTORE_REF_FILE"); fi
+          [ -z "$RESTORE_REF" ] || git cat-file -e "$RESTORE_REF^{commit}" 2>/dev/null || RESTORE_REF=""
+          BASE_REF=""; git rev-parse -q --verify "origin/$BASE^{commit}" >/dev/null 2>&1 && BASE_REF="origin/$BASE"
+          AP097_WARNED=false
           declare -A PRE=()
           if [ -n "${PRE_SNAPSHOT:-}" ] && [ -s "$PRE_SNAPSHOT" ]; then
             while IFS= read -r -d '' p && IFS= read -r -d '' h; do PRE["$p"]=$h; done < "$PRE_SNAPSHOT"
@@ -1815,7 +1843,24 @@ jobs:
             case "$xy" in R*|C*) IFS= read -r -d '' orig || true; set -- "$1" "$orig";; esac
             for q in "$@"; do
               case "$q" in
-                .claude|.claude/*|.claude-pr|.claude-pr/*|CLAUDE.md|CLAUDE.local.md|.mcp.json|.claude.json|.gitmodules|.ripgreprc|.husky|.husky/*) continue;;
+                .claude-pr|.claude-pr/*) continue;;
+                .claude|.claude/*|CLAUDE.md|CLAUDE.local.md|.mcp.json|.claude.json|.gitmodules|.ripgreprc|.husky|.husky/*)
+                  if [ "$AP097_WARNED" = "false" ]; then
+                    AP097_WARNED=true
+                    [ -n "$RESTORE_REF" ] || echo "::warning::sin restore-ref (step arbol_pre): las rutas AP-097 se comparan solo con la foto y la base al cierre"
+                    [ -n "$RESTORE_REF$BASE_REF" ] || echo "::warning::sin base verificable: el conjunto AP-097 queda fuera del rescate"
+                  fi
+                  if [ ! -f "$q" ] || [ -L "$q" ]; then echo "AP-097 $q: borrado o enlace (nunca se rescata)"; continue; fi
+                  [ -n "$RESTORE_REF$BASE_REF" ] || { echo "AP-097 $q: sin base verificable"; continue; }
+                  h=$(hashof "$q")
+                  if [ -n "${PRE[$q]+x}" ] && [ "${PRE[$q]}" = "$h" ]; then echo "AP-097 $q: igual a foto"; continue; fi
+                  # Contra la base, el hash FILTRADO (lo que `git add` almacenaría):
+                  # la restauración aplica el smudge (eol=crlf, encoding, LFS) y el
+                  # blob de la base es contenido ya limpio; crudo ≠ blob sin ser edición.
+                  hb=$(git hash-object --path="$q" -- "$q" 2>/dev/null || echo '?')
+                  if [ -n "$RESTORE_REF" ] && [ "$(blobof "$RESTORE_REF" "$q")" = "$hb" ]; then echo "AP-097 $q: igual a base"; continue; fi
+                  if [ -n "$BASE_REF" ] && [ "$(blobof "$BASE_REF" "$q")" = "$hb" ]; then echo "AP-097 $q: igual a base"; continue; fi
+                  echo "AP-097 $q: rescatada"; FILES+=("$q"); continue;;
               esac
               if [ -n "${PRE[$q]+x}" ] && [ "${PRE[$q]}" = "$(hashof "$q")" ]; then PRESKIP=$((PRESKIP + 1)); continue; fi
               FILES+=("$q")
@@ -1869,7 +1914,7 @@ jobs:
           }
           WIP=false
           if [ "${#FILES[@]}" != "0" ]; then
-            echo "árbol sucio en $BRANCH (${#FILES[@]} rutas fuera de AP-097): commit WIP"
+            echo "árbol sucio en $BRANCH (${#FILES[@]} rutas; AP-097 solo si difiere de foto y base): commit WIP"
             git config user.email >/dev/null 2>&1 || git config user.email "209825114+claude[bot]@users.noreply.github.com"
             git config user.name >/dev/null 2>&1 || git config user.name "claude[bot]"
             MSG="wip(creator): árbol sin pushear al cierre de la sesión — rescatado por estado (run ${GITHUB_RUN_ID})"

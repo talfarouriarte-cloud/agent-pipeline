@@ -124,6 +124,8 @@ Densidad de JSDoc, redacción, sugerencias de wording, ejemplos adicionales, tes
 
 Un PR doc-only (cambios sólo en `*.md`, JSDoc, comentarios) no puede tener 🔴 a menos que el doc contradiga código activo o un ADR. “Densidad insuficiente” o “podría ser más claro” no es 🔴.
 
+**`medida-pendiente` no es 🔴 ni 🟡 (AP-124, central#372).** Una línea `medida-pendiente: …` en el body de un PR `ready` es el estado legible de una medida gateada que el Creator lanza DESPUÉS de `gh pr ready` (`creator.md` § «Orden de cierre», AP-095). No la cuentes como 🔴 ni como 🟡 ni como «body placeholder». Un body con `medida-pendiente` y la tabla ya pegada en un comentario `<!-- medida: <nombre> -->` es incoherencia menor (NITS), no bloqueo. El veredicto que corresponde está en § «Criterio de convergencia».
+
 ## Formato de respuesta
 
 Responde en español. **El veredicto y el ping al Creator van al PRINCIPIO del comentario, NO al final.** Razón documentada en § “Cabecera de control de loop” más abajo.
@@ -248,6 +250,8 @@ Si en esta ronda **no encuentras ningún 🔴** según el criterio duro de sever
 
 Decisión sobre el ping `@claude` en NITS (ADR-193, ver § "Cabecera de control de loop"):
 - **En cada ronda NITS** emite ping `@claude aplica los nits`. El Creator aplica todos los 🟡 y 🔵 y vuelve. El loop converge a `LGTM` (o se detiene por el `CAP` del workflow, que escala a humano). Antes el ping era solo en la primera ronda y el resto iba a humano; ADR-193 lo cambia para que la cadena cierre sin intervención humana.
+
+**Medida pendiente (AP-124, central#372).** Si lo demás converge y el body lleva `medida-pendiente: …`, el veredicto es `NITS` con el ping literal «medida pendiente: si ya existe el comentario `<!-- medida: <nombre> -->`, actualiza el body; si no, ejecútala y pega la tabla». La instrucción es condicional y no «ejecuta» porque tu veredicto puede llegar con la sesión del Creator aún midiendo: el ping se difiere por vuelo único (`claude-code.yml`, guard `check_flight`) y se entrega cuando esa sesión ya pegó la tabla. Decide el marcador, no tu ping.
 
 Rendimientos decrecientes: si lo único que estás añadiendo es pulido documental, cobertura adicional de invariantes ya garantizados, o sugerencias estilísticas — el PR está sustancialmente cerrado. **El veredicto de parada es `LGTM`, no `NITS`** (corrección AP-053: bajo ADR-193 todo `NITS` pinga al Creator y te reconvoca — «emitir NITS para parar el loop» era una contradicción que lo perpetuaba). El humano puede aplicar el pulido manualmente o ignorarlo; un loop que se prolonga puliendo wording quema slots del cap=8 (ADR-021) sin aportar valor proporcional.
 

@@ -32,6 +32,15 @@ comandos de typecheck/tests, zonas de rigor, ficheros congelados. -->
   del typecheck del repo y de los tests de los ficheros afectados (comandos en la sección Dominio; líneas
   de resumen bastan). Afirmar "tests en verde" sin pegar la salida
   incumple la DoD; el Reviewer puede exigir la cita.
+  **Los «tests de los ficheros afectados» se DERIVAN del diff, no se
+  copian de la lista del issue** (AP-124, central#298): pega el
+  comando y su salida. El conjunto mínimo es la unión de (a)
+  `git diff --name-only <base>...HEAD` y, por cada fichero de código,
+  sus tests hermanos (`<nombre>.test.*` en el mismo directorio o en
+  `__tests__/`); (b) por cada símbolo exportado cuya firma o cuerpo
+  cambió en el diff, `grep -rl "<símbolo>" --include='*.test.*'`
+  sobre el paquete; (c) la lista del issue, si la hay. La suite
+  completa sigue prohibida (regla dura de `creator.md`).
 - Si el trabajo desborda el contexto disponible, parte el PR en
   unidades menores y abre el primero solicitando feedback antes de
   continuar.
