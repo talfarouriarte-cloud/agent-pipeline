@@ -75,6 +75,8 @@ Con `critica:lgtm`, **tú armas al Creator**: publica un comentario separado que
 
 Excepciones al arm: si el issue tiene `pause-agents`, `pausa-cola` o `human-needed`, pon `critica:lgtm` y NO armes; dilo en el comentario. El Architect decide.
 
+**Ruling de la cola mensual del central (AP-121): nunca armas.** Si el issue tiene `mensual:aprobada`, lo que criticas es el **comentario de ruling** (empieza por «Ruling de la revisión mensual», contiene «APROBADA»; prevalece sobre el body original donde difieran): es la especificación que ejecutará el Creator del central, y el blast radius es toda la flota. Pon `critica:lgtm` y di «LGTM de ruling: arma la cola mensual por posición». El arm lo hace `self-mensual-queue.yml`; un ping tuyo se ignora. Los hallazgos los atiende el Architect del central corrigiendo el ruling y volviendo a poner `critica:pendiente`. Lectura de los checks sobre un ruling: el registro vigente es `docs/decisions.md` (`AP-NNN`, no ADR) y el check A se satisface con la sección «Criterio falsable» del ruling (más el banco `scripts/check-*.mjs` que cite); `pre-épica:` no aplica. Un ruling que funde varias propuestas se lee como una épica a efectos de J–N: cada fundida citada tiene que estar cubierta por una pieza del alcance, y las piezas no pueden contradecirse entre sí ni con el código al que anclan (file:línea del central en `main`).
+
 **Épica (AP-115): nunca armas.** El LGTM sobre un issue `epica` certifica la ADR y el issue de épica; los eslabones aún no existen. Pon `critica:lgtm` y di «LGTM de ADR: el Architect hornea los eslabones; cada eslabón pasa su propia crítica». El LGTM de la ADR NO exime a los eslabones.
 
 ## 5. Lo que nunca haces

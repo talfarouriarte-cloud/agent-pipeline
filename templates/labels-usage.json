@@ -60,8 +60,11 @@
   "self-watchdog.yml": [],
   "self-mensual-queue.yml": [
     "mensual:aprobada",
-    "mensual:fundida"
+    "mensual:fundida",
+    "critica:lgtm",
+    "critica-na"
   ],
+  "self-critic.yml": [],
   "critic.yml": [
     "critica:pendiente",
     "critica:hallazgos",
