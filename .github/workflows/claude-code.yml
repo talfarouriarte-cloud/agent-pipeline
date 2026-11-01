@@ -2129,7 +2129,13 @@ jobs:
             const HAS_REPORT = /##\s*Métricas de proceso/;
             const { data: comments } = await github.rest.issues.listComments({
               owner, repo, issue_number, per_page: 100 });
-            const published = comments.some(c => HAS_REPORT.test(c.body || ''));
+            // Los comentarios del propio post-step (`informe-no-publicado`,
+            // incluidos los anteriores a AP-127 que citaban la cadena) y los
+            // parciales (`audit-parcial`) nunca cuentan como informe: imposible
+            // por construcción, no por mandato (nits del reviewer en #386).
+            // HAS_REPORT no cambia.
+            const NO_INFORME = /<!--\s*(?:informe-no-publicado|audit-parcial:[^>]*)\s*-->/;
+            const published = comments.some(c => HAS_REPORT.test(c.body || '') && !NO_INFORME.test(c.body || ''));
             if (!published) {
               // AP-127 (central#356): un único re-arm automático por panel. La
               // sesión del Auditor que termina VIVA sin informe (asesoramiento#2983:
@@ -2143,6 +2149,10 @@ jobs:
               // puede contar como informe en la sesión siguiente.
               const REARM_RE = /<!--\s*audit-rearm-auto\s*-->/;
               const yaReArmado = comments.some(c => REARM_RE.test(c.body || ''));
+              // `kind` vacío (p. ej. `Run Claude Code`/`llm_exec` saltados por un
+              // guard: no hubo sesión) también re-arma y gasta el único re-arm
+              // del panel. Aceptado por AP-127 «Riesgos declarados (b)»: lo
+              // acota el cap de 1; el texto del ruling es `kind != 'instant'`.
               const kind = process.env.LLM_EXEC_KIND || '';
               if (!yaReArmado && kind !== 'instant') {
                 await github.rest.issues.createComment({ owner, repo, issue_number,

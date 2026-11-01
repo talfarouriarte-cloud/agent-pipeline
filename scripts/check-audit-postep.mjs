@@ -31,6 +31,8 @@ const TALLA_PRE = { body: '#10 · M <!-- talla-pre: M --> · 1·1·1·1·1 = 5 �
 const PARCIAL_METRICAS = { body: '<!-- audit-parcial: metricas -->\n### Parcial · métricas de proceso\n(a) PRs por issue: 1\n' };
 const PARCIAL_BACKTICKS = { body: '<!-- audit-parcial: metricas -->\n### Parcial\nirá en el bloque `## Métricas de proceso` del informe final\n' };
 const INFORME = { body: '## Métricas de proceso\n(a) 1\n\n## Análisis de repescas (5 whys)\nSin repescas.' };
+// Texto literal del comentario `informe-no-publicado` previo a AP-127 (citaba la cadena de HAS_REPORT).
+const INFORME_NO_PUBLICADO_ANTIGUO = { body: '**claude-code · post-step de auditoría**: la sesión del Auditor terminó SIN informe publicado (ningún comentario contiene el bloque `## Métricas de proceso`). NO se aplica `auditoria-completa` — el process-review no debe correr contra un panel vacío (clase informe-no-publicado, finplan#1296/#1295). Escalado vía `stalled`.\n\n<!-- informe-no-publicado -->' };
 const REARM = { body: '@claude retoma\n\n<!-- audit-rearm-auto -->' };
 
 async function caso({ comments, kind = 'alive' }) {
@@ -69,8 +71,10 @@ const BANCO = [
     { comments: [] }, soloRearm],
   ['(b) [parcial de métricas con ### y sin la cadena] ⇒ published=false ⇒ re-arm',
     { comments: [TALLA_PRE, PARCIAL_METRICAS] }, soloRearm],
-  ['(b-bis) parcial que cita `## Métricas de proceso` entre backticks ⇒ published=true (por eso el mandato lo prohíbe)',
-    { comments: [TALLA_PRE, PARCIAL_BACKTICKS] }, r => r.published && !r.rearm && !r.stalled],
+  ['(b-bis) parcial que cita `## Métricas de proceso` entre backticks ⇒ el marcador audit-parcial lo excluye ⇒ re-arm',
+    { comments: [TALLA_PRE, PARCIAL_BACKTICKS] }, soloRearm],
+  ['(f-bis) comentario `informe-no-publicado` anterior a AP-127 (cita la cadena literal) ⇒ published=false ⇒ re-arm',
+    { comments: [TALLA_PRE, INFORME_NO_PUBLICADO_ANTIGUO] }, soloRearm],
   ['(c) [parcial, audit-rearm-auto] ⇒ stalled, sin segundo re-arm',
     { comments: [PARCIAL_METRICAS, REARM] }, soloStall],
   ['(d) kind=instant ⇒ stalled sin re-arm',
