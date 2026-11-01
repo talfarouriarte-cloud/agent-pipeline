@@ -41,6 +41,12 @@ comandos de typecheck/tests, zonas de rigor, ficheros congelados. -->
   cambió en el diff, `grep -rl "<símbolo>" --include='*.test.*'`
   sobre el paquete; (c) la lista del issue, si la hay. La suite
   completa sigue prohibida (regla dura de `creator.md`).
+  **Por encima del tope de rutas, el conjunto (b) se declara, no se
+  ejecuta** (AP-133, central#384): `test-discipline` bloquea una
+  invocación del runner con más de `PIPELINE_MAX_TEST_PATHS` rutas
+  (25 por defecto). En sesión corres los hermanos de (a) y la lista
+  (c); el conjunto (b) que lo supere lo pegas en el cierre como
+  comando + número de ficheros, y lo verifica el CI.
 - Si el trabajo desborda el contexto disponible, parte el PR en
   unidades menores y abre el primero solicitando feedback antes de
   continuar.
