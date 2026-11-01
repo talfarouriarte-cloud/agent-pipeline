@@ -1,6 +1,7 @@
 # STUB (agent-pipeline). AP-113 (2026-10-12): crítica del issue ANTES del arm.
 # El Architect publica el issue con `critica:pendiente` y no lo arma; el Critic
-# publica su crítica y, con LGTM, arma él al Creator.
+# publica su crítica; el post-step pone las labels y re-emite el arm retenido
+# (AP-128).
 name: Critic
 on:
   issues:

@@ -413,7 +413,7 @@ jobs:
       # que el checkout sparse de epic-merge. `continue-on-error`: sin módulo,
       # el scan se comporta como antes (sin pausa, sin barrido) y el detector
       # de rectificación en vuelo (AP-055) queda inerte, con `::warning`.
-      - name: Módulos vendored del central (cola-prioridad, rect-en-vuelo)
+      - name: Módulos vendored del central (cola-prioridad, rect-en-vuelo, critica)
         if: steps.preflight.outputs.dead != 'true'
         continue-on-error: true
         uses: actions/checkout@v4
@@ -1378,6 +1378,17 @@ jobs:
             for (const p of [`${process.env.GITHUB_WORKSPACE}/.cola-central/vendored/scripts/absorcion.cjs`, `${process.env.GITHUB_WORKSPACE}/scripts/absorcion.cjs`]) {
               try { ABS = require(p); break; } catch (e) { /* siguiente ubicación */ }
             }
+            // AP-128 (central#359, pieza 7): módulo del gate de crítica, del mismo
+            // checkout sparse. Da `cedeAlCritic` (crítica en curso ⇒ el arm está
+            // retenido, no es `issue-armed-no-pr`), `esArm` (mención en línea
+            // propia, nunca substring: una cita entre backticks no es arm) y
+            // `cuentaComoRearm` (un arm re-emitido tras la crítica no gasta cap).
+            // Sin módulo, el detector sigue como antes (fail-open declarado).
+            let CRIT = null;
+            for (const p of [`${process.env.GITHUB_WORKSPACE}/.cola-central/vendored/scripts/critica.cjs`, `${process.env.GITHUB_WORKSPACE}/scripts/critica.cjs`]) {
+              try { CRIT = require(p); break; } catch (e) { /* siguiente ubicación */ }
+            }
+            if (!CRIT) core.warning('critica.cjs no disponible: el detector issue-armed-no-pr usa substring y no cede ante la crítica en curso (AP-128 inerte este tick).');
             let pausaCola = null;     // objeto de pausa si el repo está EN PAUSA
             let colaLiberada = null;  // nº armado por el barrido de este tick
             if (COLA && COLA.liberarCola) {
@@ -1423,6 +1434,15 @@ jobs:
               if (!isQueued && openAgentPRs.some(p =>
                     p.head.ref.startsWith(`claude/issue-${issue.number}-`))) continue;
 
+              // AP-128: con la crítica en curso (`critica:pendiente` o
+              // `critica:hallazgos`) el arm está retenido por el gate y el turno
+              // es del Critic o del Architect: no es anomalía (asesoramiento#2970,
+              // #3266, #3269: architect-resolve NULO).
+              if (CRIT && CRIT.cedeAlCritic(issue.labels.map(l => l.name))) {
+                core.notice(`#${issue.number}: crítica en curso (arm retenido por el gate) — sin anomalía.`);
+                continue;
+              }
+
               // Buscar el último arm humano (@claude o ping-creator) en
               // los comentarios recientes.
               const { data: comments } = await github.rest.issues.listComments({
@@ -1433,7 +1453,10 @@ jobs:
               // guard de cadena, e INVISIBLE para este detector en cada scan —
               // lastArm=null => continue => 77 min de stall sin rescate). El
               // body cuenta como arm-base con la fecha de creación del issue.
-              let lastArm = (issue.body || '').includes('@claude')
+              // AP-128: `esArm` (línea propia, fuera de código) en vez de
+              // substring — central#359 se tomó por armado por una cita.
+              const esArmW = (b) => (CRIT ? CRIT.esArm(b) : (b.includes('@claude') || b.includes('<!-- ping-creator -->')));
+              let lastArm = (CRIT ? CRIT.esArm(issue.body || '') : (issue.body || '').includes('@claude'))
                 ? { created_at: issue.created_at } : null;
               let lastBot = null, rearms = 0;
               for (const c of comments) {
@@ -1442,10 +1465,12 @@ jobs:
                 // Los arms de bot también son arms (incidente #1048): con
                 // `!isBot`, un arm de claude[bot] rechazado por la action
                 // dejaba lastArm=null y el watchdog quedaba ciego.
-                if (body.includes('@claude') || body.includes('<!-- ping-creator -->'))
+                if (esArmW(body))
                   lastArm = c;
                 if (isBot) lastBot = c;
-                if (body.includes('<!-- watchdog-rearm -->')) rearms++;
+                // AP-128: el arm re-emitido tras la crítica conserva el marcador
+                // de origen pero lleva `arm-reemitido`: no es un re-arm nuevo.
+                if (CRIT ? CRIT.cuentaComoRearm(body) : body.includes('<!-- watchdog-rearm -->')) rearms++;
               }
               if (!lastArm) continue;
               if (ageMin(lastArm.created_at) > ARM_WINDOW_H * 60) continue;
