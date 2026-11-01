@@ -485,8 +485,8 @@ jobs:
       # depende de que una sesión de chat recuerde el protocolo, falla. Aquí el
       # ping ES el disparo: sin `critica:lgtm`, no se arma al Creator — se pone
       # `critica:pendiente` (dispara al Critic por `labeled`) y se para con
-      # comentario. El Critic arma él tras el LGTM (critic.md § 4) y ese ping
-      # vuelve a entrar aquí con la label puesta. Exentos: contexto PR; re-arms
+      # comentario. Tras el LGTM, el post-step de critic.yml re-emite el arm
+      # retenido (AP-128) y ese ping vuelve a entrar aquí con la label puesta. Exentos: contexto PR; re-arms
       # de cadena/cola/watchdog/enmienda (el arm inicial ya pasó por aquí);
       # label `critica-na` (solo el humano, como `serial-ok`). Va ANTES de
       # check_chain: un issue sin crítica no debe gastar los guards siguientes.
@@ -515,8 +515,8 @@ jobs:
             const labels = (issue.labels || []).map(l => l.name);
             // AP-121: un ruling de la cola mensual (`mensual:aprobada`) solo se
             // arma desde `self-mensual-queue.yml` (marcador `cola-mensual-arm`),
-            // por posición y de uno en uno. Cualquier otro ping (el arm del
-            // Critic tras su LGTM, critic.md § 4; un ping manual) se ignora con
+            // por posición y de uno en uno. Cualquier otro ping (el arm que
+            // re-emite el post-step del Critic, AP-128; un ping manual) se ignora con
             // aviso: no es un arm válido para este repo.
             if (labels.includes('mensual:aprobada') && !String(context.payload.comment?.body || '').includes('<!-- cola-mensual-arm -->')) {
               core.notice('mensual:aprobada: solo arma la cola mensual (cola-mensual-arm). Ping ignorado.');
