@@ -3115,6 +3115,8 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 
 **Fecha.** 2026-10-12.
 
+**Anotación (2026-11-01, AP-128).** §1 y §3 enmendados. §1: el orden es el de AP-118 §2: el Architect hornea ADR, issue de épica y TODOS los eslabones (bodies, sentinels, `epic-context`) y DESPUÉS pinga el issue de épica; ya no es «antes de hornear eslabones». §3: «en épica el Critic no arma» pasa a «la sesión del Critic nunca arma; el post-step de `critic.yml` re-emite el arm retenido», también en épica. El LGTM de épica cubre ahora la ADR, el issue de épica y cada eslabón (línea `critica-cubre`); se retira «cada eslabón pasa su propia crítica», que no tenía mecanismo (0 de 5, central#363).
+
 ## AP-116 — Gate de crítica en el arm: sin `critica:lgtm` no se arma al Creator; el ping dispara al Critic (2026-10-12)
 
 **Contexto.** AP-113 (mergeado 10:35 UTC) dejó el disparo del Critic en manos del Architect: poner `critica:pendiente` en vez de pingar. A las 19:40–19:52 del mismo día el Architect de finplan publicó un correctivo (#2933) y una épica de 3 eslabones (#2934–#2936) con ping directo: 0 críticas, #2936 en cola. Misma clase que el guard de panel (2026-07-12): lo que depende de que una sesión de chat recuerde un protocolo, falla, y las sesiones no comparten contexto. El propietario: «lo que habíamos hecho tenía que ser mecánico; el guard es el que debe lanzar al crítico».
@@ -3137,6 +3139,8 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 **Criterio falsable.** Desde el merge, 0 issues armados en consumidores sin `critica:lgtm` o `critica-na` (consulta: issues con `serial-activo` o PR `claude/issue-N` sin esas labels). El de AP-113 sigue vigente para medir el efecto.
 
 **Fecha.** 2026-10-12.
+
+**Anotación (2026-11-01, AP-128).** §1 enmendado: un re-arm mecánico (`watchdog-rearm`, `arm-de-cola`, `rearm-enmienda`, `eslabon-suspendido`, `epic-auto-launch`) que llega con `critica:pendiente` o `critica:hallazgos` se RETIENE sin abrir ronda; la ronda nueva solo la abre el ping del Architect, sin marcador de re-arm. §2 ampliado: exentos también los correctivos del Auditor (label `correctivo` + `<!-- correctivo-auditor -->` en la primera línea del body) y los arms `epic-partial-relaunch`; los re-arms de la lista quedan exentos solo sin crítica en curso. El comentario `critica-gate` graba `arm-retenido: <origen>` y el «Riesgo aceptado» queda superado: si el Critic muere, el post-step aplica el fail-open de AP-117 (no `human-needed`). **Criterio falsable reformulado:** «0 issues armados en consumidores sin `critica:lgtm` o `critica-na`, salvo las exenciones de AP-128 (arms de auditoría, correctivos del Auditor con `correctivo-auditor`, `epic-partial-relaunch`)».
 
 ## AP-117 — Critic fail-open: sin crítica materializada se arma al Creator con `critica-na`; presupuesto 80/30 y disciplina de lectura (2026-10-13)
 
@@ -3371,5 +3375,70 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 **Riesgos declarados.** (a) ~~Un parcial que incumpla el mandato y cite la cadena hace pasar el panel por publicado~~: cerrado por construcción (el post-step ignora los comentarios con `audit-parcial`; b-bis lo fija). Persiste solo para un parcial que omita el marcador. Su espejo: un informe final que copie la línea del marcador al reensamblar cuenta como no publicado; falla del lado seguro (re-arm y luego `stalled`, nunca `auditoria-completa` en vacío), el mandato §7 lo prohíbe y (j) lo fija. (b) Con `kind` vacío (sesión que no llegó a clasificarse) se re-arma: lo acota el cap de 1. (c) Una sesión viva que muere por cuota a mitad gasta su único re-arm dentro de la ventana agotada; el segundo fallo cae a `stalled`.
 
 **Criterio falsable** (process-reviewer, lotes de noviembre; mensual de diciembre). Vehículo: un único PR mergeado cierra los 5 issues y `self-mensual-queue` arma la posición 7 una vez. Pieza 1: 0 re-arms humanos de paneles que terminen sin informe con sesión viva (exactamente un `audit-rearm-auto` en cada uno); 0 paneles con `auditoria-completa` cuyo único informe sea un parcial; `check-audit-postep.mjs` verde. Pieza 2: 0 corridas de architect-resolve cuyo único acto sea declarar `invariantes-na`. Pieza 3: línea (i) = 0 en todos los paneles del mes. Pieza 4: ningún test con ≥ 2 `flaky-harvest` en 7 días sin correctivo. Pieza 5: 0 segundas rondas de correctivos por un hermano de carrera.
+
+**Fecha.** 2026-11-01.
+
+## AP-128 — Critic: labels y arm por post-step desde el marcador, arm retenido re-emitido también en épica, eslabones horneados antes del ping y criticados con la épica, lectura declarada en ronda 3 y talla pre en el Critic (2026-11-01)
+
+**Contexto.** Ruling de la revisión mensual de noviembre, posición 7 (central#359; funde #376, #363, #371 y #311; crítica cerrada en ronda 3 con `critica-na`, AP-117/119). El Critic (AP-113…119) tenía transiciones sin dueño:
+- **#359.** Las labels del veredicto las ponía la sesión LLM (asesoramiento#2985 quedó en `critica:pendiente` con un BLOQUEANTE publicado). Además, el arm que retiene el gate AP-116 no lo re-emitía nadie tras el LGTM en épica, porque AP-115 §3 suponía que todo `epica` es el issue de épica. Se midieron 8 ciclos con corrida de architect-resolve: asesoramiento#2953, #2980, #2988, #3054, #3096, #3136, #3263 y #3325. Tras un BLOQUEANTE, el detector `issue-armed-no-pr` tomaba el issue por armado sin PR (#3266, #3269: corridas NULO). En #3291, un `watchdog-rearm` pasó el gate con `critica:hallazgos` y armó sin ronda 2. El mismo detector y el trigger leían la mención de arm por substring: una cita entre backticks en central#359 se contó como arm.
+- **#376.** El predicado de cadena (`cadena-sin-auditoria`) se evalúa en el arm, cuando el Architect ya no está.
+- **#363.** «Cada eslabón pasa su propia crítica» no tenía mecanismo: los eslabones 2..N entran por `epic-auto-launch`, que está exento, y pasó 0 de 5.
+- **#371.** Con tope en ronda 3, los bloqueantes sin resolver llegaban al Creator sin lectura: 6 de 10 arms del lote salieron por `critica-na`.
+- **#311.** Las épicas sin `epic-context` producían escaladas en serie.
+- **AP-099.** 89 de 91 tallas pre fueron iguales a la post en octubre.
+
+**Decisión (ruling; prevalece sobre la propuesta). Un solo PR.** Toda la lógica nueva de workflows vive en `vendored/scripts/critica.cjs` (patrón AP-068, con copia servida en `scripts/`).
+1. **Labels por post-step.** El post-step «Verificación de presencia del resultado» de `critic.yml` lee el último marcador `critica: ronda=N veredicto=…` de la ronda: anclado a línea propia, fuera de código, de autor de confianza. Lo materializa con el PAT, de forma idempotente:
+   - bloqueante en ronda < 3 ⇒ `critica:hallazgos` solo en el issue;
+   - bloqueante en ronda 3 ⇒ `critica-na` en el issue y en cada issue de `critica-cubre`;
+   - lgtm ⇒ `critica:lgtm` en el issue y en cada issue de `critica-cubre`;
+   - sin marcador ⇒ fail-open AP-117 (`critica-na` y arm) y, en `epica`, `critica-na` también en la cadena `launch-next` parseada del body (`cadenaDesdeBody`, cap 20; si no se puede leer, solo la épica).
+   La sesión deja de poner labels y de armar.
+2. **Arm retenido y re-emisión.**
+   - (a) El comentario `critica-gate` lleva `<!-- arm-retenido: <origen> -->`.
+   - (b) Tras lgtm o ronda 3, el post-step re-emite el último `arm-retenido` de confianza sin arm posterior. «Arm posterior» = `esArm`: la mención en línea propia o `ping-creator`, fuera de código. La re-emisión lleva el marcador de origen y `<!-- arm-reemitido: <origen> -->`. Se re-emite también en épica (enmienda de AP-115 §3). No se re-emite con `pause-agents`, `pausa-cola`, `human-needed` ni `mensual:aprobada` (AP-121); en ese caso se pone la label y un comentario «sin arm». Sin `arm-retenido` no hay arm. Un `critica-gate` anterior a este PR cuenta como retención `manual`.
+   - (c) Exenciones del gate, en orden: `critica:lgtm`, auditoría, `critica-na`, correctivo del Auditor (`correctivo` + `<!-- correctivo-auditor -->` como primera línea del body), `epic-partial-relaunch` y los re-arms mecánicos SIN crítica en curso. Un re-arm mecánico con `critica:pendiente` o `critica:hallazgos` se retiene sin abrir ronda (enmienda de AP-116 §1).
+   - (d) El texto del gate ya no promete que «el Critic arma».
+3. **Checks O y P en el Critic** (bloqueantes en épica):
+   - O: la cadena `launch-next` está entera, termina en `epic-audit` y ningún intermedio lo lleva;
+   - P: si hay más de dos eslabones, existe `epic-context-<ADR>` en la rama por defecto.
+   El guard de cadena del arm queda como red (#376, #311).
+4. **Eslabones con la épica.** Orden de AP-118 §2: se hornea todo y después se pinga el issue de épica. La crítica cubre la ADR (J–N), la cadena (O–P) y cada eslabón (A–I), y lista los eslabones en `critica-cubre`. Se actualizan `critic.md` §2/§4 y `architect.md` §7/§8. No se añade gate en `launch-next`.
+5. **Ronda 3: lectura declarada.** El arm de ronda 3 copia los hallazgos «(ronda 3, sin resolver)» y «(nuevo)», una línea por letra. El Creator, antes de codear, publica por `gh api` `<!-- critica-leida -->` con «aplico» o «no aplico: <por qué>» por hallazgo. Eso va en la sección de `creator.md` que se renombra a «Al arrancar: enmiendas en vuelo y hallazgos de crítica sin resolver».
+6. **Talla pre en el Critic.** La línea `talla-pre` (formato de AP-099) la publica el Critic en el LGTM o en la ronda 3, por cada issue cubierto. Se retira el paso 0 del Auditor: el Auditor la lee y solo la publica, con «pre tardía», para issues sin crítica. Se actualiza `talla-issue`.
+7. **Watchdog.** El detector `issue-armed-no-pr` carga `critica.cjs` del sparse-checkout `.cola-central`:
+   - `cedeAlCritic`: con la crítica en curso no hay anomalía;
+   - `esArm` para `lastArm`, en vez de substring;
+   - `cuentaComoRearm`: el cap de 2 re-arms no cuenta un `arm-reemitido`.
+   Sin módulo se mantiene el comportamiento anterior, con `core.warning`.
+8. **Registro.** Anotaciones append-only en AP-115 y AP-116 (con el criterio de AP-116 reformulado). Filas nuevas en `protocol.md`: `critica-gate`, `arm-retenido`, `arm-reemitido`, `critica-cubre`, `correctivo-auditor` y `critica-leida`; anotación en `talla-pre`.
+
+**Los dos hallazgos de la crítica ronda 3, resueltos aquí.**
+- (H/G) El gate corre antes de cualquier checkout y no puede hacer `require`. Lleva una COPIA LITERAL de la sección `copia-gate` del módulo (mismo patrón que las copias de `enmiendas.cjs` en `check_flight`). El banco compara el texto y ejecuta el step real. No se mueve el gate detrás de un checkout: se conserva el orden «antes de `check_chain`».
+- (G/D) «Un `watchdog-rearm` re-emitido no cuenta como uno nuevo» se cumple con el marcador propio `arm-reemitido`, que el contador excluye. Los lectores del marcador de origen (`isChainRearm`, guard serial, `ARM_MARKERS`) lo siguen leyendo, a propósito: el arm re-emitido ES ese arm.
+
+**Workflows.** Los del central viajan por el post-step «Push residual con token de workflows» de `claude-code.yml` (commit local, el último de la rama) y no por `docs/patches/` (precedentes AP-103 y AP-120). Con esto queda cerrada la nota AP-064 de `CLAUDE.domain.md`.
+
+**Banco.** `scripts/check-critica.mjs` (nuevo, piggyback de `check-embedded-js.mjs`) ejecuta el módulo, el gate `check_critica` real y el post-step real de `critic.yml` mediante `cargarStep`:
+- un caso por rama de la pieza 1;
+- la pieza 2: retenido + lgtm ⇒ un arm con el origen; arm posterior en línea propia ⇒ no; cita entre backticks ⇒ sí; hold ⇒ no; `correctivo` con marcador ⇒ exento y sin marcador ⇒ retenido; `watchdog-rearm` con `critica:hallazgos` ⇒ retenido con labels intactas; ping del Architect con hallazgos ⇒ ronda nueva;
+- la pieza 7: `cedeAlCritic`, `esArm` con el fixture de central#359 y `cuentaComoRearm`;
+- las costuras: copia literal, `scripts/critica.cjs` idéntico y carga del módulo en el Watchdog.
+
+**Qué NO.** Sin ronda 4, sin `human-needed` del Critic, sin gate en `launch-next`, sin guard pre-arm de `epic-context`. No se crea la firma `critica-hallazgos-sin-respuesta` (la vigila el Architect por labels, AP-118 §4; si en noviembre una crítica queda más de 24 h en `critica:hallazgos`, se mide y se decide en diciembre). Sin cambio del contrato `workflow_call` ni de `max_turns`. Labels nuevas: cero.
+
+**Riesgos declarados.**
+- (a) Con la crítica en curso, el Watchdog cede: un issue que se quede en `critica:hallazgos` sin Architect no lo rescata nadie automáticamente. Es lo aceptado en «Qué NO».
+- (b) Una mención de arm de un autor no de confianza posterior al `arm-retenido` suprime la re-emisión. Falla del lado de no duplicar arms.
+- (c) P mira `epic-context` en `inputs.default_branch` del stub (finplan `develop`, wmcb `main`); un stub que pase otra rama daría un falso bloqueante.
+
+**Criterio falsable** (process-reviewer, lotes de noviembre; mensual de diciembre). Los del ruling:
+- piezas 1–2: 0 architect-resolve por transición de `critica:*` y 0 arms de Creator sobre un issue con `critica:hallazgos`;
+- pieza 3: 0 épicas armadas con cadena sin `epic-audit` o, con más de dos eslabones, sin `epic-context`;
+- pieza 4: el 100 % de los eslabones 2..N con `critica:lgtm` o `critica-na` antes de su arm;
+- pieza 5: 0 arms de ronda 3 sin `critica-leida`;
+- pieza 6: serie |pre−post| con ≥ 10 % de desacuerdo (si sigue ≤ 2 %, se retira en diciembre);
+- sobre el Critic: si más del 40 % de los arms de diseño salen por `critica-na`, o si la fuga de especificación del Auditor no baja, en diciembre se reduce a 1 ronda o se retira.
 
 **Fecha.** 2026-11-01.
