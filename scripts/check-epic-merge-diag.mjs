@@ -142,6 +142,18 @@ caso('sin PR (cierre por estado) no hay merge que deduplicar',
   m.popYaEmitido({ sticky: null, comentariosSiguiente: [armPrevio], next: 21, pr: null, login: PAT }) === null);
 caso('arm sin PR lleva solo el marcador del ruling', m.marcadoresPop(21, null) === '<!-- serial-pop: #21 -->');
 
+// ── Reintento de «Base branch was modified» (central#333, AP-125) ──────────
+const BBM = 'Base branch was modified. Review and try the merge again.';
+caso('reintento: «Base branch was modified» con 0 previos ⇒ update-branch', m.decidirReintentoMerge({ mensaje: BBM, reintentosPrevios: 0 }).accion === 'update-branch');
+caso('reintento: con 2 previos ⇒ update-branch', m.decidirReintentoMerge({ mensaje: BBM, reintentosPrevios: 2 }).accion === 'update-branch');
+caso('reintento: con 3 previos ⇒ stalled', m.decidirReintentoMerge({ mensaje: BBM, reintentosPrevios: 3 }).accion === 'stalled');
+caso('reintento: otro mensaje ⇒ diag (statu quo)', m.decidirReintentoMerge({ mensaje: 'Required status check "ci" is expected.', reintentosPrevios: 0 }).accion === 'diag');
+caso('reintento: cap 3 y marcador literal del ruling (con head sha)', m.MERGE_RETRY_CAP === 3 && m.marcadorReintento('abc1234') === '<!-- merge-retry-base-modified: abc1234 -->');
+caso('reintento: el contador cuenta marcadores de CUALQUIER sha y no las citas sin sha',
+  m.contarReintentos([{ body: m.marcadorReintento('abc1234') }, { body: `x\n${m.marcadorReintento('def5678')}` }, { body: 'cita `merge-retry-base-modified`' }]) === 2);
+if (existsSync('.github/workflows/epic-merge.yml'))
+  caso('costura: el catch del merge consulta `decidirReintentoMerge`', readFileSync('.github/workflows/epic-merge.yml', 'utf8').includes('EMD.decidirReintentoMerge({ mensaje: e.message, reintentosPrevios: previos })'));
+
 if (fallos.length) {
   console.error(`CHECK-EPIC-MERGE-DIAG ROJO (${fuente}): ${fallos.length} caso(s) fallan:`);
   for (const f of fallos) console.error(`  ✗ ${f}`);

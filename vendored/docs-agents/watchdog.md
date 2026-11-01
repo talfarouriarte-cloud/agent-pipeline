@@ -273,6 +273,16 @@ demostraron que el alcance no cabe (failure class #2). El coste de un
 falso positivo es barato (una partición quizá innecesaria); por eso el
 umbral no necesita ser exacto.
 
+**`epic-audit` prematuro (`<!-- epic-audit-prematuro: #N,#M -->`, AP-125):**
+si el stall viene con este marcador, es un defecto de horneado con la
+misma resolución que la cola huérfana: el sentinel de fin de cadena está
+en el intermedio que nombra el comentario y el eslabón que lo recibe (el pendiente menor del
+rango) no tenía dueño del arm. Mueve el sentinel al último eslabón real,
+arma el siguiente y des-stallea. No deduzcas el orden de la cadena de la
+numeración: léelo del árbol de issues. Si el marcador llegó SIN `stalled`
+(el eslabón ya tenía dueño del arm), no lo armes: solo re-hornea si hace
+falta.
+
 **Cortacircuito final único — sensible a progreso (2026-07-08, revisado
 tras el primer disparo en real, #1120):** el cortacircuito caza THRASHING
 (mismo problema, cero avance), no progreso incremental. Si el MISMO ítem
