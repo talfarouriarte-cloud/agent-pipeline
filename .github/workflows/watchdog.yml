@@ -786,11 +786,25 @@ jobs:
             // lo comprueba), local para que el belt no dependa del módulo.
             const RECT_MARK_RE = /<!--\s*rectificacion-en-vuelo:\s*[^>]*-->/;
             const rectHandled = new Set();
+            // AP-135 (central#393): `adr-lint.config.json` de la base de cada PR,
+            // una lectura por `base.ref` distinta en el tick. `layout: "dir"` ⇒
+            // el detector ve también `<dir>/ADR-N.md`; `null` ⇒ regex heredado.
+            // Graft viejo sin `cargarCfg` ⇒ `detectar` sin `cfg` (statu quo).
+            const rectCfgs = new Map();
             for (const pr of openAgentPRs) {
               if (!RV) break;
               if (skip(pr.labels)) continue;
               try {
-                const rects = await RV.detectar({ github, O, pr, warn: (m) => core.warning(m), info: (m) => core.info(m) });
+                let cfg = null;
+                if (typeof RV.cargarCfg === 'function') {
+                  if (!rectCfgs.has(pr.base.ref)) {
+                    const c = await RV.cargarCfg({ github, O, ref: pr.base.ref });
+                    if (!c) core.info(`rect-en-vuelo: sin \`adr-lint.config.json\` con layout "dir" en ${pr.base.ref} — filtro heredado \`*decisions*.md\`.`);
+                    rectCfgs.set(pr.base.ref, c);
+                  }
+                  cfg = rectCfgs.get(pr.base.ref);
+                }
+                const rects = await RV.detectar({ github, O, pr, cfg, warn: (m) => core.warning(m), info: (m) => core.info(m) });
                 if (!rects.length) continue;
                 // `paginate` y no la página 1: el dedupe (cap 1 por clave) vive
                 // de encontrar el marcador, y en un PR de >100 comentarios la

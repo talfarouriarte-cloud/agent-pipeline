@@ -61,17 +61,58 @@ caso('base sin commits nuevos ⇒ vacío', (await RV.detectar({ github: api({ co
 caso('`## ADR-7` NUEVO (header de bloque sin ordinal) no es rectificación',
   (await RV.detectar({ github: api({ patch: '+## ADR-7 — Nuevo', vol: '## ADR-7 — Nuevo' }), O: {}, pr: PR('ADR-7') })).length === 0);
 
+// ── AP-135 (central#393): `layout: "dir"` y `cargarCfg` ──────────────────────
+const DIR_VOL = ['## ADR-5 — Algo', 'texto', '### Revisión R·1 (2026-10-30, issue #9) — el campo `rank`', 'cuerpo'].join('\n');
+const DIR_PATCH = ['@@ -1,2 +1,4 @@', ' texto', '+### Revisión R·1 (2026-10-30, issue #9) — el campo `rank`', '+cuerpo'].join('\n');
+const apiDir = (filename) => ({ rest: { repos: {
+  compareCommits: async () => ({ data: { commits: [{ sha: 's0' }], files: [{ filename, patch: DIR_PATCH }] } }),
+  getContent: async () => ({ data: DIR_VOL }),
+} } });
+const CFG_DIR = { layout: 'dir', dir: 'docs/decisions/adr' };
+const ra = await RV.detectar({ github: apiDir('docs/decisions/adr/ADR-5.md'), O: {}, pr: PR('feat (ADR-5)'), cfg: CFG_DIR });
+caso('(a) `docs/decisions/adr/ADR-5.md` con cfg dir ⇒ clave `ADR-5·R·1`', J(ra.map(r => r.clave)) === J(['ADR-5·R·1']));
+const rb = await RV.detectar({ github: apiDir('docs/decisions/adr/ADR-5.md'), O: {}, pr: PR('feat (ADR-5)'), cfg: null });
+caso('(b) mismo patch con cfg null ⇒ no detecta (statu quo del regex heredado)', rb.length === 0);
+const rc = await RV.detectar({ github: apiDir('docs/decisions.md'), O: {}, pr: PR('feat (ADR-5)'), cfg: CFG_DIR });
+caso('(c) `docs/decisions.md` con cfg dir ⇒ sigue detectando (índice)', J(rc.map(r => r.clave)) === J(['ADR-5·R·1']));
+caso('cfg dir: un fichero fuera de `<dir>/ADR-N.md` no entra',
+  (await RV.detectar({ github: apiDir('docs/decisions/adr/notas.md'), O: {}, pr: PR('feat (ADR-5)'), cfg: CFG_DIR })).length === 0);
+const b64 = (t) => Buffer.from(t, 'utf8').toString('base64');
+const apiCfg = (fn) => ({ rest: { repos: { getContent: fn } } });
+const conCfg = (txt) => apiCfg(async (p) => {
+  if (p.path !== 'adr-lint.config.json') throw new Error('path inesperado');
+  return { data: { content: b64(txt), encoding: 'base64' } };
+});
+const err404 = Object.assign(new Error('Not Found'), { status: 404 });
+const cc = (github) => RV.cargarCfg({ github, O: { owner: 'o', repo: 'r' }, ref: 'main' });
+caso('(d) cargarCfg: 404 ⇒ null', (await cc(apiCfg(async () => { throw err404; }))) === null);
+caso('(d) cargarCfg: contenido no JSON ⇒ null', (await cc(conCfg('{no json'))) === null);
+caso('(d) cargarCfg: `{"layout":"volumes"}` ⇒ null', (await cc(conCfg('{"layout":"volumes"}'))) === null);
+caso('(d) cargarCfg: `{}` ⇒ null', (await cc(conCfg('{}'))) === null);
+caso('(d) cargarCfg: `{"layout":"dir"}` ⇒ dir por defecto', J(await cc(conCfg('{"layout":"dir"}'))) === J({ layout: 'dir', dir: 'docs/decisions/adr' }));
+caso('(d) cargarCfg: `{"layout":"dir","dir":"x/y/"}` ⇒ `dir:"x/y"`', J(await cc(conCfg('{"layout":"dir","dir":"x/y/"}'))) === J({ layout: 'dir', dir: 'x/y' }));
+let lanzo = false, rRed;
+try { rRed = await cc(apiCfg(async () => { throw new Error('ECONNRESET'); })); } catch (e) { lanzo = true; }
+caso('(d) cargarCfg: error de red ⇒ null sin lanzar', !lanzo && rRed === null);
+caso('cargarCfg: respuesta sin `content` (p. ej. directorio o raw) ⇒ null', (await cc(apiCfg(async () => ({ data: 'texto' })))) === null);
+const escReSrc = (f) => existsSync(f) ? (readFileSync(f, 'utf8').match(/^const escRe = .*$/m) || [])[0] : null;
+const escReOrigen = escReSrc('vendored/scripts/adr-append-merge.mjs');
+if (escReOrigen) caso('`escRe` copiada = la de `adr-append-merge.mjs` (mismo fuente)', escReSrc(fuente) === escReOrigen);
+caso('`escRe` escapa los metacaracteres de una ruta', new RegExp(`^${RV.escRe('a.b+(c)')}$`).test('a.b+(c)') && !new RegExp(`^${RV.escRe('a.b')}$`).test('axb'));
+
 // ── Costuras ────────────────────────────────────────────────────────────────
 const WD = '.github/workflows/watchdog.yml';
 const EM = '.github/workflows/epic-merge.yml';
 if (existsSync(WD)) {
   const wd = readFileSync(WD, 'utf8');
   caso('watchdog: el scan llama a `RV.detectar` (sin copia local del detector)', wd.includes('await RV.detectar({ github, O, pr,') && !wd.includes('const rectCand = '));
+  caso('watchdog: el scan pasa `cfg` de `cargarCfg` cacheado por `base.ref` (AP-135)', wd.includes('RV.cargarCfg({ github, O, ref: pr.base.ref })') && wd.includes('rectCfgs.set(pr.base.ref') && wd.includes('await RV.detectar({ github, O, pr, cfg,'));
   caso('watchdog: el `RECT_MARK_RE` local del belt AP-024 = el del módulo', wd.includes(`const RECT_MARK_RE = ${RV.RECT_MARK_RE.toString()};`));
 }
 if (existsSync(EM)) {
   const emTxt = readFileSync(EM, 'utf8');
   caso('epic-merge: el gate carga el módulo del checkout sparse', emTxt.includes('.epic-merge-central/vendored/scripts/rect-en-vuelo.cjs'));
+  caso('epic-merge: el gate pasa `cfg` de `cargarCfg` a `detectar` (AP-135)', emTxt.includes('RV.cargarCfg({ github, O: { owner, repo }, ref: (pf || pr).base.ref })') && emTxt.includes('pr: pf || pr, cfg,'));
   const iGate = emTxt.indexOf('await RV.detectar(');
   const iMerge = emTxt.indexOf('await github.rest.pulls.merge(');
   caso('epic-merge: el gate de rectificación corre ANTES del merge', iGate > 0 && iMerge > iGate);

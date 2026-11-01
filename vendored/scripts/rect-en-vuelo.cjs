@@ -10,11 +10,9 @@
 // La I/O de labels/comentario la hace cada llamador; aquí solo la detección
 // (lecturas de la API) y el dedupe por clave.
 //
-// Residual declarado (crítica ronda 3, [H]): el filtro de fichero sigue siendo
-// el de AP-055 (`/decisions[^/]*\.md$/i`). Un consumidor con `layout: "dir"`
-// (AP-111, `<dir>/ADR-NNN.md`) no se ve: ninguno de los dos jobs tiene en disco
-// el `adr-lint.config.json` del consumidor y la función que lo traduciría a
-// rutas no existe. Ampliarlo exige decidir de dónde se lee esa config.
+// Consumidores con `layout: "dir"` (AP-111, `<dir>/ADR-NNN.md`, finplan): el
+// llamador lee su `adr-lint.config.json` con `cargarCfg` y lo pasa a `detectar`
+// como `cfg` (AP-135, central#393; cierra el residual de la pieza 4 de AP-125).
 //
 // POR QUÉ VIVE AQUÍ (AP-068): banco `scripts/check-rect-en-vuelo.mjs`.
 
@@ -30,6 +28,27 @@ const rectCand = t => {
     : (RECT_VOCAB.test(t) || RECT_ORD.test(t));  // sub-encabezado dentro del bloque
   return /^>?\s*\*\*(?:Rectifica|Deroga|Enmienda)/i.test(t);
 };
+
+// Copia de `escRe` de `vendored/scripts/adr-append-merge.mjs:38` (ESM; este
+// módulo es CommonJS y no lo importa — AP-135).
+const escRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Config de registro del consumidor (`adr-lint.config.json` en `ref`, por la API
+// de Contents). Devuelve `{ layout: 'dir', dir }` SOLO con `layout: "dir"`
+// (`dir` por defecto `docs/decisions/adr`, el de `normalizeConfig` en
+// `adr-registro.mjs`, sin `/` final); cualquier otro caso —404, error de API,
+// JSON inválido, `layout` ausente o `"volumes"`— ⇒ `null` (regex heredado).
+// Nunca lanza (AP-135).
+async function cargarCfg({ github, O, ref }) {
+  try {
+    const { data } = await github.rest.repos.getContent({ ...O, path: 'adr-lint.config.json', ref });
+    if (!data || typeof data.content !== 'string') return null;
+    const raw = JSON.parse(Buffer.from(data.content, 'base64').toString('utf8'));
+    if (!raw || raw.layout !== 'dir') return null;
+    const dir = (typeof raw.dir === 'string' ? raw.dir : 'docs/decisions/adr').replace(/\/+$/, '');
+    return { layout: 'dir', dir };
+  } catch (e) { return null; }
+}
 
 const marcador = (clave) => `${RECT_MARK}: ${clave} -->`;
 const yaMarcada = (comments, clave) => (comments || []).some((c) => (c.body || '').includes(marcador(clave)));
@@ -51,7 +70,10 @@ const consumida = (comments, clave, login) => {
 // [{ clave, linea }] de las rectificaciones añadidas en la base desde el punto
 // de partida del PR (`pr.base.sha…pr.base.ref`) atribuidas a un ADR/AP que el
 // PR CITA en título/body. Lanza si el compare falla (el llamador decide).
-async function detectar({ github, O, pr, warn = () => {}, info = () => {} }) {
+// `cfg` (opcional, el de `cargarCfg`): con `layout: "dir"` entran además los
+// ficheros `<dir>/ADR-N.md`; sin él, solo el regex heredado (statu quo).
+async function detectar({ github, O, pr, cfg = null, warn = () => {}, info = () => {} }) {
+  const enDir = cfg && cfg.layout === 'dir' ? new RegExp(`^${escRe(String(cfg.dir).replace(/\/+$/, ''))}/ADR-\\d+\\.md$`) : null;
   const cited = new Set([...`${pr.title || ''}\n${pr.body || ''}`.matchAll(/\b(ADR|AP)-(\d+)\b/g)].map(m => `${m[1]}-${+m[2]}`));
   if (!cited.size) return [];   // PR que no cita ADR/AP: nada que invalidar
   // `compareCommits` y no `compareCommitsWithBasehead`: es la
@@ -70,7 +92,7 @@ async function detectar({ github, O, pr, warn = () => {}, info = () => {} }) {
   if ((cmp.files || []).length >= 300) warn(`rect-en-vuelo #${pr.number}: el compare devuelve ${cmp.files.length} ficheros (tope 300 de la API) — la lista puede estar TRUNCADA y un volumen de decisiones quedar fuera; rectificaciones posiblemente NO evaluadas.`);
   const rects = new Map();
   for (const f of cmp.files || []) {
-    if (!/decisions[^/]*\.md$/i.test(f.filename)) continue;
+    if (!/decisions[^/]*\.md$/i.test(f.filename) && !(enDir && enDir.test(f.filename))) continue;
     if (!f.patch) {   // diff demasiado grande: GitHub omite el patch — residual honesto, no silencioso
       warn(`rect-en-vuelo #${pr.number}: ${f.filename} sin patch en el compare (diff grande) — rectificaciones de ese fichero NO evaluadas.`);
       continue;
@@ -131,4 +153,4 @@ async function detectar({ github, O, pr, warn = () => {}, info = () => {} }) {
   return [...rects.values()].map((r) => ({ clave: r.key, linea: r.head }));
 }
 
-module.exports = { RECT_MARK, RECT_MARK_RE, ADR_HEAD, RECT_ORD, RECT_VOCAB, RECT_DATE, rectCand, marcador, yaMarcada, consumida, detectar };
+module.exports = { RECT_MARK, RECT_MARK_RE, ADR_HEAD, RECT_ORD, RECT_VOCAB, RECT_DATE, rectCand, escRe, marcador, yaMarcada, consumida, cargarCfg, detectar };
