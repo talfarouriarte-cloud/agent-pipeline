@@ -5,11 +5,14 @@
 // (2026-07-12, tras el drift serial-*/labels.json: un consumidor nuevo
 // nacía sin las labels que el guard serial necesitaba). Dinámicas
 // (estado:*, rondas:N) se auto-crean via addLabels y quedan fuera.
+// Además (AP-132): toda descripción de labels.json cabe en los 100 caracteres
+// que admite GitHub — sync-labels.mjs no recorta, la escribe tal cual.
 // Verde: exit 0. Corre en el CI del central.
 import { readFileSync, readdirSync } from 'fs';
 
 const DIR = 'templates';
-const template = new Set(JSON.parse(readFileSync(`${DIR}/labels.json`, 'utf8')).map(l => l.name));
+const labels = JSON.parse(readFileSync(`${DIR}/labels.json`, 'utf8'));
+const template = new Set(labels.map(l => l.name));
 const usage = JSON.parse(readFileSync(`${DIR}/labels-usage.json`, 'utf8'));
 const wfs = readdirSync('.github/workflows').filter(f => /\.ya?ml$/.test(f));
 
@@ -21,6 +24,10 @@ for (const [wf, labels] of Object.entries(usage)) {
     declared++;
     if (!template.has(name)) errors.push(`${wf} usa \`${name}\` — ausente de labels.json (consumidor nuevo nacería sin ella)`);
   }
+}
+for (const l of labels) {
+  const n = [...(l.description || '')].length;
+  if (n > 100) errors.push(`labels.json: \`${l.name}\` tiene descripción de ${n} caracteres (> 100, GitHub la rechaza; sync-labels no recorta)`);
 }
 for (const f of wfs) if (!(f in usage)) errors.push(`${f}: sin entrada en labels-usage.json (declara [] si no usa labels fijas)`);
 for (const wf of Object.keys(usage)) if (!wf.startsWith('_') && !wfs.includes(wf)) errors.push(`labels-usage.json declara ${wf} — ese workflow no existe`);
