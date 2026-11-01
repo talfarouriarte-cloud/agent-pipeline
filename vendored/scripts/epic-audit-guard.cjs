@@ -109,11 +109,14 @@ function esDelAlcance(titulo, base) {
   return titulo === base || new RegExp(`^${escRe(base)} \\(re-auditoría \\d+\\)$`).test(titulo || '');
 }
 
-// Título de la siguiente re-auditoría: N = paneles del alcance (abiertos o
-// cerrados, título base o «(re-auditoría k)») CON veredicto, + 1. Así una
-// tercera consumición del mismo alcance no vuelve al título base.
+// Título de la siguiente re-auditoría: N = re-auditorías previas del alcance
+// («(re-auditoría k)», abiertas o cerradas) CON veredicto, + 1. Se llega aquí
+// solo con el panel base ya juzgado, así que el primero es «(re-auditoría 1)»
+// y una tercera consumición da «(re-auditoría 2)», nunca el título base. (La
+// prosa del ruling contaba también el panel base; sus casos (g) —la parte
+// falsable— fijan esta numeración, y es la que se sigue.)
 function tituloReauditoria(base, paneles) {
-  const n = (paneles || []).filter((p) => esDelAlcance(p.title, base) && p.conVeredicto).length + 1;
+  const n = (paneles || []).filter((p) => p.title !== base && esDelAlcance(p.title, base) && p.conVeredicto).length + 1;
   return `${base} (re-auditoría ${n})`;
 }
 
