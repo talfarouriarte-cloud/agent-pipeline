@@ -87,7 +87,7 @@ jobs:
             const body = [
               `@claude Ejecuta el **ruling de la revisión mensual** publicado en este issue (comentario que empieza por «Ruling de la revisión mensual» y contiene «APROBADA»). El ruling PREVALECE sobre la propuesta original donde difieran. Un solo PR contra \`main\`; en su body pon \`Closes #${next.n}\` y \`Closes #<n>\` por cada issue que el ruling funde. Si tocas \`.github/workflows/**\`, commitea en local: el post-step publica la rama.`,
               '',
-              `<!-- cola-mensual-arm --> (posición ${next.pos === 1e6 ? 'sin marcador' : next.pos}; armado automáticamente por self-mensual-queue.yml tras ${context.eventName === 'workflow_dispatch' ? 'dispatch manual' : 'el merge de #' + context.payload.pull_request.number})`
+              `<!-- cola-mensual-arm --> (posición ${next.pos === 1e6 ? 'sin marcador' : next.pos}; armado automáticamente por self-mensual-queue.yml tras ${context.eventName === 'workflow_dispatch' ? 'dispatch manual' : context.eventName === 'issues' ? 'la crítica de #' + context.payload.issue.number + ' (' + context.payload.label.name + ')' : 'el merge de #' + context.payload.pull_request.number})`
             ].join('\n');
             await github.rest.issues.createComment({ owner, repo, issue_number: next.n, body });
             core.notice(`cola mensual: armada #${next.n} (posición ${next.pos}).`);
