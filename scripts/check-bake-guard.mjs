@@ -63,6 +63,15 @@ const BANCO = [
   ['invariantes-na de autor NO de confianza ⇒ no cuenta',
     { labels: ['correctivo'], body: 'x', comments: [{ body: '<!-- invariantes-na -->', author_association: 'NONE' }] },
     r => r.broken === 'true' && r.stalled],
+  ['suelto correctivo con invariantes-na en el BODY ⇒ pasa (AP-127, cualquier autor)',
+    { labels: ['correctivo'], body: 'Correctivo doc-only.\n<!-- invariantes-na -->\n' },
+    r => r.broken === 'false' && !r.stalled && r.comments.length === 0],
+  ['invariantes-na solo en comentario de claude[bot] (NONE) ⇒ stall como hoy (AP-127)',
+    { labels: ['correctivo'], body: 'x', comments: [{ body: '<!-- invariantes-na -->', author_association: 'NONE', user: { login: 'claude[bot]' } }] },
+    r => r.broken === 'true' && r.stalled && has(r, /<!-- sin-invariantes-stall -->/)],
+  ['epica con invariantes-na en el body del primer eslabón ⇒ pasa (AP-127)',
+    { labels: ['epica'], body: 'Eslabón 1\n<!-- invariantes-na -->\n<!-- launch-next: #2 -->', chain: { 2: 'Eslabón 2' + TAIL } },
+    r => r.broken === 'false' && !r.stalled],
   ['suelto correctivo re-armado por watchdog-rearm ⇒ exento',
     { labels: ['correctivo'], body: 'x', arm: '@claude retoma\n<!-- watchdog-rearm -->' },
     r => r.broken === 'false' && !r.stalled],
@@ -108,4 +117,4 @@ for (const [nombre, input, ok] of BANCO) {
   if (!ok(r)) rojos.push(`${nombre}: obtenido ${JSON.stringify(r)}`);
 }
 if (rojos.length) { console.error('CHECK-BAKE-GUARD ROJO:'); rojos.forEach(e => console.error('  - ' + e)); process.exit(1); }
-console.log(`check-bake-guard verde: ${BANCO.length} casos del guard de horneado (AP-021/AP-029/AP-096).`);
+console.log(`check-bake-guard verde: ${BANCO.length} casos del guard de horneado (AP-021/AP-029/AP-096/AP-127).`);
