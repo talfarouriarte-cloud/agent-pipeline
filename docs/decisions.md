@@ -1976,7 +1976,7 @@ Además de las dos de arriba (🟡 1, consumidor mecánico; 🟡 2, cuerpos verb
 
 ## AP-071 — El Δestado del Creator que NO es un push adquiere portador: rama `comment-only` en la cola del `turn-close-failsafe`, por delante de la escalada de AP-046 (repesca finplan#1724, aud. finplan#1736 §R1): EJECUTADA en el módulo y el banco · la invocación en `claude-code.yml` queda PENDIENTE DE APLICACIÓN HUMANA (parche adjunto)
 
-<!-- ancla-espejo: AP-071-turn-close-comment-only.patch = fd3a59a73898d8b11f3cc2d9f5b906c46c482d20 -->
+Espejo del ancla retirado en AP-129 (2026-11-01): el parche `AP-071-turn-close-comment-only.patch` (verificado-contra `fd3a59a7`) se aplicó al árbol en ese PR y se borró de `docs/patches/`, como pide `check-patches` para un parche ya aplicado.
 
 **Contexto (repesca R1 del 5-whys de la auditoría finplan#1736; issue central #177).** PR finplan#1724, épica ADR-232. El veredicto NITS de la ronda 2 pedía UNA cosa **sin diff**: re-publicar el sentinel `adr-divergence` por `gh api`, porque el tracking comment se lo había comido (AP-013). La sesión del Creator lo hizo en 1m 17s. Su Δestado fue un **COMENTARIO** —cero commits— y omitió el tag de cierre, como 8 de los 9 PRs de esa misma épica. La transición Creator→Reviewer se materializa hoy por **PUSH** (`turn-close-failsafe`) o por **TAG**; sin ninguno de los dos, la rama else de AP-046 clasificó la sesión como terminal NO-declarado y aplicó `stalled` + `estado:esperando-architect`. architect-resolve ruló 9 minutos después con `derived-decision`: re-convocar al Reviewer (re-aplicar `needs-review`). El PR mergeó 2 min más tarde.
 
