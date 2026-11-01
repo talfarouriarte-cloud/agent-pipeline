@@ -487,7 +487,7 @@ const VEREDICTO_LGTM = () => com(PR, 'LGTM\n\nTodo bien.', { min: 1 });
 // ── central#348 (d) `enmiendas-entregadas` ──
 {
   const dis = (id, min) => com(PR, `<!-- disparo-pendiente: ${id} -->`, { assoc: 'NONE', login: 'github-actions[bot]', min });
-  const w = mundo({ comentarios: [dis(9301, 60), com(PR, '<!-- enmiendas-entregadas: 9301 -->', { min: 30 })] });
+  const w = mundo({ comentarios: [dis(9301, 60), com(PR, '<!-- enmiendas-entregadas: 9301 run=4242 -->', { min: 30 })] });
   await correrEntrega(w);
   check(w.creados.length === 0, '348(d) disparo en `enmiendas-entregadas` TRUSTED ⇒ entregado, sin re-arm');
   const wa = mundo({ comentarios: [dis(9301, 60), com(PR, '<!-- enmiendas-entregadas: 9301 -->', { assoc: 'NONE', login: 'mallory', min: 30 })] });
@@ -511,8 +511,8 @@ const VEREDICTO_LGTM = () => com(PR, 'LGTM\n\nTodo bien.', { min: 1 });
   // (d3) foto + sesión success ⇒ entregadas, sin re-arm en el mismo step.
   const w3 = mundo({ comentarios: [dis(9501, 60)] });
   await correrEntrega(w3, { exec: EXEC_OK, disparosFoto: '9501' });
-  const ent = w3.creados.find((c) => /<!-- enmiendas-entregadas: 9501 -->/.test(c.body));
-  check(!!ent && ent.author_association === 'OWNER' && rearms(w3).length === 0, '348(d3) sesión `success` con `disparos_foto=[P1]` ⇒ publica `enmiendas-entregadas: P1` (PAT) y no lo re-arma en el mismo step');
+  const ent = w3.creados.find((c) => /^<!-- enmiendas-entregadas: 9501 run=777 -->$/m.test(c.body));
+  check(!!ent && ent.author_association === 'OWNER' && rearms(w3).length === 0, '348(d3) sesión `success` con `disparos_foto=[P1]` ⇒ publica `enmiendas-entregadas: P1 run=<runId>` (PAT) y no lo re-arma en el mismo step');
   await correrEntrega(w3, { runId: 778 });
   check(rearms(w3).length === 0 && w3.creados.length === 1, '348(d3) el siguiente cierre tampoco lo re-entrega');
   const w4 = mundo({ comentarios: [dis(9501, 60)] });

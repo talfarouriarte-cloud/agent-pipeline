@@ -2355,7 +2355,7 @@ jobs:
             await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['needs-review'] });
             await github.rest.issues.createComment({ owner, repo, issue_number: pr.number,
               body: '**claude-code · open-review-failsafe**: el evento que auto-dispara al Reviewer al volverse revisable el PR (`ready_for_review` del cierre draft-first, AP-094; `opened` si nació no-draft) no produjo ningún run tras el settle de liveness (~90s). Transición Creator→Reviewer materializada por ESTADO (camino RESIDUAL): `needs-review` aplicada con el PAT en el mismo job (repesca finplan#1382, AP-016). Idempotente por dedupe: si el evento hubiera disparado, este step no habría tocado nada. Si el stub del Reviewer de este repo no declara `ready_for_review` en sus `types`, este disparo es esperado (MIGRATION.md, AP-094).\n\n'
-                + `diagnóstico: ventana=${ventana} · runs vistos=${second.vistos} (1.ª lectura: ${first.vistos}) · filtro name=${REVIEWER_WF}\n\n<!-- open-review-failsafe -->` });
+                + `diagnóstico: ventana=${ventana} · runs vistos=${second.vistos} · filtro name=${REVIEWER_WF}\n(1.ª lectura, antes del settle: ${first.vistos} runs)\n\n<!-- open-review-failsafe -->` });
             core.warning(`open-review-failsafe: PR #${pr.number} sin run del Reviewer para ${quien} — needs-review aplicada por PAT (evento opened/ready_for_review perdido o no cableado en el stub).`);
 
       # central#327 (ruling mensual 2026-10-06, punto 3): ENTREGA al cierre del
@@ -2436,7 +2436,7 @@ jobs:
             if (pendFoto.length) {
               try {
                 await github.rest.issues.createComment({ owner, repo, issue_number: destino,
-                  body: `**Enmiendas en vuelo (central#327)**: la sesión de este turno (run ${context.runId}, \`success\`) recibió en su foto pre-sesión los disparos diferidos ${pendFoto.map(id => `\`${id}\``).join(', ')}: entregados, no se re-entregan.\n\n${ENM.marcaEntregadas(pendFoto)}` });
+                  body: `**Enmiendas en vuelo (central#327)**: la sesión de este turno (run ${context.runId}, \`success\`) recibió en su foto pre-sesión los disparos diferidos ${pendFoto.map(id => `\`${id}\``).join(', ')}: entregados, no se re-entregan.\n\n${ENM.marcaEntregadas(pendFoto, context.runId)}` });
                 for (const id of pendFoto) estado.entregadas.add(id);
               } catch (e) { core.warning(`entrega: marcador enmiendas-entregadas en #${destino} falló (${e.message}); esos disparos siguen pendientes.`); }
             }

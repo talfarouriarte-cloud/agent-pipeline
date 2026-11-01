@@ -30,7 +30,8 @@
 //   <!-- rearm-enmienda-tope -->            tope de re-arms superado ⇒ `human-needed`. El
 //                                           tope cuenta solo los re-arms cuyo conjunto se
 //                                           solapa con lo pendiente (central#348).
-//   <!-- enmiendas-entregadas: <ids> -->    lo publica la entrega (PAT ⇒ TRUSTED) tras una
+//   <!-- enmiendas-entregadas: <ids> run=<runId> -->
+//                                           lo publica la entrega (PAT ⇒ TRUSTED) tras una
 //                                           sesión `success` cuya foto pre-sesión listaba
 //                                           esos disparos: ya llegaron a una sesión
 //                                           (central#348). Solo disparos, nunca enmiendas.
@@ -66,7 +67,7 @@ const REARM_RE = /^[ \t]*<!--\s*rearm-enmienda:\s*(\d+(?:\s*,\s*\d+)*)\s*-->[ \t
 const ACK_RE = /^[ \t]*<!--\s*enmienda-(aplicada|rechazada):\s*(\d+(?:\s*,\s*\d+)*)\s*-->[ \t]*$/gm;
 const ESCALADO_RE = /^[ \t]*<!--\s*enmienda-rechazo-escalado:\s*(\d+(?:\s*,\s*\d+)*)\s*-->[ \t]*$/gm;
 const TOPE_RE = /^[ \t]*<!--\s*rearm-enmienda-tope\s*-->[ \t]*$/m;
-const ENTREGADAS_RE = /^[ \t]*<!--\s*enmiendas-entregadas:\s*(\d+(?:\s*,\s*\d+)*)\s*-->[ \t]*$/gm;
+const ENTREGADAS_RE = /^[ \t]*<!--\s*enmiendas-entregadas:\s*(\d+(?:\s*,\s*\d+)*)(?:\s+run=\d+)?\s*-->[ \t]*$/gm;
 // Copia literal en `check_flight` (claude-code.yml): mantener en sincronía. Un
 // evento es un ping si su cuerpo despojado de código tiene una línea que empieza
 // por la mención de arm o lleva el sentinel `ping-creator` (central#348, punto 3).
@@ -84,7 +85,7 @@ const todos = (re, txt) => [...txt.matchAll(re)];
 
 const marcaDisparo = (id) => `<!-- disparo-pendiente: ${Number(id)} -->`;
 const marcaRearm = (lista) => `<!-- rearm-enmienda: ${clave(lista)} -->`;
-const marcaEntregadas = (lista) => `<!-- enmiendas-entregadas: ${clave(lista)} -->`;
+const marcaEntregadas = (lista, runId) => `<!-- enmiendas-entregadas: ${clave(lista)}${Number(runId) > 0 ? ` run=${Number(runId)}` : ''} -->`;
 const esPing = (body) => PING_RE.test(despojarCodigo(body));
 
 // Lectura única de los comentarios de un ítem (issue + su PR). Cada comentario

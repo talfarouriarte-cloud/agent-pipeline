@@ -159,7 +159,7 @@ const check = (ok, msg, w) => {
   const ajeno = (id) => rev(id, { name: 'CI', conclusion: 'skipped' });
   const w = await caso({ reviewers: [ajeno(70001), ajeno(70002)] });
   const c = w.comments.find(x => /<!-- open-review-failsafe -->/.test(x)) || '';
-  check(w.fired && /^diagnóstico: ventana=branch=claude%2Fissue-40-20261005-0700&created=%3E%3D2026-10-05T10%3A16%3A18Z · runs vistos=2 \(1\.ª lectura: 2\) · filtro name=Opus Reviewer$/m.test(c),
+  check(w.fired && /^diagnóstico: ventana=branch=claude%2Fissue-40-20261005-0700&created=%3E%3D2026-10-05T10%3A16%3A18Z · runs vistos=2 · filtro name=Opus Reviewer$/m.test(c),
     '(g) 2 runs ajenos y ninguno del Reviewer ⇒ materializa con `diagnóstico: ventana=… · runs vistos=2 · filtro name=…`', w);
   const vivo = await caso({ reviewers: [ajeno(70001), rev(70003, { status: 'in_progress', conclusion: null })] });
   check(!vivo.fired && vivo.comments.length === 0, '(g) run del Reviewer vivo en la ventana ⇒ no materializa (sin cambio)', vivo);
