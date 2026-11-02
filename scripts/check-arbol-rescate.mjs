@@ -324,16 +324,18 @@ async function withEnv(vars, fn) {
   try { return await fn(); } finally { process.env = saved; }
 }
 
-async function postMuerte({ rescueWip, rescuePr = '', prs = [] }) {
-  const w = { added: [], removed: [], comments: [], created: [], outputs: {}, fetches: 0 };
+async function postMuerte({ rescueWip, rescuePr = '', prs = [], closedPrs = [], closedFail = false, issueState = 'open', outcome = 'success' }) {
+  const w = { added: [], removed: [], comments: [], created: [], outputs: {}, fetches: 0, notices: [], warnings: [] };
   const github = {
     paginate: async (fn, p) => (await fn(p)).data,
     rest: {
-      pulls: { list: async () => ({ data: prs }), create: async p => { w.created.push(p); return { data: { number: 99 } }; }, update: async () => ({}) },
-      git: { listMatchingRefs: async () => ({ data: [{ ref: 'refs/heads/claude/issue-40-1' }] }) },
+      // AP-138: sensible a `state` — la búsqueda de PR abierto lee `prs`; la de
+      // head ya mergeado (`state: 'closed'`) lee `closedPrs` (o lanza).
+      pulls: { list: async p => { if (p.state === 'closed') { if (closedFail) throw new Error('500'); return { data: closedPrs }; } return { data: prs }; }, create: async p => { w.created.push(p); return { data: { number: 99 } }; }, update: async () => ({}) },
+      git: { listMatchingRefs: async () => ({ data: [{ ref: 'refs/heads/claude/issue-40-1', object: { sha: 'headsha1' } }] }) },
       repos: { compareCommits: async () => ({ data: { ahead_by: 2, behind_by: 0, commits: [{ commit: { message: 'wip(creator): x' } }] } }) },
       issues: {
-        get: async () => ({ data: { labels: [{ name: 'serial-activo' }] } }),
+        get: async () => ({ data: { state: issueState, labels: [{ name: 'serial-activo' }] } }),
         listForRepo: async () => ({ data: [] }),
         listComments: async () => ({ data: [] }),
         addLabels: async p => { w.added.push(...p.labels.map(l => `${p.issue_number}:${l}`)); },
@@ -349,8 +351,8 @@ async function postMuerte({ rescueWip, rescuePr = '', prs = [] }) {
   globalThis.fetch = async () => { w.fetches++; return { ok: true, json: async () => ({}) }; };
   const context = { repo: { owner: 'o', repo: 'r' }, runId: 1, payload: { issue: { number: 40, title: 'x', labels: [] }, comment: { created_at: at(0) } } };
   try {
-    await withEnv({ EXEC_FILE: exec, STEP_CREATOR_OUTCOME: 'success', IN_DEFAULT_BRANCH: 'main', RESCUE_WIP: rescueWip, RESCUE_PR: rescuePr, DEFAULT_GH_TOKEN: 't' },
-      () => muerte({ github, context, core: core(w), require }));
+    await withEnv({ EXEC_FILE: exec, STEP_CREATOR_OUTCOME: outcome, IN_DEFAULT_BRANCH: 'main', RESCUE_WIP: rescueWip, RESCUE_PR: rescuePr, DEFAULT_GH_TOKEN: 't' },
+      () => muerte({ github, context, core: { ...core(w), notice: m => { w.notices.push(m); }, warning: m => { w.warnings.push(m); } }, require }));
   } finally { globalThis.fetch = savedFetch; rmSync(dir, { recursive: true, force: true }); }
   return w;
 }
@@ -367,6 +369,23 @@ async function postMuerte({ rescueWip, rescuePr = '', prs = [] }) {
   check(dm.fetches === 0 && !dm.added.includes('50:needs-review') && dm.added.join() === '50:estado:esperando-architect,50:stalled' && /arbol-rescatado-por-estado/.test(dm.comments.join()), '(muerte) WIP rescatado sin ver el PR ⇒ muerte-sin-PR materializa el turno del Creator en el PR');
   const dc = await postMuerte({ rescueWip: '', prs: draft });
   check(dc.added.includes('50:needs-review'), '(muerte, control) draft sin rescate ⇒ ready + needs-review (AP-047)');
+}
+
+// AP-138 (central#401): sin PR desde estado sobre un head ya mergeado (squash).
+// `failure`: la clase del incidente (relanzamiento muerto tras el squash); su
+// comentario residual `creator-muerto-sin-pr` es el que cita `branchInfo`.
+{
+  const mergedSame = [{ number: 34, merged_at: at(-100), head: { sha: 'headsha1', ref: 'claude/issue-40-1' } }];
+  const a = await postMuerte({ outcome: 'failure', rescueWip: '', closedPrs: mergedSame });
+  check(a.created.length === 0 && a.comments.some(c => /head ya mergeado en PR #34/.test(c)), '(AP-138 a) ahead_by=2 + PR cerrado mergeado con el mismo head.sha ⇒ sin pulls.create y branchInfo «ya mergeado en PR #34»');
+  const b = await postMuerte({ outcome: 'failure', rescueWip: '', closedPrs: [{ number: 34, merged_at: at(-100), head: { sha: 'otrosha', ref: 'claude/issue-40-1' } }] });
+  check(b.created.length === 1, '(AP-138 b) PR mergeado con OTRO head.sha ⇒ pulls.create como hoy');
+  const c = await postMuerte({ outcome: 'failure', rescueWip: '', closedPrs: [{ number: 34, merged_at: null, head: { sha: 'headsha1', ref: 'claude/issue-40-1' } }] });
+  check(c.created.length === 1, '(AP-138 c) PR cerrado SIN merged_at con el mismo SHA ⇒ pulls.create como hoy');
+  const d = await postMuerte({ outcome: 'failure', rescueWip: '', closedFail: true });
+  check(d.created.length === 1 && d.warnings.some(m => /AP-138/.test(m)), '(AP-138 d) pulls.list(closed) lanza ⇒ core.warning y pulls.create como hoy');
+  const e = await postMuerte({ outcome: 'failure', rescueWip: '', closedPrs: mergedSame, issueState: 'closed' });
+  check(e.created.length === 0 && e.added.length === 0 && e.removed.length === 0 && e.comments.length === 0 && e.fetches === 0 && e.notices.some(m => /nada que materializar/.test(m)), '(AP-138 e) caso (a) con el issue cerrado ⇒ ninguna escritura, solo core.notice');
 }
 
 async function runAutoLabel({ closing, marker, rescueWip = '' }) {
