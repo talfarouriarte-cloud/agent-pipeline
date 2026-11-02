@@ -547,6 +547,8 @@ Clase de fallo: **el bloque `permissions` del stub/job del reusable es superfici
 
 **Reversibilidad.** Alta: un bloque `if (hasCommits && branchRef)` en el post-step, la captura de `branchRef`, y filas de doc; se revierte dejando caer todo al camino residual `creator-muerto-sin-pr`.
 
+> **Enmienda (2026-11-02, AP-138, central#401).** «Rama utilizable» deja de ser solo `ahead_by > 0`: tras un merge por squash los commits de la rama siguen «ahead» con el contenido ya en la base. Si un PR cerrado con `merged_at` tiene como `head.sha` el SHA actual de la rama, el post-step la trata como sin commits que conservar (no abre el PR desde estado; clase asesoramiento-financiero#3436). Ver AP-138.
+
 **Fecha.** 2026-07-16.
 
 ## AP-024 — La materialización de `lgtm` se EJECUTA por estado desde el Watchdog: red por-estado para la ventana de crash del post-step del Reviewer (misma clase que AP-016/AP-023)
@@ -3684,5 +3686,29 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 **Términos de AP-099 que mueve.** (b) restaura el instrumento del ledger (cobertura 0/13 en aud. finplan #3384); (a) LGTM sobre CI que acaba rojo y re-rondas (93.441 ponderados en #3342).
 
 **Criterio falsable** (lotes de noviembre): cobertura del ledger de tokens del Auditor ≥ 90 % de sesiones por panel en finplan y wmcb; 0 paneles con 403 en `check-runs/<job>/annotations`; 0 veredictos del Reviewer sin cita del estado de CI (fichero, `gh pr checks` o `ci-verde`); `.pipeline/ci-head.md` con `lectura de CI falló` en < 5 % de las sesiones del Reviewer (si más, se cita el run); `check-contracts` y `check-ci-head` verdes; **0 escrituras de la sesión con `CI_READ_TOKEN`**, medidas por el Auditor en cada panel así: para cada run de `claude-code.yml` del panel, `actions/runs/<id>/jobs` da `started_at`/`completed_at` del step **«Run Claude Code»** (la API de jobs devuelve los steps por `name`, sin `id`; crítica ronda 3 [H]); se listan comentarios del issue y del PR (`issues/<n>/comments`) y eventos de label (`issues/<n>/events`, `labeled`/`unlabeled`) con autor `github-actions[bot]` y fecha dentro de esa ventana; **se excluyen** los eventos de las labels `ci-verde` y `lgtm` sobre el PR cuya fecha cae dentro de la ventana `createdAt`–`updatedAt` de un run de `ci.yml` de ese PR (`gh run list --workflow ci.yml --branch <rama> --json createdAt,updatedAt`): son el «Invalidar estado» y el «Marcar ci-verde» de `ci.yml`, que corren con su `github.token` mientras la sesión sigue viva tras cada push (crítica ronda 3 [B]). Salida esperada: residual vacío, pegado en el informe con el número de runs revisados y el de eventos excluidos; todo evento residual se atribuye a mano a su run o se reporta como escritura de la sesión.
+
+**Fecha.** 2026-11-02.
+
+---
+
+## AP-138 — Sin PR desde estado sobre un head ya mergeado: el post-step «Materializar muerte del Creator sin PR» no abre un PR con el mismo head que un PR ya mergeado por squash (2026-11-02)
+
+**Contexto.** central#401 (ruling de la revisión mensual 2026-11-02, P0 fuera de ciclo, OK explícito del propietario; alcance reducido por el Architect del central tras las rondas 1 y 2 del Critic; LGTM en la ronda 3). Incidente asesoramiento-financiero 2026-11-01 20:26Z → 2026-11-02 08:18Z: PR #3434 (#3432) mergeado por squash; el relanzamiento murió al nacer (cuota agotada); el post-step vio la rama con `ahead_by > 0` (los commits ya absorbidos por el squash) y abrió **PR #3436 «desde estado»** con el mismo head `1e0422a` que #3434 y diff vacío respecto a la base. El Reviewer, con la cuota de vuelta, diagnosticó «redundante» y reservó el cierre con `[NEEDS-HUMAN]` ⇒ serie parada ~12 h con #3429 en cola, hasta intervención manual. El ruling verificó en el hilo de central PR #398 (misma caída) que el pipeline ya se reactiva solo cuando vuelve la cuota (architect-resolve re-arma tras `stalled` por `no-arranco`): lo que paró la serie fue el PR redundante.
+
+**Decisión.**
+1. **Head ya mergeado ⇒ sin commits que conservar.** En `claude-code.yml`, post-step `post_muerte_sin_pr`, tras `compareCommits`: si `ahead_by > 0`, `pulls.list({ state: 'closed', head: '<owner>:<rama>', per_page: 30 })`; si algún PR tiene `merged_at` y `head.sha` igual al SHA actual de la rama (`object.sha` del ref de `listMatchingRefs`) ⇒ `hasCommits = false` y `branchInfo` = «rama `<rama>`: head ya mergeado en PR #N (squash); nada que conservar.». Si `pulls.list` falla ⇒ `core.warning` y el `ahead_by > 0` de siempre.
+2. **Issue armador ya cerrado.** Si además el issue está `closed` (estado VIVO, `issues.get`) ⇒ `core.notice` y fin del step sin escribir nada (sin PR, sin `stalled`, sin re-arm, sin comentario). Con el issue abierto sigue la rama `!hasCommits` existente sin cambios. La serie no queda bloqueada: las lecturas de `serial-activo` filtran `state: 'open'` y el barrido de cola del cierre del job corre porque `armed` no queda en `true`.
+3. **Banco** `scripts/check-arbol-rescate.mjs` (ejecuta el `script:` real con `cargarStep`): (a) `ahead_by = 2` y PR cerrado mergeado con el mismo `head.sha` ⇒ sin `pulls.create` y `branchInfo` con «ya mergeado en PR #N»; (b) otro `head.sha` ⇒ `pulls.create` como hoy; (c) PR cerrado sin `merged_at` y mismo SHA ⇒ como hoy; (d) `pulls.list` con `state: 'closed'` lanza ⇒ como hoy y `core.warning`; (e) caso (a) con el issue `closed` ⇒ ninguna escritura.
+4. **Enmienda** anotada en AP-023 («rama utilizable»).
+
+**Qué NO.** No se tocan Reviewer, Watchdog, firma de flota, labels ni colas. No se cierran PRs redundantes ya abiertos (su cierre sigue siendo del Architect). Un PR de diff vacío con head DISTINTO del mergeado (p. ej. un merge desde la base empujado sobre la rama ya squasheada) sigue abriéndose como hoy (caso (b)).
+
+**Residuales declarados** (fuera de este AP, a la mensual de diciembre como `process-proposal` aparte): (r1) la reactivación tras una caída de cuota pasa por architect-resolve, que corre en `claude-fable-5-1` (AP-088): si vuelve la cuota de Opus antes que la de Fable, Creator y Reviewer esperan a la de Fable (en esta caída, ~0-1 h; sin medir con precisión); (r2) el issue de flota caída (AP-091) no se cierra solo (asesoramiento-financiero#3167, abierto desde el 2026-10-26).
+
+**Riesgos.** Despliegue en vivo a los consumidores vía el reusable `@main`. Una llamada API extra (`pulls.list`) solo cuando la rama tiene commits ahead; fallo ⇒ comportamiento previo. Sin cambio de contrato `workflow_call`.
+
+**Términos de AP-099 que mueve.** (a) intervención humana y trabajo perdido por punto: el incidente costó una intervención y ~12 h de serie parada por un PR que no debía existir.
+
+**Criterio falsable** (lotes de noviembre): 0 PRs con marcador `pr-abierto-por-estado` cuyo head esté ya mergeado en otro PR; 0 `[NEEDS-HUMAN]` del Reviewer sobre PRs de diff vacío respecto a la base; banco en verde con (a)-(e).
 
 **Fecha.** 2026-11-02.
