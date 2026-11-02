@@ -42,7 +42,10 @@
       "contents": "write",
       "pull-requests": "write",
       "issues": "write",
-      "id-token": "write"
+      "id-token": "write",
+      "checks": "read",
+      "statuses": "read",
+      "actions": "read"
     }
   },
   "epic-merge.yml": {
@@ -178,7 +181,10 @@
     "permissions_required": {
       "contents": "read",
       "pull-requests": "write",
-      "issues": "write"
+      "issues": "write",
+      "checks": "read",
+      "statuses": "read",
+      "actions": "read"
     },
     "lesson_bearing": {
       "reviewer_max_turns": {
