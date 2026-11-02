@@ -3327,6 +3327,7 @@ jobs:
             let branchInfo = 'sin rama creada (muerte temprana: no hay trabajo que conservar).';
             let hasCommits = false;
             let branchRef = null;
+            let mergedHeadPr = null;
             try {
               const { data: refs } = await github.rest.git.listMatchingRefs({ owner, repo, ref: `heads/claude/issue-${n}-` });
               if (refs.length) {
@@ -3337,8 +3338,42 @@ jobs:
                 const last = cmp.data.commits.length ? cmp.data.commits[cmp.data.commits.length - 1].commit.message.split('\n')[0] : '(sin commits)';
                 hasCommits = cmp.data.ahead_by > 0;
                 branchInfo = `rama \`${branch}\`: **ahead ${cmp.data.ahead_by} / behind ${cmp.data.behind_by}** sobre \`${process.env.IN_DEFAULT_BRANCH}\`. Último commit: «${last}».`;
+                // AP-138 (central#401, asesoramiento-financiero#3436): tras un
+                // merge por SQUASH los commits de la rama siguen «ahead» aunque
+                // su contenido ya está en la base ⇒ el ramal AP-023 abría un PR
+                // «desde estado» con el MISMO head que el PR ya mergeado (diff
+                // vacío; el Reviewer lo reservó con `[NEEDS-HUMAN]` y paró la
+                // serie ~12 h). Si un PR cerrado y mergeado tiene como head el
+                // SHA actual de la rama, no hay nada que conservar. Error de
+                // API ⇒ warning y el `ahead_by > 0` de siempre.
+                const headSha = refs[refs.length - 1].object?.sha;
+                if (hasCommits && headSha) {
+                  try {
+                    const { data: closedPrs } = await github.rest.pulls.list({ owner, repo, state: 'closed', head: `${owner}:${branch}`, per_page: 30 });
+                    const merged = closedPrs.find(p => p.merged_at && p.head?.sha === headSha);
+                    if (merged) {
+                      hasCommits = false;
+                      mergedHeadPr = merged.number;
+                      branchInfo = `rama \`${branch}\`: head ya mergeado en PR #${merged.number} (squash); nada que conservar.`;
+                    }
+                  } catch (e) { core.warning(`AP-138: no pude listar PRs cerrados de \`${branch}\` (${e.message}) — se mantiene ahead_by > 0.`); }
+                }
               }
             } catch (e) { branchInfo += ` (inspección de rama falló: ${e.message})`; }
+            // AP-138 punto 2: head ya mergeado E issue armador ya cerrado ⇒
+            // terminal sin nada que materializar (sin PR, sin `stalled`, sin
+            // re-arm, sin comentario). Estado VIVO del issue, no el del payload
+            // (mismo criterio que `liveLabels`). Con el issue abierto sigue la
+            // rama `!hasCommits` de siempre.
+            if (mergedHeadPr) {
+              let liveState = null;
+              try { liveState = (await github.rest.issues.get({ owner, repo, issue_number: n })).data.state; }
+              catch (e) { core.warning(`AP-138: no pude leer el estado de #${n} (${e.message}).`); }
+              if (liveState === 'closed') {
+                core.notice(`#${n} cerrado y su rama ya mergeada en PR #${mergedHeadPr}: nada que materializar (AP-138).`);
+                return;
+              }
+            }
             if (outcome === 'success' && !hasCommits) {
               // v3 (2026-07-14, finplan#1350): un paro LIMPIO pre-código —
               // informe de bloqueo/alcance sin rama ni PR — caía aquí como
