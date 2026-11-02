@@ -111,11 +111,12 @@ const TRIG = '2026-10-05T10:00:00Z';
 const ESCALADA = { user: { login: 'claude[bot]' }, created_at: '2026-10-05T10:30:00Z', body: '[CREATOR-ESCALATED] E5.6.1 fuera de ±10 %' };
 const prBase = { number: 50, draft: true, node_id: 'PR_N', created_at: '2026-10-05T10:10:00Z', head: { ref: RAMA, sha: 'abc' }, labels: [], body: 'Refs #40\n<!-- partial-pr -->' };
 
-function mundo({ pr = prBase, comentarios = {} } = {}) {
+function mundo({ pr = prBase, comentarios = {}, lecturaCaida = false } = {}) {
   const w = { added: [], removed: [], comments: [], graphql: [], fetches: [], notices: [], warnings: [] };
   const lista = num => comentarios[num] || [];
   const github = {
-    paginate: async (fn, p) => (await fn(p)).data,
+    // `paginate` devuelve la lista completa; la llamada directa, solo la 1.ª página (100).
+    paginate: async (fn, p) => (await fn({ ...p, __todo: true })).data,
     graphql: async (q, v) => { w.graphql.push(q.match(/(\w+)\(input/)?.[1] || q); return {}; },
     rest: {
       pulls: {
@@ -129,7 +130,10 @@ function mundo({ pr = prBase, comentarios = {} } = {}) {
       issues: {
         get: async () => ({ data: { labels: [] } }),
         listForRepo: async () => ({ data: [] }),
-        listComments: async p => ({ data: lista(p.issue_number) }),
+        listComments: async p => {
+          if (lecturaCaida) throw new Error('HTTP 502');
+          return { data: p.__todo ? lista(p.issue_number) : lista(p.issue_number).slice(0, 100) };
+        },
         addLabels: async p => { w.added.push(...p.labels.map(l => `${p.issue_number}:${l}`)); },
         removeLabel: async p => { w.removed.push(`${p.issue_number}:${p.name}`); },
         createComment: async p => { w.comments.push(`${p.issue_number}:${p.body}`); },
@@ -177,6 +181,15 @@ const payIssue = { issue: { number: 40 }, comment: { created_at: TRIG } };
   check(wn.added.length === 0, '(int) escalada anterior al comentario disparador ⇒ nada', wn);
   const wsin = await escalated({ payload: payIssue, pr: null, comentarios: { 40: [ESCALADA] } });
   check(wsin.added.length === 0 && !wsin.threw, '(int) sin PR abierto de la sesión ⇒ nada', wsin);
+  // Nits del Reviewer (#398): lecturas fail-open y comentarios del PR paginados.
+  const wc = await escalated({ payload: payIssue, lecturaCaida: true, comentarios: { 50: [ESCALADA] } });
+  check(!wc.threw && wc.added.length === 0 && wc.warnings.some(m => /lectura del PR\/issue de la sesión falló/.test(m)),
+    '(int) lectura caída (5xx) ⇒ no lanza, no materializa, con aviso (fail-open)', wc);
+  const relleno = Array.from({ length: 120 }, (_, i) => ({ user: { login: 'pat' }, created_at: '2026-10-05T10:20:00Z', body: `r${i}` }));
+  const wpg = await escalated({ payload: payIssue, comentarios: { 50: [...relleno, ESCALADA] } });
+  check(wpg.added.join() === '50:estado:esperando-architect,50:stalled', '(int) escalada más allá del comentario 100 del PR ⇒ se lee (paginado)', wpg);
+  const wpgd = await escalated({ payload: payIssue, comentarios: { 50: [...relleno, ESCALADA, { user: { login: 'pat' }, created_at: '2026-10-05T10:31:00Z', body: 'x\n\n<!-- creator-escalated-materializado -->' }] } });
+  check(wpgd.added.length === 0, '(int) marcador `-materializado` más allá del comentario 100 ⇒ no duplica (paginado)', wpgd);
 }
 
 async function muerte({ outcome = 'success', jobStatus = '', workspace = ws, ...m }) {
