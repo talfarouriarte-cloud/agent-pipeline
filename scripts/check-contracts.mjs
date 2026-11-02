@@ -175,8 +175,11 @@ for (const f of declared) {
 // aquí) debe CONCEDER ⊇ los `permissions_required` que publica el contrato del
 // reusable que invoca. Conceder de más es válido; conceder de menos (o omitir
 // una clave de un bloque explícito ⇒ `none`) es el fallo de #57.
-for (const [f, doc] of Object.entries(docs)) {
-  if (onDisk[f]) continue; // los reusables no son stubs de sí mismos
+// AP-137: el mismo ⊇ se aplica a las PLANTILLAS `templates/stubs/*.yml` — son
+// el punto de partida de todo consumidor nuevo; una plantilla que no conceda
+// ⊇ arranca a ese consumidor en startup_failure. Devuelve los errores.
+function supersetErrors(f, doc) {
+  const out = [];
   const jobs = (doc && doc.jobs) || {};
   for (const [jobName, jb] of Object.entries(jobs)) {
     const uses = jb && jb.uses;
@@ -190,9 +193,33 @@ for (const [f, doc] of Object.entries(docs)) {
     if (!explicit) continue; // sin bloque explícito: default del repo, no razonable
     for (const [k, v] of Object.entries(need)) {
       if (permRank(perms[k]) < permRank(v)) {
-        errors.push(`${f} (job \`${jobName}\`): concede \`${k}:${perms[k] || 'none'}\` pero ${target} exige \`${k}:${v}\` — el callee arrancaría en startup_failure (clase #57). Concede ⊇ \`permissions_required\` [${fmtPerms(need)}]`);
+        out.push(`${f} (job \`${jobName}\`): concede \`${k}:${perms[k] || 'none'}\` pero ${target} exige \`${k}:${v}\` — el callee arrancaría en startup_failure (clase #57). Concede ⊇ \`permissions_required\` [${fmtPerms(need)}]`);
       }
     }
+  }
+  return out;
+}
+for (const [f, doc] of Object.entries(docs)) {
+  if (onDisk[f]) continue; // los reusables no son stubs de sí mismos
+  errors.push(...supersetErrors(f, doc));
+}
+for (const f of readdirSync('templates/stubs').filter(f => /\.ya?ml$/.test(f))) {
+  let doc;
+  try { doc = yaml.load(readFileSync(`templates/stubs/${f}`, 'utf8')); }
+  catch { continue; } // check-yaml ya reporta el parseo roto (cubre templates/**)
+  errors.push(...supersetErrors(`templates/stubs/${f}`, doc));
+}
+// Caso negativo (AP-137, fixture en memoria): una plantilla sin `checks: read`
+// que invoca reviewer.yml DEBE dar rojo nombrando fichero y permiso. Si el ⊇
+// dejara de verlo, el check entero se declara roto (el invariante es mudo).
+{
+  const fixture = {
+    permissions: { contents: 'read', 'pull-requests': 'write', issues: 'write', statuses: 'read', actions: 'read' },
+    jobs: { call: { uses: 'talfarouriarte-cloud/agent-pipeline/.github/workflows/reviewer.yml@main' } },
+  };
+  const neg = supersetErrors('templates/stubs/<fixture-sin-checks>.yml', fixture);
+  if (!neg.some(e => e.includes('<fixture-sin-checks>') && e.includes('`checks:none`') && e.includes('`checks:read`'))) {
+    errors.push(`check-contracts: el ⊇ de permisos NO detecta una plantilla sin \`checks: read\` (fixture negativa AP-137) — el invariante está mudo. Salida: ${JSON.stringify(neg)}`);
   }
 }
 

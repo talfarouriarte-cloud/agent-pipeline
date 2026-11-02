@@ -91,6 +91,9 @@ permissions:
   contents: read
   pull-requests: write
   issues: write
+  checks: read
+  statuses: read
+  actions: read
 
 jobs:
   review:
@@ -567,6 +570,45 @@ jobs:
       - name: Asegurar ~/.local/bin (instalador nativo de Claude Code)
         if: steps.gate.outputs.run == 'true' && steps.nitscap.outputs.skip != 'true'
         run: mkdir -p "$HOME/.local/bin"
+
+      # AP-137 (central#399): estado de CI del head en fichero, con el
+      # GITHUB_TOKEN del job (`checks/statuses: read`) — el PAT fino no tiene
+      # Checks y `gh pr checks` daba 403 (AP-134). Head REAL por `pulls.get`
+      # (el SHA del payload puede ser viejo tras un relabel `needs-review`).
+      # `.pipeline/ci-head.md` es la fuente primaria del ítem «Estado de CI en el
+      # momento del veredicto» de docs/agents/reviewer.md. Lógica en
+      # `scripts/ci-head.cjs` (graft-vendored, AP-068; banco
+      # `scripts/check-ci-head.mjs`). Fail-open: nunca bloquea al Reviewer.
+      - name: Estado de CI del head (AP-137)
+        if: steps.gate.outputs.run == 'true' && steps.nitscap.outputs.skip != 'true'
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const WS = process.env.GITHUB_WORKSPACE || process.cwd();
+            let CH = null;
+            for (const p of [`${WS}/scripts/ci-head.cjs`, `${WS}/vendored/scripts/ci-head.cjs`]) {
+              try { CH = require(p); break; } catch (e) { /* siguiente ubicación */ }
+            }
+            const falla = (motivo) => `<!-- ci-head --> Lectura de CI: ${new Date().toISOString()} · SHA desconocido\n\nlectura de CI falló: ${motivo}\n`;
+            let texto;
+            if (!CH) texto = falla('módulo no injertado');
+            else {
+              try {
+                texto = await CH.leerCiHeadPr({ github, owner: context.repo.owner, repo: context.repo.repo, pull_number: context.payload.pull_request.number });
+              } catch (e) { texto = falla(`${e.status || 'sin-status'} ${e.message}`); }
+            }
+            if (/^lectura de CI falló:/m.test(texto)) core.warning(`AP-137: ${texto.match(/^lectura de CI falló:.*$/m)[0]} — el Reviewer usa gh pr checks o la label ci-verde.`);
+            try {
+              fs.mkdirSync(`${WS}/.pipeline`, { recursive: true });
+              fs.writeFileSync(`${WS}/.pipeline/ci-head.md`, texto);
+              const ex = `${WS}/.git/info/exclude`;
+              const cur = fs.existsSync(ex) ? fs.readFileSync(ex, 'utf8') : '';
+              if (!cur.split('\n').includes('.pipeline/')) fs.appendFileSync(ex, `${cur && !cur.endsWith('\n') ? '\n' : ''}.pipeline/\n`);
+            } catch (e) { core.warning(`AP-137: no se pudo escribir .pipeline/ci-head.md (${e.message}).`); }
+            core.info(texto.split('\n')[0]);
 
       - name: Run Reviewer
         id: reviewer

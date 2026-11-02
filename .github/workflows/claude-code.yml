@@ -106,6 +106,9 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
+      checks: read
+      statuses: read
+      actions: read
 
     steps:
       # Preflight de credencial (AP-091, central#259 — asesoramiento#2318): el
@@ -1810,6 +1813,14 @@ jobs:
           # actor humano — claude-code-action rechaza actores bot y el token
           # del agente aparece como claude[bot] (incidente #1048, 2026-07-04).
           ARM_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          # AP-137 (central#399): lectura de CI (runs, jobs, check-runs y sus
+          # anotaciones) con el GITHUB_TOKEN del job — los PAT finos no ofrecen
+          # el permiso Checks y el token OIDC de la sesión no tiene actions:read.
+          # Lleva los permisos del job (también escritura; no se restringe por
+          # step): aceptado por el ruling porque ARM_TOKEN ya da más, y una
+          # escritura con él no dispara workflows y firma `github-actions[bot]`.
+          # Los mandatos lo limitan a LECTURA de CI (epic-auditor.md).
+          CI_READ_TOKEN: ${{ github.token }}
         id: creator
         # AP-085 (2026-09-08) — pin a SHA completo, no a `@v1`. v1.0.217 =
         # 9c5ddab2e6d17b83ea679153b31f1d5f023cf636 (Claude Code 2.1.263,

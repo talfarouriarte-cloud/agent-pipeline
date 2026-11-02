@@ -14,6 +14,9 @@ permissions:
   pull-requests: write
   issues: write
   id-token: write
+  checks: read
+  statuses: read
+  actions: read
 jobs:
   call:
     uses: talfarouriarte-cloud/agent-pipeline/.github/workflows/claude-code.yml@main
