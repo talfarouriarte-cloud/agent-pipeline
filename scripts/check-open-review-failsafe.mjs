@@ -17,9 +17,15 @@
 //  (g) central#348 (ruling 2026-11-01, punto 4): el comentario de materialización
 //      lleva la línea `diagnóstico:` con la ventana, los runs vistos y el filtro
 //      `name` (rastro de #339, parte 1); con un run del Reviewer vivo, no materializa.
+//  (h) AP-136 (central#392, aud. asesoramiento#3384): con `escalada-creator.cjs` en
+//      `GITHUB_WORKSPACE/scripts/` y una escalada fresca del Creator en el PR (o en
+//      el issue), o `estado:esperando-architect` en el PR ⇒ no se aplica
+//      `needs-review`; el mismo caso sin el módulo ⇒ comportamiento actual (fail-open).
 // Ejecuta el script EMBEBIDO real con el cargador compartido (EXACTAMENTE los
 // argumentos de github-script@v7). Cuelga del piggyback de check-embedded-js.
-import { readFileSync } from 'fs';
+import { readFileSync, mkdtempSync, mkdirSync, copyFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import yaml from 'js-yaml';
 import { cargarStep } from './lib/github-script.mjs';
 
@@ -50,6 +56,7 @@ async function caso(world) {
           return { data: world.timeline ?? [{ event: 'convert_to_draft', created_at: '2026-10-05T09:41:00Z' }, { event: 'ready_for_review', created_at: READY }] };
         },
         createComment: async p => { w.comments.push(p.body); },
+        listComments: async p => ({ data: (world.issueComments || {})[p.issue_number] || [] }),
       },
     },
   };
@@ -90,7 +97,7 @@ async function caso(world) {
   const core = { setOutput() {}, info() {}, notice: m => w.notices.push(String(m)), warning: m => w.warnings.push(String(m)) };
   try {
     await run({ github, context, core }, {
-      env: { ARM_PAT: 'pat', IN_REVIEWER_WF: REV, GITHUB_API_URL: 'https://api.github.com' },
+      env: { ARM_PAT: 'pat', IN_REVIEWER_WF: REV, GITHUB_API_URL: 'https://api.github.com', ...(world.workspace ? { GITHUB_WORKSPACE: world.workspace } : {}) },
       globales: { fetch, setTimeout: fn => { fn(); return 0; } },
     });
   } catch (e) { w.threw = e; }
@@ -163,6 +170,26 @@ const check = (ok, msg, w) => {
     '(g) 2 runs ajenos y ninguno del Reviewer ⇒ materializa con `diagnóstico: ventana=… · runs vistos=2 · filtro name=…`', w);
   const vivo = await caso({ reviewers: [ajeno(70001), rev(70003, { status: 'in_progress', conclusion: null })] });
   check(!vivo.fired && vivo.comments.length === 0, '(g) run del Reviewer vivo en la ventana ⇒ no materializa (sin cambio)', vivo);
+}
+
+// (h) AP-136: cesión ante escalada del Creator (módulo real copiado a un workspace temporal).
+{
+  const ws = mkdtempSync(join(tmpdir(), 'orf-ws-'));
+  mkdirSync(join(ws, 'scripts'));
+  copyFileSync('vendored/scripts/escalada-creator.cjs', join(ws, 'scripts', 'escalada-creator.cjs'));
+  const ESCALADA = { user: { login: 'claude[bot]' }, created_at: '2026-10-05T10:17:00Z', body: '[CREATOR-ESCALATED] A-E7.1 en rojo en base real' };
+  try {
+    const w = await caso({ workspace: ws, issueComments: { 50: [ESCALADA] } });
+    check(!w.fired && !w.threw && w.comments.length === 0 && w.notices.some(m => /AP-136/.test(m)), '(h) módulo presente + escalada fresca en el PR ⇒ no se aplica needs-review', w);
+    const wi = await caso({ workspace: ws, issueComments: { 40: [ESCALADA] } });
+    check(!wi.fired && !wi.threw, '(h) módulo presente + escalada fresca en el ISSUE ⇒ no se aplica needs-review', wi);
+    const wl = await caso({ workspace: ws, pr: { ...PR, labels: [{ name: 'estado:esperando-architect' }] } });
+    check(!wl.fired && !wl.threw, '(h) módulo presente + `estado:esperando-architect` en el PR ⇒ no se aplica needs-review', wl);
+    const wa = await caso({ workspace: ws, issueComments: { 50: [{ ...ESCALADA, created_at: '2026-10-05T09:00:00Z' }] } });
+    check(wa.fired, '(h) módulo presente + escalada ANTERIOR a la creación del PR (arm sin comentario) ⇒ no cede, dispara', wa);
+    const wv = await caso({ issueComments: { 50: [ESCALADA] } });
+    check(wv.fired && wv.warnings.some(m => /no injertado/.test(m)), '(h) mismo caso SIN el módulo ⇒ comportamiento actual (fail-open), con aviso', wv);
+  } finally { rmSync(ws, { recursive: true, force: true }); }
 }
 
 if (fails) { console.error(`CHECK-OPEN-REVIEW-FAILSAFE ROJO: ${fails} caso(s) fallan.`); process.exit(1); }
