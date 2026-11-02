@@ -9,16 +9,19 @@
 //  anotaciones ⇒ las 3; (c) 25 anotaciones ⇒ 20; (d) mensaje de 500 caracteres ⇒
 //  300; (e) `listForRef` lanza 403 ⇒ `lectura de CI falló: 403 …`, sin lanzar;
 //  (f) primera línea con el SHA pasado. Más: `leerCiHeadPr` usa el head de
-//  `pulls.get` y rotula su propio fallo con `<status> <message>`.
+//  `pulls.get` y rotula su propio fallo con `<status> <message>`; (i) los
+//  check-runs de agentes (`call / Reviewer`…) y los contextos `epic-merge / gate`
+//  van en su sección «NO son CI», sin anotaciones (crítica del Reviewer en #402).
 // Parte 2 — integración: el script EMBEBIDO real del step «Estado de CI del head
 // (AP-137)» de `reviewer.yml`, con el cargador compartido y `GITHUB_WORKSPACE` en
 // un directorio temporal: escribe `.pipeline/ci-head.md`, excluye `.pipeline/` y,
 // sin módulo, deja `lectura de CI falló: módulo no injertado` sin lanzar.
-// Parte 3 — costura (YAML): el step va justo antes de «Run Reviewer» con su mismo
+// Parte 3 — costura (YAML): la lista de jobs de agentes del módulo cubre los
+// jobs de TODOS los reusables `workflow_call` y sus contextos de status; el step va justo antes de «Run Reviewer» con su mismo
 // `if:` y `github-token: ${{ github.token }}`; `reviewer.yml` concede `checks: read`;
 // el step del agente de `claude-code.yml` lleva `CI_READ_TOKEN: ${{ github.token }}`.
 // Cuelga del piggyback de `check-embedded-js.mjs` como sus hermanos.
-import { readFileSync, existsSync, mkdtempSync, mkdirSync, copyFileSync, rmSync } from 'fs';
+import { readFileSync, readdirSync, existsSync, mkdtempSync, mkdirSync, copyFileSync, rmSync } from 'fs';
 import { createRequire } from 'module';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
@@ -116,6 +119,26 @@ const lee = (g, sha = SHA) => CH.leerCiHead({ github: g, owner: 'o', repo: 'r', 
   const t2 = await CH.leerCiHeadPr({ github: g2, owner: 'o', repo: 'r', pull_number: 5, ahora: AHORA });
   afirma(/^lectura de CI falló: 404 Not Found$/m.test(t2) && !t2.includes('módulo no injertado'), `(h′) fallo de pulls.get mal rotulado: ${JSON.stringify(t2)}`);
 }
+{ // (i) jobs de agentes y contextos del pipeline: sección aparte, sin anotaciones
+  const g = simula({
+    runs: [
+      { id: 1, name: 'tests', status: 'completed', conclusion: 'success' },
+      { id: 2, name: 'call / Reviewer', status: 'completed', conclusion: 'failure' },
+      { id: 3, name: 'call / claude', status: 'in_progress', conclusion: null },
+    ],
+    anot: { 2: anotaciones(3) },
+    state: 'pending',
+    statuses: [{ context: 'epic-merge / gate', state: 'pending' }, { context: 'ext/ci', state: 'success' }],
+  });
+  const t = await lee(g);
+  const [ciSec, resto] = t.split('## Check-runs del pipeline');
+  afirma(ciSec.includes('`tests`') && !ciSec.includes('call / Reviewer') && !ciSec.includes('call / claude'), `(i) la sección del CI no debe llevar jobs de agentes: ${JSON.stringify(ciSec)}`);
+  afirma((resto || '').includes('- `call / Reviewer` — status: completed, conclusion: failure') && (resto || '').includes('`call / claude`'), '(i) los jobs de agentes van en «Check-runs del pipeline»');
+  afirma(filasAnot(t).length === 0 && !g.pedidos.some(p => p[0] === 'listAnnotations'), '(i) un job de agente fallido no trae anotaciones');
+  const [comb, ctxPipe] = t.split('### Contextos del pipeline');
+  afirma(comb.includes('- `ext/ci` — success') && !comb.split('## Estado combinado')[1].includes('epic-merge / gate') && (ctxPipe || '').includes('`epic-merge / gate` — pending'), `(i) contextos del pipeline aparte: ${JSON.stringify(t)}`);
+  afirma(!CH.esDelPipeline('Reviewer') && !CH.esDelPipeline('call / tests') && CH.esDelPipeline('call / epic-merge'), '(i) esDelPipeline: solo `call / <job de agente>`');
+}
 
 // ── Parte 2 y 3: step embebido de reviewer.yml y costuras ────────────────────
 const rv = yaml.load(readFileSync('.github/workflows/reviewer.yml', 'utf8'));
@@ -127,6 +150,18 @@ const ciStep = pasos[iCi] || {};
 afirma(iRun >= 0 && ciStep.if === pasos[iRun].if, '(costura) el step de CI debe llevar el mismo `if:` que «Run Reviewer»');
 afirma(/^actions\/github-script@/.test(ciStep.uses || '') && ciStep.with && ciStep.with['github-token'] === '${{ github.token }}', '(costura) github-script con `github-token: ${{ github.token }}`');
 afirma(rv.permissions && rv.permissions.checks === 'read' && rv.permissions.statuses === 'read', '(costura) reviewer.yml debe conceder checks/statuses: read');
+for (const f of readdirSync('.github/workflows').filter(f => f.endsWith('.yml'))) {
+  const src = readFileSync(`.github/workflows/${f}`, 'utf8');
+  const w = yaml.load(src);
+  const on = w.on || w[true] || {};
+  if (on && typeof on === 'object' && 'workflow_call' in on) {
+    for (const [k, j] of Object.entries(w.jobs || {})) afirma(CH.JOBS_PIPELINE.has(j.name || k), `(costura) el job \`${j.name || k}\` del reusable ${f} falta en JOBS_PIPELINE de ${FUENTE}`);
+  }
+  for (const m of src.matchAll(/context: '([^']+)'/g)) afirma(CH.CONTEXTOS_PIPELINE.has(m[1]), `(costura) el contexto de status \`${m[1]}\` de ${f} falta en CONTEXTOS_PIPELINE`);
+}
+for (const f of readdirSync('templates/stubs').filter(f => f.endsWith('.yml'))) {
+  afirma(Object.keys(yaml.load(readFileSync(`templates/stubs/${f}`, 'utf8')).jobs || {}).every(k => k === 'call'), `(costura) el job llamador de templates/stubs/${f} debe llamarse \`call\` (esDelPipeline lo reconoce por \`call / …\`)`);
+}
 const cc = yaml.load(readFileSync('.github/workflows/claude-code.yml', 'utf8'));
 const agente = Object.values(cc.jobs).flatMap(j => j.steps || []).find(s => s && s.id === 'creator');
 afirma(agente && agente.name === 'Run Claude Code' && agente.env && agente.env.CI_READ_TOKEN === '${{ github.token }}', '(costura) el step del agente («Run Claude Code», id creator) debe llevar `CI_READ_TOKEN: ${{ github.token }}`');
