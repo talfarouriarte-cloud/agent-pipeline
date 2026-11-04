@@ -25,6 +25,9 @@
 //   step bash, m7) y, tras el push, solo el head con relectura, la retirada del
 //   `synchronize` del consumidor (`github-actions[bot]`, ≤ 120 s) re-puesta, GATE 3
 //   de enmiendas, CI rojo de M y nunca DELETE `lgtm`/`needs-review` con `final`.
+//   (AP146-*): central#427 — E1′, `lgtm` sin `ci-verde`: `final` con tres valores
+//   en el scan, marcador de dos líneas elegido en vivo (el `node -e` se ejecuta) y,
+//   tras el push, `ci-rerun` por PAT sin `DELETE` ni `PUT /merge`.
 //
 // Cuelga del piggyback de `check-embedded-js.mjs`.
 import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, existsSync, symlinkSync } from 'fs';
@@ -269,7 +272,7 @@ const SHA = 'abc1234def5678';
 
 // `heads`: secuencia de heads de las sucesivas lecturas de `pulls.get` (la última
 // se repite); `events`: `issues.listEvents`; `runs`: runs de `head_sha` (AP-144).
-function doble({ live = {}, comments = [], fallaMerge = false, heads = null, events = [], runs = [] } = {}) {
+function doble({ live = {}, comments = [], fallaMerge = false, heads = null, events = [], runs = [], fallaRuns = false } = {}) {
   const log = { calls: [], warnings: [], notices: [], gets: 0, sleeps: [] };
   const github = {
     paginate: async (fn, p) => (await fn(p)).data,
@@ -280,7 +283,7 @@ function doble({ live = {}, comments = [], fallaMerge = false, heads = null, eve
         log.gets++;
         return { data: { draft: !!live.draft, head: { sha: h || 'f'.repeat(40), ref: HEAD_REF }, labels: (live.labels || []).map(name => ({ name })), body: '', user: { login: 'claude[bot]' } } };
       } },
-      actions: { listWorkflowRunsForRepo: async () => ({ data: { workflow_runs: runs } }) },
+      actions: { listWorkflowRunsForRepo: async () => { if (fallaRuns) throw new Error('HTTP 502'); return { data: { workflow_runs: runs } }; } },
     },
   };
   const core = { info() {}, notice: m => log.notices.push(m), warning: m => log.warnings.push(m), setOutput() {} };
@@ -294,8 +297,8 @@ function doble({ live = {}, comments = [], fallaMerge = false, heads = null, eve
   const setTimeout = (f, ms) => { log.sleeps.push(ms); queueMicrotask(f); return 0; };
   return { github, core, fetch, setTimeout, log };
 }
-async function iii({ cands, resultados, live, comments, fallaMerge, heads, events, runs, ws = process.cwd() }) {
-  const d = doble({ live, comments, fallaMerge, heads, events, runs });
+async function iii({ cands, resultados, live, comments, fallaMerge, heads, events, runs, fallaRuns, ws = process.cwd() }) {
+  const d = doble({ live, comments, fallaMerge, heads, events, runs, fallaRuns });
   const env = { ARM_PAT: 'PAT', CANDS: j(cands), RESULTADOS: resultados == null ? '' : j(resultados), IN_DEFAULT_BRANCH: 'main', IN_SKIP_LABELS: 'human-needed,pause-agents',
     IN_CI_WF: 'CI', GITHUB_WORKSPACE: ws };
   await run({ github: d.github, context: { repo: { owner: 'o', repo: 'r' }, eventName: 'schedule' }, core: d.core, require }, { env, globales: { fetch: d.fetch, setTimeout: d.setTimeout } });
@@ -425,9 +428,13 @@ const conMark = b => b.includes(`<!-- watchdog-rebase-append: ${SHA40} -->`);
     const r = mg.run, fallos = [];
     const iGet = r.indexOf('fetch(`${api}/pulls/${n}`'), iMarca = r.indexOf('watchdog-merge-mecanico: ${m} revisado=${h}');
     if (iGet < 0 || iMarca < 0 || iGet > iMarca) fallos.push('pulls.get no va antes del marcador');
-    for (const t of ['p.draft&&"draft"', 'skip.includes(l))&&"hold"', 'p.head.sha===h)&&"head ≠ H0"', '!ls.includes("lgtm")&&"sin lgtm"', '!ls.includes("ci-verde")&&"sin ci-verde"', 'if(falla.length){', 'process.exit(1);}'])
+    // AP-146: la variante sale de las labels EN VIVO: `ci-verde` con automerge ⇒ E1;
+    // sin `ci-verde` ⇒ E1′; `ci-verde` con automerge=false ⇒ sin marcador.
+    for (const t of ['p.draft&&"draft"', 'skip.includes(l))&&"hold"', 'p.head.sha===h)&&"head ≠ H0"', '!ls.includes("lgtm")&&"sin lgtm"',
+      'const v=!ls.includes("ci-verde")?"e1p":process.env.IN_AUTOMERGE!=="false"?"e1":null;', '!v&&"ci-verde con automerge=false"', 'if(falla.length){', 'process.exit(1);}'])
       if (!r.includes(t)) fallos.push(`falta ${t}`);
     if ((mg.env || {}).IN_SKIP_LABELS !== '${{ inputs.skip_labels }}') fallos.push('env sin IN_SKIP_LABELS');
+    if ((mg.env || {}).IN_AUTOMERGE !== '${{ inputs.automerge }}') fallos.push('env sin IN_AUTOMERGE');
     return fallos.length === 0 || j(fallos);
   });
 }
@@ -516,11 +523,110 @@ await caso('(AP144-costura) en «Materializar…», la rama con `final` no conti
   const rama = i >= 0 && f > i ? mat.slice(i, f) : '';
   return (rama && !/labels\/lgtm/.test(rama) && !/needs-review'/.test(rama) && !/labels: \['needs-review'\]/.test(rama) && !/'DELETE'/.test(rama)) || 'rama final ausente o con escritura prohibida';
 });
+// ── AP-146 (central#427, enmienda E1′): `lgtm` vigente SIN `ci-verde` ─────────
+// Punto 1: el node del step bash «Merge append-only del registro» se EJECUTA (no
+// solo costura textual) con un `fetch` doble: la variante sale de las labels en vivo.
+{
+  const mg = steps.find(s => s.id === 'adr_append').run;
+  const i = mg.indexOf("VAR=$(node -e '"), f = mg.indexOf(`' "$M" "$H0" "$NUM")`);
+  const codigo = i >= 0 && f > i ? mg.slice(i + "VAR=$(node -e '".length, f) : null;
+  const DIRV = mkdtempSync(join(tmpdir(), 'aam-e1p-'));
+  const MOCK = join(DIRV, 'fetch.mjs');
+  writeFileSync(MOCK, `import { appendFileSync } from 'fs';
+globalThis.fetch = async (url, o = {}) => {
+  appendFileSync(process.env.FAKE_LOG, JSON.stringify({ url, method: o.method || 'GET', body: o.body ? JSON.parse(o.body) : null }) + '\\n');
+  if (/\\/pulls\\/\\d+$/.test(url)) return { ok: true, status: 200, json: async () => JSON.parse(process.env.FAKE_PR) };
+  return { ok: true, status: 201, json: async () => ({}) };
+};
+`);
+  let k = 0;
+  const vivo = ({ labels, automerge = 'true', head = H0, draft = false }) => {
+    const log = join(DIRV, `log-${k++}`); writeFileSync(log, '');
+    const r = spawnSync(process.execPath, ['--import', MOCK, '-e', codigo, SHA40, H0, '5'], { encoding: 'utf8',
+      env: { ...process.env, FAKE_LOG: log, FAKE_PR: j({ draft, head: { sha: head }, labels: labels.map(name => ({ name })) }), ARM_PAT: 'PAT',
+        GITHUB_REPOSITORY: 'o/r', IN_SKIP_LABELS: 'human-needed,pause-agents', IN_AUTOMERGE: automerge } });
+    const calls = readFileSync(log, 'utf8').split('\n').filter(Boolean).map(x => JSON.parse(x));
+    return { status: r.status, out: r.stdout.trim(), err: r.stderr, posts: calls.filter(c => c.method === 'POST').map(c => c.body.body) };
+  };
+  const L1 = `<!-- watchdog-merge-mecanico: ${SHA40} revisado=${H0} -->`, L2 = `<!-- watchdog-merge-mecanico-ci: pendiente ${SHA40} -->`;
+  await caso('(AP146-1a) en vivo `lgtm` sin `ci-verde` (automerge true y false) ⇒ marcador de dos líneas (la de E1 idéntica + la `-ci`), stdout e1p', async () => {
+    if (!codigo) return 'node del marcador no localizado en el step';
+    const rs = ['true', 'false'].map(automerge => vivo({ labels: ['lgtm'], automerge }));
+    return rs.every(r => r.status === 0 && r.out === 'e1p' && r.posts.length === 1 && r.posts[0].split('\n').includes(L1) && r.posts[0].split('\n').includes(L2)) || j(rs);
+  });
+  await caso('(AP146-1b) en vivo `lgtm` + `ci-verde` con automerge ⇒ marcador de E1 de una línea, stdout e1', async () => {
+    const r = vivo({ labels: ['lgtm', 'ci-verde'] });
+    return (r.status === 0 && r.out === 'e1' && r.posts.length === 1 && r.posts[0].split('\n').includes(L1) && !r.posts[0].includes('watchdog-merge-mecanico-ci')) || j(r);
+  });
+  await caso('(AP146-1c) en vivo `ci-verde` con automerge=false, sin `lgtm`, head ≠ H0, draft u hold ⇒ exit 1 sin marcador', async () => {
+    const rs = [vivo({ labels: ['lgtm', 'ci-verde'], automerge: 'false' }), vivo({ labels: [] }), vivo({ labels: ['lgtm'], head: 'e'.repeat(40) }),
+      vivo({ labels: ['lgtm'], draft: true }), vivo({ labels: ['lgtm', 'human-needed'] })];
+    return rs.every(r => r.status === 1 && r.out === '' && r.posts.length === 0) || j(rs);
+  });
+}
+// Puntos 2–3: «Materializar…» con el marcador de dos líneas (E1′).
+const MEC_MARK_CI = { ...MEC_MARK, id: 901, body: `${MEC_MARK.body}\n<!-- watchdog-merge-mecanico-ci: pendiente ${SHA40} -->` };
+const E1PC = [VD_LGTM, MEC_MARK_CI];
+const rerunPost = l => l.calls.filter(c => c.method === 'POST' && c.path === '/issues/5/labels' && c.body.labels.includes('ci-rerun')).length;
+const diagE1p = l => post(l).find(b => /diag \(AP-146\)/.test(b)) || '';
+await caso('(AP146-a) E1′: `lgtm` sin `ci-verde`, head = M ⇒ POST `ci-rerun` (sin DELETE alguno), comentario con `watchdog-rebase-append: M`, sin needs-review ni PUT', async () => {
+  const l = await iii({ cands: [{ ...C, final: 'e1p' }], resultados: OK40, live: { labels: ['lgtm'], head: SHA40 }, comments: E1PC });
+  const b = post(l);
+  return (rerunPost(l) === 1 && !l.calls.some(c => c.method === 'DELETE') && sinPut(l) && !addNR(l) && b.length === 1 && conMark(b[0])
+    && b[0].includes('E1′') && !l.calls.some(c => c.method === 'POST' && c.path === '/issues/5/labels' && c.body.labels.includes('lgtm')) && pat(l)) || j(l);
+});
+await caso("(AP146-a') E1′ con `ci-rerun` ya puesta ⇒ terminal: diag «`ci-rerun` ya presente» con `watchdog-rebase-append`, 0 escrituras de labels", async () => {
+  const l = await iii({ cands: [{ ...C, final: 'e1p' }], resultados: OK40, live: { labels: ['lgtm', 'ci-rerun'], head: SHA40 }, comments: E1PC });
+  const d = diagE1p(l);
+  return (sinLabels(l) && sinPut(l) && d.includes('`ci-rerun` ya presente') && conMark(d)) || j(l);
+});
+await caso('(AP146-a2) E1′: `lgtm` retirada por github-actions[bot] 30 s tras el marcador ⇒ re-pone `lgtm` y pone `ci-rerun` por PAT, sin DELETE ni PUT', async () => {
+  const l = await iii({ cands: [{ ...C, final: 'e1p' }], resultados: OK40, live: { labels: [], head: SHA40 }, comments: E1PC, events: [unl('lgtm', 'github-actions[bot]', 30)] });
+  const iL = l.calls.findIndex(c => c.method === 'POST' && c.path === '/issues/5/labels' && j(c.body.labels) === '["lgtm"]');
+  const iR = l.calls.findIndex(c => c.method === 'POST' && c.path === '/issues/5/labels' && j(c.body.labels) === '["ci-rerun"]');
+  return (iL >= 0 && iR > iL && !l.calls.some(c => c.method === 'DELETE') && sinPut(l) && conMark(post(l).pop() || '')) || j(l);
+});
+await caso('(AP146-b) E1′ con una enmienda sin acuse ⇒ terminal, 0 escrituras de labels', async () => {
+  const l = await iii({ cands: [{ ...C, final: 'e1p' }], resultados: OK40, live: { labels: ['lgtm'], head: SHA40 }, comments: [...E1PC, ENM_SIN_ACUSE] });
+  const d = diagE1p(l);
+  return (sinLabels(l) && sinPut(l) && d.includes('sin acuse (GATE 3)') && conMark(d)) || j(l);
+});
+await caso('(AP146-c) E1′ con `lgtm` retirada por el PAT (no por el consumidor) ⇒ terminal, 0 escrituras', async () => {
+  const l = await iii({ cands: [{ ...C, final: 'e1p' }], resultados: OK40, live: { labels: [], head: SHA40 }, comments: E1PC, events: [unl('lgtm', 'talfarouriarte-cloud', 20)] });
+  const d = diagE1p(l);
+  return (sinLabels(l) && sinPut(l) && d.includes('no por el consumidor') && !d.includes('`ci-verde` ausente') && conMark(d)) || j(l);
+});
+await caso('(AP146-d) E1′ con lectura ilegible (runs de CI de M) ⇒ pendiente: `watchdog-e1-diag` sin `watchdog-rebase-append`, 0 labels', async () => {
+  const l = await iii({ cands: [{ ...C, final: 'e1p' }], resultados: OK40, live: { labels: ['lgtm'], head: SHA40 }, comments: E1PC, fallaRuns: true });
+  const d = diagE1p(l);
+  return (sinLabels(l) && sinPut(l) && d.includes('ilegibles') && d.includes(`<!-- watchdog-e1-diag: ${SHA40} lectura -->`) && !conMark(d)) || j(l);
+});
+await caso('(AP146-e) marcador de E1 SIN segunda línea ⇒ rama E1 de hoy (PUT merge con sha M), sin `ci-rerun`', async () => {
+  const l = await iii({ cands: [{ ...C, final: 'e1' }], resultados: OK40, live: { labels: ['lgtm', 'ci-verde'], head: SHA40 }, comments: E1C });
+  return (l.calls.some(c => c.method === 'PUT' && c.body.sha === SHA40) && rerunPost(l) === 0 && sinLabels(l)) || j(l);
+});
+await caso('(AP146-e2) segunda línea de un autor no de confianza ⇒ rama E1 (merge al final), sin `ci-rerun`', async () => {
+  const l = await iii({ cands: [{ ...C, final: 'e1' }], resultados: OK40, live: { labels: ['lgtm', 'ci-verde'], head: SHA40 },
+    comments: [...E1C, { body: `<!-- watchdog-merge-mecanico-ci: pendiente ${SHA40} -->`, user: { login: 'claude[bot]' }, created_at: tS(1) }] });
+  return (l.calls.some(c => c.method === 'PUT') && rerunPost(l) === 0) || j(l);
+});
+await caso('(AP146-f) sin `lgtm` (sin marcador) ⇒ camino AP-130 de hoy: needs-review, sin `ci-rerun`', async () => {
+  const l = await iii({ cands: [C], resultados: OK40, live: { labels: [], head: SHA40 } });
+  return (addNR(l) && rerunPost(l) === 0 && sinPut(l)) || j(l);
+});
+await caso('(AP146-costura) la rama E1′ (dentro del tramo `final`) pone `ci-rerun` y no tiene `PUT` ni `/merge`', async () => {
+  const mat = st.with.script;
+  const i = mat.indexOf('if (ciPend) {'), f = i >= 0 ? mat.indexOf('continue;', i) : -1;
+  const rama = i >= 0 && f > i ? mat.slice(i, f) : '';
+  const tramo = mat.slice(mat.indexOf('if (final) {'), mat.indexOf('// Sin `final`: camino AP-130 de hoy.'));
+  return (rama && tramo.includes(rama) && /labels: \['ci-rerun'\]/.test(rama) && !/'PUT'/.test(rama) && !/\/merge/.test(rama)) || 'rama E1′ ausente, fuera del tramo `final` o con merge';
+});
 // El scan no entrega `final` a un PR que AP-055 acaba de tocar en el tick.
 {
   const wdTxt = readFileSync('.github/workflows/watchdog.yml', 'utf8');
-  await caso('(AP142-m10) modo d): `final` exige !rectHandled (AP-055 del mismo tick)', async () =>
-    /final: !rectHandled\.has\(pr\.number\) && !!\(mecanicos\.get\(pr\.number\) \|\| \{\}\)\.final/.test(wdTxt) || 'falta el filtro rectHandled en el push de adrAppend');
+  // AP-146: el valor ('e1' | 'e1p') se propaga tal cual (sin `!!`), con el mismo filtro.
+  await caso('(AP142-m10) modo d): `final` exige !rectHandled (AP-055 del mismo tick) y propaga su valor', async () =>
+    /final: rectHandled\.has\(pr\.number\) \? undefined : \(mecanicos\.get\(pr\.number\) \|\| \{\}\)\.final \}/.test(wdTxt) || 'falta el filtro rectHandled (o el valor) en el push de adrAppend');
 }
 
 // ── (j) gate REAL de epic-merge tras un merge mecánico ──────────────────────
@@ -681,7 +787,7 @@ await caso('(k3) HEAD normal ⇒ sin candidato', async () => {
 });
 
 // ── AP-142: el scan REAL delante del Gate 0 ───────────────────────────────────
-async function scanDelante({ labels = ['lgtm', 'ci-verde'], runsCreator = [], ref = HEAD_REF, comments, issueFalla = false, sinModulo = false, estado = 'dirty' }) {
+async function scanDelante({ labels = ['lgtm', 'ci-verde'], runsCreator = [], ref = HEAD_REF, comments, issueFalla = false, sinModulo = false, estado = 'dirty', automerge = 'true' }) {
   const out = {};
   const H = 'f'.repeat(40);
   const pr = { number: 5, title: 'feat: algo', body: '', draft: false, head: { ref, sha: H }, base: { ref: 'main' }, labels: labels.map(name => ({ name })), created_at: T(-60), updated_at: T(-60), user: { login: 'claude[bot]' } };
@@ -704,18 +810,28 @@ async function scanDelante({ labels = ['lgtm', 'ci-verde'], runsCreator = [], re
   const core = { setOutput: (k, v) => { out[k] = String(v); }, notice() {}, warning: m => warnings.push(String(m)), info() {} };
   await scanRun({ github, context: { repo: { owner: 'o', repo: 'r' }, eventName: 'schedule', payload: {}, runId: 1 }, core },
     { env: { GITHUB_WORKSPACE: sinModulo ? SC_SIN : SC_WS, STATUS_TOKEN: 'x', ARM_PAT: 'x', IN_CREATOR_WF: 'Claude Code', IN_REVIEWER_WF: 'Opus Reviewer', IN_CI_WF: 'CI',
-      IN_EPIC_MERGE_WF: 'Epic merge', IN_EXTRA_WFS: '', IN_LOOKBACK_MIN: '45', IN_SKIP_LABELS: 'human-needed,pause-agents', IN_AUTOMERGE: 'true', IN_DEFAULT_BRANCH: 'main' },
+      IN_EPIC_MERGE_WF: 'Epic merge', IN_EXTRA_WFS: '', IN_LOOKBACK_MIN: '45', IN_SKIP_LABELS: 'human-needed,pause-agents', IN_AUTOMERGE: automerge, IN_DEFAULT_BRANCH: 'main' },
       globales: { fetch } });
   return { cands: JSON.parse(out.adr_append || 'null'), warnings, H };
 }
 const SC_SIN = mkdtempSync(join(tmpdir(), 'aam-wd-sin-'));
-await caso('(AP142-s1) Gate 0 cerrado · PR dirty con lgtm + ci-verde + LGTM vigente, sin contendiente ⇒ candidato soloMecanico con final', async () => {
+// AP-146 (punto 0): `final` con tres valores — 'e1', 'e1p' o ausente.
+await caso("(AP142-s1) Gate 0 cerrado · PR dirty con lgtm + ci-verde + LGTM vigente, sin contendiente ⇒ candidato soloMecanico con final 'e1'", async () => {
   const { cands } = await scanDelante({});
-  return (Array.isArray(cands) && cands.length === 1 && cands[0].number === 5 && cands[0].soloMecanico === true && cands[0].final === true) || j(cands);
+  return (Array.isArray(cands) && cands.length === 1 && cands[0].number === 5 && cands[0].soloMecanico === true && cands[0].final === 'e1') || j(cands);
 });
-await caso('(AP142-s2) Gate 0 cerrado · sin ci-verde ⇒ candidato soloMecanico sin final', async () => {
-  const { cands } = await scanDelante({ labels: ['lgtm'] });
-  return (cands.length === 1 && cands[0].soloMecanico && cands[0].final === false) || j(cands);
+await caso("(AP142-s2, AP-146) Gate 0 cerrado · lgtm sin ci-verde ⇒ final 'e1p' con automerge true y false", async () => {
+  const a = await scanDelante({ labels: ['lgtm'] });
+  const b = await scanDelante({ labels: ['lgtm'], automerge: 'false' });
+  return [a, b].every(x => x.cands.length === 1 && x.cands[0].soloMecanico && x.cands[0].final === 'e1p') || j([a.cands, b.cands]);
+});
+await caso('(AP146-s3) Gate 0 cerrado · lgtm + ci-verde con automerge=false ⇒ sin final (como hoy)', async () => {
+  const { cands } = await scanDelante({ automerge: 'false' });
+  return (cands.length === 1 && cands[0].soloMecanico && !('final' in cands[0])) || j(cands);
+});
+await caso('(AP146-s4) Gate 0 cerrado · lgtm sin ci-verde y LGTM NO vigente (sin SHA revisado, head posterior) ⇒ sin final', async () => {
+  const { cands } = await scanDelante({ labels: ['lgtm'], comments: [{ body: 'REVIEW\n\narregla', user: { login: REV }, created_at: T(-30) }] });
+  return (cands.length === 1 && !('final' in cands[0])) || j(cands);
 });
 await caso('(AP142-s3) Gate 0 cerrado · sin lgtm, en hold, rama no claude/ o no dirty ⇒ sin candidatos', async () => {
   const a = await scanDelante({ labels: ['ci-verde'] });

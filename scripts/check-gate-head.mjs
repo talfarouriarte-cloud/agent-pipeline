@@ -338,6 +338,47 @@ if (WD != null) {
     const w = await scan({ comentarios: [LG, MK(HEAD), { body: `x\n\n<!-- watchdog-lgtm-ci-rearm: ${HEAD} -->`, user: { login: 'github-actions[bot]' }, created_at: T(-10) }], labels: ['lgtm'], eventos: labeled });
     check(w.anomalias.some(a => a.type === 'lgtm-sin-ci') && !tiene(w, /lgtm/), '(int) re-arm ya hecho para el head ⇒ anomalía `lgtm-sin-ci`, sin tocar labels', w.anomalias);
   }
+  // AP-146 (4′, central#427): head M con la línea E1′ `watchdog-merge-mecanico-ci: pendiente <M>`.
+  {
+    const E1P = com(PAT, `x\n\n<!-- watchdog-merge-mecanico: ${HEAD} revisado=${PREV} -->\n<!-- watchdog-merge-mecanico-ci: pendiente ${HEAD} -->`, T(-30));
+    const labRerun = t => ({ event: 'labeled', label: { name: 'ci-rerun' }, created_at: t });
+    const lgtmEscrita = w => tiene(w, /^DELETE \/issues\/5\/labels\/lgtm/) || tiene(w, /^POST \/issues\/5\/labels .*"lgtm"/);
+    {
+      const w = await scan({ comentarios: [LG, MK(HEAD), E1P], labels: ['lgtm'], eventos: labeled });
+      check(tiene(w, /^POST \/issues\/5\/labels .*"ci-rerun"/) && !lgtmEscrita(w) && w.comentarios.some(b => b.includes(`<!-- watchdog-ci-rerun: ${HEAD} -->`))
+        && !w.comentarios.some(b => b.includes('watchdog-lgtm-ci-rearm')),
+        '(int, AP-146 g) head con marcador E1′ y sin run de CI ⇒ `POST ci-rerun` por PAT, sin tocar `lgtm`', w);
+    }
+    {
+      const w = await scan({ comentarios: [LG, MK(HEAD), E1P], labels: ['lgtm', 'ci-rerun'], eventos: [...labeled, labRerun(T(-16))] });
+      const b = w.comentarios.find(x => x.includes(`<!-- watchdog-lgtm-ci-rearm: ${HEAD} -->`)) || '';
+      check(tiene(w, /^DELETE \/issues\/5\/labels\/lgtm/) && tiene(w, /^POST \/issues\/5\/labels .*"lgtm"/) && b.includes('consumidor sin `ci-rerun`')
+        && b.includes(`<!-- watchdog-e1p-respaldo: ${HEAD} -->`) && !tiene(w, /"ci-rerun"/),
+        '(int, AP-146 h) `ci-rerun` ≥ 15 min sin run de CI sobre M ⇒ respaldo DELETE + POST de `lgtm` con diag «consumidor sin `ci-rerun`»', w);
+    }
+    {
+      const w = await scan({ comentarios: [LG, MK(HEAD), E1P], labels: ['lgtm', 'ci-rerun'], eventos: [...labeled, labRerun(T(-5))] });
+      check(!lgtmEscrita(w) && !tiene(w, /"ci-rerun"/) && !w.comentarios.some(b => /watchdog-(lgtm-ci-rearm|ci-rerun)/.test(b)),
+        '(int, AP-146) `ci-rerun` de hace < 15 min ⇒ espera: ni `lgtm` ni `ci-rerun`', w);
+    }
+    {
+      const w = await scan({ comentarios: [LG, MK(HEAD), E1P], labels: ['lgtm', 'ci-rerun'], eventos: [...labeled, labRerun(T(-60))] });
+      const b = w.comentarios.find(x => x.includes('watchdog-lgtm-ci-rearm')) || '';
+      check(b.includes('`ci-rerun` residual anterior al merge mecánico') && !b.includes('consumidor sin'),
+        '(int, AP-146) `ci-rerun` residual anterior al marcador E1′ ⇒ respaldo con su propio motivo, no «consumidor sin `ci-rerun`»', w);
+    }
+    {
+      const w = await scan({ comentarios: [LG, MK(HEAD), E1P, com('github-actions[bot]', `x\n\n<!-- watchdog-ci-rerun: ${HEAD} -->`, T(-20))], labels: ['lgtm'], eventos: labeled });
+      check(tiene(w, /^DELETE \/issues\/5\/labels\/lgtm/) && !tiene(w, /"ci-rerun"/) && w.comentarios.some(b => b.includes('consumidor sin `ci-rerun`')),
+        '(int, AP-146) `ci-rerun` ya re-puesta una vez por la red (cap 1 por head) y retirada sin run ⇒ respaldo', w);
+    }
+    {
+      const E1PX = com('claude[bot]', `<!-- watchdog-merge-mecanico-ci: pendiente ${HEAD} -->`, T(-30));
+      const w = await scan({ comentarios: [LG, MK(HEAD), E1PX], labels: ['lgtm'], eventos: labeled });
+      check(tiene(w, /^DELETE \/issues\/5\/labels\/lgtm/) && !tiene(w, /"ci-rerun"/) && !w.comentarios.some(b => b.includes('watchdog-e1p-respaldo')),
+        '(int, AP-146) línea E1′ de un autor no de confianza ⇒ red AP-139 de hoy', w);
+    }
+  }
   {
     const w = await scan({ comentarios: [LG], headDate: T(-120), ws: WS_SIN });
     check(w.warnings.some(m => m.includes('gate-head ausente: AP-024 en modo previo; ramas 5-6 inactivas'))
