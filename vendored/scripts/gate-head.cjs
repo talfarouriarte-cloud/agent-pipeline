@@ -17,7 +17,8 @@
 //     checkout sparse `.epic-merge-central/vendored/scripts/`; fail-closed.
 //   · `watchdog.yml` — belt AP-024 (`decidirAp024`, `remats`), rama del Reviewer por
 //     head nuevo y `lgtm` sin CI, desde `.cola-central/vendored/scripts/`; sin
-//     módulo, AP-024 en modo previo.
+//     módulo, AP-024 en modo previo. Y (AP-142) el merge mecánico con merge al
+//     final: `lgtmVigente` sobre H0 y el marcador `watchdog-merge-mecanico`.
 //
 // POR QUÉ VIVE AQUÍ (AP-068): el JS embebido en `.github/workflows/**` no lo
 // ejecuta un banco; este sí. Banco: `scripts/check-gate-head.mjs`.
@@ -32,6 +33,12 @@ const marcaLgtmSha = sha => `<!-- reviewer-lgtm-sha: ${sha} -->`;
 // «Resolve conflicts» de la web también firma `web-flow` y metería código de
 // resolución sin review.
 const MARCA_UPDATE_RE = /^<!-- epic-merge-update-branch: ([0-9a-f]{40}) -->$/gm;
+// Marcador que el Watchdog publica (PAT) ANTES del push de su merge mecánico
+// append-only/CHANGELOG cuando el PR tenía LGTM vigente y `ci-verde` (AP-142,
+// central#418, enmienda E2): `M` es el commit de merge y `revisado=` su primera
+// madre (el head H0 con el LGTM vigente).
+const MARCA_MECANICO_RE = /^<!-- watchdog-merge-mecanico: ([0-9a-f]{40}) revisado=([0-9a-f]{40}) -->$/gm;
+const marcaMecanico = (m, h0) => `<!-- watchdog-merge-mecanico: ${m} revisado=${h0} -->`;
 // Re-materialización de `lgtm` (AP-024). Forma con SHA (AP-139: cap 1 por head) y
 // forma vieja sin SHA (cap 1 por PR, anterior a AP-139).
 const REMAT_SHA_RE = /^<!-- watchdog-lgtm-rematerialize: ([0-9a-f]{7,40}) -->$/gm;
@@ -73,6 +80,17 @@ function ultimoVeredicto(comentarios, loginReviewer) {
   return v;
 }
 
+// Mapa `M → revisado` de los merges mecánicos que el Watchdog marcó (AP-142, E2).
+// Mismos autores de confianza que `shasUpdateMarcados`.
+function shasMecanicoMarcados(comentarios, loginPat) {
+  const map = new Map();
+  for (const c of comentarios || []) {
+    if (!c || !c.user || c.user.login !== loginPat) continue;
+    for (const m of String(c.body || '').matchAll(MARCA_MECANICO_RE)) map.set(m[1], m[2]);
+  }
+  return map;
+}
+
 // Mapa `sha → { parents: [sha…], committerLogin }` desde `pulls.listCommits`.
 function mapaCommits(listCommits) {
   const m = new Map();
@@ -96,21 +114,32 @@ function esUpdateDeBase(commit) {
 
 const leer = (commits, sha) => (commits instanceof Map ? commits.get(sha) : (commits || {})[sha]);
 
-// ¿El head es el SHA revisado, o se llega a él por la PRIMERA madre pasando solo
-// por merges `web-flow` cuya primera madre marcó epic-merge antes de su
-// `updateBranch` (`marcadosUpdate`, Set de SHAs)? Sin conjunto ⇒ ningún paso vale.
-function revisadoPorCadena({ headSha, shaRevisado: rev, commits, marcadosUpdate }) {
-  if (!rev || !headSha) return false;
-  if (headSha === rev) return true;
+// Recorre la PRIMERA madre desde el head hasta el SHA revisado. Cada paso vale si
+// es un merge `web-flow` cuya primera madre marcó epic-merge antes de su
+// `updateBranch` (`marcadosUpdate`, Set de SHAs) o un merge mecánico del Watchdog
+// marcado (`marcadosMecanico`, Map `M → revisado`, AP-142 E2) cuya primera madre
+// es el `revisado=` de su marcador. Sin conjuntos ⇒ ningún paso vale.
+// ⇒ { ok, mecanico } (`mecanico`: algún paso fue un merge mecánico).
+function recorrerCadena({ headSha, shaRevisado: rev, commits, marcadosUpdate, marcadosMecanico }) {
+  if (!rev || !headSha) return { ok: false, mecanico: false };
+  if (headSha === rev) return { ok: true, mecanico: false };
   const marcados = marcadosUpdate instanceof Set ? marcadosUpdate : new Set(marcadosUpdate || []);
-  let cur = headSha;
+  const mecanicos = marcadosMecanico instanceof Map ? marcadosMecanico : new Map(marcadosMecanico || []);
+  let cur = headSha, mecanico = false;
   for (let i = 0; i < 500; i++) {
     const c = leer(commits, cur);
-    if (!esUpdateDeBase(c) || !marcados.has(c.parents[0])) return false;
+    if (esUpdateDeBase(c) && marcados.has(c.parents[0])) { /* paso web-flow */ }
+    else if (c && Array.isArray(c.parents) && c.parents.length === 2 && mecanicos.has(cur) && mecanicos.get(cur) === c.parents[0]) mecanico = true;
+    else return { ok: false, mecanico };
     cur = c.parents[0];
-    if (cur === rev) return true;
+    if (cur === rev) return { ok: true, mecanico };
   }
-  return false;
+  return { ok: false, mecanico };
+}
+
+// ¿El head es el SHA revisado, o se llega a él por la cadena de `recorrerCadena`?
+function revisadoPorCadena(args) {
+  return recorrerCadena(args).ok;
 }
 
 // LGTM vigente para el head. Exige SIEMPRE que el último veredicto del Reviewer sea
@@ -119,21 +148,29 @@ function revisadoPorCadena({ headSha, shaRevisado: rev, commits, marcadosUpdate 
 //   · head = SHA revisado: con la label `lgtm` viva.
 //   · head ≠ SHA revisado: por la cadena `web-flow`, sin la label (`ci.yml` la
 //     retira en el `synchronize` del `updateBranch`) y sin `needs-review` pendiente
-//     (una review convocada sobre ese head aún no ha hablado).
-function lgtmVigente({ labels, shaRevisado: rev, headSha, commits, marcadosUpdate, ultimoEsLgtm }) {
+//     (una review convocada sobre ese head aún no ha hablado). Si la cadena pasa
+//     por un merge mecánico del Watchdog (AP-142 E2), exige además la label `lgtm`
+//     viva: el Watchdog no la retira y el consumidor tampoco (E3); si alguien la
+//     quitó, el LGTM ya no vale.
+function lgtmVigente({ labels, shaRevisado: rev, headSha, commits, marcadosUpdate, marcadosMecanico, ultimoEsLgtm }) {
   if (ultimoEsLgtm !== true || !rev || !headSha) return false;
   const ls = labels || [];
   if (rev === headSha) return ls.includes('lgtm');
   if (ls.includes('needs-review')) return false;
-  return revisadoPorCadena({ headSha, shaRevisado: rev, commits, marcadosUpdate });
+  const r = recorrerCadena({ headSha, shaRevisado: rev, commits, marcadosUpdate, marcadosMecanico });
+  return r.ok && (!r.mecanico || ls.includes('lgtm'));
 }
 
 // Decisión del belt AP-024 (Watchdog). Solo si el último veredicto es LGTM y no
 // hay `rectHold` (AP-055). ⇒ 'remat' | 'rellenar-y-remat' | 'reviewer' | null.
-function decidirAp024({ ultimoEsLgtm, hasLgtm, shaRevisado: rev, headSha, headSinCambiosDesdeVeredicto, commits, marcadosUpdate, remats: n, rectHold }) {
+// Cadena con merge mecánico (AP-142 E2) sin `lgtm` ⇒ 'reviewer': ahí la label es
+// la que mantiene el LGTM (ver `lgtmVigente`), no se re-materializa.
+function decidirAp024({ ultimoEsLgtm, hasLgtm, shaRevisado: rev, headSha, headSinCambiosDesdeVeredicto, commits, marcadosUpdate, marcadosMecanico, remats: n, rectHold }) {
   if (ultimoEsLgtm !== true || rectHold) return null;
   if (rev) {
-    if (!revisadoPorCadena({ headSha, shaRevisado: rev, commits, marcadosUpdate })) return 'reviewer';
+    const r = recorrerCadena({ headSha, shaRevisado: rev, commits, marcadosUpdate, marcadosMecanico });
+    if (!r.ok) return 'reviewer';
+    if (r.mecanico) return hasLgtm ? null : 'reviewer';
     return !hasLgtm && (Number(n) || 0) < 1 ? 'remat' : null;
   }
   return headSinCambiosDesdeVeredicto === true ? 'rellenar-y-remat' : 'reviewer';
@@ -161,7 +198,7 @@ function remats({ comentarios, headSha }) {
 }
 
 module.exports = {
-  shaRevisado, shasUpdateMarcados, ultimoVeredicto, mapaCommits, esUpdateDeBase, revisadoPorCadena,
-  lgtmVigente, decidirAp024, ciOkPorRun, remats, marcaLgtmSha,
-  PATRONES: { MARCA_SHA_RE, MARCA_UPDATE_RE, REMAT_SHA_RE, REMAT_VIEJA, VEREDICTO_RE, WEB_FLOW },
+  shaRevisado, shasUpdateMarcados, shasMecanicoMarcados, ultimoVeredicto, mapaCommits, esUpdateDeBase,
+  recorrerCadena, revisadoPorCadena, lgtmVigente, decidirAp024, ciOkPorRun, remats, marcaLgtmSha, marcaMecanico,
+  PATRONES: { MARCA_SHA_RE, MARCA_UPDATE_RE, MARCA_MECANICO_RE, REMAT_SHA_RE, REMAT_VIEJA, VEREDICTO_RE, WEB_FLOW },
 };

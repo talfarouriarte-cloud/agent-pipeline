@@ -123,6 +123,30 @@ check(GH.lgtmVigente({ labels: [], shaRevisado: A, headSha: B, commits: new Map(
   check(GH.ultimoVeredicto([com(PAT, marca(A))], PAT) === null, '(i) el marcador del SHA revisado no es un veredicto');
 }
 
+// ── (E2) AP-142, central#418: paso mecánico del Watchdog en la cadena ─────────
+{
+  const MEC = (p1, p2 = X) => ({ parents: [p1, p2], committerLogin: 'github-actions[bot]' });
+  const marcaMec = (m, h0, login = PAT) => com(login, `**watchdog · merge mecánico**\n\n${GH.marcaMecanico(m, h0)}`);
+  const vig = (cs, o = {}) => GH.lgtmVigente({ labels: ['lgtm', 'ci-verde'], shaRevisado: A, headSha: B, commits: new Map([[B, MEC(A)]]),
+    marcadosUpdate: new Set(), marcadosMecanico: GH.shasMecanicoMarcados(cs, PAT), ultimoEsLgtm: true, ...o });
+  check(vig([marcaMec(B, A)]) === true, '(E2) head M marcado sobre H0 revisado, con `lgtm` ⇒ vigente');
+  check(vig([]) === false, '(E2) M sin marcador ⇒ no');
+  check(vig([marcaMec(B, A, 'claude[bot]')]) === false, '(E2) marcador de un autor no de confianza ⇒ no');
+  check(vig([marcaMec(B, C)]) === false, '(E2) `parents[0]` ≠ `revisado=` del marcador ⇒ no');
+  check(vig([marcaMec(B, A)], { labels: ['ci-verde'] }) === false, '(E2) cadena mecánica sin la label `lgtm` viva ⇒ no');
+  check(vig([marcaMec(B, A)], { commits: new Map([[B, { parents: [A], committerLogin: 'x' }]]) }) === false, '(E2) M con una sola madre ⇒ no');
+  check(GH.shasMecanicoMarcados([com(PAT, `cita \`${GH.marcaMecanico(B, A)}\``)], PAT).size === 0, '(E2) marcador citado en prosa ⇒ no cuenta');
+  // Cadena mixta: M mecánico sobre un merge web-flow de updateBranch sobre el revisado.
+  check(GH.lgtmVigente({ labels: ['lgtm'], shaRevisado: A, headSha: C, commits: new Map([[C, MEC(B)], [B, W(A)]]), marcadosUpdate: new Set([A]),
+    marcadosMecanico: new Map([[C, B]]), ultimoEsLgtm: true }) === true, '(E2) cadena mixta mecánico + web-flow marcados ⇒ vigente');
+  // decidirAp024 sobre un head mecánico: no re-materializa; sin `lgtm` ⇒ Reviewer.
+  const dm = o => GH.decidirAp024({ ultimoEsLgtm: true, hasLgtm: true, shaRevisado: A, headSha: B, headSinCambiosDesdeVeredicto: false,
+    commits: new Map([[B, MEC(A)]]), marcadosUpdate: new Set(), marcadosMecanico: new Map([[B, A]]), remats: 0, rectHold: false, ...o });
+  check(dm({}) === null, '(E2) decidirAp024: head mecánico marcado con `lgtm` ⇒ null (no se toca nada)');
+  check(dm({ hasLgtm: false }) === 'reviewer', "(E2) decidirAp024: head mecánico sin `lgtm` ⇒ 'reviewer'");
+  check(dm({ marcadosMecanico: new Map() }) === 'reviewer', "(E2) decidirAp024: head mecánico SIN marcador ⇒ 'reviewer'");
+}
+
 // ── (h) decidirAp024 ────────────────────────────────────────────────────────
 const d = o => GH.decidirAp024({ ultimoEsLgtm: true, hasLgtm: false, shaRevisado: A, headSha: A, headSinCambiosDesdeVeredicto: false, commits: new Map(), remats: 0, rectHold: false, ...o });
 check(d({}) === 'remat', "(h) 'remat': crash con head = revisado");
@@ -156,7 +180,9 @@ function costuras(em, wd, rv) {
       if (trozos.length !== 4) f.push(`epic-merge.yml llama a \`pulls.updateBranch\` ${trozos.length - 1} veces (se esperaban 3)`);
       else if (!trozos[0].includes('epic-merge-update-branch') || !trozos.slice(0, 3).every(t => /await marcarUpdateBranch\(/.test(t.slice(Math.max(0, t.length - 700)))))
         f.push('epic-merge.yml: `epic-merge-update-branch` no se publica (`marcarUpdateBranch`) antes de cada `pulls.updateBranch`');
-      if (!/GH\.shasUpdateMarcados\(/.test(em) || !/marcadosUpdate, ultimoEsLgtm/.test(em)) f.push('epic-merge.yml no pasa los `updateBranch` marcados a `lgtmVigente`');
+      if (!/GH\.shasUpdateMarcados\(/.test(em) || !/marcadosUpdate, (marcadosMecanico, )?ultimoEsLgtm/.test(em)) f.push('epic-merge.yml no pasa los `updateBranch` marcados a `lgtmVigente`');
+      // AP-142 E2: el merge mecánico marcado del Watchdog también entra en GATE 2.
+      if (!/GH\.shasMecanicoMarcados\(comments, await loginPAT\(\)\)/.test(em) || !/marcadosUpdate, marcadosMecanico, ultimoEsLgtm/.test(em)) f.push('epic-merge.yml no pasa los merges mecánicos marcados (`shasMecanicoMarcados`) a `lgtmVigente` (AP-142 E2)');
     }
     if (!/gate-head\.cjs`\); \}\s*\n\s*catch \(e\) \{ await diag\([^\n]*fail-closed[^\n]*\); return; \}/.test(em)) f.push('epic-merge.yml no carga `gate-head.cjs` fail-closed (diag + return)');
   }
@@ -164,6 +190,8 @@ function costuras(em, wd, rv) {
     if (!/GH\.decidirAp024\(/.test(wd)) f.push('watchdog.yml no invoca `decidirAp024`');
     if (!wd.includes('watchdog-lgtm-rematerialize: ')) f.push('watchdog.yml no escribe la forma con SHA de `watchdog-lgtm-rematerialize`');
     if (!wd.includes('watchdog-lgtm-ci-rearm')) f.push('watchdog.yml no contiene `watchdog-lgtm-ci-rearm`');
+    // AP-142 E2: el belt AP-024 y la rama `lgtm` sin CI ven los merges mecánicos marcados.
+    if (!/marcadosUpdate: marcados, marcadosMecanico: mecanicosM,/.test(wd) || !/marcadosMecanico: lgtmMecanicos, ultimoEsLgtm: true/.test(wd)) f.push('watchdog.yml no pasa `marcadosMecanico` a `decidirAp024`/`lgtmVigente` (AP-142 E2)');
     if (!wd.includes("'lgtm-sin-ci'")) f.push('watchdog.yml no declara la anomalía `lgtm-sin-ci`');
     if (!wd.includes('gate-head ausente: AP-024 en modo previo')) f.push('watchdog.yml no contiene el aviso literal del modo previo');
     const iRev = wd.indexOf("ap024 === 'reviewer'");
@@ -210,6 +238,8 @@ if (EM != null && WD != null && RVW != null) {
     ['reviewer marcador duplicado', () => costuras(EM, WD, RVW + '\n// reviewer-lgtm-sha\n')],
     ['epic-merge updateBranch sin marcador', () => costuras(EM.replace(/await marcarUpdateBranch\(shaGate\)/, 'null'), WD, RVW)],
     ['reviewer sin fail-closed', () => costuras(EM, WD, RVW.replace(/if \(!marcado\) \{/, 'if (false) {'))],
+    ['epic-merge sin marcadosMecanico', () => costuras(EM.replace('marcadosUpdate, marcadosMecanico, ultimoEsLgtm', 'marcadosUpdate, ultimoEsLgtm'), WD, RVW)],
+    ['watchdog AP-024 sin marcadosMecanico', () => costuras(EM, WD.replace('marcadosMecanico: mecanicosM,', ''), RVW)],
   ];
   for (const [nom, fn] of mut) check(fn().length > fallosCostura.length, `auto-ejercicio: «${nom}» pone la costura roja`);
 }
