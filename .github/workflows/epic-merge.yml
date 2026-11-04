@@ -1523,46 +1523,141 @@ jobs:
                 // AP-139: el merge fija el head que pasó los gates; si se movió, GitHub
                 // devuelve 409 y no se mergea un head sin CI ni review.
                 await github.rest.pulls.merge({ owner, repo, pull_number: prNumber, merge_method: 'squash', sha: pf.head.sha });
-              } catch (e) {
-                // AP-139: 409 = el head se movió entre el gate y el merge. Sin
-                // reintento en este run: el head nuevo entra por su propio evento.
-                if (e && e.status === 409) {
-                  await diag(prNumber, `head movido entre gate y merge (gate sobre ${pf.head.sha.slice(0, 7)}; ${e.message}) — no mergeo; el head nuevo re-entra por su evento (AP-139).`);
-                  return;
-                }
-                // central#333 (AP-125): «Base branch was modified» es transitorio
-                // (la base se movió durante el merge). Hasta 3 veces: marcador en
-                // el PR + `updateBranch` y re-entrada por `workflow_run` del CI
-                // (mismo camino que `behind`); a la 4.ª, `stalled` en el issue.
-                // El conteo son los marcadores del PR (persisten entre jobs).
-                let r = { accion: 'diag' };
-                let previos = 0;
+              } catch (e0) {
+                // AP-141 (central#412): bucle de reintento del merge en ESTE run.
+                // Cada fallo de `pulls.merge` pasa por la misma clasificación
+                // (`decidirReintentoMerge`): 409 ⇒ `diag` (AP-139); base
+                // modificada ⇒ AP-125 §3; 5xx ⇒ marcador + espera (30 s, 60 s) +
+                // relectura + nuevo merge con `sha`, y al 3.er 5xx `stalled`; lo
+                // demás ⇒ `diag`. Todo en su propio `try`: ninguna excepción
+                // del bucle sube al `catch` exterior («excepción no esperada»).
+                // Salida sin merge: siempre `diag` o `stalled` antes del `return`.
+                const ESPERAS_5XX_MS = [30000, 60000];
+                const espera = (ms) => new Promise((res) => setTimeout(res, ms));
+                const shaGate = pf.head.sha;
+                let e = e0;
+                let intento5xx = 0;
+                // 3.er 5xx (o relectura caída sin 5xx): `stalled` en el issue,
+                // 2 intentos con 30 s entre ellos; si los dos fallan, run rojo.
+                const stalled5xx = async (motivo) => {
+                  let ok = false;
+                  for (let k = 1; k <= 2 && !ok; k++) {
+                    try {
+                      await github.rest.issues.addLabels({ owner, repo, issue_number: issueNumber, labels: ['stalled'] });
+                      await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber,
+                        body: `**epic-merge · merge atascado por 5xx de GitHub**: el PR #${prNumber} no se pudo mergear (${motivo}). Gates verdes sobre \`${shaGate.slice(0, 7)}\`. Escalado a architect-resolve vía \`stalled\` (AP-141).` });
+                      ok = true;
+                    } catch (eS) {
+                      core.warning(`[epic-merge] stalled por 5xx (intento ${k}/2): ${eS.message}`);
+                      if (k < 2) await espera(30000);
+                    }
+                  }
+                  if (!ok) {
+                    await diag(prNumber, `MERGE FALLÓ por 5xx y no pude aplicar \`stalled\` en #${issueNumber} (${motivo}).`);
+                    core.setFailed(`[epic-merge] MERGE FALLÓ por 5xx y no pude aplicar stalled en #${issueNumber} (${motivo}).`);
+                    return;
+                  }
+                  await diag(prNumber, intento5xx >= EMD.MERGE_5XX_CAP
+                    ? `MERGE FALLÓ: 5xx de GitHub ×${intento5xx} en el mismo run; gates verdes; lo recoge architect-resolve (issue #${issueNumber} \`stalled\`; último: ${motivo}).`
+                    : `MERGE FALLÓ tras ${intento5xx} 5xx de GitHub en el mismo run (${motivo}); gates verdes; lo recoge architect-resolve (issue #${issueNumber} \`stalled\`).`);
+                };
                 try {
-                  const mcs = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: prNumber, per_page: 100 });
-                  previos = EMD.contarReintentos(mcs);
-                  r = EMD.decidirReintentoMerge({ mensaje: e.message, reintentosPrevios: previos });
-                } catch (e2) { core.warning('reintento de merge: ' + e2.message); }
-                if (r.accion === 'update-branch') {
-                  try {
-                    await github.rest.issues.createComment({ owner, repo, issue_number: prNumber,
-                      body: `**epic-merge · reintento de merge ${previos + 1}/${EMD.MERGE_RETRY_CAP}**: el merge falló con «${e.message}» (la base se movió durante el merge). Actualizo la rama; el CI re-evalúa y este gate vuelve a entrar.\n\n${EMD.marcadorReintento((pf && pf.head && pf.head.sha) || pr.head.sha)}` });
-                    const idMarca = await marcarUpdateBranch(pf.head.sha);
-                    try { await github.rest.pulls.updateBranch({ owner, repo, pull_number: prNumber, expected_head_sha: pf.head.sha }); }
-                    catch (eU) { await desmarcarUpdateBranch(idMarca); throw eU; }
-                    await diag(prNumber, `MERGE FALLÓ por base modificada (${previos + 1}/${EMD.MERGE_RETRY_CAP}): rama actualizada; re-entro por el CI.`);
-                  } catch (e3) { await diag(prNumber, `MERGE FALLÓ por base modificada y updateBranch falló: ${e3.message}`); }
-                  return;
+                  while (e) {
+                    // AP-139: 409 = el head se movió entre el gate y el merge. Sin
+                    // reintento en este run: el head nuevo entra por su propio evento.
+                    if (e && e.status === 409) {
+                      await diag(prNumber, `head movido entre gate y merge (gate sobre ${shaGate.slice(0, 7)}; ${e.message}) — no mergeo; el head nuevo re-entra por su evento (AP-139).`);
+                      return;
+                    }
+                    if (EMD.es5xx({ status: e.status, mensaje: e.message })) intento5xx++;
+                    // La clasificación no depende de la paginación (crítica r3 de
+                    // #412): solo la rama de base modificada necesita el conteo.
+                    let r = EMD.decidirReintentoMerge({ mensaje: e.message, status: e.status, reintentosPrevios: 0, intento5xx });
+                    // central#333 (AP-125): «Base branch was modified» es transitorio
+                    // (la base se movió durante el merge). Hasta 3 veces: marcador en
+                    // el PR + `updateBranch` y re-entrada por `workflow_run` del CI
+                    // (mismo camino que `behind`); a la 4.ª, `stalled` en el issue.
+                    // El conteo son los marcadores del PR (persisten entre jobs).
+                    let previos = 0;
+                    if (r.accion === 'update-branch') {
+                      try {
+                        const mcs = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: prNumber, per_page: 100 });
+                        previos = EMD.contarReintentos(mcs);
+                        r = EMD.decidirReintentoMerge({ mensaje: e.message, status: e.status, reintentosPrevios: previos, intento5xx });
+                      } catch (e2) { core.warning('reintento de merge: ' + e2.message); r = { accion: 'diag' }; }
+                    }
+                    if (r.accion === 'update-branch') {
+                      try {
+                        await github.rest.issues.createComment({ owner, repo, issue_number: prNumber,
+                          body: `**epic-merge · reintento de merge ${previos + 1}/${EMD.MERGE_RETRY_CAP}**: el merge falló con «${e.message}» (la base se movió durante el merge). Actualizo la rama; el CI re-evalúa y este gate vuelve a entrar.\n\n${EMD.marcadorReintento(shaGate)}` });
+                        const idMarca = await marcarUpdateBranch(shaGate);
+                        try { await github.rest.pulls.updateBranch({ owner, repo, pull_number: prNumber, expected_head_sha: shaGate }); }
+                        catch (eU) { await desmarcarUpdateBranch(idMarca); throw eU; }
+                        await diag(prNumber, `MERGE FALLÓ por base modificada (${previos + 1}/${EMD.MERGE_RETRY_CAP}): rama actualizada; re-entro por el CI.`);
+                      } catch (e3) { await diag(prNumber, `MERGE FALLÓ por base modificada y updateBranch falló: ${e3.message}`); }
+                      return;
+                    }
+                    if (r.accion === 'stalled') {
+                      try {
+                        await github.rest.issues.addLabels({ owner, repo, issue_number: issueNumber, labels: ['stalled'] });
+                        await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber,
+                          body: `**epic-merge · merge atascado**: el PR #${prNumber} falló ${EMD.MERGE_RETRY_CAP} reintentos por base modificada («${e.message}»). Escalado a architect-resolve vía \`stalled\`.` });
+                      } catch (e4) { core.warning('stalled por reintentos: ' + e4.message); }
+                      await diag(prNumber, `MERGE FALLÓ: ${e.message} — ${EMD.MERGE_RETRY_CAP} reintentos por base modificada agotados; issue #${issueNumber} \`stalled\`.`);
+                      return;
+                    }
+                    if (r.accion === 'stalled-5xx') { await stalled5xx(`«${e.message}»`); return; }
+                    if (r.accion !== 'reintentar-5xx') {
+                      await diag(prNumber, `MERGE FALLÓ: ${e.message} (¿ya mergeado / protección de rama / token sin contents:write?)`); return;
+                    }
+                    // `reintentar-5xx`: marcador (solo trazabilidad; si falla, se sigue).
+                    try {
+                      await github.rest.issues.createComment({ owner, repo, issue_number: prNumber,
+                        body: `**epic-merge · reintento por 5xx ${intento5xx}/${EMD.MERGE_5XX_CAP - 1}**: el merge falló con «${e.message}» (status ${e.status ?? '¿?'}). Espero ${ESPERAS_5XX_MS[intento5xx - 1] / 1000} s, releo el PR y, si el head y los gates siguen, reintento en este mismo run (AP-141).\n\n${EMD.marcadorReintento5xx(shaGate, intento5xx)}` });
+                    } catch (eC) { core.warning(`[epic-merge] marcador merge-retry-5xx no publicado: ${eC.message}`); }
+                    // Relectura (`pulls.get` trae head, labels y mergeable_state).
+                    // Un 5xx aquí cuenta como uno más; otro error ⇒ `stalled`.
+                    let fr = null;
+                    while (!fr) {
+                      await espera(ESPERAS_5XX_MS[intento5xx - 1]);
+                      try { fr = (await github.rest.pulls.get({ owner, repo, pull_number: prNumber })).data; }
+                      catch (eR) {
+                        if (!EMD.es5xx({ status: eR.status, mensaje: eR.message })) { await stalled5xx(`relectura falló: ${eR.message}`); return; }
+                        intento5xx++;
+                        const rr = EMD.decidirReintentoMerge({ mensaje: eR.message, status: eR.status, intento5xx });
+                        if (rr.accion === 'stalled-5xx') { await stalled5xx(`relectura con 5xx: «${eR.message}»`); return; }
+                      }
+                    }
+                    // El 5xx pudo llegar con el merge ya hecho: se sigue por postMerge.
+                    if (fr.merged) { core.notice(`[epic-merge] #${prNumber} ya mergeado tras el 5xx: sigo por postMerge.`); e = null; break; }
+                    if (fr.head.sha !== shaGate) {
+                      await diag(prNumber, `head movido durante el reintento 5xx (gate sobre ${shaGate.slice(0, 7)}, ahora ${fr.head.sha.slice(0, 7)}) — no mergeo; el head nuevo re-entra por su evento.`);
+                      return;
+                    }
+                    const lbs = (fr.labels || []).map((l) => l.name);
+                    if (!lbs.includes('lgtm') || !lbs.includes('ci-verde')) {
+                      await diag(prNumber, `gates retirados durante el reintento 5xx (falta ${['lgtm', 'ci-verde'].filter((n) => !lbs.includes(n)).map((n) => '`' + n + '`').join(' y ')}) — no mergeo; quien retiró la label re-arma.`);
+                      return;
+                    }
+                    // La base pudo moverse durante la espera (crítica r3 de #412):
+                    // mismo camino `behind` que antes del merge.
+                    if (fr.mergeable_state === 'behind') {
+                      let idMarca = null;
+                      try { idMarca = await marcarUpdateBranch(shaGate); }
+                      catch (eM) { await stalled5xx(`rama behind tras el 5xx y el marcador de updateBranch no se publicó: ${eM.message}`); return; }
+                      try { await github.rest.pulls.updateBranch({ owner, repo, pull_number: prNumber, expected_head_sha: shaGate }); }
+                      catch (eU) { await desmarcarUpdateBranch(idMarca); await stalled5xx(`rama behind tras el 5xx y updateBranch falló: ${eU.message}`); return; }
+                      await diag(prNumber, 'reintento 5xx: la rama quedó behind de la base durante la espera; rama actualizada, el CI re-evalúa y se mergea en la siguiente pasada.');
+                      return;
+                    }
+                    try { await github.rest.pulls.merge({ owner, repo, pull_number: prNumber, merge_method: 'squash', sha: shaGate }); e = null; }
+                    catch (eN) { e = eN; }
+                  }
+                } catch (eB) {
+                  core.warning('[epic-merge] bucle de reintento del merge: ' + (eB && eB.message));
+                  if (intento5xx > 0) { await stalled5xx(`excepción en el bucle de reintento: ${eB && eB.message}`); return; }
+                  await diag(prNumber, `MERGE FALLÓ: ${e0 && e0.message}; excepción al clasificar: ${eB && eB.message}`); return;
                 }
-                if (r.accion === 'stalled') {
-                  try {
-                    await github.rest.issues.addLabels({ owner, repo, issue_number: issueNumber, labels: ['stalled'] });
-                    await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber,
-                      body: `**epic-merge · merge atascado**: el PR #${prNumber} falló ${EMD.MERGE_RETRY_CAP} reintentos por base modificada («${e.message}»). Escalado a architect-resolve vía \`stalled\`.` });
-                  } catch (e4) { core.warning('stalled por reintentos: ' + e4.message); }
-                  await diag(prNumber, `MERGE FALLÓ: ${e.message} — ${EMD.MERGE_RETRY_CAP} reintentos por base modificada agotados; issue #${issueNumber} \`stalled\`.`);
-                  return;
-                }
-                await diag(prNumber, `MERGE FALLÓ: ${e.message} (¿ya mergeado / protección de rama / token sin contents:write?)`); return;
               }
               try { await github.rest.git.deleteRef({ owner, repo, ref: `heads/${headBranch}` }); } catch (e) {}
 
