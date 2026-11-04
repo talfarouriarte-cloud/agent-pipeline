@@ -151,8 +151,90 @@ caso('reintento: otro mensaje ⇒ diag (statu quo)', m.decidirReintentoMerge({ m
 caso('reintento: cap 3 y marcador literal del ruling (con head sha)', m.MERGE_RETRY_CAP === 3 && m.marcadorReintento('abc1234') === '<!-- merge-retry-base-modified: abc1234 -->');
 caso('reintento: el contador cuenta marcadores de CUALQUIER sha y no las citas sin sha',
   m.contarReintentos([{ body: m.marcadorReintento('abc1234') }, { body: `x\n${m.marcadorReintento('def5678')}` }, { body: 'cita `merge-retry-base-modified`' }]) === 2);
-if (existsSync('.github/workflows/epic-merge.yml'))
-  caso('costura: el catch del merge consulta `decidirReintentoMerge`', readFileSync('.github/workflows/epic-merge.yml', 'utf8').includes('EMD.decidirReintentoMerge({ mensaje: e.message, reintentosPrevios: previos })'));
+caso('reintento (c′): base modificada con 3 previos e intento5xx 1 ⇒ stalled (AP-125 §3 intacta)', m.decidirReintentoMerge({ mensaje: BBM, reintentosPrevios: 3, intento5xx: 1 }).accion === 'stalled');
+
+// ── Reintento ante 5xx de GitHub en el mismo run (central#412, AP-141) ─────
+const d5 = (o) => m.decidirReintentoMerge(o).accion;
+caso('5xx (a): status 500, intento5xx 1 ⇒ reintentar-5xx', d5({ mensaje: 'Server Error', status: 500, intento5xx: 1 }) === 'reintentar-5xx');
+caso('5xx (b): status 502, intento5xx 2 ⇒ reintentar-5xx', d5({ mensaje: 'Bad Gateway', status: 502, intento5xx: 2 }) === 'reintentar-5xx');
+caso('5xx (c): status 503, intento5xx 3 ⇒ stalled-5xx', d5({ mensaje: 'Service Unavailable', status: 503, intento5xx: 3 }) === 'stalled-5xx');
+caso('5xx (d): sin status, mensaje «Server Error», intento5xx 1 ⇒ reintentar-5xx', d5({ mensaje: 'Server Error', intento5xx: 1 }) === 'reintentar-5xx');
+caso('5xx (d′): sin status, «Gateway Timeout» y «Gateway Time-out» ⇒ reintentar-5xx', d5({ mensaje: 'Gateway Timeout', intento5xx: 1 }) === 'reintentar-5xx' && d5({ mensaje: 'Gateway Time-out', intento5xx: 1 }) === 'reintentar-5xx');
+caso('5xx (e): status 422 «Pull Request has merge conflicts» ⇒ diag (sin cambio)', d5({ mensaje: 'Pull Request has merge conflicts', status: 422, intento5xx: 1 }) === 'diag');
+caso('5xx (f): «Base branch was modified» (status 405) ⇒ update-branch (sin cambio)', d5({ mensaje: BBM, status: 405, reintentosPrevios: 0, intento5xx: 0 }) === 'update-branch');
+caso('5xx: un status 4xx con mensaje de 5xx manda el status ⇒ diag', d5({ mensaje: 'Server Error', status: 403, intento5xx: 1 }) === 'diag');
+caso('5xx: llamada de hoy (sin status ni intento5xx) con otro mensaje ⇒ diag', d5({ mensaje: 'Required status check "ci" is expected.', reintentosPrevios: 0 }) === 'diag');
+caso('5xx: cap 3 y marcador literal con head sha', m.MERGE_5XX_CAP === 3 && m.marcadorReintento5xx('abc1234', 2) === '<!-- merge-retry-5xx: abc1234 intento=2 -->');
+
+if (existsSync('.github/workflows/epic-merge.yml')) {
+  const y = readFileSync('.github/workflows/epic-merge.yml', 'utf8');
+  const ini = y.indexOf('} catch (e0) {');
+  const fin = y.indexOf('} catch (eB) {', ini);
+  const bloque = ini >= 0 && fin > ini ? y.slice(ini, y.indexOf('\n              }\n', fin)) : '';
+  const bucleIni = bloque.indexOf('while (e) {');
+  const bucle = bucleIni >= 0 ? bloque.slice(bucleIni) : '';
+  caso('costura: el catch del merge clasifica con `status: e.status` y el conteo de base modificada',
+    /EMD\.decidirReintentoMerge\(\{ mensaje: e\.message, status: e\.status, reintentosPrevios: 0, intento5xx \}\)/.test(bloque)
+    && /EMD\.decidirReintentoMerge\(\{ mensaje: e\.message, status: e\.status, reintentosPrevios: previos, intento5xx \}\)/.test(bloque));
+  caso('costura: marcador `merge-retry-5xx` en un try que solo hace core.warning',
+    /try \{\s*await github\.rest\.issues\.createComment\([^]*?EMD\.marcadorReintento5xx\(shaGate, intento5xx\)[^]*?\} catch \(eC\) \{ core\.warning\([^)]*\); \}/.test(bloque));
+  caso('costura: esperas de 30 s y 60 s', /ESPERAS_5XX_MS = \[30000, 60000\]/.test(bloque) && /await espera\(ESPERAS_5XX_MS\[intento5xx - 1\]\)/.test(bloque));
+  caso('costura: tope de 3 intentos por `MERGE_5XX_CAP` del módulo (stalled-5xx)', /r\.accion === 'stalled-5xx'/.test(bloque) && /rr\.accion === 'stalled-5xx'/.test(bloque));
+  caso('costura: relectura de head, labels y behind antes de cada reintento',
+    /github\.rest\.pulls\.get\(\{ owner, repo, pull_number: prNumber \}\)/.test(bucle)
+    && /fr\.head\.sha !== shaGate/.test(bucle) && /lbs\.includes\('lgtm'\)/.test(bucle) && /lbs\.includes\('ci-verde'\)/.test(bucle)
+    && /fr\.mergeable_state === 'behind'/.test(bucle)
+    && bucle.indexOf('pulls.get(') < bucle.lastIndexOf("pulls.merge({ owner, repo, pull_number: prNumber, merge_method: 'squash', sha: shaGate })"));
+  caso('costura: el bucle va en su propio try (catch eB, sin subir al catch exterior)', /try \{\s*while \(e\) \{/.test(bloque) && bloque.includes('} catch (eB) {'));
+  const lineas = bucle.split('\n');
+  const sinSalida = lineas.filter((l, i) => /\breturn;/.test(l) && !/(diag|stalled5xx)\(/.test(l) && !/(diag|stalled5xx)\(/.test(lineas[i - 1] || ''));
+  caso('costura: ningún `return` del bucle sin `diag` o `stalled`', bucle.length > 0 && /\breturn;/.test(bucle) && sinSalida.length === 0);
+
+  // El `catch` REAL del YAML ejecutado con un `github` simulado (esperas a 0).
+  const finCatch = y.indexOf('\n              }\n', fin);
+  const cuerpo = ini >= 0 && finCatch > ini ? y.slice(ini + 1, finCatch + 16) : '';
+  const E = (status, msg) => Object.assign(new Error(msg), { status });
+  const sim = async (merges, gets = []) => {
+    const log = []; let gi = 0;
+    const github = { paginate: async () => [], rest: {
+      issues: { createComment: async (o) => { log.push(`comment#${o.issue_number}`); }, addLabels: async (o) => { log.push(`label:${o.labels}`); }, deleteComment: async () => {} },
+      pulls: {
+        merge: async () => { log.push('merge'); const x = merges.shift(); if (x) throw x; },
+        updateBranch: async () => { log.push('update'); },
+        get: async () => { log.push('get'); const g = gets[gi++] || {}; if (g instanceof Error) throw g;
+          return { data: { head: { sha: g.sha || 'abc1234' }, labels: (g.labels || ['lgtm', 'ci-verde']).map((name) => ({ name })), mergeable_state: g.ms || 'clean', merged: !!g.merged } }; } } } };
+    const core = { warning: () => {}, notice: () => {}, setFailed: () => log.push('failed') };
+    const diag = async (_p, msg) => { log.push(`diag:${msg}`); };
+    const f = new Function('github', 'core', 'diag', 'EMD', 'pf', 'owner', 'repo', 'prNumber', 'issueNumber', 'marcarUpdateBranch', 'desmarcarUpdateBranch', 'setTimeout', 'primero',
+      `return (async () => { try { throw primero; } ${cuerpo} return 'mergeado'; })();`);
+    const fin_ = await f(github, core, diag, m, { head: { sha: 'abc1234' } }, 'o', 'r', 7, 9, async () => 1, async () => {}, (fn) => fn(), merges.shift());
+    return { fin: fin_ || 'sin-merge', log, merges: log.filter((l) => l === 'merge').length, stalled: log.includes('label:stalled') };
+  };
+  try {
+    let r = await sim([E(500, 'Server Error'), null]);
+    caso('sim: 500 y luego merge ⇒ mergeado en el mismo run', r.fin === 'mergeado' && r.merges === 1 && r.log.includes('get'));
+    r = await sim([E(500, 'Server Error'), E(502, 'Bad Gateway'), E(503, 'Service Unavailable')]);
+    caso('sim: 5xx ×3 ⇒ 3 intentos de merge en total y `stalled`', r.fin === 'sin-merge' && r.merges === 2 && r.stalled && r.log.some((l) => /5xx de GitHub ×3/.test(l)));
+    r = await sim([E(500, 'Server Error'), E(409, 'moved')]);
+    caso('sim: 5xx y luego 409 ⇒ diag sin reintento (AP-139)', !r.stalled && r.merges === 1 && r.log.some((l) => /head movido entre gate y merge/.test(l)));
+    r = await sim([E(500, 'Server Error')], [{ sha: 'def5678' }]);
+    caso('sim: head movido en la relectura ⇒ diag, sin merge', r.merges === 0 && !r.stalled && r.log.some((l) => /head movido durante el reintento 5xx/.test(l)));
+    r = await sim([E(500, 'Server Error')], [{ labels: ['lgtm'] }]);
+    caso('sim: `ci-verde` retirada en la relectura ⇒ diag sin stalled', r.merges === 0 && !r.stalled && r.log.some((l) => /gates retirados/.test(l)));
+    r = await sim([E(500, 'Server Error')], [{ ms: 'behind' }]);
+    caso('sim: rama behind en la relectura ⇒ updateBranch, sin merge', r.merges === 0 && r.log.includes('update'));
+    r = await sim([E(500, 'Server Error')], [{ merged: true }]);
+    caso('sim: el 5xx sí mergeó ⇒ sigue por postMerge', r.fin === 'mergeado' && r.merges === 0);
+    r = await sim([E(500, 'Server Error')], [E(502, 'Bad Gateway'), E(504, 'Gateway Timeout')]);
+    caso('sim: relectura con 5xx cuenta como intento ⇒ stalled al 3.º', r.stalled && r.merges === 0);
+    r = await sim([E(500, 'Server Error')], [E(404, 'Not Found')]);
+    caso('sim: relectura con error no 5xx ⇒ stalled', r.stalled && r.log.some((l) => /relectura falló/.test(l)));
+    r = await sim([E(422, 'Pull Request has merge conflicts')]);
+    caso('sim: 422 ⇒ diag, sin reintento (statu quo)', r.merges === 0 && !r.log.includes('get') && r.log.some((l) => /MERGE FALLÓ: Pull Request has merge conflicts/.test(l)));
+    r = await sim([E(405, BBM)]);
+    caso('sim: base modificada ⇒ updateBranch (AP-125 §3, statu quo)', r.log.includes('update') && r.log.some((l) => /base modificada \(1\/3\)/.test(l)));
+  } catch (eS) { caso(`sim: el catch del YAML ejecuta sin excepción (${eS.message})`, false); }
+}
 
 if (fallos.length) {
   console.error(`CHECK-EPIC-MERGE-DIAG ROJO (${fuente}): ${fallos.length} caso(s) fallan:`);
