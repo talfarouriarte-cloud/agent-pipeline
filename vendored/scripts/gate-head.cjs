@@ -26,6 +26,12 @@
 // línea propia) no cuenta (clase PR #1133 / AP-063).
 const MARCA_SHA_RE = /^<!-- reviewer-lgtm-sha: ([0-9a-f]{40}) -->$/m;
 const marcaLgtmSha = sha => `<!-- reviewer-lgtm-sha: ${sha} -->`;
+// Marcador que epic-merge publica (PAT) ANTES de su propio `pulls.updateBranch`, con
+// el head previo al update (enmienda del Architect a #408, punto 2). Solo un merge
+// `web-flow` cuya primera madre está marcada es un update de epic-merge: el editor
+// «Resolve conflicts» de la web también firma `web-flow` y metería código de
+// resolución sin review.
+const MARCA_UPDATE_RE = /^<!-- epic-merge-update-branch: ([0-9a-f]{40}) -->$/gm;
 // Re-materialización de `lgtm` (AP-024). Forma con SHA (AP-139: cap 1 por head) y
 // forma vieja sin SHA (cap 1 por PR, anterior a AP-139).
 const REMAT_SHA_RE = /^<!-- watchdog-lgtm-rematerialize: ([0-9a-f]{7,40}) -->$/gm;
@@ -34,6 +40,16 @@ const REMAT_VIEJA = '<!-- watchdog-lgtm-rematerialize -->';
 const VEREDICTO_RE = /^\s*(LGTM|REVIEW|NITS)\b/;
 // Committer de los merges que crea GitHub en `pulls.updateBranch` / «Update branch».
 const WEB_FLOW = 'web-flow';
+
+// SHAs (head previo al update) que epic-merge marcó antes de un `updateBranch`.
+function shasUpdateMarcados(comentarios, loginPat) {
+  const set = new Set();
+  for (const c of comentarios || []) {
+    if (!c || !c.user || c.user.login !== loginPat) continue;
+    for (const m of String(c.body || '').matchAll(MARCA_UPDATE_RE)) set.add(m[1]);
+  }
+  return set;
+}
 
 // `<sha40>` del ÚLTIMO comentario de `loginPat` con el marcador en línea propia, o null.
 function shaRevisado(comentarios, loginPat) {
@@ -81,14 +97,16 @@ function esUpdateDeBase(commit) {
 const leer = (commits, sha) => (commits instanceof Map ? commits.get(sha) : (commits || {})[sha]);
 
 // ¿El head es el SHA revisado, o se llega a él por la PRIMERA madre pasando solo
-// por merges `web-flow`?
-function revisadoPorCadena({ headSha, shaRevisado: rev, commits }) {
+// por merges `web-flow` cuya primera madre marcó epic-merge antes de su
+// `updateBranch` (`marcadosUpdate`, Set de SHAs)? Sin conjunto ⇒ ningún paso vale.
+function revisadoPorCadena({ headSha, shaRevisado: rev, commits, marcadosUpdate }) {
   if (!rev || !headSha) return false;
   if (headSha === rev) return true;
+  const marcados = marcadosUpdate instanceof Set ? marcadosUpdate : new Set(marcadosUpdate || []);
   let cur = headSha;
   for (let i = 0; i < 500; i++) {
     const c = leer(commits, cur);
-    if (!esUpdateDeBase(c)) return false;
+    if (!esUpdateDeBase(c) || !marcados.has(c.parents[0])) return false;
     cur = c.parents[0];
     if (cur === rev) return true;
   }
@@ -102,20 +120,20 @@ function revisadoPorCadena({ headSha, shaRevisado: rev, commits }) {
 //   · head ≠ SHA revisado: por la cadena `web-flow`, sin la label (`ci.yml` la
 //     retira en el `synchronize` del `updateBranch`) y sin `needs-review` pendiente
 //     (una review convocada sobre ese head aún no ha hablado).
-function lgtmVigente({ labels, shaRevisado: rev, headSha, commits, ultimoEsLgtm }) {
+function lgtmVigente({ labels, shaRevisado: rev, headSha, commits, marcadosUpdate, ultimoEsLgtm }) {
   if (ultimoEsLgtm !== true || !rev || !headSha) return false;
   const ls = labels || [];
   if (rev === headSha) return ls.includes('lgtm');
   if (ls.includes('needs-review')) return false;
-  return revisadoPorCadena({ headSha, shaRevisado: rev, commits });
+  return revisadoPorCadena({ headSha, shaRevisado: rev, commits, marcadosUpdate });
 }
 
 // Decisión del belt AP-024 (Watchdog). Solo si el último veredicto es LGTM y no
 // hay `rectHold` (AP-055). ⇒ 'remat' | 'rellenar-y-remat' | 'reviewer' | null.
-function decidirAp024({ ultimoEsLgtm, hasLgtm, shaRevisado: rev, headSha, headSinCambiosDesdeVeredicto, commits, remats: n, rectHold }) {
+function decidirAp024({ ultimoEsLgtm, hasLgtm, shaRevisado: rev, headSha, headSinCambiosDesdeVeredicto, commits, marcadosUpdate, remats: n, rectHold }) {
   if (ultimoEsLgtm !== true || rectHold) return null;
   if (rev) {
-    if (!revisadoPorCadena({ headSha, shaRevisado: rev, commits })) return 'reviewer';
+    if (!revisadoPorCadena({ headSha, shaRevisado: rev, commits, marcadosUpdate })) return 'reviewer';
     return !hasLgtm && (Number(n) || 0) < 1 ? 'remat' : null;
   }
   return headSinCambiosDesdeVeredicto === true ? 'rellenar-y-remat' : 'reviewer';
@@ -143,7 +161,7 @@ function remats({ comentarios, headSha }) {
 }
 
 module.exports = {
-  shaRevisado, ultimoVeredicto, mapaCommits, esUpdateDeBase, revisadoPorCadena,
+  shaRevisado, shasUpdateMarcados, ultimoVeredicto, mapaCommits, esUpdateDeBase, revisadoPorCadena,
   lgtmVigente, decidirAp024, ciOkPorRun, remats, marcaLgtmSha,
-  PATRONES: { MARCA_SHA_RE, REMAT_SHA_RE, REMAT_VIEJA, VEREDICTO_RE, WEB_FLOW },
+  PATRONES: { MARCA_SHA_RE, MARCA_UPDATE_RE, REMAT_SHA_RE, REMAT_VIEJA, VEREDICTO_RE, WEB_FLOW },
 };

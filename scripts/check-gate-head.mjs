@@ -85,20 +85,37 @@ check(GH.esUpdateDeBase({ parents: [A], committerLogin: 'web-flow' }) === false,
 
 // ── (f) revisadoPorCadena ───────────────────────────────────────────────────
 check(GH.revisadoPorCadena({ headSha: A, shaRevisado: A, commits: new Map() }) === true, '(f) head = revisado ⇒ true');
-check(GH.revisadoPorCadena({ headSha: B, shaRevisado: A, commits: new Map([[B, W(A)]]) }) === true, '(f) head = merge web-flow cuya primera madre es el revisado ⇒ true');
-check(GH.revisadoPorCadena({ headSha: C, shaRevisado: A, commits: new Map([[C, W(B)], [B, W(A)]]) }) === true, '(f) dos merges web-flow encadenados ⇒ true');
-check(GH.revisadoPorCadena({ headSha: C, shaRevisado: A, commits: new Map([[C, W(B)], [B, propio(A)]]) }) === false, '(f) merge web-flow sobre un commit propio posterior al revisado ⇒ false');
-check(GH.revisadoPorCadena({ headSha: B, shaRevisado: A, commits: new Map([[B, { parents: [A, X], committerLogin: 'github-actions[bot]' }]]) }) === false, '(f) merge append-only no web-flow ⇒ false');
-check(GH.revisadoPorCadena({ headSha: B, shaRevisado: A, commits: new Map([[B, W(X, A)]]) }) === false, '(f) el revisado solo como SEGUNDA madre ⇒ false (se sigue la primera)');
+check(GH.revisadoPorCadena({ headSha: B, shaRevisado: A, commits: new Map([[B, W(A)]]), marcadosUpdate: new Set([A]) }) === true, '(f) head = merge web-flow cuya primera madre es el revisado (marcada) ⇒ true');
+check(GH.revisadoPorCadena({ headSha: C, shaRevisado: A, commits: new Map([[C, W(B)], [B, W(A)]]), marcadosUpdate: new Set([A, B]) }) === true, '(f) dos merges web-flow encadenados (ambos marcados) ⇒ true');
+check(GH.revisadoPorCadena({ headSha: C, shaRevisado: A, commits: new Map([[C, W(B)], [B, W(A)]]), marcadosUpdate: new Set([A]) }) === false, '(f) dos merges web-flow, el segundo sin marcador ⇒ false');
+check(GH.revisadoPorCadena({ headSha: C, shaRevisado: A, commits: new Map([[C, W(B)], [B, propio(A)]]), marcadosUpdate: new Set([A, B]) }) === false, '(f) merge web-flow sobre un commit propio posterior al revisado ⇒ false');
+check(GH.revisadoPorCadena({ headSha: B, shaRevisado: A, commits: new Map([[B, { parents: [A, X], committerLogin: 'github-actions[bot]' }]]), marcadosUpdate: new Set([A]) }) === false, '(f) merge append-only no web-flow ⇒ false');
+check(GH.revisadoPorCadena({ headSha: B, shaRevisado: A, commits: new Map([[B, W(X, A)]]), marcadosUpdate: new Set([A, X]) }) === false, '(f) el revisado solo como SEGUNDA madre ⇒ false (se sigue la primera)');
 
 // ── (g) lgtmVigente por cadena ──────────────────────────────────────────────
-check(GH.lgtmVigente({ labels: [], shaRevisado: A, headSha: B, commits: new Map([[B, W(A)]]), ultimoEsLgtm: true }) === true, '(g) sin label y head = merge web-flow del revisado ⇒ true');
+check(GH.lgtmVigente({ labels: [], shaRevisado: A, headSha: B, commits: new Map([[B, W(A)]]), marcadosUpdate: new Set([A]), ultimoEsLgtm: true }) === true, '(g) sin label y head = merge web-flow del revisado ⇒ true');
+
+// ── (iv)/(v) enmienda del Architect, punto 2: solo los `updateBranch` de epic-merge ─
+{
+  const marcaUpd = s2 => com(PAT, `**epic-merge · \`updateBranch\`**\n\n<!-- epic-merge-update-branch: ${s2} -->`);
+  const set = GH.shasUpdateMarcados([marcaUpd(A), com('claude[bot]', `<!-- epic-merge-update-branch: ${B} -->`), com(PAT, `cita \`<!-- epic-merge-update-branch: ${C} -->\``)], PAT);
+  check(set.has(A) && !set.has(B) && !set.has(C), '(iv) `shasUpdateMarcados`: solo el autor PAT y en línea propia');
+  check(GH.lgtmVigente({ labels: [], shaRevisado: A, headSha: B, commits: new Map([[B, W(A)]]), marcadosUpdate: GH.shasUpdateMarcados([marcaUpd(A)], PAT), ultimoEsLgtm: true }) === true, '(iv) merge web-flow con marcador de su primera madre ⇒ true');
+  check(GH.lgtmVigente({ labels: [], shaRevisado: A, headSha: B, commits: new Map([[B, W(A)]]), marcadosUpdate: new Set(), ultimoEsLgtm: true }) === false, '(v) merge web-flow sin marcador («Resolve conflicts» web) ⇒ false');
+  check(GH.lgtmVigente({ labels: [], shaRevisado: A, headSha: B, commits: new Map([[B, W(A)]]), ultimoEsLgtm: true }) === false, '(v) sin conjunto de marcados ⇒ false (fail-closed)');
+}
 
 // ── (i) crítica ronda 3, D: todo LGTM vigente exige que el último veredicto sea LGTM
-check(GH.lgtmVigente({ labels: [], shaRevisado: A, headSha: B, commits: new Map([[B, W(A)]]), ultimoEsLgtm: false }) === false, '(i) REVIEW/NITS posterior sobre el head web-flow ⇒ false');
+{
+  const M = new Set([A]);
+  const ult = cs => GH.ultimoVeredicto(cs, PAT) === 'LGTM';
+  check(GH.lgtmVigente({ labels: [], shaRevisado: A, headSha: B, commits: new Map([[B, W(A)]]), marcadosUpdate: M, ultimoEsLgtm: ult([com(PAT, 'LGTM'), com(PAT, marca(A)), com(PAT, 'REVIEW\n🔴')]) }) === false, '(i) head = merge web-flow del revisado + REVIEW posterior ⇒ false');
+  check(GH.lgtmVigente({ labels: [], shaRevisado: A, headSha: B, commits: new Map([[B, W(A)]]), marcadosUpdate: M, ultimoEsLgtm: ult([com(PAT, 'LGTM'), com(PAT, marca(A)), com(PAT, 'NITS\n- x')]) }) === false, '(ii) mismo caso con NITS posterior ⇒ false');
+  check(GH.lgtmVigente({ labels: ['lgtm'], shaRevisado: A, headSha: A, commits: new Map(), ultimoEsLgtm: ult([com(PAT, 'LGTM'), com(PAT, marca(A)), com(PAT, 'REVIEW\n🔴')]) }) === false, '(iii) rama 1 (label + SHA igual) con REVIEW posterior ⇒ false');
+}
 check(GH.lgtmVigente({ labels: ['lgtm'], shaRevisado: A, headSha: A, commits: new Map(), ultimoEsLgtm: false }) === false, '(i) último veredicto no-LGTM con label y SHA iguales ⇒ false');
-check(GH.lgtmVigente({ labels: ['needs-review'], shaRevisado: A, headSha: B, commits: new Map([[B, W(A)]]), ultimoEsLgtm: true }) === false, '(i) `needs-review` pendiente sobre el head web-flow ⇒ false');
-check(GH.lgtmVigente({ labels: [], shaRevisado: A, headSha: B, commits: new Map([[B, W(A)]]) }) === false, '(i) `ultimoEsLgtm` ausente ⇒ false (fail-closed)');
+check(GH.lgtmVigente({ labels: ['needs-review'], shaRevisado: A, headSha: B, commits: new Map([[B, W(A)]]), marcadosUpdate: new Set([A]), ultimoEsLgtm: true }) === false, '(i) `needs-review` pendiente sobre el head web-flow ⇒ false');
+check(GH.lgtmVigente({ labels: [], shaRevisado: A, headSha: B, commits: new Map([[B, W(A)]]), marcadosUpdate: new Set([A]) }) === false, '(i) `ultimoEsLgtm` ausente ⇒ false (fail-closed)');
 {
   const cs = [com(PAT, 'LGTM\n\nok'), com(PAT, marca(A)), com(PAT, 'REVIEW\n\n🔴 algo')];
   check(GH.ultimoVeredicto(cs, PAT) === 'REVIEW', '(i) `ultimoVeredicto` ⇒ el último veredicto del Reviewer');
@@ -109,7 +126,8 @@ check(GH.lgtmVigente({ labels: [], shaRevisado: A, headSha: B, commits: new Map(
 // ── (h) decidirAp024 ────────────────────────────────────────────────────────
 const d = o => GH.decidirAp024({ ultimoEsLgtm: true, hasLgtm: false, shaRevisado: A, headSha: A, headSinCambiosDesdeVeredicto: false, commits: new Map(), remats: 0, rectHold: false, ...o });
 check(d({}) === 'remat', "(h) 'remat': crash con head = revisado");
-check(d({ headSha: B, commits: new Map([[B, W(A)]]) }) === 'remat', "(h) 'remat': head de updateBranch");
+check(d({ headSha: B, commits: new Map([[B, W(A)]]), marcadosUpdate: new Set([A]) }) === 'remat', "(h) 'remat': head de updateBranch de epic-merge");
+check(d({ headSha: B, commits: new Map([[B, W(A)]]), marcadosUpdate: new Set() }) === 'reviewer', "(h) 'reviewer': head web-flow sin marcador de updateBranch");
 check(d({ remats: 1 }) === null, '(h) null: cap 1 por head agotado');
 check(d({ shaRevisado: null, headSinCambiosDesdeVeredicto: true }) === 'rellenar-y-remat', "(h) 'rellenar-y-remat': sin marcador, head sin cambios, sin `lgtm`");
 check(d({ shaRevisado: null, headSinCambiosDesdeVeredicto: true, hasLgtm: true }) === 'rellenar-y-remat', "(h) 'rellenar-y-remat': sin marcador, head sin cambios, con `lgtm`");
@@ -132,6 +150,13 @@ function costuras(em, wd, rv) {
     if (!/GH\.ciOkPorRun\(/.test(em)) f.push('epic-merge.yml no invoca `ciOkPorRun`');
     if (!/pulls\.merge\(\{[^}]*\bsha:\s*pf\.head\.sha/.test(em)) f.push('epic-merge.yml no pasa `sha: pf.head.sha` a `pulls.merge`');
     if (em.includes('/^\\s*LGTM\\b/')) f.push('epic-merge.yml aún contiene el regex del respaldo por comentarios (`/^\\s*LGTM\\b/`)');
+    {
+      const trozos = em.split('pulls.updateBranch(');
+      if (trozos.length !== 3) f.push(`epic-merge.yml llama a \`pulls.updateBranch\` ${trozos.length - 1} veces (se esperaban 2)`);
+      else if (!trozos[0].includes('epic-merge-update-branch') || !trozos.slice(0, 2).every(t => /await marcarUpdateBranch\(/.test(t.slice(Math.max(0, t.length - 700)))))
+        f.push('epic-merge.yml: `epic-merge-update-branch` no se publica (`marcarUpdateBranch`) antes de cada `pulls.updateBranch`');
+      if (!/GH\.shasUpdateMarcados\(/.test(em) || !/marcadosUpdate, ultimoEsLgtm/.test(em)) f.push('epic-merge.yml no pasa los `updateBranch` marcados a `lgtmVigente`');
+    }
     if (!/gate-head\.cjs`\); \}\s*\n\s*catch \(e\) \{ await diag\([^\n]*fail-closed[^\n]*\); return; \}/.test(em)) f.push('epic-merge.yml no carga `gate-head.cjs` fail-closed (diag + return)');
   }
   if (wd != null) {
@@ -182,6 +207,7 @@ if (EM != null && WD != null && RVW != null) {
     ['watchdog sin aviso', () => costuras(EM, WD.replace('gate-head ausente: AP-024 en modo previo', 'x'), RVW)],
     ['watchdog modo previo alterado', () => costuras(EM, WD.replace('if (!hasLgtm && !headAfterVerdict && remats < 1 && !rectHold)', 'if (!hasLgtm && remats < 1)'), RVW)],
     ['reviewer marcador duplicado', () => costuras(EM, WD, RVW + '\n// reviewer-lgtm-sha\n')],
+    ['epic-merge updateBranch sin marcador', () => costuras(EM.replace(/await marcarUpdateBranch\(pf\.head\.sha\)/, 'null'), WD, RVW)],
     ['reviewer sin fail-closed', () => costuras(EM, WD, RVW.replace(/if \(!marcado\) \{/, 'if (false) {'))],
   ];
   for (const [nom, fn] of mut) check(fn().length > fallosCostura.length, `auto-ejercicio: «${nom}» pone la costura roja`);
@@ -235,8 +261,12 @@ if (WD != null) {
     check(!tiene(w, /"lgtm"/), '(int) cap 1 por head: con el marcador del head ya presente ⇒ sin re-materializar', w);
   }
   {
-    const w = await scan({ comentarios: [LG, MK(PREV)], commits: [{ sha: HEAD, parents: [{ sha: PREV }, { sha: '7'.repeat(40) }], committer: { login: 'web-flow' } }] });
-    check(tiene(w, /^POST \/issues\/5\/labels .*"lgtm"/), "(int) 'remat': head `web-flow` de updateBranch sobre el SHA revisado ⇒ `lgtm`", w);
+    const WF = [{ sha: HEAD, parents: [{ sha: PREV }, { sha: '7'.repeat(40) }], committer: { login: 'web-flow' } }];
+    const UPD = com(PAT, `x\n\n<!-- epic-merge-update-branch: ${PREV} -->`, T(-20));
+    const w = await scan({ comentarios: [LG, MK(PREV), UPD], commits: WF });
+    check(tiene(w, /^POST \/issues\/5\/labels .*"lgtm"/), "(int) 'remat': head `web-flow` de updateBranch de epic-merge sobre el SHA revisado ⇒ `lgtm`", w);
+    const w2 = await scan({ comentarios: [LG, MK(PREV)], commits: WF });
+    check(tiene(w2, /^POST \/issues\/5\/labels .*"needs-review"/) && !tiene(w2, /^POST \/issues\/5\/labels .*"lgtm"/), "(int) head `web-flow` SIN marcador de updateBranch («Resolve conflicts») ⇒ turno del Reviewer", w2);
   }
   {
     const w = await scan({ comentarios: [LG], headDate: T(-120) });
@@ -291,4 +321,4 @@ if (fails) {
   console.error(`CHECK-GATE-HEAD ROJO: ${fails}/${n} aserciones fallan (módulo ${fuente}).`);
   process.exit(1);
 }
-console.log(`check-gate-head verde: ${n} aserciones sobre el módulo REAL ${fuente} (casos a–i del ruling de #408) + costura de epic-merge/watchdog/reviewer con auto-ejercicio + integración con el scan REAL de watchdog.yml (con y sin módulo).`);
+console.log(`check-gate-head verde: ${n} aserciones sobre el módulo REAL ${fuente} (casos a–i del ruling de #408 y i–v de la enmienda del Architect) + costura de epic-merge/watchdog/reviewer con auto-ejercicio + integración con el scan REAL de watchdog.yml (con y sin módulo).`);

@@ -259,19 +259,22 @@ const cm = (msg, min, { sha = HEAD_J, parents = [PREV_J, 'c3'.repeat(20)], login
 const feat = (min) => cm('feat', min, { sha: PREV_J, parents: ['d4'.repeat(20)], login: 'claude[bot]' });
 const vd = (v, min) => ({ id: min, body: `${v}\nok`, user: { login: REV }, created_at: T(min) });
 const mk = (sha, min) => ({ id: 2000 + min, body: `**reviewer · \`lgtm\` materializado**\n\n<!-- reviewer-lgtm-sha: ${sha} -->`, user: { login: REV }, created_at: T(min) });
+const upd = (sha, min) => ({ id: 3000 + min, body: `x\n\n<!-- epic-merge-update-branch: ${sha} -->`, user: { login: REV }, created_at: T(min) });
 const marcaAppend = min => ({ id: 1000 + min, body: `**watchdog · merge append-only**\n\n<!-- watchdog-rebase-append: ${SHA} -->`, user: { login: REV }, created_at: T(min) });
-async function gateEM({ comments = [], commits = [], labels = ['lgtm', 'ci-verde'] } = {}) {
-  const w = { merged: false, diags: [] };
+async function gateEM({ comments = [], commits = [], labels = ['lgtm', 'ci-verde'], estado = 'clean', updateFalla = false } = {}) {
+  const w = { merged: false, diags: [], orden: [], borrados: [] };
   const pr = { number: 50, state: 'open', merged: false, draft: false, title: 'feat: algo', body: 'Refs #40', head: { ref: 'claude/issue-40-x', sha: HEAD_J }, base: { ref: 'main', sha: 'b0' }, labels: labels.map(name => ({ name })) };
   const conocidos = {
     issues: {
       get: async p => ({ data: p.issue_number === 40 ? { number: 40, state: 'open', title: 'Issue 40', body: '', labels: [{ name: 'epica' }] } : { number: p.issue_number, labels: [], body: '' } }),
       listComments: async p => ({ data: p.issue_number === 50 ? comments : [] }),
-      createComment: async p => { w.diags.push(p.body); return { data: { id: 1 } }; },
+      createComment: async p => { w.diags.push(p.body); w.orden.push('comment:' + p.body); return { data: { id: 77 } }; },
+      deleteComment: async p => { w.borrados.push(p.comment_id); return { data: {} }; },
     },
     pulls: {
-      get: async () => ({ data: { ...pr, mergeable_state: 'clean' } }),
+      get: async () => ({ data: { ...pr, mergeable_state: estado } }),
       listCommits: async () => ({ data: commits }),
+      updateBranch: async p => { w.orden.push('update:' + p.expected_head_sha); if (updateFalla) throw Object.assign(new Error('merge conflict'), { status: 422 }); return { data: {} }; },
       merge: async () => { w.merged = true; return { data: {} }; },
     },
     users: { getAuthenticated: async () => ({ data: { login: REV } }) },
@@ -326,12 +329,26 @@ await caso('(j7) comentario no-veredicto que CITA el marcador entre backticks no
   return w.merged || j(w);
 });
 await caso('(j8) head = merge `web-flow` de `updateBranch` sobre el SHA revisado, sin label ⇒ mergea (AP-125 §3 por la cadena, AP-139)', async () => {
-  const w = await gateEM({ comments: [vd('LGTM', 0), mk(PREV_J, 0)], commits: [feat(-5), cm('Merge branch main', 10, { login: 'web-flow' })], labels: ['ci-verde'] });
+  const w = await gateEM({ comments: [vd('LGTM', 0), mk(PREV_J, 0), upd(PREV_J, 5)], commits: [feat(-5), cm('Merge branch main', 10, { login: 'web-flow' })], labels: ['ci-verde'] });
   return w.merged || j(w);
 });
 await caso('(j9) head `web-flow` sobre el SHA revisado + REVIEW posterior ⇒ NO mergea (crítica ronda 3, D)', async () => {
-  const w = await gateEM({ comments: [vd('LGTM', 0), mk(PREV_J, 0), vd('REVIEW', 20)], commits: [feat(-5), cm('Merge branch main', 10, { login: 'web-flow' })], labels: ['ci-verde'] });
+  const w = await gateEM({ comments: [vd('LGTM', 0), mk(PREV_J, 0), upd(PREV_J, 5), vd('REVIEW', 20)], commits: [feat(-5), cm('Merge branch main', 10, { login: 'web-flow' })], labels: ['ci-verde'] });
   return !w.merged || j(w);
+});
+await caso('(j10) head = merge `web-flow` SIN marcador de updateBranch de epic-merge («Resolve conflicts» web) ⇒ NO mergea (enmienda del Architect, punto 2)', async () => {
+  const w = await gateEM({ comments: [vd('LGTM', 0), mk(PREV_J, 0)], commits: [feat(-5), cm('Merge branch main', 10, { login: 'web-flow' })], labels: ['ci-verde'] });
+  return !w.merged || j(w);
+});
+await caso('(j11) rama `behind`: marcador `epic-merge-update-branch` del head ANTES de `updateBranch` (con `expected_head_sha`), sin merge', async () => {
+  const w = await gateEM({ comments: [vd('LGTM', 0), mk(HEAD_J, 0)], commits: [feat(-5)], estado: 'behind' });
+  const iM = w.orden.findIndex(x => x.includes(`<!-- epic-merge-update-branch: ${HEAD_J} -->`));
+  const iU = w.orden.indexOf('update:' + HEAD_J);
+  return (!w.merged && iM >= 0 && iU > iM && !w.borrados.length) || j(w.orden);
+});
+await caso('(j12) rama `behind` con `updateBranch` fallido ⇒ el marcador se borra', async () => {
+  const w = await gateEM({ comments: [vd('LGTM', 0), mk(HEAD_J, 0)], commits: [feat(-5)], estado: 'behind', updateFalla: true });
+  return (!w.merged && w.borrados.includes(77)) || j({ orden: w.orden, borrados: w.borrados });
 });
 
 // ── (k) red por estado del scan ─────────────────────────────────────────────
