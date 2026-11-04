@@ -258,7 +258,7 @@ async function run({ github, context, core, skipLabels }) {
     let ciDelWf = [];
     try {
       const { data: runs } = await github.rest.actions.listWorkflowRunsForRepo({ owner, repo, head_sha: head, per_page: 20 });
-      ciDelWf = (runs.workflow_runs || []).filter((r) => r.name === CI_WF);
+      ciDelWf = (runs.workflow_runs || []).filter((r) => r.name === CI_WF && r.conclusion !== 'skipped');   // run con todos los jobs saltados: no es veredicto ni «sustituto»
       ci = ciDelWf.slice().sort((x, y) => new Date(y.created_at) - new Date(x.created_at))[0] || null;
     } catch (e) { core.warning(`resolve-rerun: runs de CI de #${n} ilegibles (${e.message}) — fail-closed.`); continue; }
     // Frescura POR ESTADO: el ruling se materializa solo si el head VIGENTE
