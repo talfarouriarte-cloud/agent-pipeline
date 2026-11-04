@@ -77,5 +77,10 @@
     "pausa-cola",
     "critica-na"
   ],
-  "self-sync-labels.yml": []
+  "self-sync-labels.yml": [],
+  "suite-steward.yml": [
+    "suite-salud",
+    "suite-limpieza",
+    "eje:local"
+  ]
 }

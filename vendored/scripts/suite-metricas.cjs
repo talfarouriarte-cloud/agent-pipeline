@@ -8,8 +8,8 @@
 // jobs) y escribe `.suite-steward/metricas.{json,md}` para la sesión del
 // steward (`docs/agents/suite-steward.md`).
 //
-// PURO (AP-068): sin E/S ni red; todo lo que hace llamadas vive en el step y
-// todo lo que decide vive aquí. Banco: `scripts/check-suite-metricas.mjs`.
+// PURO (AP-068): sin E/S ni red (`zlib` solo descomprime un zip ya bajado);
+// todo lo que hace llamadas vive en el step y todo lo que decide vive aquí. Banco: `scripts/check-suite-metricas.mjs`.
 //
 // Una sola magnitud por campo (hallazgo [G] de la crítica ronda 3 y enmienda
 // del Architect a #410):
@@ -251,6 +251,7 @@ function informeMd(m) {
   for (const p of m.dias || []) L.push(`| ${p.fecha} | ${p.fuente || 'artifact'} | ${p.run || '—'} | ${p.tests} | ${s(p.msTotal)} |`);
   if (!(m.dias || []).length) L.push('| — | — | — | — | — |');
   L.push('', '## Top 20 ficheros por ms', '');
+  if (m.detalleDe) L.push(`Detalle por fichero del run ${m.detalleDe.run} (${m.detalleDe.fecha}).`, '');
   if (!(m.top || []).length) L.push('Sin detalle por fichero (no hay informe de vitest en la semana).');
   else { L.push('| # | Fichero | Tests | ms |', '|---|---|---|---|'); (m.top || []).forEach((e, i) => L.push(`| ${i + 1} | \`${e.fichero}\` | ${e.tests} | ${e.ms} |`)); }
   if ((m.directorios || []).length) {
@@ -271,6 +272,73 @@ function informeMd(m) {
   return L.join('\n') + '\n';
 }
 
+// Entradas de un zip (`actions/artifacts/<id>/zip`) ⇒ `[{ nombre, datos: Buffer }]`.
+// Solo lo que sube `actions/upload-artifact@v4`: método 0 (stored) o 8
+// (deflate), leídos por el directorio central (los tamaños de la cabecera local
+// pueden venir a 0 con data descriptor). Sin E/S: `zlib` solo descomprime.
+function leerZip(buf) {
+  const b = Buffer.from(buf);
+  let eocd = -1;
+  for (let i = b.length - 22; i >= Math.max(0, b.length - 65557); i--) if (b.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+  if (eocd < 0) throw new Error('zip sin directorio central');
+  const n = b.readUInt16LE(eocd + 10);
+  let p = b.readUInt32LE(eocd + 16);
+  const out = [];
+  for (let k = 0; k < n; k++) {
+    if (b.readUInt32LE(p) !== 0x02014b50) throw new Error('zip: entrada del directorio central corrupta');
+    const metodo = b.readUInt16LE(p + 10), comp = b.readUInt32LE(p + 20);
+    const ln = b.readUInt16LE(p + 28), lx = b.readUInt16LE(p + 30), lc = b.readUInt16LE(p + 32);
+    const local = b.readUInt32LE(p + 42);
+    const nombre = b.slice(p + 46, p + 46 + ln).toString('utf8');
+    p += 46 + ln + lx + lc;
+    if (nombre.endsWith('/')) continue;
+    const ini = local + 30 + b.readUInt16LE(local + 26) + b.readUInt16LE(local + 28);
+    const crudo = b.slice(ini, ini + comp);
+    if (metodo === 0) out.push({ nombre, datos: crudo });
+    else if (metodo === 8) out.push({ nombre, datos: require('zlib').inflateRawSync(crudo) });
+    else throw new Error(`zip: método ${metodo} no soportado (${nombre})`);
+  }
+  return out;
+}
+
+// Un run ⇒ su punto de la serie. `reportes` (informes JSON de sus artifacts) gana
+// sobre `logs` (texto de cada job); sin ninguno de los dos con datos ⇒ `null`.
+function punto({ fecha, run, reportes, logs }) {
+  if ((reportes || []).length) {
+    const ag = agregar(reportes);
+    return { fecha, run, fuente: 'artifact', tests: ag.tests, msTotal: ag.msTotal, msPared: null, agregado: ag };
+  }
+  const xs = (logs || []).map(agregarDesdeLog).filter(Boolean);
+  if (!xs.length) return null;
+  const suma = k => (xs.some(x => x[k] != null) ? xs.reduce((t, x) => t + (x[k] || 0), 0) : null);
+  return { fecha, run, fuente: 'log', tests: suma('tests'), msTotal: suma('msTotal'), msPared: suma('msPared') };
+}
+
+// Lo que recoge el step ⇒ `metricas.json`. `dias` y `semanas` = `[{ fecha, run,
+// reportes?, logs? }]`. La serie de tendencia es un punto por semana: las
+// `semanas` anteriores, de la más antigua a la más reciente, y el último día con
+// datos de la semana actual. El top y los directorios salen del punto `artifact`
+// más reciente (sin ninguno, vacíos y el informe lo dice).
+function componer(e) {
+  const sinAg = p => { const { agregado, ...r } = p; return r; };
+  const dias = (e.dias || []).map(punto).filter(Boolean).sort((a, b) => (a.fecha < b.fecha ? -1 : 1));
+  const sems = (e.semanas || []).map(punto).filter(Boolean).sort((a, b) => (a.fecha < b.fecha ? -1 : 1));
+  const serie = [...sems, ...dias.slice(-1)];
+  const conDetalle = [...sems, ...dias].filter(p => p.agregado).pop() || null;
+  return {
+    repo: e.repo, rama: e.rama, modo: e.modo, generado: e.generado, semana: semanaIso(e.generado),
+    hayArtifacts: [...sems, ...dias].some(p => p.fuente === 'artifact'),
+    serie: serie.map(sinAg), dias: dias.map(sinAg), tendencia: tendencia(serie.map(sinAg)),
+    detalleDe: conDetalle ? { fecha: conDetalle.fecha, run: conDetalle.run } : null,
+    top: conDetalle ? top(conDetalle.agregado, e.nTop || 20) : [],
+    directorios: conDetalle ? porDirectorio(conDetalle.agregado, e.nDir || 10) : [],
+    porFichero: conDetalle ? conDetalle.agregado.porFichero : [],
+    runsRojos: e.runsRojos == null ? null : e.runsRojos,
+    rojos: rojos(e.anotaciones), inestables: inestables(e.ejecuciones),
+    avisos: e.avisos || [],
+  };
+}
+
 // Semana ISO `AAAA-Www` de una fecha (título del issue de estado).
 function semanaIso(fecha) {
   const x = new Date(fecha);
@@ -285,4 +353,5 @@ function semanaIso(fecha) {
 module.exports = {
   relativo, agregar, top, porDirectorio, tendencia, clasificarFallo,
   normalizarLog, agregarDesdeLog, inestables, rojos, seleccionarRuns, informeMd, semanaIso,
+  leerZip, punto, componer,
 };
