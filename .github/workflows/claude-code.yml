@@ -1219,8 +1219,21 @@ jobs:
             // watchdog si el Creator muere sin abrirlo — cierra la ventana
             // ciega entre el arm y el nacimiento del PR), O un PR claude/*
             // abierto (fase tardía). Cualquiera de las dos bloquea.
+            // AP-143 (central#421): `serial-ok` es simétrico — fuera del régimen
+            // serial, ni es bloqueado (salida de arriba) ni bloquea: el PR
+            // `claude/issue-N-*` de un issue `serial-ok` no es titular de la
+            // serie (`COLA.titularesSerie`). Módulo ausente o viejo, o listado de
+            // `serial-ok` fallido ⇒ cuentan todos los `claude/*` (fail-closed).
+            let COLA = null;
+            for (const p of [`${process.env.GITHUB_WORKSPACE}/.cola-central/vendored/scripts/cola-prioridad.cjs`, `${process.env.GITHUB_WORKSPACE}/scripts/cola-prioridad.cjs`]) {
+              try { COLA = require(p); break; } catch (e) { /* siguiente ubicación */ }
+            }
             const { data: prs } = await github.rest.pulls.list({ owner, repo, state: 'open', per_page: 100 });
-            const claudePRs = prs.filter(p => p.head.ref.startsWith('claude/'));
+            const titulares = (COLA && COLA.titularesSerie)
+              ? await COLA.titularesSerie({ github, owner, repo, prs, warn: (m) => core.warning(m) })
+              : { prs: prs.filter(p => p.head.ref.startsWith('claude/')), excluidos: [], fallo: false };
+            if (titulares.excluidos.length) core.notice(`Guard serial: PRs de issues serial-ok fuera de la titularidad (AP-143): ${titulares.excluidos.map(n => `#${n}`).join(', ')}.`);
+            const claudePRs = titulares.prs;
             const inFlightPRs = claudePRs.map(p => `#${p.number} (${p.head.ref})`);
             const { data: flagged } = await github.rest.issues.listForRepo({
               owner, repo, state: 'open', labels: 'serial-activo', per_page: 20 });
@@ -4383,7 +4396,11 @@ jobs:
                 : queued.filter(i => !i.pull_request))[0];
               if (!next) return;
               const { data: prs } = await github.rest.pulls.list({ owner, repo, state: 'open', per_page: 100 });
-              const held = prs.filter(p => p.head.ref.startsWith('claude/')).map(p => `#${p.number}`);
+              // AP-143: los PRs de issues `serial-ok` no son titulares; sin
+              // módulo (o listado fallido), cuentan todos los `claude/*`.
+              const held = ((COLA && COLA.titularesSerie)
+                ? (await COLA.titularesSerie({ github, owner, repo, prs, warn: (m) => core.warning(m) })).prs
+                : prs.filter(p => p.head.ref.startsWith('claude/'))).map(p => `#${p.number}`);
               if (held.length) {
                 core.info(`barrido de cola: serie OCUPADA por ${held.join(', ')}; la espera de #${next.number} es legítima.`);
                 return;

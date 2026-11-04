@@ -1595,6 +1595,13 @@ jobs:
             for (const p of [`${process.env.GITHUB_WORKSPACE}/.cola-central/vendored/scripts/cola-prioridad.cjs`, `${process.env.GITHUB_WORKSPACE}/scripts/cola-prioridad.cjs`]) {
               try { COLA = require(p); break; } catch (e) { /* siguiente ubicación */ }
             }
+            // AP-143 (central#421): titulares de la serie para `cola-huerfana`
+            // (`foreignHolder`, abajo): los PRs de issues `serial-ok` no
+            // cuentan. Solo ahí: `openAgentPRs` sigue entero para los demás
+            // detectores de PR. Sin módulo (o listado fallido), todos los `claude/*`.
+            const titularesCola = (COLA && COLA.titularesSerie)
+              ? (await COLA.titularesSerie({ github, ...O, prs: openAgentPRs, warn: (m) => core.warning(m) })).prs
+              : openAgentPRs;
             // AP-122 (review PR #380, 🔴 1): módulo de absorción, del mismo
             // checkout sparse. Sin módulo, el detector de issues sigue como antes.
             let ABS = null;
@@ -1749,7 +1756,7 @@ jobs:
                 // `cola-huerfana` (le da dueño: architect-resolve) aunque nadie
                 // aplique el fast-path del guard (AP-048).
                 const foreignHolder = serialActiveOpen.some(i => i.number !== issue.number)
-                  || openAgentPRs.some(p => !p.head.ref.startsWith(`claude/issue-${issue.number}-`));
+                  || titularesCola.some(p => !p.head.ref.startsWith(`claude/issue-${issue.number}-`));
                 if (foreignHolder) {
                   core.notice(`#${issue.number}: en-cola con serie ocupada por titular AJENO (premisa sostenida) — espera legítima, sin anomalía.`);
                   continue;
