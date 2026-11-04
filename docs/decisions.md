@@ -3790,7 +3790,7 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
    - 409 ⇒ `diag`.
    - Base modificada ⇒ AP-125 §3: `update-branch`, que sale del bucle.
    - Otro 4xx ⇒ `diag`.
-   - 5xx ⇒ marcador `merge-retry-5xx: <sha>` (si falla, `core.warning` y se sigue), espera de 30 s (o 60 s en el segundo reintento) y relectura con `pulls.get`, que trae head, labels y `mergeable_state`.
+   - 5xx ⇒ marcador `merge-retry-5xx: <sha> intento=<n>` (si falla, `core.warning` y se sigue), espera de 30 s (o 60 s en el segundo reintento) y relectura con `pulls.get`, que trae head, labels y `mergeable_state`.
    Tras la relectura:
    - Head distinto ⇒ `diag`.
    - Falta `lgtm` o `ci-verde` ⇒ `diag` sin `stalled`.

@@ -152,7 +152,7 @@ const MERGE_RETRY_CAP = 3;
 // Sin `status` (error sin código), el mensaje canónico del 5xx.
 const MERGE_5XX_CAP = 3;
 const MENSAJE_5XX_RE = /^(Server Error|Bad Gateway|Service Unavailable|Gateway Time-?out)$/i;
-const marcadorReintento5xx = (sha) => `<!-- merge-retry-5xx: ${sha} -->`;
+const marcadorReintento5xx = (sha, intento) => `<!-- merge-retry-5xx: ${sha} intento=${intento} -->`;
 function es5xx({ status, mensaje }) {
   const st = Number(status);
   if (status !== undefined && status !== null && Number.isFinite(st)) return st >= 500 && st <= 599;

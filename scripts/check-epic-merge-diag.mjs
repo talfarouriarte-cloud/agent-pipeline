@@ -164,7 +164,7 @@ caso('5xx (e): status 422 «Pull Request has merge conflicts» ⇒ diag (sin cam
 caso('5xx (f): «Base branch was modified» (status 405) ⇒ update-branch (sin cambio)', d5({ mensaje: BBM, status: 405, reintentosPrevios: 0, intento5xx: 0 }) === 'update-branch');
 caso('5xx: un status 4xx con mensaje de 5xx manda el status ⇒ diag', d5({ mensaje: 'Server Error', status: 403, intento5xx: 1 }) === 'diag');
 caso('5xx: llamada de hoy (sin status ni intento5xx) con otro mensaje ⇒ diag', d5({ mensaje: 'Required status check "ci" is expected.', reintentosPrevios: 0 }) === 'diag');
-caso('5xx: cap 3 y marcador literal con head sha', m.MERGE_5XX_CAP === 3 && m.marcadorReintento5xx('abc1234') === '<!-- merge-retry-5xx: abc1234 -->');
+caso('5xx: cap 3 y marcador literal con head sha', m.MERGE_5XX_CAP === 3 && m.marcadorReintento5xx('abc1234', 2) === '<!-- merge-retry-5xx: abc1234 intento=2 -->');
 
 if (existsSync('.github/workflows/epic-merge.yml')) {
   const y = readFileSync('.github/workflows/epic-merge.yml', 'utf8');
@@ -177,7 +177,7 @@ if (existsSync('.github/workflows/epic-merge.yml')) {
     /EMD\.decidirReintentoMerge\(\{ mensaje: e\.message, status: e\.status, reintentosPrevios: 0, intento5xx \}\)/.test(bloque)
     && /EMD\.decidirReintentoMerge\(\{ mensaje: e\.message, status: e\.status, reintentosPrevios: previos, intento5xx \}\)/.test(bloque));
   caso('costura: marcador `merge-retry-5xx` en un try que solo hace core.warning',
-    /try \{\s*await github\.rest\.issues\.createComment\([^]*?EMD\.marcadorReintento5xx\(shaGate\)[^]*?\} catch \(eC\) \{ core\.warning\([^)]*\); \}/.test(bloque));
+    /try \{\s*await github\.rest\.issues\.createComment\([^]*?EMD\.marcadorReintento5xx\(shaGate, intento5xx\)[^]*?\} catch \(eC\) \{ core\.warning\([^)]*\); \}/.test(bloque));
   caso('costura: esperas de 30 s y 60 s', /ESPERAS_5XX_MS = \[30000, 60000\]/.test(bloque) && /await espera\(ESPERAS_5XX_MS\[intento5xx - 1\]\)/.test(bloque));
   caso('costura: tope de 3 intentos por `MERGE_5XX_CAP` del módulo (stalled-5xx)', /r\.accion === 'stalled-5xx'/.test(bloque) && /rr\.accion === 'stalled-5xx'/.test(bloque));
   caso('costura: relectura de head, labels y behind antes de cada reintento',
