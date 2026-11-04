@@ -143,13 +143,36 @@ const marcadorReintento = (sha) => `<!-- merge-retry-base-modified: ${sha} -->`;
 const MERGE_RETRY_RE = /<!--\s*merge-retry-base-modified:\s*[0-9a-f]{7,40}\s*-->/;
 const contarReintentos = (comentarios) => (comentarios || []).filter((c) => MERGE_RETRY_RE.test(c.body || '')).length;
 const MERGE_RETRY_CAP = 3;
-function decidirReintentoMerge({ mensaje, reintentosPrevios }) {
-  if (!/Base branch was modified/i.test(String(mensaje || ''))) return { accion: 'diag' };
-  return (Number(reintentosPrevios) || 0) < MERGE_RETRY_CAP ? { accion: 'update-branch' } : { accion: 'stalled' };
+
+// Reintento del merge ante un 5xx de GitHub (central#412, AP-141). Un 5xx
+// transitorio acababa en `MERGE FALLÓ` sin nada que re-evaluara el PR. Se
+// reintenta en el MISMO run: `intento5xx` es el nº de 5xx ya recibidos en este
+// run (merge y relecturas), 1 tras el primero; < 3 ⇒ `reintentar-5xx`, 3 ⇒
+// `stalled-5xx` (estado terminal del run). El marcador es solo trazabilidad.
+// Sin `status` (error sin código), el mensaje canónico del 5xx.
+const MERGE_5XX_CAP = 3;
+const MENSAJE_5XX_RE = /^(Server Error|Bad Gateway|Service Unavailable|Gateway Time-?out)$/i;
+const marcadorReintento5xx = (sha) => `<!-- merge-retry-5xx: ${sha} -->`;
+function es5xx({ status, mensaje }) {
+  const st = Number(status);
+  if (status !== undefined && status !== null && Number.isFinite(st)) return st >= 500 && st <= 599;
+  return MENSAJE_5XX_RE.test(String(mensaje || '').trim());
+}
+// Orden: (a) base modificada (AP-125 §3, sin cambio) → (b) 5xx → (c) `diag`.
+// Las llamadas sin `status` ni `intento5xx` dan lo mismo que antes de AP-141.
+function decidirReintentoMerge({ mensaje, status, reintentosPrevios, intento5xx }) {
+  if (/Base branch was modified/i.test(String(mensaje || ''))) {
+    return (Number(reintentosPrevios) || 0) < MERGE_RETRY_CAP ? { accion: 'update-branch' } : { accion: 'stalled' };
+  }
+  if (es5xx({ status, mensaje })) {
+    return (Number(intento5xx) || 0) < MERGE_5XX_CAP ? { accion: 'reintentar-5xx' } : { accion: 'stalled-5xx' };
+  }
+  return { accion: 'diag' };
 }
 
 module.exports = {
   MARKER, esStickyPropio, seleccionarSticky, estadoDe, stickyMergeado,
   construirCuerpo, marcadoresPop, popYaEmitido,
   marcadorReintento, MERGE_RETRY_RE, contarReintentos, MERGE_RETRY_CAP, decidirReintentoMerge,
+  MERGE_5XX_CAP, marcadorReintento5xx, es5xx,
 };

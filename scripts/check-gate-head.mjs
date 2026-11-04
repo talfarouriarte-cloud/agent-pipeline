@@ -152,8 +152,9 @@ function costuras(em, wd, rv) {
     if (em.includes('/^\\s*LGTM\\b/')) f.push('epic-merge.yml aún contiene el regex del respaldo por comentarios (`/^\\s*LGTM\\b/`)');
     {
       const trozos = em.split('pulls.updateBranch(');
-      if (trozos.length !== 3) f.push(`epic-merge.yml llama a \`pulls.updateBranch\` ${trozos.length - 1} veces (se esperaban 2)`);
-      else if (!trozos[0].includes('epic-merge-update-branch') || !trozos.slice(0, 2).every(t => /await marcarUpdateBranch\(/.test(t.slice(Math.max(0, t.length - 700)))))
+      // AP-141: el tercero es el `behind` de la relectura del reintento 5xx.
+      if (trozos.length !== 4) f.push(`epic-merge.yml llama a \`pulls.updateBranch\` ${trozos.length - 1} veces (se esperaban 3)`);
+      else if (!trozos[0].includes('epic-merge-update-branch') || !trozos.slice(0, 3).every(t => /await marcarUpdateBranch\(/.test(t.slice(Math.max(0, t.length - 700)))))
         f.push('epic-merge.yml: `epic-merge-update-branch` no se publica (`marcarUpdateBranch`) antes de cada `pulls.updateBranch`');
       if (!/GH\.shasUpdateMarcados\(/.test(em) || !/marcadosUpdate, ultimoEsLgtm/.test(em)) f.push('epic-merge.yml no pasa los `updateBranch` marcados a `lgtmVigente`');
     }
@@ -207,7 +208,7 @@ if (EM != null && WD != null && RVW != null) {
     ['watchdog sin aviso', () => costuras(EM, WD.replace('gate-head ausente: AP-024 en modo previo', 'x'), RVW)],
     ['watchdog modo previo alterado', () => costuras(EM, WD.replace('if (!hasLgtm && !headAfterVerdict && remats < 1 && !rectHold)', 'if (!hasLgtm && remats < 1)'), RVW)],
     ['reviewer marcador duplicado', () => costuras(EM, WD, RVW + '\n// reviewer-lgtm-sha\n')],
-    ['epic-merge updateBranch sin marcador', () => costuras(EM.replace(/await marcarUpdateBranch\(pf\.head\.sha\)/, 'null'), WD, RVW)],
+    ['epic-merge updateBranch sin marcador', () => costuras(EM.replace(/await marcarUpdateBranch\(shaGate\)/, 'null'), WD, RVW)],
     ['reviewer sin fail-closed', () => costuras(EM, WD, RVW.replace(/if \(!marcado\) \{/, 'if (false) {'))],
   ];
   for (const [nom, fn] of mut) check(fn().length > fallosCostura.length, `auto-ejercicio: «${nom}» pone la costura roja`);

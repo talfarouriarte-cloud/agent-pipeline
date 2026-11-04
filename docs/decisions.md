@@ -3734,6 +3734,8 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 7. **Watchdog sin `gate-head.cjs`:** AP-024 conserva su condición de hoy, literal, con `core.warning('gate-head ausente: AP-024 en modo previo; ramas 5-6 inactivas')`.
 8. **Mandatos:** filas `reviewer-lgtm-sha`, `epic-merge-update-branch` y `watchdog-lgtm-ci-rearm` y la forma con SHA de `watchdog-lgtm-rematerialize` en `protocol.md`; `watchdog-lgtm-ci-rearm` en la fila rescate/repesca de `epic-auditor.md`. Enmiendas anotadas en AP-024, AP-125 §3 y AP-130.
 
+> **Enmienda (2026-11-04, AP-141, central#412).** §3 no cambia su efecto: la base modificada sigue con `update-branch` y menos de 3 marcadores, y `stalled` a partir de 3. `decidirReintentoMerge` añade un parámetro, `({ mensaje, status, reintentosPrevios, intento5xx })`, y una rama (b) para los 5xx entre la base modificada (a) y `diag` (c). El `catch` del merge clasifica primero sin el conteo y solo pagina los comentarios del PR si sale la rama (a). Un 5xx de GitHub se reintenta en el mismo run, como mucho 3 intentos; ver AP-141.
+
 **Crítica ronda 3.** La enmienda del Architect al ruling (comentario `<!-- enmienda -->` de 2026-11-04 09:04Z en #408) aplica los dos bloqueantes y el no bloqueante:
 - *D, un `REVIEW`/`NITS` sobre un head `web-flow` no revocaba el LGTM por cadena.* `lgtmVigente` exige siempre que el último veredicto del Reviewer (`ultimoVeredicto`, autor = login del Reviewer) sea `LGTM`, en las dos ramas. `decidirAp024` también lo exige. El Creator añade, en la rama por cadena, que no haya `needs-review` pendiente (una review convocada sobre ese head aún no ha hablado). Casos de banco (i)–(iii).
 - *No bloqueante, editor de conflictos web de GitHub.* Un «Resolve conflicts» en la web firma también `web-flow`, con código de resolución escrito a mano. Se cierra con el marcador `epic-merge-update-branch` (punto 3b). Casos de banco (iv)–(v).
@@ -3771,5 +3773,49 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 **Términos de AP-099 que mueve.** (b) tokens ponderados por punto: tiempo de CI y sesiones de Creator perdidas en rojos de literal/timeout. (c) restricción: toda propuesta declara el invariante que deja de vigilarse.
 
 **Criterio falsable** (4 semanas tras la revisión inicial): un issue `suite-salud` por semana sin huecos; ≥ 1 `suite-limpieza` ejecutado por el consumidor por semana; `msTotal/tests` de app no sube semana a semana más de 2 de 4 semanas, evaluado solo sobre tramos de la misma `fuente` (enmienda §4); rojos de clase `literal` en PRs de finplan: la serie baja respecto a la semana de la revisión inicial. Banco y `check-contracts` en verde.
+
+**Fecha.** 2026-11-04.
+
+## AP-141 — epic-merge reintenta en el mismo run un 5xx de GitHub al mergear: bucle acotado a 3 intentos, relectura de head, gates y `behind`, y `stalled` como estado terminal (2026-11-04)
+
+**Contexto.** central#412. Ruling del 2026-11-04 fuera de ciclo, posición 20, por delegación del propietario en el Architect del central. Se corrigió tras las rondas 1 y 2 del Critic, y la ronda 3 cerró con `critica-na` y dos [G] que este AP aplica (ver abajo). En asesoramiento-financiero, el PR #3547 tenía `lgtm` vigente y `ci-verde` cuando `pulls.merge` devolvió `Server Error`, en una mañana de 5xx intermitentes. El `catch` del merge solo trataba el 409 (AP-139) y «Base branch was modified» (AP-125 §3). Lo demás acababa en `MERGE FALLÓ` y `return`, y el PR se quedó verde y sin ningún evento que lo re-evaluara: el caller no tiene `schedule`, y los belts del Watchdog solo actúan si falta `lgtm` o falta el CI del head. Lo desbloqueó el Architect a mano, re-aplicando `lgtm`.
+
+**Decisión (ruling; prevalece sobre la propuesta).**
+1. **Clasificación en el módulo** (`vendored/scripts/epic-merge-diag.cjs`). `decidirReintentoMerge({ mensaje, status, reintentosPrevios, intento5xx })` evalúa en este orden:
+   - (a) «Base branch was modified» ⇒ AP-125 §3 sin cambio.
+   - (b) 5xx ⇒ `reintentar-5xx` mientras `intento5xx < 3`, y `stalled-5xx` con 3. Es 5xx si `status` está entre 500 y 599, o, sin `status`, si el mensaje casa `/^(Server Error|Bad Gateway|Service Unavailable|Gateway Time-?out)$/i` (`es5xx`). Si viene `status`, decide el `status`.
+   - (c) Lo demás ⇒ `diag`.
+   `intento5xx` es el número de 5xx recibidos en este run, contando el merge y las relecturas. Las llamadas sin `status` ni `intento5xx` dan el mismo resultado que antes. Exportados nuevos: `MERGE_5XX_CAP` (3), `marcadorReintento5xx`, `es5xx`.
+2. **Bucle de reintento en el `catch`** (`epic-merge.yml`). Va en su propio `try` (`catch (eB)`): una excepción en él da `stalled` si ya hubo algún 5xx y `diag` si no, y nunca llega al `catch` exterior de «excepción no esperada». Cada fallo de `pulls.merge` pasa por la misma clasificación:
+   - 409 ⇒ `diag`.
+   - Base modificada ⇒ AP-125 §3: `update-branch`, que sale del bucle.
+   - Otro 4xx ⇒ `diag`.
+   - 5xx ⇒ marcador `merge-retry-5xx: <sha>` (si falla, `core.warning` y se sigue), espera de 30 s (o 60 s en el segundo reintento) y relectura con `pulls.get`, que trae head, labels y `mergeable_state`.
+   Tras la relectura:
+   - Head distinto ⇒ `diag`.
+   - Falta `lgtm` o `ci-verde` ⇒ `diag` sin `stalled`.
+   - Si no, nuevo `pulls.merge` con `sha` (AP-139).
+   Si la relectura falla con un 5xx, cuenta como uno más y vuelve a esperar según la misma serie, indexada por `intento5xx`. Si falla con cualquier otro error ⇒ `stalled`.
+3. **Tope = estado terminal del run.** Con `stalled-5xx` (como mucho 3 merges y ~90 s de esperas): label `stalled` en el issue del PR + comentario + `diag` «MERGE FALLÓ: 5xx de GitHub ×3 en el mismo run; gates verdes». Lo recoge architect-resolve, sin cambios en él. El propio `stalled` se intenta 2 veces, con 30 s entre ellas. Si las dos fallan: `diag` y `core.setFailed`, y el run queda rojo y visible (residual declarado).
+4. **Banco** (`scripts/check-epic-merge-diag.mjs`):
+   - Casos (a)–(f) y (c′) del ruling, más los mensajes sin `status`, «el `status` manda» y el marcador literal.
+   - Costuras: clasificación con `status: e.status`, en sus dos llamadas; marcador dentro de un `try` que solo hace `core.warning`; esperas de 30 s y 60 s; tope; relectura de head, labels y `behind` antes del merge; bucle en su propio `try`; ningún `return` del bucle sin `diag` o `stalled`.
+   - El `catch` real del YAML se ejecuta además con un `github` simulado y las esperas a 0, en 11 escenarios: merge al 2.º intento; ×3 ⇒ `stalled`; 5xx y luego 409; head movido; gate retirado; `behind`; ya mergeado; relectura con 5xx ×2; relectura con 404; 422; base modificada.
+   - Se ha comprobado que el banco se pone ROJO al aflojar el tope del módulo y al meter un `return` sin `diag` en el bucle.
+5. **Registro.** Fila `merge-retry-5xx` en `protocol.md` y enmienda en AP-125 §3.
+
+**Crítica ronda 3: decisiones del Creator, declaradas antes de codear** (el Reviewer las juzga):
+- *[G] Falla la paginación de comentarios antes de clasificar.* La clasificación se hace primero con `reintentosPrevios: 0`, y solo se pagina si sale la rama (a), la única que necesita el conteo. Un 5xx no pasa nunca por `listComments`. Si la paginación falla con base modificada, sale `diag`, igual que antes.
+- *[G] La relectura no miraba `mergeable_state`.* Con `behind`, se usa el camino `behind` previo al merge: `marcarUpdateBranch` (AP-139) + `updateBranch` con `expected_head_sha`, y re-entra por el CI del head nuevo. Si falla el marcador o el `updateBranch`, `stalled`: un `diag` ahí volvería a dejar un PR con «gates verdes sin evento».
+- *No bloqueantes aplicados.* Se reescribe la costura literal. `scripts/epic-merge-diag.cjs` NO está versionado: es la copia que deja el graft en runtime (excluida en `.git/info/exclude`) y se regenera desde `vendored/`, así que no puede divergir en el repo. `check-gate-head.mjs` pasa a esperar 3 `updateBranch`, todos con su marcador previo (el tercero es el `behind` de la relectura).
+- *Añadido.* Un 5xx puede llegar con el merge ya hecho. Si la relectura da `merged`, el run sigue por `postMerge`: limpieza de estado, pop de cola y sentinels. Sin esto, el siguiente `pulls.merge` daría un 4xx y quedaría en `diag`, sin pop.
+
+**Qué NO.** No reintenta conflictos, protección de rama ni otros errores 4xx. No cambia el gate ni el `sha` del merge (AP-139). No toca architect-resolve, el Watchdog ni la superficie `workflow_call`. Labels nuevas: ninguna.
+
+**Riesgos.** (a) Un run de epic-merge puede durar ~2,5 min más en el peor caso. `concurrency` va por rama, así que solo serializa eventos del mismo PR. (b) Si GitHub no devuelve el `status` y el mensaje no es uno de los cuatro canónicos, se sigue tratando como hoy (`diag`).
+
+**Términos de AP-099 que mueve.** (a) Intervención humana: un 5xx transitorio ya no deja un PR verde sin mergear hasta que alguien lo ve.
+
+**Criterio falsable (30 días).** Todo «MERGE FALLÓ» por 5xx acaba, en el mismo run, en merge o en `stalled`. 0 PRs con `lgtm` vigente y `ci-verde` sin mergear más de 30 min tras un «MERGE FALLÓ» por 5xx. Banco verde.
 
 **Fecha.** 2026-11-04.
