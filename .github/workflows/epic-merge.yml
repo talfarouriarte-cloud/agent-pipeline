@@ -1309,7 +1309,7 @@ jobs:
                   const { data: ciRuns } = await github.rest.actions.listWorkflowRunsForRepo({
                     owner, repo, head_sha: pf.head.sha, per_page: 30 });
                   const cis = ciRuns.workflow_runs
-                    .filter(r => r.name === process.env.IN_CI_WORKFLOW_NAME)
+                    .filter(r => r.name === process.env.IN_CI_WORKFLOW_NAME && r.conclusion !== 'skipped')   // run con todos los jobs saltados: no es veredicto
                     .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
                   ciOk = cis.length > 0 && cis[0].status === 'completed' && cis[0].conclusion === 'success';
                 } catch (e) { core.info('consulta directa de CI falló: ' + e.message); }

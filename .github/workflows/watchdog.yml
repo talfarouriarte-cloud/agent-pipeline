@@ -1253,7 +1253,7 @@ jobs:
               const { data: ciRuns } = await github.rest.actions.listWorkflowRunsForRepo({
                 ...O, head_sha: pr.head.sha, per_page: 20,
               });
-              const ciDelWf = ciRuns.workflow_runs.filter(r => r.name === process.env.IN_CI_WF);
+              const ciDelWf = ciRuns.workflow_runs.filter(r => r.name === process.env.IN_CI_WF && r.conclusion !== 'skipped');   // un run con todos los jobs saltados (p. ej. `labeled` de otra label en un CI que solo corre tras el LGTM) no es veredicto
               const ci = ciDelWf
                 .sort((x, y) => new Date(y.created_at) - new Date(x.created_at))[0];
               if (!ci || ci.status !== 'completed') continue;
