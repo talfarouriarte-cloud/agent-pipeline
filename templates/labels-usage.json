@@ -46,6 +46,7 @@
   "watchdog.yml": [
     "human-needed",
     "lgtm",
+    "ci-rerun",
     "needs-review",
     "serial-activo",
     "stalled",

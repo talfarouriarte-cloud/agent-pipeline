@@ -20,6 +20,11 @@
     "description": "Hecho materializado: CI verde vigente (la escribe ci.yml)"
   },
   {
+    "name": "ci-rerun",
+    "color": "0e8a16",
+    "description": "Re-dispara el CI del head como `lgtm` sin re-review (la pone el Watchdog, AP-146)"
+  },
+  {
     "name": "ready-to-merge",
     "color": "0e8a16",
     "description": "Cierre del Creator sin loop pendiente"

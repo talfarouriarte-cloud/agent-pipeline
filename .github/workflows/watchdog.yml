@@ -613,6 +613,10 @@ jobs:
             // `final` (enmienda E1 del propietario): además LGTM vigente sobre el head H0
             // (`lgtmVigente`, AP-139) y `ci-verde`, con automerge ⇒ el Watchdog no toca
             // `lgtm` ni `ci-verde` y mergea con `sha: M` al acabar.
+            // AP-146 (enmienda E1′): `final` tiene tres valores. 'e1' es lo de arriba;
+            // 'e1p' es LGTM vigente sin `ci-verde`, con cualquier automerge (E1′ no
+            // mergea: conserva `lgtm` y re-dispara el CI con `ci-rerun`); ausente en el
+            // resto (con `ci-verde` y automerge=false, como hoy).
             const REBASE_MARK = '<!-- watchdog-rebase -->';
             const mecanicos = new Map();
             let MM = null;
@@ -636,15 +640,16 @@ jobs:
                   if (rebases >= 2) continue;
                   const v = await MM.libreDeContendiente({ pr, creatorWf: process.env.IN_CREATOR_WF, leerIssue, listarRuns, contarJobs });
                   if (!v.libre) { core.info(`merge mecánico #${pr.number}: no candidato delante del Gate 0 — ${v.motivo}.`); continue; }
-                  let final = false;
-                  if (GH && typeof GH.shasMecanicoMarcados === 'function' && labels.includes('ci-verde') && process.env.IN_AUTOMERGE !== 'false') {
+                  let final;
+                  const variante = !labels.includes('ci-verde') ? 'e1p' : process.env.IN_AUTOMERGE !== 'false' ? 'e1' : null;
+                  if (GH && typeof GH.shasMecanicoMarcados === 'function' && variante) {
                     try {
                       const rev = GH.shaRevisado(cs, REVIEWER_LOGIN);
                       let commits = new Map();
                       if (rev && rev !== pr.head.sha) commits = GH.mapaCommits(await github.paginate(github.rest.pulls.listCommits, { ...O, pull_number: pr.number, per_page: 100 }));
-                      final = GH.lgtmVigente({ labels, shaRevisado: rev, headSha: pr.head.sha, commits,
+                      if (GH.lgtmVigente({ labels, shaRevisado: rev, headSha: pr.head.sha, commits,
                         marcadosUpdate: GH.shasUpdateMarcados(cs, REVIEWER_LOGIN), marcadosMecanico: GH.shasMecanicoMarcados(cs, REVIEWER_LOGIN),
-                        ultimoEsLgtm: GH.ultimoVeredicto(cs, REVIEWER_LOGIN) === 'LGTM' });
+                        ultimoEsLgtm: GH.ultimoVeredicto(cs, REVIEWER_LOGIN) === 'LGTM' })) final = variante;
                     } catch (e) { core.info(`merge mecánico #${pr.number}: lgtmVigente ilegible (${e.message}) — sin merge al final.`); }
                   }
                   mecanicos.set(pr.number, { number: pr.number, head_ref: pr.head.ref, head_sha: pr.head.sha, rebases, final });
@@ -705,7 +710,7 @@ jobs:
               const soloMecanico = [...mecanicos.values()].map(c => ({ ...c, soloMecanico: true }));
               if (soloMecanico.length) {
                 core.setOutput('adr_append', JSON.stringify(soloMecanico));
-                core.notice(`Merge mecánico delante del Gate 0 (AP-142): ${soloMecanico.map(c => '#' + c.number + (c.final ? ' (merge al final)' : '')).join(', ')}.`);
+                core.notice(`Merge mecánico delante del Gate 0 (AP-142): ${soloMecanico.map(c => '#' + c.number + (c.final === 'e1' ? ' (merge al final)' : c.final === 'e1p' ? ' (conserva lgtm, CI con ci-rerun)' : '')).join(', ')}.`);
               }
               return;
             }
@@ -1238,28 +1243,54 @@ jobs:
                   // head ⇒ DELETE + POST de `lgtm` con el PAT (re-dispara
                   // `labeled`). Cap 1 por head; reincidencia ⇒ `lgtm-sin-ci`. Un PR
                   // `dirty` no llega aquí (el dispatcher cede al modo PR-dirty).
-                  let sinCi = false;
+                  // AP-146 (4′): head M con `watchdog-merge-mecanico-ci: pendiente <M>` (E1′)
+                  // ⇒ la red no re-etiqueta `lgtm`: `POST` de `ci-rerun` si no está (cap 1
+                  // por head, `watchdog-ci-rerun`). Respaldo, única excepción declarada al
+                  // criterio de AP-144/AP-146: `ci-rerun` ≥ 15 min (o ya re-puesta una vez)
+                  // sin run de CI no `skipped` sobre M ⇒ el DELETE + POST de `lgtm` de hoy,
+                  // con su motivo («consumidor sin `ci-rerun`») en el comentario.
+                  const CI_PEND_RE = new RegExp(`^<!-- watchdog-merge-mecanico-ci: pendiente ${pr.head.sha} -->$`, 'm');
+                  const marcaCiPend = hcsAll.filter(c => c.user && c.user.login === REVIEWER_LOGIN && CI_PEND_RE.test(c.body || '')).pop();
+                  let sinCi = false, rerunLab = null;
                   try {
                     const evs = await github.paginate(github.rest.issues.listEvents, { ...O, issue_number: pr.number, per_page: 100 });
                     const lab = evs.filter(e => e.event === 'labeled' && e.label && e.label.name === 'lgtm').pop();
+                    rerunLab = evs.filter(e => e.event === 'labeled' && e.label && e.label.name === 'ci-rerun').pop() || null;
                     if (lab && ageMin(lab.created_at) >= 15) {
                       const { data: ciR } = await github.rest.actions.listWorkflowRunsForRepo({ ...O, head_sha: pr.head.sha, per_page: 30 });
                       sinCi = !ciR.workflow_runs.some(r => r.name === process.env.IN_CI_WF && r.conclusion !== 'skipped');
                     }
                   } catch (e) { core.info(`lgtm-sin-ci #${pr.number}: ${e.message}`); }
-                  if (sinCi) {
+                  const CI_RERUN = `<!-- watchdog-ci-rerun: ${pr.head.sha} -->`;
+                  const hayRerun = labels.includes('ci-rerun');
+                  if (sinCi && marcaCiPend && !hayRerun && !hcsAll.some(c => (c.body || '').split('\n').some(l => l.trim() === CI_RERUN))) {
+                    why = `\`lgtm\` vigente sin run de CI sobre el merge mecánico ${pr.head.sha.slice(0, 7)} (E1′) y sin \`ci-rerun\``;
+                    fix = async () => {
+                      await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['ci-rerun'] });
+                      await github.rest.issues.createComment({ ...O, issue_number: pr.number,
+                        body: `**watchdog · \`ci-rerun\` sobre el merge mecánico (AP-146)**: el LGTM es vigente para \`${pr.head.sha.slice(0, 7)}\` (merge mecánico E1′) y no hay run de CI sobre ese head. \`lgtm\` intacta; \`ci-rerun\` puesta con el PAT para re-disparar el CI. Si en 15 min sigue sin run, respaldo: re-etiquetado de \`lgtm\`.\n\n${CI_RERUN}\n${CAPA}` });
+                      return true;
+                    };
+                  } else if (sinCi && marcaCiPend && hayRerun && rerunLab && ageMin(rerunLab.created_at) < 15) {
+                    sinCi = false;   // `ci-rerun` reciente: el CI del consumidor aún puede arrancar
+                  }
+                  // Motivo del respaldo en un head E1′: un `ci-rerun` anterior al marcador
+                  // es residual de un CI viejo, no prueba que el consumidor no tenga la pieza.
+                  const respaldo = (fix || !marcaCiPend) ? ''
+                    : (rerunLab && Date.parse(rerunLab.created_at) < Date.parse(marcaCiPend.created_at || '')) ? '`ci-rerun` residual anterior al merge mecánico' : 'consumidor sin `ci-rerun`';
+                  if (sinCi && !fix) {
                     const CI_REARM = `<!-- watchdog-lgtm-ci-rearm: ${pr.head.sha} -->`;
                     if (hcsAll.some(c => (c.body || '').split('\n').some(l => l.trim() === CI_REARM))) {
                       anomalies.push({ type: 'lgtm-sin-ci', number: pr.number, head: pr.head.sha,
                         note: '`lgtm` vigente sin run de CI sobre su head tras el re-arm del Watchdog (cap 1 por head agotado)' });
                       continue;
                     }
-                    why = `\`lgtm\` vigente desde hace ≥ 15 min sin run de CI sobre ${pr.head.sha.slice(0, 7)}`;
+                    why = `\`lgtm\` vigente desde hace ≥ 15 min sin run de CI sobre ${pr.head.sha.slice(0, 7)}${respaldo ? ` (respaldo AP-146: ${respaldo})` : ''}`;
                     fix = async () => {
                       await patCall('DELETE', `/issues/${pr.number}/labels/lgtm`);
                       await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['lgtm'] });
                       await github.rest.issues.createComment({ ...O, issue_number: pr.number,
-                        body: `**watchdog · \`lgtm\` sin CI en su head (AP-139)**: el LGTM es vigente para \`${pr.head.sha.slice(0, 7)}\` pero no hay run de CI sobre ese head pasados 15 min del \`labeled\`. \`lgtm\` retirada y re-aplicada con el PAT para re-disparar el CI. Cap 1 por head; reincidencia ⇒ anomalía \`lgtm-sin-ci\`.\n\n${CI_REARM}\n${CAPA}` });
+                        body: `**watchdog · \`lgtm\` sin CI en su head (AP-139)**: el LGTM es vigente para \`${pr.head.sha.slice(0, 7)}\` pero no hay run de CI sobre ese head pasados 15 min del \`labeled\`. \`lgtm\` retirada y re-aplicada con el PAT para re-disparar el CI. Cap 1 por head; reincidencia ⇒ anomalía \`lgtm-sin-ci\`.${respaldo ? `\n\n**diag (AP-146)**: respaldo de \`ci-rerun\` sobre el merge mecánico E1′ — motivo: ${respaldo}. Única excepción declarada al «0 retiradas de \`lgtm\`» de AP-144/AP-146.\n<!-- watchdog-e1p-respaldo: ${pr.head.sha} -->` : ''}\n\n${CI_REARM}\n${CAPA}` });
                       return true;
                     };
                   }
@@ -1396,7 +1427,8 @@ jobs:
                   // siempre, con el PAT (central#268) y el mismo cap 2.
                   // AP-142: con el gate abierto, `final` (E1) si el PR cumple (i)–(v)
                   // y AP-055 no lo acaba de tocar en este tick (su `lgtm` ya no vale).
-                  adrAppend.push({ number: pr.number, head_ref: pr.head.ref, head_sha: pr.head.sha, rebases, final: !rectHandled.has(pr.number) && !!(mecanicos.get(pr.number) || {}).final });
+                  // AP-146: se propaga el valor ('e1' | 'e1p'), no un booleano.
+                  adrAppend.push({ number: pr.number, head_ref: pr.head.ref, head_sha: pr.head.sha, rebases, final: rectHandled.has(pr.number) ? undefined : (mecanicos.get(pr.number) || {}).final });
                   // Output escrito en el acto: si el scan muere más abajo, los
                   // steps de materialización (`always()`) siguen recibiendo el
                   // candidato y el PR no se queda sin dueño.
@@ -1877,6 +1909,10 @@ jobs:
       # AP-144: los gates de E1 se leen en vivo antes del marcador; tras el push
       # «Materializar» solo espera el head y no cuenta la retirada del
       # `synchronize` del consumidor (nunca retira `lgtm` con `final`).
+      # AP-146 (E1′): con `lgtm` vigente SIN `ci-verde` (cualquier automerge), el
+      # marcador lleva además `watchdog-merge-mecanico-ci: pendiente <M>`; tras el
+      # push «Materializar» conserva `lgtm`, pone `ci-rerun` por PAT y no mergea
+      # (lo hace epic-merge cuando el CI sobre M ponga `ci-verde`).
       - name: Checkout del consumidor (merge append-only, AP-130)
         if: steps.scan.outputs.adr_append != '' && steps.scan.outputs.adr_append != '[]'
         continue-on-error: true
@@ -1898,6 +1934,8 @@ jobs:
           ARM_PAT: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
           # AP-144: el hold de `skip_labels` se lee en vivo antes del marcador.
           IN_SKIP_LABELS: ${{ inputs.skip_labels }}
+          # AP-146: con `ci-verde` en vivo, E1 solo con automerge (el Watchdog mergea).
+          IN_AUTOMERGE: ${{ inputs.automerge }}
         run: |
           # Sin `-e`: el output `resultados` se escribe SIEMPRE (trap EXIT); un
           # candidato sin entrada lo trata el step siguiente como `sin-resultado`.
@@ -1911,8 +1949,9 @@ jobs:
           }
           # `materializar`: red por estado del scan (merge ya empujado en un tick
           # anterior) ⇒ ni merge ni push; lo resuelve el step siguiente.
-          LISTA=$(node -e 'for (const c of JSON.parse(process.env.CANDS || "[]")) if (!c.materializar) console.log(c.number + "\t" + c.head_ref + "\t" + (c.final ? c.head_sha : "-"))')
-          while IFS=$'\t' read -r NUM REF H0; do
+          # AP-146: `final` del scan ('e1' | 'e1p') en su propia columna; sin él, `- -`.
+          LISTA=$(node -e 'for (const c of JSON.parse(process.env.CANDS || "[]")) if (!c.materializar) console.log(c.number + "\t" + c.head_ref + "\t" + (c.final === "e1" || c.final === "e1p" ? c.final + "\t" + c.head_sha : "-\t-"))')
+          while IFS=$'\t' read -r NUM REF FIN H0; do
             [ -z "$NUM" ] && continue
             if [ ! -f "$MOD" ]; then put "$NUM" '{"ok":false,"na":"modulo-ausente"}'; continue; fi
             if [ ! -d .repo/.git ]; then put "$NUM" '{"ok":false,"na":"checkout-fallido"}'; continue; fi
@@ -1930,24 +1969,37 @@ jobs:
               # falla ⇒ sin marcador (camino AP-130 de hoy, sin merge al final).
               # Tras el push, «Materializar» ya no re-exige estos gates: solo espera
               # el head y descarta la retirada del `synchronize` del consumidor.
+              # AP-146 (enmienda E1′): la comprobación en vivo admite un segundo caso,
+              # `lgtm` SIN `ci-verde`. La variante del marcador la deciden las labels
+              # EN VIVO (no el `final` del scan: el CI pudo acabar entre medias):
+              # `ci-verde` con automerge ⇒ E1 (una línea); sin `ci-verde` ⇒ E1′ (la
+              # línea de E1 idéntica, para el consumidor y `gate-head.cjs`, más
+              # `watchdog-merge-mecanico-ci: pendiente <M>`); `ci-verde` con
+              # automerge=false ⇒ sin marcador (camino AP-130, como hoy).
               if [ "$H0" != "-" ]; then
                 M=$(git -C .repo rev-parse HEAD); P1=$(git -C .repo rev-parse HEAD^1)
-                if [ "$P1" = "$H0" ] && node -e '
+                if [ "$P1" = "$H0" ] && VAR=$(node -e '
                   const [m,h,n]=process.argv.slice(1);
                   const api=`https://api.github.com/repos/${process.env.GITHUB_REPOSITORY}`;
                   const H={Authorization:`Bearer ${process.env.ARM_PAT}`,Accept:"application/vnd.github+json"};
                   const skip=(process.env.IN_SKIP_LABELS||"").split(",").map(x=>x.trim()).filter(Boolean);
                   (async()=>{
                     const r=await fetch(`${api}/pulls/${n}`,{headers:H});
-                    if(!r.ok){console.log(`gates en vivo: pulls.get HTTP ${r.status}`);process.exit(1);}
+                    if(!r.ok){console.error(`gates en vivo: pulls.get HTTP ${r.status}`);process.exit(1);}
                     const p=await r.json();const ls=(p.labels||[]).map(l=>l.name||l);
-                    const falla=[p.draft&&"draft",ls.some(l=>skip.includes(l))&&"hold",!(p.head&&p.head.sha===h)&&"head ≠ H0",!ls.includes("lgtm")&&"sin lgtm",!ls.includes("ci-verde")&&"sin ci-verde"].filter(Boolean);
-                    if(falla.length){console.log(`gates en vivo: ${falla.join(", ")}`);process.exit(1);}
-                    const c=await fetch(`${api}/issues/${n}/comments`,{method:"POST",headers:H,body:JSON.stringify({body:`**watchdog · merge mecánico con merge al final (AP-142)**: LGTM vigente sobre \`${h.slice(0,7)}\` y \`ci-verde\`, leídos en vivo (AP-144); el merge \`${m.slice(0,7)}\` conserva los dos gates.\n\n<!-- watchdog-merge-mecanico: ${m} revisado=${h} -->`})});
+                    const v=!ls.includes("ci-verde")?"e1p":process.env.IN_AUTOMERGE!=="false"?"e1":null;
+                    const falla=[p.draft&&"draft",ls.some(l=>skip.includes(l))&&"hold",!(p.head&&p.head.sha===h)&&"head ≠ H0",!ls.includes("lgtm")&&"sin lgtm",!v&&"ci-verde con automerge=false"].filter(Boolean);
+                    if(falla.length){console.error(`gates en vivo: ${falla.join(", ")}`);process.exit(1);}
+                    const body=v==="e1"
+                      ?`**watchdog · merge mecánico con merge al final (AP-142)**: LGTM vigente sobre \`${h.slice(0,7)}\` y \`ci-verde\`, leídos en vivo (AP-144); el merge \`${m.slice(0,7)}\` conserva los dos gates.\n\n<!-- watchdog-merge-mecanico: ${m} revisado=${h} -->`
+                      :`**watchdog · merge mecánico que conserva el LGTM, CI pendiente (AP-146)**: LGTM vigente sobre \`${h.slice(0,7)}\` sin \`ci-verde\`, leídos en vivo; el merge \`${m.slice(0,7)}\` conserva \`lgtm\` y re-dispara el CI sobre él con \`ci-rerun\`. Sin merge del Watchdog: mergea epic-merge cuando el CI sobre \`${m.slice(0,7)}\` ponga \`ci-verde\`.\n\n<!-- watchdog-merge-mecanico: ${m} revisado=${h} -->\n<!-- watchdog-merge-mecanico-ci: pendiente ${m} -->`;
+                    const c=await fetch(`${api}/issues/${n}/comments`,{method:"POST",headers:H,body:JSON.stringify({body})});
+                    if(c.ok)console.log(v);
                     process.exit(c.ok?0:1);
-                  })().catch(e=>{console.log(String(e));process.exit(1);});
-                ' "$M" "$H0" "$NUM"; then
-                  OUT=$(printf '%s' "$OUT" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const o=JSON.parse(s);o.final=true;process.stdout.write(JSON.stringify(o))})')
+                  })().catch(e=>{console.error(String(e));process.exit(1);});
+                ' "$M" "$H0" "$NUM"); then
+                  echo "PR #$NUM: marcador watchdog-merge-mecanico ($VAR; scan: $FIN)."
+                  OUT=$(printf '%s' "$OUT" | VAR="$VAR" node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const o=JSON.parse(s);o.final=process.env.VAR;process.stdout.write(JSON.stringify(o))})')
                 else
                   echo "PR #$NUM: sin marcador watchdog-merge-mecanico (madre $P1 vs H0 $H0, gates en vivo o POST fallido) — merge mecánico sin merge al final."
                 fi
@@ -2024,6 +2076,13 @@ jobs:
                   const FINAL_RE = new RegExp(`^<!-- watchdog-merge-mecanico: ${r0.sha} revisado=([0-9a-f]{40}) -->$`, 'm');
                   const marca = cs.filter(x => x.user && x.user.login === REVIEWER_LOGIN && FINAL_RE.test(x.body || '')).pop();
                   const final = !!marca;
+                  // AP-146 (E1′): con `final`, la línea `watchdog-merge-mecanico-ci: pendiente <M>`
+                  // del mismo autor de confianza separa E1′ (conserva `lgtm`, re-dispara el
+                  // CI con `ci-rerun`, sin merge) de E1 (merge al final). Ninguna retira `lgtm`.
+                  const CI_PEND_RE = new RegExp(`^<!-- watchdog-merge-mecanico-ci: pendiente ${r0.sha} -->$`, 'm');
+                  const ciPend = final && cs.some(x => x.user && x.user.login === REVIEWER_LOGIN && CI_PEND_RE.test(x.body || ''));
+                  const RAMA = ciPend ? 'E1′' : 'E1';
+                  const QUE = ciPend ? 'sin re-disparo del CI con `ci-rerun`' : 'sin merge al final';
                   // Cómo se resolvió cada ruta (AP-142).
                   const MODO = { append: 'append al final: base + PR', insercion: 'inserción en el mismo punto: PR encima de base' };
                   const res = Array.isArray(r0.resueltas) && r0.resueltas.length ? r0.resueltas
@@ -2045,10 +2104,10 @@ jobs:
                     // misma regla (dedupe por motivo para no repetir el diag cada tick).
                     const diagE1 = async (clave, motivo, terminal) => {
                       const DIAG = `<!-- watchdog-e1-diag: ${r0.sha} ${clave} -->`;
-                      core.warning(`PR #${c.number}: sin merge al final (E1) — ${motivo}`);
+                      core.warning(`PR #${c.number}: ${QUE} (${RAMA}) — ${motivo}`);
                       if (!terminal && cs.some(x => (x.body || '').split('\n').includes(DIAG))) return;
                       await patCall('POST', `/issues/${c.number}/comments`, {
-                        body: `${cabecera}**diag (AP-144)**: sin merge al final (E1): ${motivo}. Labels intactas: con el marcador \`watchdog-merge-mecanico\` el Watchdog no retira \`lgtm\` ni pone \`needs-review\`.${terminal ? '' : ' Pendiente: la red por estado del siguiente tick vuelve a evaluar.'}\n\n${terminal ? `${MARK}\n` : ''}${DIAG}\n${CAPA}` });
+                        body: `${cabecera}**diag (${ciPend ? 'AP-146' : 'AP-144'})**: ${QUE} (${RAMA}): ${motivo}. Labels intactas: con el marcador \`watchdog-merge-mecanico\` el Watchdog no retira \`lgtm\` ni pone \`needs-review\`.${terminal ? '' : ' Pendiente: la red por estado del siguiente tick vuelve a evaluar.'}\n\n${terminal ? `${MARK}\n` : ''}${DIAG}\n${CAPA}` });
                     };
                     // Head: el push acaba de salir; la API puede devolver aún H0.
                     let pf = null;
@@ -2059,7 +2118,7 @@ jobs:
                     }
                     const headV = (pf.head && pf.head.sha) || '';
                     if (headV !== r0.sha) {
-                      if (headV === H0) await diagE1('head-h0', `merge al final pendiente: head aún en H0 \`${H0.slice(0, 7)}\` tras 6 lecturas`, false);
+                      if (headV === H0) await diagE1('head-h0', `${ciPend ? 're-disparo del CI' : 'merge al final'} pendiente: head aún en H0 \`${H0.slice(0, 7)}\` tras 6 lecturas`, false);
                       else await diagE1('head-otro', `el head es \`${headV.slice(0, 7)}\`, ni M ni H0 (alguien empujó otra cosa)`, true);
                       continue;
                     }
@@ -2072,8 +2131,9 @@ jobs:
                     if (!GH) pendientes.push('`gate-head.cjs` no disponible (fail-closed)');
                     else if (GH.ultimoVeredicto(cs, REVIEWER_LOGIN) !== 'LGTM') terminales.push(`el último veredicto del Reviewer es \`${GH.ultimoVeredicto(cs, REVIEWER_LOGIN)}\`, no \`LGTM\``);
                     // `lgtm`/`ci-verde` ausentes: solo la retirada del `synchronize`
-                    // del consumidor sobre M no cuenta como retirada.
-                    const faltan = ['lgtm', 'ci-verde'].filter(l => !labels.includes(l));
+                    // del consumidor sobre M no cuenta como retirada. En E1′ (AP-146)
+                    // `ci-verde` no está nunca: las condiciones solo valen para `lgtm`.
+                    const faltan = (ciPend ? ['lgtm'] : ['lgtm', 'ci-verde']).filter(l => !labels.includes(l));
                     if (faltan.length) {
                       let evs = null;
                       try { evs = await github.paginate(github.rest.issues.listEvents, { ...O, issue_number: c.number, per_page: 100 }); }
@@ -2107,8 +2167,24 @@ jobs:
                       const { data: rs } = await github.rest.actions.listWorkflowRunsForRepo({ ...O, head_sha: r0.sha, per_page: 50 });
                       if ((rs.workflow_runs || []).some(r => r.name === process.env.IN_CI_WF && r.conclusion === 'failure')) terminales.push(`run \`${process.env.IN_CI_WF}\` de M en \`failure\``);
                     } catch (e) { pendientes.push(`runs de CI de M ilegibles (${String(e.message).slice(0, 120)})`); }
+                    // E1′ (AP-146): un `ci-rerun` ya puesto lo dejó un CI de este PR que
+                    // no marcó `ci-verde` (rojo o head movido): terminal, sin escrituras.
+                    if (ciPend && labels.includes('ci-rerun')) terminales.push('`ci-rerun` ya presente (la dejó un CI de este PR que no marcó `ci-verde`: rojo o head movido)');
                     if (terminales.length || pendientes.length) {
                       await diagE1(terminales.length ? 'gates' : 'lectura', [...terminales, ...pendientes].join('; '), terminales.length > 0);
+                      continue;
+                    }
+                    if (ciPend) {
+                      // AP-146 (E1′): re-pone por PAT el `lgtm` que retiró el consumidor,
+                      // `ci-rerun` por PAT (su `labeled` arranca el CI del consumidor sobre
+                      // M) y comentario de éxito con `watchdog-rebase-append: M` (terminal:
+                      // la red por estado no repite el re-disparo). Sin merge: lo hace
+                      // epic-merge cuando el CI sobre M ponga `ci-verde` (E2 de AP-142).
+                      for (const l of reponer) await patCall('POST', `/issues/${c.number}/labels`, { labels: [l] });
+                      await patCall('POST', `/issues/${c.number}/labels`, { labels: ['ci-rerun'] });
+                      await patCall('POST', `/issues/${c.number}/comments`, {
+                        body: `${cabecera}LGTM vigente sobre el head revisado, CI pendiente: se conserva \`lgtm\`${reponer.length ? ' (re-puesta, la retiró el `synchronize` del consumidor sobre M)' : ''} y se pone \`ci-rerun\` por PAT para que el CI corra sobre \`${r0.sha.slice(0, 7)}\`. Sin merge del Watchdog ni re-review: mergea epic-merge cuando el CI sobre M ponga \`ci-verde\` (enmienda E1′, AP-146).\n\n${MARK}\n${CAPA}` });
+                      core.notice(`PR #${c.number}: merge mecánico ${r0.sha.slice(0, 7)} conservando lgtm + ci-rerun (AP-146 E1′).`);
                       continue;
                     }
                     // Re-pone por PAT lo que retiró el `synchronize` del consumidor y
