@@ -11,15 +11,18 @@
 // PURO (AP-068): sin E/S ni red; todo lo que hace llamadas vive en el step y
 // todo lo que decide vive aquí. Banco: `scripts/check-suite-metricas.mjs`.
 //
-// Dos magnitudes, NO intercambiables (hallazgo [G] de la crítica ronda 3):
-//  - punto `fuente: 'artifact'` ⇒ `msTotal` = suma por fichero de
-//    `endTime − startTime` (lo que lee `test-budget-check.mjs` de finplan);
-//  - punto `fuente: 'log'` ⇒ `msTotal` = `Duration` de pared de vitest, sumado
-//    por shard.
-// `tendencia` no calcula Δ% entre dos puntos de `fuente` distinta: la frontera
-// artifact↔log daría un salto falso (≈ ×2) solo por cambiar de fuente.
-// `tests` cuenta en las dos fuentes los tests en `passed` (el `Tests N passed`
-// del log y `assertionResults[].status === 'passed'` del informe).
+// Una sola magnitud por campo (hallazgo [G] de la crítica ronda 3 y enmienda
+// del Architect a #410):
+//  - `msTotal` es SIEMPRE suma de duraciones de test: en un punto
+//    `fuente: 'artifact'`, la suma por fichero de `endTime − startTime` (lo que
+//    lee `test-budget-check.mjs` de finplan); en un punto `fuente: 'log'`, el
+//    `tests Ys` de la línea `Duration`. El `Duration` de pared va aparte, en
+//    `msPared`, solo informativo.
+//  - `tests` es SIEMPRE el número de tests `passed` (`Tests N passed` del log,
+//    `assertionResults[].status === 'passed'` del informe).
+// Aun así las dos fuentes no son idénticas al milisegundo: `tendencia` solo
+// calcula Δ% entre puntos consecutivos de la MISMA `fuente`; en la frontera, el
+// tramo es `null` («cambio de fuente»).
 
 // Ruta de un `testResults[].name` relativa al checkout del runner
 // (`/home/runner/work/<repo>/<repo>/…`, `/__w/<repo>/<repo>/…`).
@@ -80,8 +83,10 @@ const pct = (a, b) => (Number.isFinite(a) && Number.isFinite(b) && a !== 0) ? Ma
 const msPorTest = p => (p.tests > 0 ? p.msTotal / p.tests : null);
 const fuenteDe = p => p.fuente || 'artifact';
 
-function delta(a, b) {
-  if (fuenteDe(a) !== fuenteDe(b)) return { desde: a.fecha, hasta: b.fecha, comparable: false, motivo: `fuente distinta (${fuenteDe(a)} → ${fuenteDe(b)})` };
+// Δ% de `a` a `b`; `tramo` = los puntos de `a` a `b`, ambos incluidos: si alguno
+// cambia de `fuente`, no hay Δ%.
+function delta(a, b, tramo = [a, b]) {
+  if (!tramo.every(p => fuenteDe(p) === fuenteDe(a))) return { desde: a.fecha, hasta: b.fecha, comparable: false, motivo: `cambio de fuente (${fuenteDe(a)} → ${fuenteDe(b)})` };
   return {
     desde: a.fecha, hasta: b.fecha, comparable: true,
     tests: pct(a.tests, b.tests),
@@ -90,9 +95,11 @@ function delta(a, b) {
   };
 }
 
-// `serie` = `[{ fecha, tests, msTotal, fuente? }]`, un punto por semana ⇒ Δ%
-// del último punto contra la semana anterior y contra 4 semanas antes. Menos
-// de 2 puntos ⇒ `null`. Sin punto 4 semanas antes ⇒ `cuatroSemanas: null`.
+// `serie` = `[{ fecha, tests, msTotal, fuente? }]`, un punto por semana ⇒
+// `tramos` (Δ% de cada par consecutivo; en la frontera de fuente, `delta: null`)
+// y Δ% del último punto contra la semana anterior y contra 4 semanas antes (sin
+// cambio de fuente en esos 5 puntos). Menos de 2 puntos ⇒ `null`. Sin punto 4
+// semanas antes ⇒ `cuatroSemanas: null`.
 function tendencia(serie) {
   const s = [...(serie || [])].filter(p => p && p.fecha).sort((a, b) => (a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0));
   if (s.length < 2) return null;
@@ -100,8 +107,12 @@ function tendencia(serie) {
   return {
     puntos: s.length,
     ultimo: { fecha: ult.fecha, tests: ult.tests, msTotal: ult.msTotal, msPorTest: msPorTest(ult), fuente: fuenteDe(ult) },
+    tramos: s.slice(1).map((p, i) => {
+      const x = delta(s[i], p);
+      return x.comparable ? x : { ...x, delta: null };
+    }),
     semanal: delta(s[s.length - 2], ult),
-    cuatroSemanas: s.length >= 5 ? delta(s[s.length - 5], ult) : null,
+    cuatroSemanas: s.length >= 5 ? delta(s[s.length - 5], ult, s.slice(-5)) : null,
   };
 }
 
@@ -117,7 +128,8 @@ function clasificarFallo(mensaje) {
   return 'aserción';
 }
 
-// Log crudo de un job (`actions/jobs/<id>/logs`) ⇒ `{ tests, msTests, msTotal }`.
+// Log crudo de un job (`actions/jobs/<id>/logs`) ⇒ `{ tests, msTotal, msPared }`
+// (`msTotal` = `tests Ys`, `msPared` = `Duration Xs`).
 // Se normaliza antes de las regex: escapes ANSI y timestamp del runner al inicio
 // de cada línea (sin eso `\s+` no casa: crítica ronda 2). Suma TODAS las líneas
 // de resumen (un log con varios paquetes trae una por paquete). Segundos ⇒ ms.
@@ -135,8 +147,8 @@ function agregarDesdeLog(texto) {
   if (!tests.length && !durs.length) return null;
   return {
     tests: tests.reduce((s, n) => s + n, 0),
-    msTests: durs.length ? Math.round(durs.reduce((s, d) => s + d[1], 0) * 1000) : null,
-    msTotal: durs.length ? Math.round(durs.reduce((s, d) => s + d[0], 0) * 1000) : null,
+    msTotal: durs.length ? Math.round(durs.reduce((s, d) => s + d[1], 0) * 1000) : null,
+    msPared: durs.length ? Math.round(durs.reduce((s, d) => s + d[0], 0) * 1000) : null,
   };
 }
 
@@ -219,18 +231,22 @@ function informeMd(m) {
   L.push(`# Métricas de la suite · ${m.repo || ''} · ${m.semana || ''}`, '');
   L.push(`Generado: ${m.generado || ''} · modo: \`${m.modo || 'semanal'}\` · rama: \`${m.rama || ''}\``, '');
   if (!m.hayArtifacts) L.push('**sin informes de vitest: falta el upload en `ci.yaml`** (los puntos con `fuente: log` salen de las líneas de resumen de los logs, sin detalle por fichero).', '');
-  L.push('## Tendencia', '', '| Fecha | Fuente | Run | Tests | msTotal | ms/test |', '|---|---|---|---|---|---|');
-  for (const p of m.serie || []) L.push(`| ${p.fecha} | ${p.fuente || 'artifact'} | ${p.run || '—'} | ${p.tests} | ${s(p.msTotal)} | ${mpt(p)} |`);
-  if (!(m.serie || []).length) L.push('| — | — | — | — | — | — |');
+  L.push('## Tendencia', '', '| Fecha | Fuente | Run | Tests | msTotal | ms/test | Pared |', '|---|---|---|---|---|---|---|');
+  for (const p of m.serie || []) L.push(`| ${p.fecha} | ${p.fuente || 'artifact'} | ${p.run || '—'} | ${p.tests} | ${s(p.msTotal)} | ${mpt(p)} | ${s(p.msPared)} |`);
+  if (!(m.serie || []).length) L.push('| — | — | — | — | — | — | — |');
   L.push('');
   const t = m.tendencia;
+  const linea = (nom, x) => {
+    if (!x) return `- Δ% ${nom}: \`null\` (sin punto).`;
+    if (!x.comparable) return `- Δ% ${nom} (${x.desde} → ${x.hasta}): \`null\`, ${x.motivo}.`;
+    return `- Δ% ${nom} (${x.desde} → ${x.hasta}): tests ${d(x.tests)} · msTotal ${d(x.msTotal)} · ms/test ${d(x.msPorTest)}`;
+  };
   if (!t) L.push('Δ%: `null` (menos de 2 puntos en la serie).');
-  else for (const [nom, x] of [['semana a semana', t.semanal], ['a 4 semanas', t.cuatroSemanas]]) {
-    if (!x) L.push(`- Δ% ${nom}: \`null\` (sin punto).`);
-    else if (!x.comparable) L.push(`- Δ% ${nom} (${x.desde} → ${x.hasta}): no comparable, ${x.motivo}.`);
-    else L.push(`- Δ% ${nom} (${x.desde} → ${x.hasta}): tests ${d(x.tests)} · msTotal ${d(x.msTotal)} · ms/test ${d(x.msPorTest)}`);
+  else {
+    L.push(linea('semana a semana', t.semanal), linea('a 4 semanas', t.cuatroSemanas), '', 'Tramos:', '');
+    for (const x of t.tramos) L.push(linea('del tramo', x));
   }
-  L.push('', 'msTotal: suma por fichero (`artifact`) o `Duration` de pared sumado por shard (`log`); no se comparan entre sí.', '');
+  L.push('', 'msTotal: suma de duraciones de test (por fichero en `artifact`, `tests Ys` de vitest en `log`). «Pared» = `Duration` de vitest, solo informativo. Sin Δ% en un cambio de fuente.', '');
   L.push('## Semana actual (último run verde de cada día)', '', '| Día | Fuente | Run | Tests | msTotal |', '|---|---|---|---|---|');
   for (const p of m.dias || []) L.push(`| ${p.fecha} | ${p.fuente || 'artifact'} | ${p.run || '—'} | ${p.tests} | ${s(p.msTotal)} |`);
   if (!(m.dias || []).length) L.push('| — | — | — | — | — |');

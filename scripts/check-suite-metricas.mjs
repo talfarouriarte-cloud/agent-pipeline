@@ -13,15 +13,14 @@
 //      en los dos ⇒ no;
 //  (f) `agregarDesdeLog` con el texto crudo de un log real (ANSI + timestamps,
 //      job 126487115833 de asesoramiento-financiero) ⇒ valores; dos bloques ⇒
-//      suma; sin resumen ⇒ `null`.
+//      suma; sin resumen ⇒ `null`;
+//  (g)–(i) de la enmienda del Architect a #410: Δ% solo por tramo de la misma
+//      fuente; `tests` solo `passed`; `msTotal` = `tests Ys`, `msPared` = pared.
 // Más: `seleccionarRuns` (último de cada día y de cada semana), `rojos`,
 // `informeMd` (literal de «sin informes de vitest») y `semanaIso`.
-// Parte 2 — costura (YAML): ver abajo.
 // Cuelga del piggyback de `check-embedded-js.mjs` como sus hermanos.
-import { readFileSync, existsSync } from 'fs';
 import { createRequire } from 'module';
 import { resolve } from 'path';
-import yaml from 'js-yaml';
 
 const require = createRequire(import.meta.url);
 const FUENTE = 'vendored/scripts/suite-metricas.cjs';
@@ -70,9 +69,27 @@ const fichero = (name, startTime, endTime, estados) => ({ name: W + name, startT
   // [G] ronda 3: log (pared) frente a artifact (suma por fichero) no se comparan
   const mixta = serie.map((p, i) => ({ ...p, fuente: i < 4 ? 'log' : 'artifact' }));
   const tm = M.tendencia(mixta);
-  afirma(tm.semanal.comparable === false && /fuente distinta \(log → artifact\)/.test(tm.semanal.motivo) && tm.semanal.msTotal === undefined, `(c) frontera log→artifact no comparable: ${JSON.stringify(tm.semanal)}`);
+  afirma(tm.semanal.comparable === false && /cambio de fuente \(log → artifact\)/.test(tm.semanal.motivo) && tm.semanal.msTotal === undefined, `(c) frontera log→artifact no comparable: ${JSON.stringify(tm.semanal)}`);
+  afirma(tm.cuatroSemanas.comparable === false, '(c) Δ a 4 semanas con un cambio de fuente en medio ⇒ no comparable');
   const tl = M.tendencia(serie.map(p => ({ ...p, fuente: 'log' })));
-  afirma(tl.semanal.comparable === true && tl.semanal.tests === 15.4, '(c) log↔log sí comparable');
+  afirma(tl.semanal.comparable === true && tl.semanal.tests === 15.4 && tl.cuatroSemanas.comparable === true, '(c) log↔log sí comparable');
+}
+
+{ // (g) enmienda del Architect: serie [log, log, artifact, artifact] ⇒ Δ% por tramo de la misma fuente
+  const t = M.tendencia([
+    { fecha: '2026-10-14', tests: 100, msTotal: 1000, fuente: 'log' },
+    { fecha: '2026-10-21', tests: 110, msTotal: 1200, fuente: 'log' },
+    { fecha: '2026-10-28', tests: 120, msTotal: 1300, fuente: 'artifact' },
+    { fecha: '2026-11-04', tests: 150, msTotal: 1950, fuente: 'artifact' },
+  ]);
+  igual(t.tramos.map(x => x.comparable ? [x.tests, x.msTotal] : x.delta), [[10, 20], null, [25, 50]], '(g) tramos log→log y artifact→artifact definidos, log→artifact null');
+  afirma(/cambio de fuente/.test(t.tramos[1].motivo), '(g) la frontera dice «cambio de fuente»');
+  const md = M.informeMd({ serie: [], tendencia: t, rojos: M.rojos([]) });
+  afirma(md.includes('Tramos:') && md.includes('cambio de fuente (log → artifact)'), '(g) metricas.md marca la frontera');
+}
+
+{ // (h) `tests` cuenta solo `passed`
+  igual(M.agregar([{ testResults: [fichero('p/h.test.ts', 0, 10, ['passed', 'skipped', 'failed', 'passed', 'todo'])] }]).tests, 2, '(h) agregar cuenta solo passed');
 }
 
 { // (d) clasificarFallo
@@ -106,9 +123,10 @@ const LOG = '2026-11-04T09:15:49.5539120Z \n' +
   `2026-11-04T09:15:49.5550000Z ${E}[2m Test Files ${E}[22m ${E}[1m${E}[32m512 passed${E}[39m${E}[22m${E}[90m (512)${E}[39m\n` +
   bloque('2026-11-04T09:15:49.5603965Z', '2026-11-04T09:15:49.5610000Z', 4706, '727.95', '1582.06');
 {
-  igual(M.agregarDesdeLog(LOG), { tests: 4706, msTests: 1582060, msTotal: 727950 }, '(f) log real de shard');
+  // (i) enmienda: `msTotal` = `tests Ys`, `msPared` = `Duration Xs`
+  igual(M.agregarDesdeLog(LOG), { tests: 4706, msTotal: 1582060, msPared: 727950 }, '(f)(i) log real de shard');
   const dos = LOG + bloque('2026-11-04T09:20:00.0000000Z', '2026-11-04T09:20:00.1000000Z', 100, '10.5', '2.25');
-  igual(M.agregarDesdeLog(dos), { tests: 4806, msTests: 1584310, msTotal: 738450 }, '(f) dos bloques de resumen ⇒ suma');
+  igual(M.agregarDesdeLog(dos), { tests: 4806, msTotal: 1584310, msPared: 738450 }, '(f)(i) dos bloques de resumen ⇒ suma');
   igual(M.agregarDesdeLog('2026-11-04T09:00:00.0000000Z ##[group]Run pnpm install\nDone in 3s\n'), null, '(f) log sin resumen ⇒ null');
   afirma(!/\x1b|^\d{4}-\d{2}-\d{2}T/m.test(M.normalizarLog(LOG)), '(f) normalizar quita ANSI y timestamps');
 }

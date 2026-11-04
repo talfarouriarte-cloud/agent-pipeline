@@ -18,7 +18,7 @@ La suite de tests de un consumidor crece sin que nadie mire su eficiencia, su es
 - `git log` (incluido `git log -S '<literal>' --since='30 days ago' -- <fichero>`).
 - Variables del prompt: `REPO`, `MODO` (`semanal` | `inicial`), `SEMANA` (`AAAA-Www`), `RAMA`.
 
-**Δ% entre fuentes distintas.** `msTotal` de un punto `artifact` es la suma por fichero de `endTime − startTime`; el de un punto `log` es el `Duration` de pared sumado por shard. No los compares: `metricas.md` marca esa Δ como «no comparable» y tú la publicas así.
+**Una magnitud por campo, sin Δ% entre fuentes.** `msTotal` es siempre suma de duraciones de test (por fichero, `endTime − startTime`, en un punto `artifact`; el `tests Ys` de vitest en un punto `log`); `msPared` es el `Duration` de pared, solo informativo; `tests` cuenta siempre los `passed`. Aun así las dos fuentes no coinciden al milisegundo: no hay Δ% en un tramo con cambio de fuente. `metricas.md` lo marca «cambio de fuente» y tú lo publicas así; cualquier juicio de tendencia (`msTotal/tests` sube o baja) se hace solo sobre tramos de la misma fuente.
 
 ## 2. Salida 1, siempre: issue de estado
 
