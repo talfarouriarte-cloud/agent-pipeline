@@ -28,7 +28,7 @@ const CONCLUSIONES_CON_ANOTACIONES = new Set(['failure', 'timed_out']);
 // leído como CI, haría al Reviewer re-armado emitir REVIEW contra un Creator sin
 // nada que arreglar. Nombres = `name` (o clave) de los jobs de los reusables
 // `workflow_call`; el banco comprueba que la lista no se desfasa del árbol.
-const JOBS_PIPELINE = new Set(['claude', 'Crítica del issue', 'epic-merge', 'Process review', 'Reviewer', 'detect', 'architect', 'detect-failure-belt']);
+const JOBS_PIPELINE = new Set(['claude', 'Crítica del issue', 'epic-merge', 'Process review', 'Reviewer', 'detect', 'architect', 'detect-failure-belt', 'Métricas de la suite', 'Suite steward']);
 const CONTEXTOS_PIPELINE = new Set(['epic-merge / gate', 'watchdog / turno']);
 const esDelPipeline = (nombre) => {
   const m = /^call \/ (.+)$/.exec(String(nombre || ''));

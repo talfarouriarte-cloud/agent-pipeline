@@ -317,5 +317,59 @@
       "contents": "read",
       "issues": "write"
     }
+  },
+  "suite-steward.yml": {
+    "inputs": {
+      "runner": {
+        "has_default": true,
+        "required": false
+      },
+      "default_branch": {
+        "has_default": true,
+        "required": false
+      },
+      "ci_workflow_name": {
+        "has_default": true,
+        "required": false
+      },
+      "report_artifact_prefix": {
+        "has_default": true,
+        "required": false
+      },
+      "steward_model": {
+        "has_default": true,
+        "required": false
+      },
+      "steward_fallback_model": {
+        "has_default": true,
+        "required": false
+      },
+      "max_turns": {
+        "has_default": true,
+        "required": false
+      },
+      "modo": {
+        "has_default": true,
+        "required": false
+      },
+      "timeout_minutes": {
+        "has_default": true,
+        "required": false
+      },
+      "timeout_minutes_inicial": {
+        "has_default": true,
+        "required": false
+      }
+    },
+    "secrets_required": [
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "REVIEWER_GITHUB_TOKEN"
+    ],
+    "permissions_required": {
+      "contents": "read",
+      "issues": "write",
+      "actions": "read",
+      "checks": "read"
+    }
   }
 }

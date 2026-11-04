@@ -168,5 +168,15 @@
     "name": "launch-hold",
     "color": "fbca04",
     "description": "LGTM que condiciona el eslabón siguiente; epic-merge no lanza launch-next"
+  },
+  {
+    "name": "suite-salud",
+    "color": "bfd4f2",
+    "description": "Informe semanal de estado de la suite de tests (lo abre el suite steward, AP-140)"
+  },
+  {
+    "name": "suite-limpieza",
+    "color": "c5def5",
+    "description": "Propuesta de limpieza de la suite de tests, sin arm (suite steward, AP-140)"
   }
 ]
