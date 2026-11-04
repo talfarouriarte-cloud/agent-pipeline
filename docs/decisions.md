@@ -3780,6 +3780,8 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 
 **Fecha.** 2026-11-04.
 
+> **Enmienda (2026-11-04, AP-145, central#425).** `suite-metricas.cjs` suma además las familias de ficheros partidos (`porFamilia`, clave `familias` de `metricas.json`, tabla «Familias partidas» de `metricas.md`), y el mandato trata una familia de más de 60 000 ms como un fichero del top. El «Qué NO» de este AP no cambia (ni `test-budget-check.mjs` ni CI); ver AP-145.
+
 ## AP-141 — epic-merge reintenta en el mismo run un 5xx de GitHub al mergear: bucle acotado a 3 intentos, relectura de head, gates y `behind`, y `stalled` como estado terminal (2026-11-04)
 
 **Contexto.** central#412. Ruling del 2026-11-04 fuera de ciclo, posición 20, por delegación del propietario en el Architect del central. Se corrigió tras las rondas 1 y 2 del Critic, y la ronda 3 cerró con `critica-na` y dos [G] que este AP aplica (ver abajo). En asesoramiento-financiero, el PR #3547 tenía `lgtm` vigente y `ci-verde` cuando `pulls.merge` devolvió `Server Error`, en una mañana de 5xx intermitentes. El `catch` del merge solo trataba el 409 (AP-139) y «Base branch was modified» (AP-125 §3). Lo demás acababa en `MERGE FALLÓ` y `return`, y el PR se quedó verde y sin ningún evento que lo re-evaluara: el caller no tiene `schedule`, y los belts del Watchdog solo actúan si falta `lgtm` o falta el CI del head. Lo desbloqueó el Architect a mano, re-aplicando `lgtm`.
@@ -3922,5 +3924,25 @@ El ruling citaba `AP-142` para este registro; ese número lo tomó central#418 (
 - Todo marcador acaba en merge, o en `diag` con un motivo que no es la retirada del consumidor.
 - 0 merges E1 con `lgtm` retirada por un actor que no es el consumidor, ni con enmiendas sin acuse.
 - Banco verde.
+
+**Fecha.** 2026-11-04.
+
+## AP-145 — El steward de la suite mide por familia de ficheros partidos (`-a`…): `porFamilia`, clave `familias` y umbral de 60 s en el mandato; enmienda a AP-140 (2026-11-04)
+
+**Contexto.** central#425. Ruling del 2026-11-04 fuera de ciclo, posición 24, por delegación del propietario en el Architect del central, con LGTM de la crítica en la ronda 1. Origen: asesoramiento-financiero #3539, revisión inicial de la suite del 2026-11-04. 41 ficheros terminan en `-a`…`-h` y suman 417 s, el 21 % de la suite. Partir un fichero lo deja por debajo del presupuesto por fichero de ADR-261 D3 (consumidor), pero no baja el coste. El steward de AP-140 solo medía por fichero y por directorio, así que una familia partida no se veía.
+
+**Decisión.** Se mide en el steward, que agrega los dos shards, y no en el gate del CI: allí cada shard ve solo la mitad de una familia y una regla nueva pondría rojos sin aportar señal.
+1. **`porFamilia(agregado, n)`** en `vendored/scripts/suite-metricas.cjs`, exportada y con la forma de `porDirectorio`. La familia de un fichero es su ruta sin el sufijo de partición, con la regex literal `/-[a-z](?=\.test\.(ts|tsx)$)/` (`src/lib/plan/adr-312-drag-pill-h.test.ts` ⇒ `src/lib/plan/adr-312-drag-pill.test.ts`). Solo cuentan las familias con **≥ 2 ficheros con sufijo**; el fichero sin sufijo con el mismo nombre base, si existe, se suma a su familia. Salida `{ familia, ficheros, tests, ms }`, por `ms` desc y, en empate, por nombre; `slice(0, n)`. Sin detalle por fichero (`fuente: log`) ⇒ `[]`.
+2. **`componer`** añade `familias: porFamilia(agregado, 20)` del mismo punto `artifact` que `top` y `directorios` (`[]` sin él). `informeMd` añade la tabla «Familias partidas» (familia, ficheros, tests, s) detrás del mapa de directorios, solo si `familias` no está vacío. `suite-steward.yml` escribe `componer(...)` tal cual, así que no se toca.
+3. **Mandato** `vendored/docs-agents/suite-steward.md` § 4 (f): una familia con `familias[].ms` > **60 000** es un hallazgo de eficiencia del mismo rango que un fichero del top. Se trata igual: issue `suite-limpieza` con el invariante que cubre cada fichero, o justificación de por qué no se baja. Partir un fichero no cuenta como remedio. La magnitud es la del agregado del run de `detalleDe` (los dos shards), no la suma de los días de la semana.
+4. **Banco** `scripts/check-suite-metricas.mjs`, casos (fam a)–(e): `x-a`, `x-b` y `x` ⇒ una familia de 3 con la suma; `y-a.test.tsx` solo ⇒ sin familia; sin agregado y `componer` solo con puntos `log` ⇒ `[]`; orden por `ms` con desempate por nombre y `slice`; `informeMd` lleva la tabla, detrás de los directorios, solo con familias.
+
+**Decisiones del Creator declaradas.** La regex acepta `-a`…`-z`, más que el «`-a`…`-h`» del body: el ruling prevalece y es literal. `.test.ts` y `.test.tsx` del mismo nombre base son familias distintas, porque la regex conserva la extensión.
+
+**Qué NO.** No toca `test-budget-check.mjs` de ningún consumidor ni el gate del CI. No re-decide ADR-261 D3 en el consumidor: eso lo hace su `ADR-261·R·5`, en un suelto aparte. No cambia la superficie `workflow_call` ni las labels.
+
+**Términos de AP-099 que mueve.** (c) Eficiencia: el 21 % de la suite de finplan hoy no se ve como unidad de coste.
+
+**Criterio falsable (30 días).** El informe semanal de finplan lista las familias partidas, y toda familia > 60 s tiene un issue `suite-limpieza` o una justificación en el informe. Banco verde.
 
 **Fecha.** 2026-11-04.

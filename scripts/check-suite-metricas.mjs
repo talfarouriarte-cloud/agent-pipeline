@@ -16,6 +16,8 @@
 //      suma; sin resumen ⇒ `null`;
 //  (g)–(i) de la enmienda del Architect a #410: Δ% solo por tramo de la misma
 //      fuente; `tests` solo `passed`; `msTotal` = `tests Ys`, `msPared` = pared.
+//  (fam a)–(e) de AP-145 (central#425): `porFamilia`, clave `familias` y tabla
+//      «Familias partidas» de `informeMd`.
 // Más: `seleccionarRuns` (último de cada día y de cada semana), `rojos`,
 // `informeMd` (literal de «sin informes de vitest»), `semanaIso`, `leerZip`
 // (stored y deflate) y `componer` (serie de un punto por semana, top del punto
@@ -65,6 +67,30 @@ const fichero = (name, startTime, endTime, estados) => ({ name: W + name, startT
   igual(M.top(ag, 10).length, 4, '(b) n mayor que el total');
   igual(M.porDirectorio({ porFichero: [{ fichero: 'p/x/a.test.ts', tests: 2, ms: 5 }, { fichero: 'p/x/b.test.ts', tests: 1, ms: 5 }, { fichero: 'p/y/c.test.ts', tests: 1, ms: 20 }] }, 10),
     [{ directorio: 'p/y', ficheros: 1, tests: 1, ms: 20 }, { directorio: 'p/x', ficheros: 2, tests: 3, ms: 10 }], '(b) porDirectorio');
+}
+
+{ // AP-145 (central#425): familias de ficheros partidos
+  const f = (fichero, ms, tests = 1) => ({ fichero, tests, ms });
+  const ag = { porFichero: [
+    f('p/x-a.test.ts', 100, 2), f('p/x-b.test.ts', 200, 3), f('p/x.test.ts', 50, 1),   // (a)
+    f('p/y-a.test.tsx', 999),                                                         // (b)
+    f('q/m-a.test.ts', 175), f('q/m-b.test.ts', 175),                                 // (d) empate con k
+    f('q/k-a.test.ts', 300), f('q/k-c.test.tsx', 900), f('q/k-b.test.ts', 50),
+    f('q/z-a.test.ts', 10), f('q/z-b.test.ts', 5),
+  ] };
+  const fam = M.porFamilia(ag, 20);
+  igual(fam.find(e => e.familia === 'p/x.test.ts'), { familia: 'p/x.test.ts', ficheros: 3, tests: 6, ms: 350 }, '(fam a) x-a, x-b y x ⇒ una familia de 3 con la suma de los tres');
+  afirma(!fam.some(e => /\/y/.test(e.familia)), `(fam b) y-a.test.tsx solo ⇒ sin familia: ${JSON.stringify(fam)}`);
+  igual(fam.map(e => [e.familia, e.ms]), [['p/x.test.ts', 350], ['q/k.test.ts', 350], ['q/m.test.ts', 350], ['q/z.test.ts', 15]], '(fam d) por ms desc, empate por nombre; .ts y .tsx son familias distintas');
+  igual(M.porFamilia(ag, 2).length, 2, '(fam d) slice(0, n)');
+  igual(M.porFamilia(null, 20), [], '(fam c) sin agregado ⇒ []');
+  const soloLog = M.componer({ generado: '2026-11-08T23:00:00Z', dias: [{ fecha: '2026-11-08', run: 1, logs: [`Tests 3 passed\nDuration 1.0s (tests 0.5s)`] }], semanas: [] });
+  igual([soloLog.hayArtifacts, soloLog.familias], [false, []], '(fam c) componer solo con puntos `log` ⇒ familias: []');
+  const md = M.informeMd({ serie: [], tendencia: null, top: [], familias: [{ familia: 'p/x.test.ts', ficheros: 3, tests: 6, ms: 61234 }], rojos: M.rojos([]) });
+  afirma(md.includes('## Familias partidas') && md.includes('| `p/x.test.ts` | 3 | 6 | 61.2 |'), '(fam e) informeMd lleva la tabla «Familias partidas»');
+  afirma(!M.informeMd({ serie: [], tendencia: null, top: [], familias: [], rojos: M.rojos([]) }).includes('Familias partidas'), '(fam e) sin familias, sin tabla');
+  const conDir = M.informeMd({ serie: [], tendencia: null, top: [], directorios: [{ directorio: 'p', ficheros: 1, tests: 1, ms: 1 }], familias: fam, rojos: M.rojos([]) });
+  afirma(conDir.indexOf('## Directorios por ms') < conDir.indexOf('## Familias partidas') && conDir.indexOf('## Familias partidas') < conDir.indexOf('## Rojos'), '(fam e) la tabla va detrás del mapa de directorios');
 }
 
 { // (c) tendencia
@@ -222,6 +248,7 @@ const informe = (...fs) => JSON.stringify({ testResults: fs });
   igual(m.serie.map(p => [p.fecha, p.fuente, p.tests, p.msTotal, p.msPared]), [['2026-10-20', 'log', 4706, 1582060, 727950], ['2026-10-28', 'log', 4706, 1582060, 727950], ['2026-11-08', 'artifact', 2, 900, null]], 'componer: un punto por semana, día sin datos fuera');
   afirma(m.tendencia.tramos[0].comparable && m.tendencia.tramos[1].delta === null && m.semana === '2026-W45' && m.hayArtifacts, `componer: tramos y semana (${JSON.stringify(m.tendencia.tramos)})`);
   igual([m.top.map(e => e.fichero), m.detalleDe, m.serie.some(p => 'agregado' in p)], [['p/a.test.ts'], { fecha: '2026-11-08', run: 30 }, false], 'componer: top del artifact más reciente, sin `agregado` en la serie');
+  igual(m.familias, [], 'componer: clave `familias` (sin ficheros partidos ⇒ [])');
 }
 
 // ── Parte 2 — costura ───────────────────────────────────────────────────────

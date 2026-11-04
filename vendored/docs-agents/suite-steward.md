@@ -12,7 +12,7 @@ La suite de tests de un consumidor crece sin que nadie mire su eficiencia, su es
 
 ## 1. Entradas
 
-- `.suite-steward/metricas.json` y `.suite-steward/metricas.md`: los calcula el job determinista `metricas` de `suite-steward.yml` con `scripts/suite-metricas.cjs`. Tienen la serie de tendencia (un punto por semana; `fuente: artifact` = informe JSON de vitest con detalle por fichero, `fuente: log` = líneas de resumen del log, sin detalle por fichero), los puntos diarios de la semana, el top 20 por `ms`, el mapa de directorios, los rojos de PR de la semana por clase (`literal`, `timeout`, `entorno`, `aserción`) y por fichero, y los inestables. **Son la fuente de toda magnitud que publiques**: no inventes ni estimes una cifra que no salga de ahí o de un comando que pegas.
+- `.suite-steward/metricas.json` y `.suite-steward/metricas.md`: los calcula el job determinista `metricas` de `suite-steward.yml` con `scripts/suite-metricas.cjs`. Tienen la serie de tendencia (un punto por semana; `fuente: artifact` = informe JSON de vitest con detalle por fichero, `fuente: log` = líneas de resumen del log, sin detalle por fichero), los puntos diarios de la semana, el top 20 por `ms`, el mapa de directorios, las familias de ficheros partidos (`familias`, AP-145), los rojos de PR de la semana por clase (`literal`, `timeout`, `entorno`, `aserción`) y por fichero, y los inestables. **Son la fuente de toda magnitud que publiques**: no inventes ni estimes una cifra que no salga de ahí o de un comando que pegas.
 - El árbol de tests del checkout (historia completa: `fetch-depth: 0`).
 - El registro de decisiones del repo: `adr-lint.config.json` (`volumes` o `dir`). Lee con `grep -n` la cabecera y el estado de la ADR/AP citada, nunca `cat` de un volumen.
 - `git log` (incluido `git log -S '<literal>' --since='30 days ago' -- <fichero>`).
@@ -27,7 +27,7 @@ Título exacto: `Estado de la suite · <REPO> · <SEMANA>`. Label `suite-salud`.
 Cuerpo, en este orden y sin secciones extra:
 
 1. La tabla de métricas **tal cual** (el contenido de `metricas.md`, sin editar cifras).
-2. `## Eficiencia` — los ficheros más lentos del top y **por qué** lo son (barrido, N grande, setup caro, I/O), con la línea o el bloque que lo causa.
+2. `## Eficiencia` — los ficheros más lentos del top y **por qué** lo son (barrido, N grande, setup caro, I/O), con la línea o el bloque que lo causa; y las familias partidas de § 4 (f).
 3. `## Estructura` — los hallazgos de § 4 (a)–(d) con su evidencia.
 4. `## Fallos` — los rojos de la semana por clase, con los ficheros que más fallan y su causa (§ 4 (e)); los inestables.
 
@@ -42,7 +42,7 @@ Label `suite-limpieza` y `eje:local`. **Sin arm y sin mención a ningún agente*
 - **Ficheros exactos** (rutas del árbol).
 - **Acción**: una de `borrar` / `fusionar` / `reescribir aserción` / `mover a bench bajo demanda` / `bajar N de un barrido`.
 - **Evidencia**: líneas (`fichero:línea`), ADR/AP con su estado en el registro, salida de `git log` pegada.
-- **Ahorro estimado** en `ms`, sacado de `metricas.json` (`porFichero[].ms`); si el fichero no tiene detalle (`fuente: log`), dilo literal en vez de estimar.
+- **Ahorro estimado** en `ms`, sacado de `metricas.json` (`porFichero[].ms`, o `familias[].ms` para una familia partida); si el fichero no tiene detalle (`fuente: log`), dilo literal en vez de estimar.
 - **Riesgo**: qué invariante deja de vigilarse y si otro test lo cubre (cítalo). Proponer quitar un test sin decir qué invariante cubría y si otro lo cubre está **prohibido**.
 
 **Tope**: 3 por semana en `semanal`, 12 en `inicial`, ordenados por `ms` ahorrados (de mayor a menor).
@@ -56,6 +56,7 @@ Label `suite-limpieza` y `eje:local`. **Sin arm y sin mención a ningún agente*
 - **(c)** Ficheros del top 20 cuyo coste viene de barridos o N grandes que no son el invariante que el test vigila.
 - **(d)** Duplicados: dos ficheros que ejercitan la misma función con los mismos casos.
 - **(e)** Ficheros que fallan ≥ 2 veces en la semana (`metricas.json` → `rojos.porFichero[].fallos`): clase y causa.
+- **(f)** Familias de ficheros partidos (AP-145): ficheros `-a`, `-b`… con el mismo nombre base, sumados en `metricas.json` → `familias[].ms` (el agregado de los dos shards del run de `detalleDe`, no la suma de los días de la semana). Una familia con `ms` > **60 000** es un hallazgo de eficiencia del mismo rango que un fichero del top 20: entra en el tope de § 3 por sus `ms`, y la tratas igual, con un issue `suite-limpieza` que diga el invariante que cubre cada fichero de la familia, o con la justificación en «Eficiencia» de por qué no se baja. **Partir un fichero no es un remedio**: no lo propongas y no cuentes un partido como ahorro. Esta regla no cambia el gate del CI ni el presupuesto por fichero del consumidor.
 
 ## 5. Prohibido
 
