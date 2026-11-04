@@ -76,18 +76,18 @@ const fichero = (name, startTime, endTime, estados) => ({ name: W + name, startT
     { fecha: '2026-11-04', tests: 150, msTotal: 1800 },
   ];
   const t = M.tendencia([...serie].reverse());   // el orden de entrada no importa
-  igual([t.semanal.tests, t.semanal.msTotal, t.semanal.msPorTest], [15.4, 28.6, 11.4], '(c) Δ% semana a semana');
-  igual([t.cuatroSemanas.tests, t.cuatroSemanas.msTotal, t.cuatroSemanas.msPorTest], [50, 80, 20], '(c) Δ% a 4 semanas');
+  igual(t.semanal.delta, { tests: 15.4, msTotal: 28.6, msPorTest: 11.4 }, '(c) Δ% semana a semana');
+  igual(t.cuatroSemanas.delta, { tests: 50, msTotal: 80, msPorTest: 20 }, '(c) Δ% a 4 semanas');
   igual([t.semanal.desde, t.cuatroSemanas.desde, t.puntos], ['2026-10-28', '2026-10-07', 5], '(c) puntos de comparación');
   igual(M.tendencia([serie[0]]), null, '(c) serie de 1 punto ⇒ null');
   igual(M.tendencia(serie.slice(0, 3)).cuatroSemanas, null, '(c) 3 puntos ⇒ sin Δ a 4 semanas');
   // [G] ronda 3: log (pared) frente a artifact (suma por fichero) no se comparan
   const mixta = serie.map((p, i) => ({ ...p, fuente: i < 4 ? 'log' : 'artifact' }));
   const tm = M.tendencia(mixta);
-  afirma(tm.semanal.comparable === false && /cambio de fuente \(log → artifact\)/.test(tm.semanal.motivo) && tm.semanal.msTotal === undefined, `(c) frontera log→artifact no comparable: ${JSON.stringify(tm.semanal)}`);
+  afirma(tm.semanal.comparable === false && /cambio de fuente \(log → artifact\)/.test(tm.semanal.motivo) && tm.semanal.delta === null, `(c) frontera log→artifact no comparable: ${JSON.stringify(tm.semanal)}`);
   afirma(tm.cuatroSemanas.comparable === false, '(c) Δ a 4 semanas con un cambio de fuente en medio ⇒ no comparable');
   const tl = M.tendencia(serie.map(p => ({ ...p, fuente: 'log' })));
-  afirma(tl.semanal.comparable === true && tl.semanal.tests === 15.4 && tl.cuatroSemanas.comparable === true, '(c) log↔log sí comparable');
+  afirma(tl.semanal.comparable === true && tl.semanal.delta.tests === 15.4 && tl.cuatroSemanas.comparable === true, '(c) log↔log sí comparable');
 }
 
 { // (g) enmienda del Architect: serie [log, log, artifact, artifact] ⇒ Δ% por tramo de la misma fuente
@@ -97,7 +97,8 @@ const fichero = (name, startTime, endTime, estados) => ({ name: W + name, startT
     { fecha: '2026-10-28', tests: 120, msTotal: 1300, fuente: 'artifact' },
     { fecha: '2026-11-04', tests: 150, msTotal: 1950, fuente: 'artifact' },
   ]);
-  igual(t.tramos.map(x => x.comparable ? [x.tests, x.msTotal] : x.delta), [[10, 20], null, [25, 50]], '(g) tramos log→log y artifact→artifact definidos, log→artifact null');
+  igual(t.tramos.map(x => x.delta && [x.delta.tests, x.delta.msTotal]), [[10, 20], null, [25, 50]], '(g) tramos log→log y artifact→artifact definidos, log→artifact null');
+  igual(t.tramos.map(x => Object.keys(x).filter(k => k !== 'motivo').sort().join()), Array(3).fill('comparable,delta,desde,hasta'), '(g) una sola forma de tramo: `delta` siempre presente (objeto o null)');
   afirma(/cambio de fuente/.test(t.tramos[1].motivo), '(g) la frontera dice «cambio de fuente»');
   const md = M.informeMd({ serie: [], tendencia: t, rojos: M.rojos([]) });
   afirma(md.includes('Tramos:') && md.includes('cambio de fuente (log → artifact)'), '(g) metricas.md marca la frontera');
@@ -166,10 +167,19 @@ const LOG = '2026-11-04T09:15:49.5539120Z \n' +
     { run: 1, path: W + 'p/a.test.ts', message: 'el hash es el literal capturado' },
     { run: 2, path: 'p/a.test.ts', message: 'Test timed out in 5000ms' },
     { run: 2, path: 'p/a.test.ts', message: 'expected 1 to be 2' },
-    { run: 3, path: '', message: 'Process completed with exit code 1.' },
+    { run: 3, path: '', message: 'algo petó sin fichero' },
   ]);
   igual(r.porClase, { literal: 1, timeout: 1, entorno: 0, 'aserción': 2 }, 'rojos: por clase');
   igual(r.porFichero.map(e => [e.fichero, e.fallos]), [['p/a.test.ts', 2], ['(sin fichero)', 1]], 'rojos: por fichero (runs distintos)');
+  const g = M.rojos([
+    { run: 1, path: '.github', message: 'Process completed with exit code 1.' },
+    { run: 2, path: '.github', message: 'Process completed with exit code 137' },
+    { run: 3, path: '', message: ' Process completed with exit code 2. ' },
+    { run: 4, path: '.github', message: 'The job running on runner X has exceeded the maximum execution time of 30 minutes.' },
+    { run: 4, path: 'p/a.test.ts', message: 'expected 1 to be 2' },
+  ]);
+  igual([g.anotaciones, g.porClase], [2, { literal: 0, timeout: 1, entorno: 0, 'aserción': 1 }], 'rojos: «Process completed with exit code N» descartada; el timeout del job (`.github`) cuenta');
+  igual(g.porFichero.map(e => [e.fichero, e.fallos]), [['(sin fichero)', 1], ['p/a.test.ts', 1]], 'rojos: `.github` no es un fichero ⇒ `(sin fichero)`');
 }
 
 { // informeMd y semanaIso
@@ -335,7 +345,8 @@ if (calc && typeof calc.with.script === 'string') {
       igual(m.top.map(e => e.fichero), ['packages/app/lento.test.ts', 'packages/app/rapido.test.ts'], '(int) top desde el zip del artifact `vitest-report-*`');
       afirma(g.llamadas.filter(l => l[0] === 'zip').length === 1, '(int) solo baja artifacts con el prefijo');
       afirma(m.tendencia.semanal.comparable === false && r.md.includes('cambio de fuente (log → artifact)'), '(int) frontera log→artifact marcada');
-      igual(m.rojos.porClase, { literal: 1, timeout: 1, entorno: 0, 'aserción': 1 }, '(int) rojos por clase (solo nivel failure)');
+      igual(m.rojos.porClase, { literal: 1, timeout: 1, entorno: 0, 'aserción': 0 }, '(int) rojos por clase (solo nivel failure, sin la genérica del runner)');
+      afirma(!m.rojos.porFichero.some(e => e.fichero === '.github'), '(int) `.github` no aparece como fichero en rojos');
       igual(m.inestables, [{ run: 201, fichero: 'packages/app/flaky.test.ts' }], '(int) inestable: rojo en intento 1, verde en el 2');
       igual([m.runsRojos, c.out.semana, m.modo, m.avisos], [2, M.semanaIso(new Date().toISOString()), 'semanal', []], '(int) runs rojos, output semana, sin avisos');
       afirma(!g.llamadas.some(l => l[0] === 'runs' && !['push', 'pull_request'].includes(l[1])), '(int) solo runs de push y de PR');

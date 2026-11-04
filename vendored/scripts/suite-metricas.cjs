@@ -22,7 +22,7 @@
 //    `assertionResults[].status === 'passed'` del informe).
 // Aun así las dos fuentes no son idénticas al milisegundo: `tendencia` solo
 // calcula Δ% entre puntos consecutivos de la MISMA `fuente`; en la frontera, el
-// tramo es `null` («cambio de fuente»).
+// `delta` del tramo es `null` («cambio de fuente»).
 
 // Ruta de un `testResults[].name` relativa al checkout del runner
 // (`/home/runner/work/<repo>/<repo>/…`, `/__w/<repo>/<repo>/…`).
@@ -84,14 +84,17 @@ const msPorTest = p => (p.tests > 0 ? p.msTotal / p.tests : null);
 const fuenteDe = p => p.fuente || 'artifact';
 
 // Δ% de `a` a `b`; `tramo` = los puntos de `a` a `b`, ambos incluidos: si alguno
-// cambia de `fuente`, no hay Δ%.
+// cambia de `fuente`, no hay Δ%. Una sola forma: `{ desde, hasta, comparable,
+// delta }`, con `delta` = `{ tests, msTotal, msPorTest }` o `null` (y `motivo`).
 function delta(a, b, tramo = [a, b]) {
-  if (!tramo.every(p => fuenteDe(p) === fuenteDe(a))) return { desde: a.fecha, hasta: b.fecha, comparable: false, motivo: `cambio de fuente (${fuenteDe(a)} → ${fuenteDe(b)})` };
+  if (!tramo.every(p => fuenteDe(p) === fuenteDe(a))) return { desde: a.fecha, hasta: b.fecha, comparable: false, delta: null, motivo: `cambio de fuente (${fuenteDe(a)} → ${fuenteDe(b)})` };
   return {
     desde: a.fecha, hasta: b.fecha, comparable: true,
-    tests: pct(a.tests, b.tests),
-    msTotal: pct(a.msTotal, b.msTotal),
-    msPorTest: pct(msPorTest(a), msPorTest(b)),
+    delta: {
+      tests: pct(a.tests, b.tests),
+      msTotal: pct(a.msTotal, b.msTotal),
+      msPorTest: pct(msPorTest(a), msPorTest(b)),
+    },
   };
 }
 
@@ -107,10 +110,7 @@ function tendencia(serie) {
   return {
     puntos: s.length,
     ultimo: { fecha: ult.fecha, tests: ult.tests, msTotal: ult.msTotal, msPorTest: msPorTest(ult), fuente: fuenteDe(ult) },
-    tramos: s.slice(1).map((p, i) => {
-      const x = delta(s[i], p);
-      return x.comparable ? x : { ...x, delta: null };
-    }),
+    tramos: s.slice(1).map((p, i) => delta(s[i], p)),
     semanal: delta(s[s.length - 2], ult),
     cuatroSemanas: s.length >= 5 ? delta(s[s.length - 5], ult, s.slice(-5)) : null,
   };
@@ -174,15 +174,20 @@ function inestables(ejecuciones) {
 }
 
 // Anotaciones `::error` de los rojos de PR (`[{ run, path, message }]`) ⇒ por
-// clase y por fichero (runs distintos en que falla). `path` vacío ⇒ `(sin fichero)`.
+// clase y por fichero (runs distintos en que falla). La genérica del runner
+// («Process completed with exit code N», una por job rojo) es consecuencia de
+// otro fallo, no causa: se descarta. `path` vacío o `.github` (anotaciones del
+// runner, p. ej. el timeout del job, que sí cuenta) ⇒ `(sin fichero)`.
+const RE_GENERICA = /^Process completed with exit code \d+\.?$/;
+
 function rojos(anotaciones) {
   const porClase = { literal: 0, timeout: 0, entorno: 0, 'aserción': 0 };
   const fich = new Map();
-  for (const a of anotaciones || []) {
-    if (!a) continue;
+  const validas = (anotaciones || []).filter(a => a && !RE_GENERICA.test(String(a.message == null ? '' : a.message).trim()));
+  for (const a of validas) {
     const clase = clasificarFallo(a.message);
     porClase[clase]++;
-    const f = relativo(a.path) || '(sin fichero)';
+    const f = (a.path !== '.github' && relativo(a.path)) || '(sin fichero)';
     const e = fich.get(f) || { fichero: f, runs: new Set(), clases: {} };
     e.runs.add(a.run);
     e.clases[clase] = (e.clases[clase] || 0) + 1;
@@ -191,7 +196,7 @@ function rojos(anotaciones) {
   const porFichero = [...fich.values()]
     .map(e => ({ fichero: e.fichero, fallos: e.runs.size, clases: e.clases }))
     .sort((a, b) => b.fallos - a.fallos || (a.fichero < b.fichero ? -1 : a.fichero > b.fichero ? 1 : 0));
-  return { anotaciones: (anotaciones || []).filter(Boolean).length, porClase, porFichero };
+  return { anotaciones: validas.length, porClase, porFichero };
 }
 
 // Selección de runs de push verdes de la rama por defecto: el último de cada
@@ -239,7 +244,7 @@ function informeMd(m) {
   const linea = (nom, x) => {
     if (!x) return `- Δ% ${nom}: \`null\` (sin punto).`;
     if (!x.comparable) return `- Δ% ${nom} (${x.desde} → ${x.hasta}): \`null\`, ${x.motivo}.`;
-    return `- Δ% ${nom} (${x.desde} → ${x.hasta}): tests ${d(x.tests)} · msTotal ${d(x.msTotal)} · ms/test ${d(x.msPorTest)}`;
+    return `- Δ% ${nom} (${x.desde} → ${x.hasta}): tests ${d(x.delta.tests)} · msTotal ${d(x.delta.msTotal)} · ms/test ${d(x.delta.msPorTest)}`;
   };
   if (!t) L.push('Δ%: `null` (menos de 2 puntos en la serie).');
   else {
