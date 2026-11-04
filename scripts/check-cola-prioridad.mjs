@@ -47,7 +47,8 @@ const caso = (nombre, ok) => { if (!ok) fallos.push(nombre); };
 
 // ── API de GitHub en memoria ────────────────────────────────────────────────
 // `prs`: PRs abiertos (`pulls.list`). `getRoto`: `issues.get` lanza (5xx).
-function repoFalso(issues, { prs = [], getRoto = false } = {}) {
+// `serialOkRoto`: la consulta `labels=serial-ok` lanza (5xx, AP-143).
+function repoFalso(issues, { prs = [], getRoto = false, serialOkRoto = false } = {}) {
   const st = new Map();
   for (const i of issues) st.set(i.number, { state: 'open', comments: [], body: '', ...i, labels: [...(i.labels || [])] });
   const vista = (i) => ({ number: i.number, state: i.state, state_reason: i.state_reason || null, created_at: i.created_at,
@@ -66,6 +67,7 @@ function repoFalso(issues, { prs = [], getRoto = false } = {}) {
       return { data: vista(st.get(issue_number)) };
     },
     async listForRepo({ state, labels }) {
+      if (labels === 'serial-ok' && serialOkRoto) throw new Error('502 Bad Gateway');
       const data = [...st.values()]
         .filter((i) => (!state || i.state === state) && (!labels || i.labels.includes(labels)))
         .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
@@ -73,6 +75,12 @@ function repoFalso(issues, { prs = [], getRoto = false } = {}) {
       return { data };
     },
     async listComments({ issue_number }) { return { data: [...st.get(issue_number).comments] }; },
+    async listCommentsForRepo({ since }) {
+      const corte = Date.parse(since);
+      const data = [];
+      for (const i of st.values()) for (const c of i.comments) if (Date.parse(c.created_at) >= corte) data.push(c);
+      return { data };
+    },
     async addLabels({ issue_number, labels }) {
       const i = st.get(issue_number);
       for (const l of labels) if (!i.labels.includes(l)) i.labels.push(l);
@@ -502,6 +510,89 @@ if (existsSync(WD)) {
   const iOwn = scan.indexOf('const ownOrphanPR'), iDep = scan.indexOf('COLA.dependenciasAbiertas('), iSos = scan.indexOf('if (!freshSuspicion)');
   caso('watchdog scan (AP-126): `en-cola` con `depende-de` abierto se salta ANTES de la sospecha/`cola-huerfana`', iOwn !== -1 && iOwn < iDep && iDep < iSos);
   caso('watchdog scan (AP-126): la exención no aplica con el propio PR huérfano (interbloqueo AP-048)', /if \(!ownOrphanPR && COLA && COLA\.dependenciasAbiertas\)/.test(scan));
+}
+
+// ══ AP-143 · `serial-ok` simétrico en la titularidad de la serie (central#421) ══
+// `excluirSerialOk` (pura) y `titularesSerie` (con su listado), y `liberarCola`
+// como lector que las usa. Casos (a)–(f) del ruling corregido de #421.
+const pr = (number, ref) => ({ number, head: { ref } });
+{
+  const claudePRs = [pr(3562, 'claude/issue-3558-20261104-1100'), pr(3570, 'claude/issue-3497-20261104-1130'), pr(3571, 'claude/fix-suelto')];
+  const r = m.excluirSerialOk({ claudePRs, serialOk: [3558] });
+  caso('AP-143 (a) PR `claude/issue-3558-…` con 3558 en `serialOk` ⇒ excluido', !r.some((p) => p.number === 3562));
+  caso('AP-143 (b) PR `claude/issue-3497-…` sin `serial-ok` ⇒ se queda', r.some((p) => p.number === 3570));
+  caso('AP-143 (c) rama que no es `claude/issue-N-*` ⇒ se queda', r.some((p) => p.number === 3571));
+  const v = m.excluirSerialOk({ claudePRs, serialOk: [] });
+  caso('AP-143 (d) `serialOk` vacío ⇒ todo igual', v.length === 3 && v.every((p, i) => p === claudePRs[i]));
+  caso('AP-143 (c-bis) N es el número entero de la rama: 355 no excluye `claude/issue-3558-…`',
+    m.excluirSerialOk({ claudePRs, serialOk: [355] }).length === 3);
+}
+{
+  // titularesSerie: filtra `claude/*`, lista `serial-ok` una vez y devuelve los excluidos.
+  const prs = [pr(3562, 'claude/issue-3558-x'), pr(3570, 'claude/issue-3497-x'), pr(9, 'dependabot/npm')];
+  const R = repoFalso([{ number: 3558, created_at: T(1), labels: ['serial-ok'] }, { number: 3497, created_at: T(1), labels: [] }]);
+  const t = await m.titularesSerie({ ...R, prs });
+  caso('AP-143 titularesSerie: solo cuentan los `claude/*` sin `serial-ok`; excluidos y sin fallo',
+    t.prs.map((p) => p.number).join() === '3570' && t.excluidos.join() === '3562' && t.fallo === false);
+  const avisos = [];
+  const R2 = repoFalso([{ number: 3558, created_at: T(1), labels: ['serial-ok'] }], { serialOkRoto: true });
+  const t2 = await m.titularesSerie({ ...R2, prs, warn: (w) => avisos.push(w) });
+  caso('AP-143 titularesSerie: listado fallido ⇒ `warn`, `fallo: true` y no excluye nada (fail-closed)',
+    t2.fallo === true && t2.prs.map((p) => p.number).join() === '3562,3570' && t2.excluidos.length === 0 && avisos.length === 1);
+}
+{
+  // (e)/(f) liberarCola: el único PR abierto es de un issue `serial-ok`, sin `serial-activo`.
+  const mundo = () => [{ number: 3493, created_at: T(1), labels: ['en-cola', 'epica'] }, { number: 3558, created_at: T(1), labels: ['serial-ok'] }];
+  const prs = [pr(3562, 'claude/issue-3558-20261104-1100')];
+  const R = repoFalso(mundo(), { prs });
+  const armados = [];
+  const armar = async (next) => { armados.push(next.number); };
+  const r = await m.liberarCola({ ...R, armar });
+  caso('AP-143 (e) liberarCola: `en-cola` y solo un PR `serial-ok` abierto ⇒ arma la cabeza, sin «serie ocupada»',
+    r.accion === 'armado' && r.numero === 3493 && armados.join() === '3493');
+  const R2 = repoFalso(mundo(), { prs, serialOkRoto: true });
+  const avisos = [];
+  const r2 = await m.liberarCola({ ...R2, armar: async () => { throw new Error('no debía armar'); }, warn: (w) => avisos.push(w) });
+  caso('AP-143 (f) …con el listado de `serial-ok` fallando ⇒ «serie ocupada», como hoy',
+    r2.accion === 'no-op' && /serie ocupada por #3562/.test(r2.motivo) && avisos.length === 1);
+  const R3 = repoFalso(mundo(), { prs: [...prs, pr(3570, 'claude/issue-3497-x')] });
+  const r3 = await m.liberarCola({ ...R3, armar: async () => { throw new Error('no debía armar'); } });
+  caso('AP-143 (e-bis) …con otro PR `claude/*` sin `serial-ok` la serie sigue ocupada (regla serial intacta)',
+    r3.accion === 'no-op' && r3.motivo === 'serie ocupada por #3570');
+}
+// Costura (AP-143): los cuatro lectores en YAML llaman a `titularesSerie` y
+// conservan el fallback a todos los `claude/*` sin `COLA`.
+{
+  const lectores = [];
+  if (existsSync('.github/workflows/claude-code.yml')) {
+    const cc = readFileSync('.github/workflows/claude-code.yml', 'utf8');
+    const g = cc.indexOf('- name: Guard serial');
+    const guardTxt = g === -1 ? '' : cc.slice(g, cc.indexOf('\n      - name:', g + 1));
+    const iT = guardTxt.indexOf('COLA.titularesSerie('), iIn = guardTxt.indexOf('const inFlightPRs');
+    caso('AP-143 costura: el guard serial llama a `titularesSerie` antes de `inFlightPRs`', iT !== -1 && iIn !== -1 && iT < iIn
+      && /const claudePRs = titulares\.prs;/.test(guardTxt));
+    lectores.push(['guard serial', guardTxt.slice(0, iIn)]);
+    const b = cc.indexOf('barrido de cola: serie OCUPADA por ${held');
+    lectores.push(['barrido de cola al cierre', b === -1 ? '' : cc.slice(cc.lastIndexOf('const held', b), b)]);
+  }
+  if (existsSync('.github/workflows/epic-merge.yml')) {
+    const em = readFileSync('.github/workflows/epic-merge.yml', 'utf8');
+    const b = em.indexOf('[epic-merge] barrido de cola: serie OCUPADA por ${held');
+    lectores.push(['barrido de epic-merge', b === -1 ? '' : em.slice(em.lastIndexOf('const held', b), b)]);
+  }
+  if (existsSync('.github/workflows/watchdog.yml')) {
+    const wd = readFileSync('.github/workflows/watchdog.yml', 'utf8');
+    const t = wd.indexOf('const titularesCola');
+    lectores.push(['cola-huerfana del Watchdog', t === -1 ? '' : wd.slice(t, wd.indexOf(';', t))]);
+    caso('AP-143 costura: `foreignHolder` lee `titularesCola`, no `openAgentPRs`',
+      /titularesCola\.some\(p => !p\.head\.ref\.startsWith\(`claude\/issue-\$\{issue\.number\}-`\)\)/.test(wd)
+      && !/openAgentPRs\.some\(p => !p\.head\.ref\.startsWith\(`claude\/issue-\$\{issue\.number\}-`\)\)/.test(wd));
+  }
+  for (const [n, txt] of lectores) {
+    caso(`AP-143 costura (${n}): llama a \`COLA.titularesSerie\` con fallback sin módulo`,
+      /\(COLA && COLA\.titularesSerie\)/.test(txt) && /COLA\.titularesSerie\(\{ github,/.test(txt)
+      && (/startsWith\('claude\/'\)/.test(txt) || /: openAgentPRs/.test(txt)));
+  }
 }
 
 // ── Copias: la del consumidor (`scripts/`) es la del central ───────────────

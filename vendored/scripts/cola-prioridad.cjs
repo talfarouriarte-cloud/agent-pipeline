@@ -364,6 +364,46 @@ async function retenerPorDependencia({ github, owner, repo, issue, cadena, comen
   return { retenido: true, abiertas, comentado: true, motivo: `depende de ${lista} abierto` };
 }
 
+// Titularidad de la serie simétrica con `serial-ok` (AP-143, central#421).
+// `serial-ok` saca al issue del régimen serial de ENTRADA (el guard sale antes)
+// y, desde AP-143, también del de SALIDA: su PR `claude/issue-N-*` no cuenta
+// como titular de la serie para los demás. Lo leen los cinco lectores de
+// titularidad: guard serial, barrido de cola al cierre, barrido de
+// `epic-merge`, `liberarCola` y `cola-huerfana` del Watchdog.
+// `excluirSerialOk` es la parte pura: saca de `claudePRs` los PRs cuya rama es
+// `claude/issue-N-*` con N en `serialOk`; el resto (otras ramas, ramas que no
+// son `claude/issue-N-*`) se queda.
+const SERIAL_OK = 'serial-ok';
+const RAMA_ISSUE_RE = /^claude\/issue-(\d+)-/;
+function excluirSerialOk({ claudePRs, serialOk }) {
+  const ok = new Set([...(serialOk || [])].map(Number));
+  return (claudePRs || []).filter((p) => {
+    const mm = RAMA_ISSUE_RE.exec((p && p.head && p.head.ref) || '');
+    return !(mm && ok.has(Number(mm[1])));
+  });
+}
+
+// Filtra los PRs `claude/*` de `prs` (los abiertos de `pulls.list`), lista UNA
+// vez los issues abiertos con `serial-ok` y excluye sus PRs. Devuelve
+// { prs: <los claude/* que cuentan>, excluidos: [números], fallo }. Listado
+// fallido ⇒ `warn`, `fallo: true` y no se excluye nada (fail-closed: el
+// bloqueo de antes de AP-143).
+async function titularesSerie({ github, owner, repo, prs, warn }) {
+  const claudePRs = (prs || []).filter((p) => ((p && p.head && p.head.ref) || '').startsWith('claude/'));
+  if (!claudePRs.length) return { prs: claudePRs, excluidos: [], fallo: false };
+  let serialOk;
+  try {
+    const { data } = await github.rest.issues.listForRepo({ owner, repo, state: 'open', labels: SERIAL_OK, per_page: 100 });
+    serialOk = (data || []).filter((i) => i && !i.pull_request).map((i) => i.number);
+  } catch (e) {
+    if (warn) warn(`titularidad de la serie: no se pudo listar \`${SERIAL_OK}\` (${e.message}); fail-closed, cuentan todos los \`claude/*\`.`);
+    return { prs: claudePRs, excluidos: [], fallo: true };
+  }
+  const quedan = excluirSerialOk({ claudePRs, serialOk });
+  const excluidos = claudePRs.filter((p) => !quedan.includes(p)).map((p) => p.number);
+  return { prs: quedan, excluidos, fallo: false };
+}
+
 // Barrido de LIBERACIÓN del Watchdog (ruling, punto 6): determinista, sin LLM.
 // Arma la cabeza de la cola (orden de central#313) con el `arm-de-cola` normal
 // SOLO con identificación positiva de: pausa LEÍDA y ausente (consulta
@@ -381,7 +421,8 @@ async function liberarCola({ github, owner, repo, armar, warn, ahora }) {
   const queued = await leerCola({ github, owner, repo });
   if (!(queued || []).some((i) => i && !i.pull_request)) return { accion: 'no-op', motivo: 'cola vacía' };
   const { data: prs } = await github.rest.pulls.list({ owner, repo, state: 'open', per_page: 100 });
-  const held = (prs || []).filter((p) => (p.head && p.head.ref || '').startsWith('claude/'));
+  // AP-143: los PRs de issues `serial-ok` no son titulares (fail-closed si el listado falla).
+  const { prs: held } = await titularesSerie({ github, owner, repo, prs, warn });
   if (held.length) return { accion: 'no-op', motivo: `serie ocupada por ${held.map((p) => `#${p.number}`).join(', ')}` };
   const { data: flagged } = await github.rest.issues.listForRepo({ owner, repo, state: 'open', labels: 'serial-activo', per_page: 20 });
   if ((flagged || []).length) return { accion: 'no-op', motivo: `serie ocupada por serial-activo en ${flagged.map((i) => `#${i.number}`).join(', ')}` };
@@ -414,4 +455,5 @@ module.exports = {
   retenerEslabon, retenerArm, liberarCola,
   PAUSE_AGENTS, DEPENDE_RE, RETENIDO_DEP_RE, marcaRetenidoDependencia, dependenciasDeclaradas,
   dependenciasAbiertas, sinDependenciasAbiertas, describirSaltados, retenerPorDependencia,
+  SERIAL_OK, excluirSerialOk, titularesSerie,
 };

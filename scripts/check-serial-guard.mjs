@@ -11,9 +11,21 @@
 // ha escrito aún el flag) y se ejecutan uno tras otro contra esa foto; lo que se
 // cuenta son las escrituras de cada uno. Cuelga del piggyback de
 // `check-embedded-js.mjs` por la misma razón que sus hermanos.
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
+import { createRequire } from 'module';
+import { resolve } from 'path';
 import yaml from 'js-yaml';
 import { cargarStep } from './lib/github-script.mjs';
+
+// AP-143: el guard carga `cola-prioridad.cjs` (titularidad de la serie) por
+// `GITHUB_WORKSPACE`; el banco inyecta el módulo FUENTE, como
+// check-panel-al-encolar. Sin módulo, el guard cuenta todos los `claude/*`.
+const requireLocal = createRequire(import.meta.url);
+let COLA = null;
+for (const f of ['vendored/scripts/cola-prioridad.cjs', 'scripts/cola-prioridad.cjs']) {
+  if (existsSync(f)) { COLA = requireLocal(resolve(f)); break; }
+}
+const reqInyectado = p => (String(p).endsWith('cola-prioridad.cjs') && COLA ? COLA : requireLocal(p));
 
 const wf = yaml.load(readFileSync('.github/workflows/claude-code.yml', 'utf8'));
 let script = null;
@@ -55,6 +67,8 @@ async function guard(world, runId, issue) {
     // Con el cargador fiel `require` existe y el guard carga cola-prioridad.cjs
     // (pausa AP-103, orden AP-102): el doble respeta el filtro por label.
     if (p.labels === 'pausa-cola') return { data: world.pausa || [] };
+    // AP-143: titularidad de la serie (`titularesSerie` lista `serial-ok`).
+    if (p.labels === 'serial-ok') return { data: world.serialOk || [] };
     if (world.issuesDown) throw new Error('API caída (issues)');
     return { data: world.issues || [] };
   };
@@ -87,7 +101,7 @@ async function guard(world, runId, issue) {
   };
   const context = { repo: { owner: 'o', repo: 'r' }, runId, workflow: WF, payload: { issue } };
   const core = { setOutput: (k, v) => { w.outputs[k] = String(v); }, notice: m => w.notices.push(String(m)), warning: m => w.warnings.push(String(m)), info() {} };
-  await run({ github, context, core }, { globales: { setTimeout } });
+  await run({ github, context, core, require: reqInyectado }, { globales: { setTimeout } });
   return w;
 }
 
@@ -251,6 +265,24 @@ const BANCO = [
       const w = await guard(world, 101, B);
       return w.added.includes('11:en-cola') && !w.added.includes('11:serial-activo')
         && w.notices.some(m => /run 100 \(sin número\) → contendiente/.test(m));
+    }],
+  // AP-143 (central#421): `serial-ok` simétrico — el PR de un suelto
+  // `serial-ok` no es titular de la serie; con otro PR sin `serial-ok`, sí.
+  ['AP-143: el único PR abierto es de un issue `serial-ok` ⇒ el eslabón pasa (no queda en-cola)',
+    async () => {
+      const world = { runs: [armRun(101, B.title, 2)], issues: [B], serialOk: [iss(3558, 'Limpieza suite', ['serial-ok'])],
+        prs: [{ number: 3562, head: { ref: 'claude/issue-3558-20261104-1100' } }] };
+      const w = await guard(world, 101, B);
+      return w.outputs.blocked === 'false' && w.added.includes('11:serial-activo') && !w.added.includes('11:en-cola')
+        && w.notices.some(m => /serial-ok fuera de la titularidad \(AP-143\): #3562/.test(m));
+    }],
+  ['AP-143: PR `serial-ok` + PR de otro issue sin `serial-ok` ⇒ en-cola, titular solo el segundo',
+    async () => {
+      const world = { runs: [armRun(101, B.title, 2)], issues: [B], serialOk: [iss(3558, 'Limpieza suite', ['serial-ok'])],
+        prs: [{ number: 3562, head: { ref: 'claude/issue-3558-x' } }, { number: 3570, head: { ref: 'claude/issue-3497-x' } }] };
+      const w = await guard(world, 101, B);
+      return w.outputs.blocked === 'true' && w.added.includes('11:en-cola')
+        && has(w, /ya hay un Creator en vuelo \(#3570 \(claude\/issue-3497-x\)\)/);
     }],
   ['traza: cada run menor evaluado deja notice con su motivo (exento, fuera-de-ventana)',
     async () => {
