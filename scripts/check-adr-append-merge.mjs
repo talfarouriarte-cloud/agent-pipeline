@@ -269,7 +269,7 @@ function doble({ live = {}, comments = [], fallaMerge = false } = {}) {
     paginate: async (fn, p) => (await fn(p)).data,
     rest: {
       issues: { listComments: async () => ({ data: comments }) },
-      pulls: { get: async () => ({ data: { draft: !!live.draft, labels: (live.labels || []).map(name => ({ name })) } }) },
+      pulls: { get: async () => ({ data: { draft: !!live.draft, head: { sha: live.head || 'f'.repeat(40) }, labels: (live.labels || []).map(name => ({ name })) } }) },
     },
   };
   const core = { info() {}, notice: m => log.notices.push(m), warning: m => log.warnings.push(m), setOutput() {} };
@@ -283,7 +283,7 @@ function doble({ live = {}, comments = [], fallaMerge = false } = {}) {
 }
 async function iii({ cands, resultados, live, comments, fallaMerge }) {
   const d = doble({ live, comments, fallaMerge });
-  const env = { ARM_PAT: 'PAT', CANDS: j(cands), RESULTADOS: resultados == null ? '' : j(resultados), IN_DEFAULT_BRANCH: 'main' };
+  const env = { ARM_PAT: 'PAT', CANDS: j(cands), RESULTADOS: resultados == null ? '' : j(resultados), IN_DEFAULT_BRANCH: 'main', IN_SKIP_LABELS: 'human-needed,pause-agents' };
   await run({ github: d.github, context: { repo: { owner: 'o', repo: 'r' }, eventName: 'schedule' }, core: d.core, require }, { env, globales: { fetch: d.fetch } });
   return d.log;
 }
@@ -366,7 +366,7 @@ await caso('(AP142-m2) soloMecanico + ok sin marcador mecánico ⇒ materializa 
   return (post(l).length === 1 && has(l, 'DELETE', '/issues/5/labels/lgtm') && addNR(l)) || j(l);
 });
 await caso('(AP142-m3) E1: ok + marcador watchdog-merge-mecanico de M (PAT) ⇒ sin tocar labels, PUT merge squash con sha M por PAT, texto por ruta', async () => {
-  const l = await iii({ cands: [{ ...C, final: true, soloMecanico: true }], resultados: OK40, live: { labels: ['lgtm', 'ci-verde'] }, comments: [MEC_MARK] });
+  const l = await iii({ cands: [{ ...C, final: true, soloMecanico: true }], resultados: OK40, live: { labels: ['lgtm', 'ci-verde'], head: SHA40 }, comments: [MEC_MARK] });
   const b = post(l), m = l.calls.find(c => c.method === 'PUT' && c.path === '/pulls/5/merge');
   return (b.length === 1 && b[0].includes(`<!-- watchdog-rebase-append: ${SHA40} -->`) && b[0].includes('append al final: base + PR')
     && b[0].includes('inserción en el mismo punto: PR encima de base') && !l.calls.some(c => /labels/.test(c.path))
@@ -378,15 +378,51 @@ await caso('(AP142-m4) E1: marcador de un autor no de confianza ⇒ sin merge al
   return (!l.calls.some(c => c.method === 'PUT') && has(l, 'DELETE', '/issues/5/labels/lgtm')) || j(l);
 });
 await caso('(AP142-m5) E1: pulls.merge falla ⇒ diag con el error, sin reintento, labels intactas', async () => {
-  const l = await iii({ cands: [{ ...C, final: true }], resultados: OK40, live: { labels: ['lgtm', 'ci-verde'] }, comments: [MEC_MARK], fallaMerge: true });
+  const l = await iii({ cands: [{ ...C, final: true }], resultados: OK40, live: { labels: ['lgtm', 'ci-verde'], head: SHA40 }, comments: [MEC_MARK], fallaMerge: true });
   const b = post(l);
   return (b.length === 2 && /diag \(AP-142 E1\)/.test(b[1]) && /HTTP 405/.test(b[1]) && l.calls.filter(c => c.method === 'PUT').length === 1
     && !l.calls.some(c => /labels/.test(c.path))) || j(l);
 });
 await caso('(AP142-m6) E1 en la red por estado: candidato materializar con marcador mecánico ⇒ merge al final', async () => {
-  const l = await iii({ cands: [{ ...C, materializar: SHA40 }], resultados: null, live: { labels: ['lgtm', 'ci-verde'] }, comments: [MEC_MARK] });
+  const l = await iii({ cands: [{ ...C, materializar: SHA40 }], resultados: null, live: { labels: ['lgtm', 'ci-verde'], head: SHA40 }, comments: [MEC_MARK] });
   return (l.calls.some(c => c.method === 'PUT' && c.body.sha === SHA40) && !l.calls.some(c => /labels/.test(c.path))) || j(l);
 });
+
+// Review de #420 🔴: E1 «en el tick» se lee EN VIVO justo antes del PUT. El
+// `final` del scan puede estar caducado (AP-055 del mismo tick retiró `lgtm`,
+// hold, head movido) ⇒ sin PUT y camino de hoy (fail-closed).
+const sinPut = l => !l.calls.some(c => c.method === 'PUT');
+await caso('(AP142-m7) E1 con `lgtm` ya retirada en vivo (AP-055 del mismo tick) ⇒ sin PUT, camino de hoy con needs-review', async () => {
+  const l = await iii({ cands: [{ ...C, final: true }], resultados: OK40, live: { labels: ['ci-verde'], head: SHA40 }, comments: [MEC_MARK] });
+  const b = post(l);
+  return (sinPut(l) && b.length === 1 && /Sin merge al final \(E1\)/.test(b[0]) && b[0].includes('sin `lgtm`') && addNR(l)
+    && !has(l, 'DELETE', '/issues/5/labels/lgtm')) || j(l);
+});
+await caso('(AP142-m8) E1 en la red por estado con `lgtm` retirada en vivo ⇒ sin PUT', async () => {
+  const l = await iii({ cands: [{ ...C, materializar: SHA40 }], resultados: null, live: { labels: ['ci-verde'], head: SHA40 }, comments: [MEC_MARK] });
+  return (sinPut(l) && /Sin merge al final \(E1\)/.test(post(l)[0] || '') && addNR(l)) || j(l);
+});
+for (const [nombre, live, motivo] of [
+  ['sin ci-verde', { labels: ['lgtm'], head: SHA40 }, 'sin `ci-verde`'],
+  ['hold human-needed', { labels: ['lgtm', 'ci-verde', 'human-needed'], head: SHA40 }, 'hold'],
+  ['head ≠ M', { labels: ['lgtm', 'ci-verde'], head: 'e'.repeat(40) }, 'head ≠ M'],
+  ['draft', { labels: ['lgtm', 'ci-verde'], head: SHA40, draft: true }, 'draft'],
+]) {
+  await caso(`(AP142-m9) E1 con ${nombre} en vivo ⇒ sin PUT, lgtm retirada, motivo declarado`, async () => {
+    const l = await iii({ cands: [{ ...C, final: true }], resultados: OK40, live, comments: [MEC_MARK] });
+    const b = post(l);
+    const nr = addNR(l);
+    return (sinPut(l) && b.length === 1 && b[0].includes(motivo)
+      && (live.labels.includes('lgtm') ? has(l, 'DELETE', '/issues/5/labels/lgtm') : true)
+      && (nombre === 'hold human-needed' || nombre === 'draft' ? !nr : nr)) || j(l);
+  });
+}
+// El scan no entrega `final` a un PR que AP-055 acaba de tocar en el tick.
+{
+  const wdTxt = readFileSync('.github/workflows/watchdog.yml', 'utf8');
+  await caso('(AP142-m10) modo d): `final` exige !rectHandled (AP-055 del mismo tick)', async () =>
+    /final: !rectHandled\.has\(pr\.number\) && !!\(mecanicos\.get\(pr\.number\) \|\| \{\}\)\.final/.test(wdTxt) || 'falta el filtro rectHandled en el push de adrAppend');
+}
 
 // ── (j) gate REAL de epic-merge tras un merge mecánico ──────────────────────
 const emWf = yaml.load(readFileSync('.github/workflows/epic-merge.yml', 'utf8'));
