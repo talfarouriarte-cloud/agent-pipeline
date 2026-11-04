@@ -1362,11 +1362,14 @@ jobs:
                 // Solo los `updateBranch` de este gate (marcador previo, PAT) cuentan
                 // como merge de base (enmienda del Architect a #408, punto 2).
                 const marcadosUpdate = GH.shasUpdateMarcados(comments, await loginPAT());
+                // AP-142 E2: el merge mecánico del Watchdog marcado (`watchdog-merge-mecanico`,
+                // PAT) sobre el head revisado también es un paso de la cadena, con `lgtm` viva.
+                const marcadosMecanico = typeof GH.shasMecanicoMarcados === 'function' ? GH.shasMecanicoMarcados(comments, await loginPAT()) : new Map();
                 let commits = new Map();
                 if (shaRev && shaRev !== pf.head.sha) {
                   commits = GH.mapaCommits(await github.paginate(github.rest.pulls.listCommits, { owner, repo, pull_number: prNumber, per_page: 100 }));
                 }
-                lgtm = GH.lgtmVigente({ labels: (pf.labels || []).map(l => l.name), shaRevisado: shaRev, headSha: pf.head.sha, commits, marcadosUpdate, ultimoEsLgtm: ultimoV === 'LGTM' });
+                lgtm = GH.lgtmVigente({ labels: (pf.labels || []).map(l => l.name), shaRevisado: shaRev, headSha: pf.head.sha, commits, marcadosUpdate, marcadosMecanico, ultimoEsLgtm: ultimoV === 'LGTM' });
               } catch (e) { await diag(prNumber, `chequeo Reviewer falló: ${e.message}`); return; }
               if (!lgtm) {
                 // ¿Espera al Reviewer (sin veredicto aún) o al Creator (REVIEW/NITS abiertos)?

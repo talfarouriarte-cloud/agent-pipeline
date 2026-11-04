@@ -587,6 +587,70 @@ jobs:
                 core.notice(`PR #${pr.number}: stalled re-derivado del estado (AP-038).`);
               }
             } catch (e) { core.warning('re-derivación stalled: ' + e.message); }
+            // AP-139 (central#408): gate por head (`gate-head.cjs`) para el belt
+            // AP-024 y las ramas «LGTM no vigente por head nuevo» y «`lgtm` sin CI
+            // en su head» del dispatcher. Sin módulo, AP-024 en modo previo. Se carga
+            // aquí, delante del Gate 0, porque el merge mecánico de AP-142 (abajo) lo usa.
+            let GH = null;
+            for (const p of [`${process.env.GITHUB_WORKSPACE}/.cola-central/vendored/scripts/gate-head.cjs`, `${process.env.GITHUB_WORKSPACE}/scripts/gate-head.cjs`]) {
+              try { GH = require(p); break; } catch (e) { /* siguiente ubicación */ }
+            }
+            const REVIEWER_LOGIN = 'talfarouriarte-cloud';   // login del PAT (mismo literal que reviewer.yml/epic-merge.yml)
+            // ── Merge mecánico DELANTE del Gate 0 (AP-142, central#418). Con PRs en
+            // paralelo (`serial-ok`, AP-121) el repo casi nunca calla y un PR `dirty`
+            // (sin merge-ref ni checks) se quedaba sin dueño detrás del gate. Como el
+            // `stalled` de AP-122, este escaneo va delante. Candidato solo si:
+            //   (i) rama `claude/`; (ii) sin hold (`skip()`); (iii) `dirty` y < 2
+            //   `watchdog-rebase`; (iv) label `lgtm` (el turno es del merge, no del
+            //   Creator); (v) sin contendiente vivo sobre el mismo ítem con la definición
+            //   de AP-100 §1 (`merge-mecanico.cjs`: título del PR, título del issue de la
+            //   rama `claude/issue-N-*` o misma `head_branch`), FAIL-CLOSED: sin módulo,
+            //   o con runs/issue ilegibles, no es candidato.
+            // Con el gate CERRADO, `adr_append` lleva solo estos, con `soloMecanico`: si
+            // el merge mecánico no aplica, NO hay ping LLM (sigue detrás del gate). Con
+            // el gate abierto todo sigue como hoy (el modo PR-dirty de abajo entrega
+            // todos los `dirty`) y estos solo aportan `final`.
+            // `final` (enmienda E1 del propietario): además LGTM vigente sobre el head H0
+            // (`lgtmVigente`, AP-139) y `ci-verde`, con automerge ⇒ el Watchdog no toca
+            // `lgtm` ni `ci-verde` y mergea con `sha: M` al acabar.
+            const REBASE_MARK = '<!-- watchdog-rebase -->';
+            const mecanicos = new Map();
+            let MM = null;
+            for (const p of [`${process.env.GITHUB_WORKSPACE}/.cola-central/vendored/scripts/merge-mecanico.cjs`, `${process.env.GITHUB_WORKSPACE}/vendored/scripts/merge-mecanico.cjs`]) {
+              try { MM = require(p); break; } catch (e) { /* siguiente ubicación */ }
+            }
+            if (!MM) core.warning('merge-mecanico: módulo `merge-mecanico.cjs` no disponible — sin merge mecánico delante del Gate 0 en este tick (fail-closed).');
+            else {
+              const runsMemo = {};
+              const listarRuns = status => (runsMemo[status] = runsMemo[status] || github.rest.actions.listWorkflowRunsForRepo({ ...O, status, per_page: 100 }).then(r => r.data.workflow_runs || []));
+              const leerIssue = async n => (await github.rest.issues.get({ ...O, issue_number: n })).data.title;
+              const contarJobs = async id => (await github.rest.actions.listJobsForWorkflowRun({ ...O, run_id: id, per_page: 1 })).data.total_count;
+              for (const pr of prs) {
+                const labels = (pr.labels || []).map(l => l.name);
+                if (!pr.head.ref.startsWith('claude/') || skip(pr.labels) || !labels.includes('lgtm')) continue;
+                try {
+                  const { data: prFull } = await github.rest.pulls.get({ ...O, pull_number: pr.number });
+                  if (prFull.mergeable_state !== 'dirty') continue;
+                  const cs = await github.paginate(github.rest.issues.listComments, { ...O, issue_number: pr.number, per_page: 100 });
+                  const rebases = cs.filter(c => (c.body || '').includes(REBASE_MARK)).length;
+                  if (rebases >= 2) continue;
+                  const v = await MM.libreDeContendiente({ pr, creatorWf: process.env.IN_CREATOR_WF, leerIssue, listarRuns, contarJobs });
+                  if (!v.libre) { core.info(`merge mecánico #${pr.number}: no candidato delante del Gate 0 — ${v.motivo}.`); continue; }
+                  let final = false;
+                  if (GH && typeof GH.shasMecanicoMarcados === 'function' && labels.includes('ci-verde') && process.env.IN_AUTOMERGE !== 'false') {
+                    try {
+                      const rev = GH.shaRevisado(cs, REVIEWER_LOGIN);
+                      let commits = new Map();
+                      if (rev && rev !== pr.head.sha) commits = GH.mapaCommits(await github.paginate(github.rest.pulls.listCommits, { ...O, pull_number: pr.number, per_page: 100 }));
+                      final = GH.lgtmVigente({ labels, shaRevisado: rev, headSha: pr.head.sha, commits,
+                        marcadosUpdate: GH.shasUpdateMarcados(cs, REVIEWER_LOGIN), marcadosMecanico: GH.shasMecanicoMarcados(cs, REVIEWER_LOGIN),
+                        ultimoEsLgtm: GH.ultimoVeredicto(cs, REVIEWER_LOGIN) === 'LGTM' });
+                    } catch (e) { core.info(`merge mecánico #${pr.number}: lgtmVigente ilegible (${e.message}) — sin merge al final.`); }
+                  }
+                  mecanicos.set(pr.number, { number: pr.number, head_ref: pr.head.ref, head_sha: pr.head.sha, rebases, final });
+                } catch (e) { core.info(`merge mecánico #${pr.number}: ${e.message} — no candidato delante del Gate 0.`); }
+              }
+            }
             // ── Gate 0: ¿hay algo moviéndose? Si hay CUALQUIER run activo
             // de los workflows del pipeline, no hay cuelgue: salir.
             //
@@ -637,6 +701,12 @@ jobs:
                 : 'Runs del pipeline activos; nada que vigilar.');
               core.setOutput('found', String(delante.length > 0));
               core.setOutput('anomalies', JSON.stringify(delante));
+              // AP-142: con el gate cerrado, solo el merge mecánico de (i)–(v), sin ping LLM.
+              const soloMecanico = [...mecanicos.values()].map(c => ({ ...c, soloMecanico: true }));
+              if (soloMecanico.length) {
+                core.setOutput('adr_append', JSON.stringify(soloMecanico));
+                core.notice(`Merge mecánico delante del Gate 0 (AP-142): ${soloMecanico.map(c => '#' + c.number + (c.final ? ' (merge al final)' : '')).join(', ')}.`);
+              }
               return;
             }
 
@@ -781,14 +851,8 @@ jobs:
               try { RV = require(p); break; } catch (e) { /* siguiente ubicación */ }
             }
             if (!RV) core.warning('rect-en-vuelo: módulo `rect-en-vuelo.cjs` no disponible — detector AP-055 INERTE en este tick.');
-            // AP-139 (central#408): gate por head (`gate-head.cjs`) para el belt
-            // AP-024 y las ramas «LGTM no vigente por head nuevo» y «`lgtm` sin CI
-            // en su head» del dispatcher. Sin módulo, AP-024 en modo previo.
-            let GH = null;
-            for (const p of [`${process.env.GITHUB_WORKSPACE}/.cola-central/vendored/scripts/gate-head.cjs`, `${process.env.GITHUB_WORKSPACE}/scripts/gate-head.cjs`]) {
-              try { GH = require(p); break; } catch (e) { /* siguiente ubicación */ }
-            }
-            const REVIEWER_LOGIN = 'talfarouriarte-cloud';   // login del PAT (mismo literal que reviewer.yml/epic-merge.yml)
+            // AP-139 (central#408): `GH` (`gate-head.cjs`) y `REVIEWER_LOGIN` se cargan
+            // delante del Gate 0 desde AP-142 (merge mecánico con merge al final).
             // El belt `watchdog-lgtm-rematerialize` (más abajo) lee la cadena
             // COMPLETA con clave; mismo valor que `RV.RECT_MARK_RE` (el banco
             // lo comprueba), local para que el belt no dependa del módulo.
@@ -1062,12 +1126,14 @@ jobs:
                 // `updateBranch`. Sustituye a `headAfterVerdict` por fecha: un
                 // merge de la base ya no bloquea la re-materialización y un commit
                 // propio la impide siempre. Cap 1 por head SHA (`remats`).
-                let ap024 = null, hcsAll = hcs, gateHeadOk = false, revSha = null, lgtmCommits = new Map(), lgtmMarcados = new Set();
+                let ap024 = null, hcsAll = hcs, gateHeadOk = false, revSha = null, lgtmCommits = new Map(), lgtmMarcados = new Set(), lgtmMecanicos = new Map();
                 if (GH) {
                   try {
                     if (hcs.length >= 100) hcsAll = await github.paginate(github.rest.issues.listComments, { ...O, issue_number: pr.number, per_page: 100 });
                     const rev = GH.shaRevisado(hcsAll, REVIEWER_LOGIN);
                     const marcados = GH.shasUpdateMarcados(hcsAll, REVIEWER_LOGIN);   // solo los `updateBranch` de epic-merge
+                    // AP-142 E2: merges mecánicos marcados del Watchdog (head M sobre H0 con LGTM).
+                    const mecanicosM = typeof GH.shasMecanicoMarcados === 'function' ? GH.shasMecanicoMarcados(hcsAll, REVIEWER_LOGIN) : new Map();
                     let commits = new Map();
                     if (rev && rev !== pr.head.sha) commits = GH.mapaCommits(await github.paginate(github.rest.pulls.listCommits, { ...O, pull_number: pr.number, per_page: 100 }));
                     // Fail-closed: si `getCommit` falla, el head cuenta como cambiado.
@@ -1079,10 +1145,10 @@ jobs:
                       } catch (e) { core.info(`lgtm-remat/head-check #${pr.number}: ${e.message}`); }
                     }
                     ap024 = GH.decidirAp024({ ultimoEsLgtm: true, hasLgtm, shaRevisado: rev, headSha: pr.head.sha,
-                      headSinCambiosDesdeVeredicto: headSinCambios, commits, marcadosUpdate: marcados,
+                      headSinCambiosDesdeVeredicto: headSinCambios, commits, marcadosUpdate: marcados, marcadosMecanico: mecanicosM,
                       remats: GH.remats({ comentarios: hcsAll, headSha: pr.head.sha }), rectHold });
                     gateHeadOk = true;
-                    revSha = rev; lgtmCommits = commits; lgtmMarcados = marcados;
+                    revSha = rev; lgtmCommits = commits; lgtmMarcados = marcados; lgtmMecanicos = mecanicosM;
                   } catch (e) { core.warning(`gate-head #${pr.number}: ${e.message} — sin decisión por head en este tick.`); }
                 }
                 if (GH && ap024 === 'remat') {
@@ -1164,7 +1230,7 @@ jobs:
                     await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['needs-review'] });
                     return false;   // cap 2 del dispatcher (TURN_MARK), sin marcador nuevo
                   };
-                } else if (GH && gateHeadOk && hasLgtm && GH.lgtmVigente({ labels, shaRevisado: revSha, headSha: pr.head.sha, commits: lgtmCommits, marcadosUpdate: lgtmMarcados, ultimoEsLgtm: true })) {
+                } else if (GH && gateHeadOk && hasLgtm && GH.lgtmVigente({ labels, shaRevisado: revSha, headSha: pr.head.sha, commits: lgtmCommits, marcadosUpdate: lgtmMarcados, marcadosMecanico: lgtmMecanicos, ultimoEsLgtm: true })) {
                   // AP-139, `lgtm` vigente sin CI en su head (red del CI-tras-LGTM):
                   // si el `labeled` se perdió no hay run de CI y epic-merge espera
                   // en `esperando-ci` para siempre. ≥ 15 min desde el último
@@ -1317,7 +1383,6 @@ jobs:
                 const { data: prCs } = await github.rest.issues.listComments({
                   ...O, issue_number: pr.number, per_page: 100,
                 });
-                const REBASE_MARK = '<!-- watchdog-rebase -->';
                 const rebases = prCs.filter(c => (c.body || '').includes(REBASE_MARK)).length;
                 // Nota: el gate 0 (runs activos => no hacer nada) ya cubre la
                 // reparación en curso; aquí solo cap de reintentos via marca.
@@ -1329,7 +1394,8 @@ jobs:
                   // mecánico + push con el PAT; en CUALQUIER otro caso (también
                   // si el camino mecánico falla) el ping de rebase LLM de
                   // siempre, con el PAT (central#268) y el mismo cap 2.
-                  adrAppend.push({ number: pr.number, head_ref: pr.head.ref, head_sha: pr.head.sha, rebases });
+                  // AP-142: con el gate abierto, `final` (E1) si el PR cumple (i)–(v).
+                  adrAppend.push({ number: pr.number, head_ref: pr.head.ref, head_sha: pr.head.sha, rebases, final: !!(mecanicos.get(pr.number) || {}).final });
                   // Output escrito en el acto: si el scan muere más abajo, los
                   // steps de materialización (`always()`) siguen recibiendo el
                   // candidato y el PR no se queda sin dueño.
@@ -1779,18 +1845,27 @@ jobs:
             }
 
       # ── AP-130 (central#370): merge mecánico append-only del registro de
-      # decisiones en el modo PR-dirty. El scan ya no publica el ping de rebase
-      # LLM: entrega los PRs `dirty` con cap disponible en `adr_append`. Si el
-      # ÚNICO conflicto es un append al registro (ruta por `adr-lint.config.json`,
-      # AP-111) por los dos lados sobre el mismo ancestro, `adr-append-merge.mjs`
-      # hace un commit de MERGE de dos padres (sin reescritura, push
-      # fast-forward con el PAT ⇒ dispara CI). Cualquier otro caso, y todo fallo
-      # del camino mecánico, cae al ping LLM de siempre en «Materializar rebase
-      # append-only» (invariante de fail-open: todo candidato recibe en el mismo
-      # tick o un `watchdog-rebase-append` o un ping LLM; si (iii) no termina
-      # DESPUÉS del push, la red por estado del modo d) lo re-materializa en el
-      # tick siguiente). El gate 0 del scan garantiza que no hay sesión del
-      # Creator viva sobre la rama.
+      # decisiones en el modo PR-dirty, extendido por AP-142 (central#418) a la
+      # inserción en el mismo punto de un `CHANGELOG.md` y a varios ficheros en
+      # conflicto (todos admitidos y resolubles). El scan ya no publica el ping
+      # de rebase LLM: entrega los PRs `dirty` con cap disponible en
+      # `adr_append`. Si TODOS los conflictos son mecánicos (`adr-append-merge.mjs`)
+      # hace un commit de MERGE de dos padres (sin reescritura, push fast-forward
+      # con el PAT ⇒ dispara CI). Con el gate 0 ABIERTO, cualquier otro caso y
+      # todo fallo del camino mecánico cae al ping LLM de siempre en
+      # «Materializar rebase append-only» (fail-open: todo candidato recibe en el
+      # mismo tick o un `watchdog-rebase-append` o un ping LLM; si (iii) no
+      # termina DESPUÉS del push, la red por estado del modo d) lo re-materializa
+      # cuando el gate se abra). Con el gate CERRADO (AP-142) los candidatos
+      # llevan `soloMecanico`: si el merge mecánico no aplica no hay ping (el
+      # ping LLM podría chocar con una sesión del Creator y sigue detrás del
+      # gate) ni marcador, así que se reintenta en cada tick hasta que el gate
+      # se abra. Sesión del Creator viva sobre la rama: con el gate abierto la
+      # excluye el gate 0; con el gate cerrado la excluyen (iv) `lgtm` y (v) sin
+      # contendiente AP-100 §1 (`merge-mecanico.cjs`, fail-closed). Y si alguien
+      # empuja antes, el push fast-forward se rechaza (`push-rechazado`).
+      # `final` (enmienda E1): el step publica `watchdog-merge-mecanico` ANTES
+      # del push, no toca `lgtm`/`ci-verde` y «Materializar» mergea con `sha: M`.
       - name: Checkout del consumidor (merge append-only, AP-130)
         if: steps.scan.outputs.adr_append != '' && steps.scan.outputs.adr_append != '[]'
         continue-on-error: true
@@ -1807,6 +1882,9 @@ jobs:
         env:
           CANDS: ${{ steps.scan.outputs.adr_append }}
           IN_DEFAULT_BRANCH: ${{ inputs.default_branch }}
+          # AP-142 E1: el marcador `watchdog-merge-mecanico` sale por PAT (autor
+          # de confianza para `gate-head.cjs`) ANTES del push.
+          ARM_PAT: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
         run: |
           # Sin `-e`: el output `resultados` se escribe SIEMPRE (trap EXIT); un
           # candidato sin entrada lo trata el step siguiente como `sin-resultado`.
@@ -1820,14 +1898,27 @@ jobs:
           }
           # `materializar`: red por estado del scan (merge ya empujado en un tick
           # anterior) ⇒ ni merge ni push; lo resuelve el step siguiente.
-          LISTA=$(node -e 'for (const c of JSON.parse(process.env.CANDS || "[]")) if (!c.materializar) console.log(c.number + "\t" + c.head_ref)')
-          while IFS=$'\t' read -r NUM REF; do
+          LISTA=$(node -e 'for (const c of JSON.parse(process.env.CANDS || "[]")) if (!c.materializar) console.log(c.number + "\t" + c.head_ref + "\t" + (c.final ? c.head_sha : "-"))')
+          while IFS=$'\t' read -r NUM REF H0; do
             [ -z "$NUM" ] && continue
             if [ ! -f "$MOD" ]; then put "$NUM" '{"ok":false,"na":"modulo-ausente"}'; continue; fi
             if [ ! -d .repo/.git ]; then put "$NUM" '{"ok":false,"na":"checkout-fallido"}'; continue; fi
             OUT=$(node "$MOD" --repo .repo --base "$IN_DEFAULT_BRANCH" --head "$REF")
             echo "PR #$NUM ($REF): $OUT"
             if printf '%s' "$OUT" | grep -q '"ok":true'; then
+              # AP-142 E1: con LGTM vigente sobre H0 y `ci-verde`, el marcador
+              # `watchdog-merge-mecanico: <M> revisado=<H0>` sale ANTES del push
+              # (si no, el `synchronize` vería un head sin marcar). Solo si la
+              # primera madre de M es el H0 que evaluó el scan; si el marcador no
+              # se publica, el merge sigue sin merge al final.
+              if [ "$H0" != "-" ]; then
+                M=$(git -C .repo rev-parse HEAD); P1=$(git -C .repo rev-parse HEAD^1)
+                if [ "$P1" = "$H0" ] && node -e 'const [m,h,n]=process.argv.slice(1);fetch(`https://api.github.com/repos/${process.env.GITHUB_REPOSITORY}/issues/${n}/comments`,{method:"POST",headers:{Authorization:`Bearer ${process.env.ARM_PAT}`,Accept:"application/vnd.github+json"},body:JSON.stringify({body:`**watchdog · merge mecánico con merge al final (AP-142)**: LGTM vigente sobre \`${h.slice(0,7)}\` y \`ci-verde\`; el merge \`${m.slice(0,7)}\` conserva los dos gates.\n\n<!-- watchdog-merge-mecanico: ${m} revisado=${h} -->`})}).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))' "$M" "$H0" "$NUM"; then
+                  OUT=$(printf '%s' "$OUT" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const o=JSON.parse(s);o.final=true;process.stdout.write(JSON.stringify(o))})')
+                else
+                  echo "PR #$NUM: sin marcador watchdog-merge-mecanico (madre $P1 vs H0 $H0, o POST fallido) — merge mecánico sin merge al final."
+                fi
+              fi
               # Fast-forward sobre la rama del PR; rechazo (el Creator empujó
               # entre el tick y el push, o cualquier otro) ⇒ camino LLM.
               if ! git -C .repo push origin "HEAD:refs/heads/$REF"; then
@@ -1852,6 +1943,7 @@ jobs:
             const CAPA = `<!-- watchdog-capa: ${context.eventName} -->`;
             const REBASE_MARK = '<!-- watchdog-rebase -->';
             const verdictRe = /^\s*(LGTM|REVIEW|NITS)\b/;
+            const REVIEWER_LOGIN = 'talfarouriarte-cloud';   // login del PAT: autor de `watchdog-merge-mecanico`
             // Todas las escrituras con el PAT: el ping arma al Creator
             // (central#268) y la `needs-review` debe disparar reviewer.yml (un
             // `labeled` por GITHUB_TOKEN no lo hace).
@@ -1870,7 +1962,7 @@ jobs:
               try {
                 // Red por estado del scan: el merge ya está en la rama, falta
                 // la materialización de un tick anterior que no terminó.
-                const r0 = c.materializar ? { ok: true, sha: String(c.materializar), ruta: null, red: true } : resultados[String(c.number)];
+                const r0 = c.materializar ? { ok: true, sha: String(c.materializar), rutas: [], red: true } : resultados[String(c.number)];
                 const ok = !!(r0 && r0.ok === true && /^[0-9a-f]{7,40}$/.test(String(r0.sha || '')));
                 if (ok) {
                   const MARK = `<!-- watchdog-rebase-append: ${r0.sha} -->`;
@@ -1878,6 +1970,33 @@ jobs:
                   // Forma de máquina (línea propia): una cita del marcador no hace no-op.
                   const MARK_RE = new RegExp(`^${MARK}$`, 'm');
                   if (cs.some(x => MARK_RE.test(x.body || ''))) { core.info(`PR #${c.number}: ${r0.sha.slice(0, 7)} ya materializado — no-op.`); continue; }
+                  // AP-142 E1: merge al final si M lleva su `watchdog-merge-mecanico`
+                  // (publicado por PAT antes del push; también en la red por estado).
+                  const FINAL_RE = new RegExp(`^<!-- watchdog-merge-mecanico: ${r0.sha} revisado=[0-9a-f]{40} -->$`, 'm');
+                  const final = cs.some(x => x.user && x.user.login === REVIEWER_LOGIN && FINAL_RE.test(x.body || ''));
+                  // Cómo se resolvió cada ruta (AP-142).
+                  const MODO = { append: 'append al final: base + PR', insercion: 'inserción en el mismo punto: PR encima de base' };
+                  const res = Array.isArray(r0.resueltas) && r0.resueltas.length ? r0.resueltas
+                    : (r0.rutas || []).map(ruta => ({ ruta, modo: /(^|\/)CHANGELOG\.md$/.test(ruta) ? 'insercion' : 'append' }));
+                  const como = res.length ? res.map(x => `\`${x.ruta}\` (${MODO[x.modo] || x.modo})`).join('; ') : 'registro / CHANGELOG';
+                  const cabecera = `**watchdog · merge mecánico append-only (AP-130, AP-142)**: los conflictos con \`origin/${process.env.IN_DEFAULT_BRANCH}\` eran solo appends al registro o inserciones en el mismo punto de un CHANGELOG: ${como}. Resuelto sin sesión LLM con un commit de merge de dos padres (${r0.sha.slice(0, 7)}), sin reescritura de historia. ${r0.red ? '(Materialización tardía: la del tick del merge no terminó; la detectó la red por estado del scan.) ' : ''}`;
+                  if (final) {
+                    // E1: no se tocan `lgtm` ni `ci-verde` ni `needs-review`; merge
+                    // con `sha: M` por PAT (su `closed` dispara el post-merge de
+                    // epic-merge). Si falla, sin reintento: diag y labels intactas
+                    // ⇒ epic-merge lo recoge en su próxima evaluación (E2).
+                    await patCall('POST', `/issues/${c.number}/comments`, {
+                      body: `${cabecera}LGTM vigente sobre el head revisado y \`ci-verde\`: se conservan los dos gates y el Watchdog mergea con \`sha: ${r0.sha.slice(0, 7)}\` (enmienda E1).\n\n${MARK}\n${CAPA}` });
+                    try {
+                      await patCall('PUT', `/pulls/${c.number}/merge`, { merge_method: 'squash', sha: r0.sha });
+                      core.notice(`PR #${c.number}: merge mecánico ${r0.sha.slice(0, 7)} + merge al final (AP-142 E1).`);
+                    } catch (e) {
+                      await patCall('POST', `/issues/${c.number}/comments`, {
+                        body: `**watchdog · diag (AP-142 E1)**: \`pulls.merge\` con \`sha: ${r0.sha.slice(0, 7)}\` falló (${String(e.message).slice(0, 200)}). Sin reintento aquí: \`lgtm\` y \`ci-verde\` siguen puestas y epic-merge lo recoge en su próxima evaluación.\n${CAPA}` }).catch(() => {});
+                      core.warning(`PR #${c.number}: merge al final falló (${e.message}) — queda para epic-merge.`);
+                    }
+                    continue;
+                  }
                   // Estado LEÍDO en vivo, no el del listado del scan: el bloque
                   // AP-055 del mismo tick puede haber retirado `lgtm`.
                   const { data: pf } = await github.rest.pulls.get({ ...O, pull_number: c.number });
@@ -1887,8 +2006,8 @@ jobs:
                   const lastV = vs.length ? (vs[vs.length - 1].body || '').trim().split(/\s/)[0].replace(':', '') : null;
                   const turnoCreator = lastV === 'REVIEW' || lastV === 'NITS';
                   const reconvoca = !pf.draft && !turnoCreator;
-                  // El veredicto previo NUNCA sobrevive al merge mecánico: lo
-                  // que entra desde la base puede ser una rectificación de una
+                  // Sin E1, el veredicto previo NUNCA sobrevive al merge mecánico:
+                  // lo que entra desde la base puede ser una rectificación de una
                   // ADR citada que AP-055 no ve en `layout: "dir"`.
                   if (hadLgtm) await patCall('DELETE', `/issues/${c.number}/labels/lgtm`);
                   if (reconvoca) {
@@ -1897,11 +2016,14 @@ jobs:
                   }
                   const que = `${hadLgtm ? 'Retirada la label `lgtm`: el veredicto previo no vio lo que entró desde la base. ' : ''}${reconvoca ? 'Re-aplicada `needs-review` por PAT: el Reviewer juzga el HEAD nuevo.' : pf.draft ? 'Sin `needs-review`: el PR está en draft (el Reviewer entrará por `ready`).' : `Sin \`needs-review\`: el veredicto vigente es \`${lastV}\`, el turno es del Creator y la próxima review consume el HEAD nuevo.`}`;
                   await patCall('POST', `/issues/${c.number}/comments`, {
-                    body: `**watchdog · merge append-only del registro (AP-130)**: el único conflicto con \`origin/${process.env.IN_DEFAULT_BRANCH}\` era un append por los dos lados al final de \`${r0.ruta || 'registro'}\`. Resuelto sin sesión LLM con un commit de merge de dos padres (${r0.sha.slice(0, 7)}): ancestro + bloque de la base + bloque del PR, sin reescritura de historia. ${r0.red ? '(Materialización tardía: la del tick del merge no terminó; la detectó la red por estado del scan.) ' : ''}${que}\n\n${MARK}\n${CAPA}` });
+                    body: `${cabecera}${que}\n\n${MARK}\n${CAPA}` });
                   core.notice(`PR #${c.number}: merge append-only ${r0.sha.slice(0, 7)} — lgtm ${hadLgtm ? 'retirada' : 'ausente'}, needs-review ${reconvoca ? 're-aplicada' : pf.draft ? 'omitida (draft)' : `omitida (turno del Creator: ${lastV})`}.`);
                 } else {
                   const na = String((r0 && r0.na) || 'sin-resultado').replace(/[^a-z-]/g, '') || 'sin-resultado';
                   if (r0 && r0.detalle) core.info(`PR #${c.number}: na ${na} — ${r0.detalle}`);
+                  // AP-142: con el gate 0 cerrado (`soloMecanico`) no hay ping LLM:
+                  // podría chocar con una sesión del Creator; sigue detrás del gate.
+                  if (c.soloMecanico) { core.notice(`PR #${c.number}: merge mecánico no aplica (${na}); sin ping LLM con el Gate 0 cerrado (AP-142).`); continue; }
                   await patCall('POST', `/issues/${c.number}/comments`, {
                     body: `${REBASE_MARK}\n@claude rebasa esta rama sobre \`origin/${process.env.IN_DEFAULT_BRANCH}\` y resuelve los conflictos (watchdog: PR en conflicto sin checks posibles — sin merge-ref no corren CI ni Reviewer). Alcance intacto: solo rebase + resolución. <!-- ping-creator -->\n<!-- watchdog-rebase-append-na: ${na} -->\n${CAPA}`,
                   });
