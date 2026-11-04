@@ -79,6 +79,34 @@ function porDirectorio(agregado, n) {
     .slice(0, n);
 }
 
+// Familias de ficheros partidos (AP-145, central#425): la familia de un fichero
+// es su ruta sin el sufijo de partición `-<letra>` delante de `.test.ts(x)`
+// (`x-h.test.ts` ⇒ `x.test.ts`). Partir un fichero lo deja bajo el presupuesto
+// por fichero sin bajar su coste: aquí se vuelve a sumar. Solo cuenta como
+// familia la que tiene ≥ 2 ficheros con sufijo; el fichero sin sufijo con el
+// mismo nombre base, si existe, se suma a ella. Empate ⇒ por nombre.
+const RE_PARTICION = /-[a-z](?=\.test\.(ts|tsx)$)/;
+
+function porFamilia(agregado, n) {
+  const xs = (agregado && agregado.porFichero) || [];
+  const conSufijo = new Map();
+  for (const e of xs) if (RE_PARTICION.test(e.fichero)) {
+    const k = e.fichero.replace(RE_PARTICION, '');
+    conSufijo.set(k, (conSufijo.get(k) || 0) + 1);
+  }
+  const m = new Map();
+  for (const e of xs) {
+    const familia = e.fichero.replace(RE_PARTICION, '');
+    if ((conSufijo.get(familia) || 0) < 2) continue;
+    const f = m.get(familia) || { familia, ficheros: 0, tests: 0, ms: 0 };
+    f.ficheros++; f.tests += e.tests; f.ms += e.ms;
+    m.set(familia, f);
+  }
+  return [...m.values()]
+    .sort((a, b) => b.ms - a.ms || (a.familia < b.familia ? -1 : a.familia > b.familia ? 1 : 0))
+    .slice(0, n);
+}
+
 const pct = (a, b) => (Number.isFinite(a) && Number.isFinite(b) && a !== 0) ? Math.round(((b - a) / a) * 1000) / 10 : null;
 const msPorTest = p => (p.tests > 0 ? p.msTotal / p.tests : null);
 const fuenteDe = p => p.fuente || 'artifact';
@@ -229,8 +257,8 @@ const s = ms => (ms == null ? '—' : `${(ms / 1000).toFixed(1)} s`);
 const d = v => (v == null ? '—' : `${v > 0 ? '+' : ''}${v} %`);
 const mpt = p => (p.tests > 0 ? `${Math.round(p.msTotal / p.tests)} ms` : '—');
 
-// `metricas.md` desde `metricas.json`: tabla de tendencia, top 20, rojos por
-// clase y por fichero, inestables. Sin informes de vitest lo dice literal.
+// `metricas.md` desde `metricas.json`: tabla de tendencia, top 20, directorios,
+// familias partidas, rojos por clase y por fichero, inestables. Sin informes de vitest lo dice literal.
 function informeMd(m) {
   const L = [];
   L.push(`# Métricas de la suite · ${m.repo || ''} · ${m.semana || ''}`, '');
@@ -262,6 +290,10 @@ function informeMd(m) {
   if ((m.directorios || []).length) {
     L.push('', '## Directorios por ms', '', '| Directorio | Ficheros | Tests | ms |', '|---|---|---|---|');
     for (const e of m.directorios) L.push(`| \`${e.directorio}\` | ${e.ficheros} | ${e.tests} | ${e.ms} |`);
+  }
+  if ((m.familias || []).length) {
+    L.push('', '## Familias partidas', '', 'Ficheros `-a`…`-z` del mismo nombre base, sumados (AP-145).', '', '| Familia | Ficheros | Tests | s |', '|---|---|---|---|');
+    for (const e of m.familias) L.push(`| \`${e.familia}\` | ${e.ficheros} | ${e.tests} | ${(e.ms / 1000).toFixed(1)} |`);
   }
   const r = m.rojos || { porClase: {}, porFichero: [], anotaciones: 0 };
   L.push('', '## Rojos de la semana (CI de PR)', '', `Runs con algún job en \`failure\`: ${m.runsRojos == null ? '—' : m.runsRojos} · anotaciones \`::error\`: ${r.anotaciones}`, '');
@@ -322,7 +354,7 @@ function punto({ fecha, run, reportes, logs }) {
 // Lo que recoge el step ⇒ `metricas.json`. `dias` y `semanas` = `[{ fecha, run,
 // reportes?, logs? }]`. La serie de tendencia es un punto por semana: las
 // `semanas` anteriores, de la más antigua a la más reciente, y el último día con
-// datos de la semana actual. El top y los directorios salen del punto `artifact`
+// datos de la semana actual. El top, los directorios y las familias salen del punto `artifact`
 // más reciente (sin ninguno, vacíos y el informe lo dice).
 function componer(e) {
   const sinAg = p => { const { agregado, ...r } = p; return r; };
@@ -337,6 +369,7 @@ function componer(e) {
     detalleDe: conDetalle ? { fecha: conDetalle.fecha, run: conDetalle.run } : null,
     top: conDetalle ? top(conDetalle.agregado, e.nTop || 20) : [],
     directorios: conDetalle ? porDirectorio(conDetalle.agregado, e.nDir || 10) : [],
+    familias: conDetalle ? porFamilia(conDetalle.agregado, 20) : [],
     porFichero: conDetalle ? conDetalle.agregado.porFichero : [],
     runsRojos: e.runsRojos == null ? null : e.runsRojos,
     rojos: rojos(e.anotaciones), inestables: inestables(e.ejecuciones),
@@ -356,7 +389,7 @@ function semanaIso(fecha) {
 }
 
 module.exports = {
-  relativo, agregar, top, porDirectorio, tendencia, clasificarFallo,
+  relativo, agregar, top, porDirectorio, porFamilia, tendencia, clasificarFallo,
   normalizarLog, agregarDesdeLog, inestables, rojos, seleccionarRuns, informeMd, semanaIso,
   leerZip, punto, componer,
 };
