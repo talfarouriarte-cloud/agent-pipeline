@@ -374,7 +374,11 @@ jobs:
                   return;
                 }
                 const { data: prs } = await github.rest.pulls.list({ owner, repo, state: 'open', per_page: 100 });
-                const held = prs.filter(p => p.head.ref.startsWith('claude/')).map(p => `#${p.number}`);
+                // AP-143: los PRs de issues `serial-ok` no son titulares; sin
+                // módulo (o listado fallido), cuentan todos los `claude/*`.
+                const held = ((COLA && COLA.titularesSerie)
+                  ? (await COLA.titularesSerie({ github, owner, repo, prs, warn: (m) => core.warning(m) })).prs
+                  : prs.filter(p => p.head.ref.startsWith('claude/'))).map(p => `#${p.number}`);
                 if (held.length) {
                   core.info(`[epic-merge] barrido de cola: serie OCUPADA por ${held.join(', ')}; la espera es legítima.`);
                   return;
