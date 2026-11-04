@@ -1097,8 +1097,11 @@ jobs:
                   why = 'veredicto LGTM sin marcador `reviewer-lgtm-sha` y head sin cambios desde el veredicto (crash entre veredicto y marcador, o PR anterior a AP-139)';
                   fix = async () => {   // con el PAT: `shaRevisado` solo lee comentarios del login del PAT
                     await patCall('POST', `/issues/${pr.number}/comments`, {
-                      body: `**watchdog · relleno del SHA revisado (AP-139)**: el último veredicto del Reviewer es LGTM y el head \`${pr.head.sha.slice(0, 7)}\` no ha cambiado desde él, pero el post-step no dejó el marcador del SHA revisado. Se rellena para este head${hasLgtm ? '' : ' y se re-aplica `lgtm`'}.\n\n${GH.marcaLgtmSha(pr.head.sha)}\n${CAPA}` });
-                    if (!hasLgtm) await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['lgtm'] });
+                      body: `**watchdog · relleno del SHA revisado (AP-139)**: el último veredicto del Reviewer es LGTM y el head \`${pr.head.sha.slice(0, 7)}\` no ha cambiado desde él, pero el post-step no dejó el marcador del SHA revisado. Se rellena para este head y se ${hasLgtm ? 'retira y re-aplica' : 're-aplica'} \`lgtm\` con el PAT: su \`labeled\` re-dispara epic-merge (un comentario no es trigger).\n\n${GH.marcaLgtmSha(pr.head.sha)}\n${CAPA}` });
+                    // Con `lgtm` ya puesta (PR en vuelo) el marcador solo no re-entra
+                    // en epic-merge: DELETE + POST, como el re-arm sin CI.
+                    if (hasLgtm) await patCall('DELETE', `/issues/${pr.number}/labels/lgtm`);
+                    await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['lgtm'] });
                     return true;
                   };
                 } else if (!GH) {

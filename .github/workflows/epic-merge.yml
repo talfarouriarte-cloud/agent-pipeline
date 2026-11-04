@@ -410,6 +410,7 @@ jobs:
               'estado:esperando-ci': ['pending', 'Esperando CI verde'],
               'estado:esperando-reviewer': ['pending', 'Esperando veredicto del Reviewer'],
               'estado:esperando-creator': ['pending', 'Veredicto REVIEW/NITS abierto: turno del Creator'],
+              'lgtm-sin-sha': ['pending', 'LGTM sin SHA revisado: espera el relleno del Watchdog (AP-139)'],
               'merged': ['success', 'Gate satisfecho: mergeado por epic-merge'],
               'manual': ['success', 'Mergeado manualmente; sentinels procesados'],
             };
@@ -1369,9 +1370,12 @@ jobs:
               } catch (e) { await diag(prNumber, `chequeo Reviewer falló: ${e.message}`); return; }
               if (!lgtm) {
                 // ¿Espera al Reviewer (sin veredicto aún) o al Creator (REVIEW/NITS abiertos)?
-                const waitingOn = (ultimoV === 'REVIEW' || ultimoV === 'NITS') ? 'estado:esperando-creator' : 'estado:esperando-reviewer';
-                await setStatus(prNumber, waitingOn);
-                await diag(prNumber, `LGTM no vigente para el head ${pf.head.sha.slice(0, 7)} (último veredicto: ${ultimoV || 'ninguno'}; SHA revisado: ${shaRev ? shaRev.slice(0, 7) : 'sin marcador'}) — ${waitingOn.replace('estado:', '')}; espero (AP-139).`);
+                // LGTM sin marcador: actúa el belt AP-024 del Watchdog (relleno o
+                // Reviewer), no el Reviewer; sin label `estado:*` que lo atribuya.
+                const sinMarca = ultimoV === 'LGTM' && !shaRev;
+                const waitingOn = (ultimoV === 'REVIEW' || ultimoV === 'NITS') ? 'estado:esperando-creator' : sinMarca ? null : 'estado:esperando-reviewer';
+                await setStatus(prNumber, waitingOn, sinMarca ? 'lgtm-sin-sha' : undefined);
+                await diag(prNumber, `LGTM no vigente para el head ${pf.head.sha.slice(0, 7)} (último veredicto: ${ultimoV || 'ninguno'}; SHA revisado: ${shaRev ? shaRev.slice(0, 7) : 'sin marcador'}) — ${sinMarca ? 'esperando-watchdog (relleno del SHA revisado)' : waitingOn.replace('estado:', '')}; espero (AP-139).`);
                 return;
               }
 
