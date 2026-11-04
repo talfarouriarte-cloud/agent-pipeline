@@ -275,7 +275,9 @@ if (WD != null) {
   }
   {
     const w = await scan({ comentarios: [LG], labels: ['lgtm'], headDate: T(-120) });
-    check(tiene(w, /reviewer-lgtm-sha/) && !tiene(w, /^POST \/issues\/5\/labels .*"lgtm"/), "(int) 'rellenar-y-remat' con `lgtm` puesta (PR en vuelo) ⇒ solo el marcador", w);
+    const iC = w.pat.findIndex(x => /reviewer-lgtm-sha/.test(x)), iD = w.pat.findIndex(x => /^DELETE \/issues\/5\/labels\/lgtm/.test(x)),
+      iP = w.pat.findIndex(x => /^POST \/issues\/5\/labels .*"lgtm"/.test(x));
+    check(iC >= 0 && iC < iD && iD < iP, "(int) 'rellenar-y-remat' con `lgtm` puesta (PR en vuelo) ⇒ marcador y luego DELETE + POST de `lgtm` (re-dispara epic-merge)", w);
   }
   for (const automerge of ['true', 'false']) {
     const w = await scan({ comentarios: [LG, MK(PREV)], labels: ['lgtm'], commits: [{ sha: HEAD, parents: [{ sha: PREV }], committer: { login: 'claude[bot]' } }], automerge });
