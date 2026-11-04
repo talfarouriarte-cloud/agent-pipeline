@@ -12,10 +12,15 @@
 // Parte 2 — costura (regex sobre los YAML, método de
 // `check-turn-close-detection.mjs`): `epic-merge.yml`, `watchdog.yml`, `reviewer.yml`.
 // Se ejercita a sí misma: cada costura revertida en memoria tiene que ponerla roja.
+// Parte 3 — integración: el step `scan` REAL de `watchdog.yml` sobre un mundo en
+// memoria, con el módulo (`.cola-central` enlazado) y sin él (modo previo).
 // Cuelga del piggyback de `check-embedded-js.mjs` como sus hermanos.
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, mkdtempSync, symlinkSync } from 'fs';
 import { createRequire } from 'module';
-import { resolve } from 'path';
+import { resolve, join } from 'path';
+import { tmpdir } from 'os';
+import yaml from 'js-yaml';
+import { cargarStep } from './lib/github-script.mjs';
 
 const require = createRequire(import.meta.url);
 const FUENTES = ['vendored/scripts/gate-head.cjs', 'scripts/gate-head.cjs'];
@@ -182,8 +187,108 @@ if (EM != null && WD != null && RVW != null) {
   for (const [nom, fn] of mut) check(fn().length > fallosCostura.length, `auto-ejercicio: «${nom}» pone la costura roja`);
 }
 
+// ── Parte 3: integración con el scan REAL del Watchdog ─────────────────────
+if (WD != null) {
+  const steps = Object.values(yaml.load(WD).jobs || {}).flatMap(j => j.steps || []);
+  const scanStep = steps.find(st => st.id === 'scan');
+  const scanRun = cargarStep(scanStep.with.script, 'scan');
+  const WS_CON = mkdtempSync(join(tmpdir(), 'gh-wd-'));
+  symlinkSync(process.cwd(), join(WS_CON, '.cola-central'));
+  const WS_SIN = mkdtempSync(join(tmpdir(), 'gh-wd-sin-'));
+  const T = min => new Date(Date.now() + min * 60000).toISOString();
+  const HEAD = '9'.repeat(40), PREV = '8'.repeat(40);
+  async function scan({ comentarios, labels = [], commits = [], headDate = T(-60), eventos = [], ciRuns = [], automerge = 'true', ws = WS_CON }) {
+    const w = { out: {}, pat: [], comentarios: [], warnings: [] };
+    const pr = { number: 5, title: 'x', body: '', draft: false, node_id: 'n', head: { ref: 'claude/issue-4-x', sha: HEAD }, base: { ref: 'main', sha: 'b0' },
+      labels: labels.map(name => ({ name })), created_at: T(-600), updated_at: T(-60), user: { login: 'claude[bot]' } };
+    const conocidos = {
+      pulls: { list: async () => ({ data: [pr] }), get: async () => ({ data: { ...pr, mergeable: true, mergeable_state: 'clean' } }),
+        listCommits: async () => ({ data: commits }) },
+      repos: { getCommit: async p => ({ data: { sha: p.ref, commit: { message: 'feat', committer: { date: headDate } } } }) },
+      issues: { listComments: async p => ({ data: p.issue_number === 5 ? comentarios : [] }), listEvents: async () => ({ data: eventos }),
+        createComment: async p => { w.comentarios.push(p.body); return { data: { id: 1 } }; } },
+      actions: { listWorkflowRunsForRepo: async () => ({ data: { workflow_runs: ciRuns } }), listJobsForWorkflowRun: async () => ({ data: { total_count: 0, jobs: [] } }) },
+    };
+    const vacio = async () => ({ data: [] });
+    const rest = new Proxy({}, { get: (_, ns) => new Proxy({}, { get: (_, m) => (conocidos[ns] && conocidos[ns][m]) || vacio }) });
+    const github = { rest, graphql: async () => ({}), paginate: async (fn, p) => { const r = await fn(p); return Array.isArray(r.data) ? r.data : (r.data && (r.data.workflow_runs || r.data.items)) || []; } };
+    const fetch = async (url, o = {}) => { if (/statuses/.test(url)) return { ok: true, status: 201, json: async () => ({}) };
+      w.pat.push(`${o.method || 'GET'} ${url.replace(/^https:\/\/api\.github\.com\/repos\/o\/r/, '')}${o.body ? ' ' + o.body : ''}`); return { ok: true, status: 200, json: async () => ([]), text: async () => '' }; };
+    const core = { setOutput: (k, v) => { w.out[k] = String(v); }, notice() {}, warning: m => w.warnings.push(String(m)), info() {}, setFailed() {} };
+    await scanRun({ github, context: { repo: { owner: 'o', repo: 'r' }, eventName: 'schedule', payload: {}, runId: 1 }, core },
+      { env: { GITHUB_WORKSPACE: ws, STATUS_TOKEN: 'x', ARM_PAT: 'x', IN_CREATOR_WF: 'Claude Code', IN_REVIEWER_WF: 'Opus Reviewer', IN_CI_WF: 'CI',
+        IN_EPIC_MERGE_WF: 'Epic merge', IN_EXTRA_WFS: '', IN_LOOKBACK_MIN: '45', IN_SKIP_LABELS: 'human-needed,pause-agents', IN_AUTOMERGE: automerge, IN_DEFAULT_BRANCH: 'main' },
+        globales: { fetch } });
+    w.anomalias = JSON.parse(w.out.anomalies || '[]');
+    return w;
+  }
+  const LG = com(PAT, 'LGTM\n\nok', T(-30));
+  const MK = s2 => com(PAT, marca(s2), T(-30));
+  const tiene = (w, re) => w.pat.some(x => re.test(x));
+  {
+    const w = await scan({ comentarios: [LG, MK(HEAD)] });
+    check(tiene(w, /^POST \/issues\/5\/labels .*"lgtm"/) && w.comentarios.some(b => b.includes(`<!-- watchdog-lgtm-rematerialize: ${HEAD} -->`)),
+      "(int) 'remat': marcador = head, sin `lgtm` ⇒ `lgtm` por PAT + marcador con SHA", w);
+  }
+  {
+    const w = await scan({ comentarios: [LG, MK(HEAD), { body: `x\n\n<!-- watchdog-lgtm-rematerialize: ${HEAD} -->`, user: { login: 'github-actions[bot]' }, created_at: T(-10) }] });
+    check(!tiene(w, /"lgtm"/), '(int) cap 1 por head: con el marcador del head ya presente ⇒ sin re-materializar', w);
+  }
+  {
+    const w = await scan({ comentarios: [LG, MK(PREV)], commits: [{ sha: HEAD, parents: [{ sha: PREV }, { sha: '7'.repeat(40) }], committer: { login: 'web-flow' } }] });
+    check(tiene(w, /^POST \/issues\/5\/labels .*"lgtm"/), "(int) 'remat': head `web-flow` de updateBranch sobre el SHA revisado ⇒ `lgtm`", w);
+  }
+  {
+    const w = await scan({ comentarios: [LG], headDate: T(-120) });
+    check(tiene(w, new RegExp(`^POST /issues/5/comments .*reviewer-lgtm-sha: ${HEAD}`)) && tiene(w, /^POST \/issues\/5\/labels .*"lgtm"/),
+      "(int) 'rellenar-y-remat': sin marcador, head sin cambios ⇒ marcador por PAT + `lgtm`", w);
+  }
+  {
+    const w = await scan({ comentarios: [LG], labels: ['lgtm'], headDate: T(-120) });
+    check(tiene(w, /reviewer-lgtm-sha/) && !tiene(w, /^POST \/issues\/5\/labels .*"lgtm"/), "(int) 'rellenar-y-remat' con `lgtm` puesta (PR en vuelo) ⇒ solo el marcador", w);
+  }
+  for (const automerge of ['true', 'false']) {
+    const w = await scan({ comentarios: [LG, MK(PREV)], labels: ['lgtm'], commits: [{ sha: HEAD, parents: [{ sha: PREV }], committer: { login: 'claude[bot]' } }], automerge });
+    check(tiene(w, /^DELETE \/issues\/5\/labels\/lgtm/) && tiene(w, /^POST \/issues\/5\/labels .*"needs-review"/) && w.comentarios.some(b => b.includes('watchdog-turn-relaunch')),
+      `(int) 'reviewer': commit propio tras el SHA revisado (automerge=${automerge}) ⇒ quita \`lgtm\` + \`needs-review\` por PAT, cap 2`, w);
+  }
+  {
+    const w = await scan({ comentarios: [LG], headDate: T(10) });
+    check(tiene(w, /^POST \/issues\/5\/labels .*"needs-review"/) && !tiene(w, /reviewer-lgtm-sha/), "(int) 'reviewer': sin marcador y head posterior al veredicto ⇒ `needs-review`, sin relleno", w);
+  }
+  const labeled = [{ event: 'labeled', label: { name: 'lgtm' }, created_at: T(-20) }];
+  {
+    const w = await scan({ comentarios: [LG, MK(HEAD)], labels: ['lgtm', 'ci-verde'], eventos: labeled });
+    check(tiene(w, /^DELETE \/issues\/5\/labels\/lgtm/) && tiene(w, /^POST \/issues\/5\/labels .*"lgtm"/) && w.comentarios.some(b => b.includes(`<!-- watchdog-lgtm-ci-rearm: ${HEAD} -->`)),
+      '(int) `lgtm` vigente ≥ 15 min sin CI en su head ⇒ DELETE + POST de `lgtm` + `watchdog-lgtm-ci-rearm`', w);
+  }
+  {
+    const w = await scan({ comentarios: [LG, MK(HEAD)], labels: ['lgtm'], eventos: labeled,
+      ciRuns: [{ name: 'CI', head_sha: HEAD, status: 'in_progress', conclusion: null, created_at: T(-5), id: 1 }] });
+    check(!tiene(w, /lgtm/) && !w.comentarios.some(b => b.includes('watchdog-lgtm-ci-rearm')), '(int) con run de CI sobre el head ⇒ sin re-arm', w);
+  }
+  {
+    const w = await scan({ comentarios: [LG, MK(HEAD)], labels: ['lgtm'], eventos: [{ event: 'labeled', label: { name: 'lgtm' }, created_at: T(-5) }] });
+    check(!w.comentarios.some(b => b.includes('watchdog-lgtm-ci-rearm')), '(int) `labeled` de hace < 15 min ⇒ sin re-arm', w);
+  }
+  {
+    const w = await scan({ comentarios: [LG, MK(HEAD), { body: `x\n\n<!-- watchdog-lgtm-ci-rearm: ${HEAD} -->`, user: { login: 'github-actions[bot]' }, created_at: T(-10) }], labels: ['lgtm'], eventos: labeled });
+    check(w.anomalias.some(a => a.type === 'lgtm-sin-ci') && !tiene(w, /lgtm/), '(int) re-arm ya hecho para el head ⇒ anomalía `lgtm-sin-ci`, sin tocar labels', w.anomalias);
+  }
+  {
+    const w = await scan({ comentarios: [LG], headDate: T(-120), ws: WS_SIN });
+    check(w.warnings.some(m => m.includes('gate-head ausente: AP-024 en modo previo; ramas 5-6 inactivas'))
+      && tiene(w, /^POST \/issues\/5\/labels .*"lgtm"/) && w.comentarios.some(b => /<!-- watchdog-lgtm-rematerialize -->/.test(b)) && !tiene(w, /reviewer-lgtm-sha/),
+      '(int) módulo ausente ⇒ aviso literal + AP-024 de hoy (marcador sin SHA), sin relleno', w);
+  }
+  {
+    const w = await scan({ comentarios: [LG, MK(PREV)], labels: ['lgtm'], commits: [{ sha: HEAD, parents: [{ sha: PREV }], committer: { login: 'claude[bot]' } }], ws: WS_SIN });
+    check(!tiene(w, /needs-review/) && !tiene(w, /^DELETE/), '(int) módulo ausente ⇒ las ramas 5-6 no corren', w);
+  }
+}
+
 if (fails) {
   console.error(`CHECK-GATE-HEAD ROJO: ${fails}/${n} aserciones fallan (módulo ${fuente}).`);
   process.exit(1);
 }
-console.log(`check-gate-head verde: ${n} aserciones sobre el módulo REAL ${fuente} (casos a–i del ruling de #408) + costura de epic-merge/watchdog/reviewer con auto-ejercicio.`);
+console.log(`check-gate-head verde: ${n} aserciones sobre el módulo REAL ${fuente} (casos a–i del ruling de #408) + costura de epic-merge/watchdog/reviewer con auto-ejercicio + integración con el scan REAL de watchdog.yml (con y sin módulo).`);

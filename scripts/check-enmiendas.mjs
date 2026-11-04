@@ -87,6 +87,7 @@ writeFileSync(EXEC_KO, JSON.stringify([{ type: 'system', subtype: 'init' }, { ty
 
 // ── Mundo en memoria ──────────────────────────────────────────────────────────
 const ISSUE = 40, PR = 50, RAMA = 'claude/issue-40-20261006-0900', PAT_LOGIN = 'talfarouriarte-cloud';
+const HEAD_SHA = 'abc123'.padEnd(40, '0');   // AP-139: el SHA revisado es de 40 hex
 const HACE = (min) => new Date(Date.now() - min * 60 * 1000).toISOString();
 let nextId = 1000;
 const com = (item, body, { assoc = 'OWNER', login = PAT_LOGIN, min = 5, id } = {}) => {
@@ -101,7 +102,7 @@ function mundo({ comentarios = [], labels = {}, conPR = true, prBody = null, prA
   const w = { comentarios: [...comentarios], labels: { [ISSUE]: [...(labels[ISSUE] || [])], [PR]: [...(labels[PR] || [])] },
     creados: [], añadidas: [], quitadas: [], merges: 0, fetches: [] };
   const prObj = () => ({ number: PR, state: 'open', merged: false, draft: false, title: 'feat (#40)', created_at: HACE(600),
-    head: { ref: RAMA, sha: 'abc123' }, labels: w.labels[PR].map((name) => ({ name })), mergeable_state: 'clean',
+    head: { ref: RAMA, sha: HEAD_SHA }, labels: w.labels[PR].map((name) => ({ name })), mergeable_state: 'clean',
     body: prBody, user: { login: prAutor.login }, author_association: prAutor.assoc, html_url: `https://github.com/o/r/pull/${PR}` });
   const crear = (n, body) => {
     const c = com(n, body, { min: 0 });
@@ -181,12 +182,15 @@ async function correrFlight(w, { trigger, runs, pasos = {} }) {
   return out;
 }
 async function correrReviewer(w) {
-  const payload = { pull_request: { number: PR, head: { sha: 'abc123', ref: RAMA }, labels: w.labels[PR].map((name) => ({ name })) } };
+  const payload = { pull_request: { number: PR, head: { sha: HEAD_SHA, ref: RAMA }, labels: w.labels[PR].map((name) => ({ name })) } };
   await reviewer({ github: w.github, context: { repo: { owner: 'o', repo: 'r' }, runId: 900, payload }, core: core(w) },
     { env: { ARM_PAT: 'pat', GITHUB_WORKSPACE: WS, STEP_OUTCOME: 'success' }, globales: { fetch: w.fetch } });
 }
 async function correrEpicMerge(w) {
-  const pull_request = { number: PR, state: 'open', merged: false, head: { ref: RAMA, sha: 'abc123' }, labels: w.labels[PR].map((name) => ({ name })) };
+  // AP-139: el post-step del Reviewer deja el SHA revisado junto a cada LGTM; sin
+  // él GATE 2 no da el LGTM por vigente y el banco no llegaría al gate 3.
+  w.comentarios.push(com(PR, `**reviewer · \`lgtm\` materializado**\n\n<!-- reviewer-lgtm-sha: ${HEAD_SHA} -->`, { min: 0 }));
+  const pull_request = { number: PR, state: 'open', merged: false, head: { ref: RAMA, sha: HEAD_SHA }, labels: w.labels[PR].map((name) => ({ name })) };
   await epicMerge({ github: w.github, context: { repo: { owner: 'o', repo: 'r' }, runId: 950, eventName: 'pull_request',
     payload: { action: 'labeled', label: { name: 'lgtm' }, pull_request } }, core: core(w) },
   { env: { GITHUB_WORKSPACE: WS, IN_AUTOMERGE: 'true', IN_EPIC_LABEL: 'epica', IN_CI_WORKFLOW_NAME: 'CI', STATUS_TOKEN: 'job', IN_LOOSE_AUDIT: 'false',
