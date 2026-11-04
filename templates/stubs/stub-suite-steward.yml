@@ -1,0 +1,37 @@
+# STUB (agent-pipeline). AP-140 (central#410): steward semanal de la suite de
+# tests. Cada lunes mide la suite (informes JSON de vitest subidos por el CI de
+# push a la rama por defecto, o sus logs) y deja un issue `suite-salud` y hasta
+# 3 `suite-limpieza` sin arm. `workflow_dispatch` con `modo: inicial` = la
+# revisión inicial fuerte (8 semanas de tendencia, 4 × max_turns, 12 limpiezas).
+# Requisito en el `ci.yaml` del consumidor: `actions/upload-artifact@v4` del
+# informe JSON de vitest con nombre `vitest-report-<job>-<shard>` (`if: always()`).
+name: Suite steward
+on:
+  schedule:
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+    inputs:
+      modo:
+        description: 'semanal | inicial'
+        type: choice
+        options: [semanal, inicial]
+        default: semanal
+permissions:
+  contents: read
+  issues: write
+  actions: read
+  checks: read
+concurrency:
+  group: suite-steward
+  cancel-in-progress: false
+jobs:
+  call:
+    uses: talfarouriarte-cloud/agent-pipeline/.github/workflows/suite-steward.yml@main
+    with:
+      runner: ubuntu-latest
+      default_branch: main
+      ci_workflow_name: CI
+      modo: ${{ inputs.modo || 'semanal' }}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      REVIEWER_GITHUB_TOKEN: ${{ secrets.REVIEWER_GITHUB_TOKEN }}

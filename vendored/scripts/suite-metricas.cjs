@@ -1,0 +1,272 @@
+'use strict';
+// suite-metricas — métricas de la suite de tests de un consumidor para el
+// steward semanal (AP-140, central#410, ruling 2026-11-04 posición 19).
+//
+// Llamador: `suite-steward.yml`, job `metricas`, que carga
+// `${GITHUB_WORKSPACE}/scripts/suite-metricas.cjs` (graft-vendored), baja los
+// informes JSON de vitest de los runs de CI (o, sin ellos, los logs de sus
+// jobs) y escribe `.suite-steward/metricas.{json,md}` para la sesión del
+// steward (`docs/agents/suite-steward.md`).
+//
+// PURO (AP-068): sin E/S ni red; todo lo que hace llamadas vive en el step y
+// todo lo que decide vive aquí. Banco: `scripts/check-suite-metricas.mjs`.
+//
+// Dos magnitudes, NO intercambiables (hallazgo [G] de la crítica ronda 3):
+//  - punto `fuente: 'artifact'` ⇒ `msTotal` = suma por fichero de
+//    `endTime − startTime` (lo que lee `test-budget-check.mjs` de finplan);
+//  - punto `fuente: 'log'` ⇒ `msTotal` = `Duration` de pared de vitest, sumado
+//    por shard.
+// `tendencia` no calcula Δ% entre dos puntos de `fuente` distinta: la frontera
+// artifact↔log daría un salto falso (≈ ×2) solo por cambiar de fuente.
+// `tests` cuenta en las dos fuentes los tests en `passed` (el `Tests N passed`
+// del log y `assertionResults[].status === 'passed'` del informe).
+
+// Ruta de un `testResults[].name` relativa al checkout del runner
+// (`/home/runner/work/<repo>/<repo>/…`, `/__w/<repo>/<repo>/…`).
+function relativo(nombre) {
+  return String(nombre || '').replace(/\\/g, '/').replace(/^.*?\/(?:work|__w)\/[^/]+\/[^/]+\//, '');
+}
+
+const msDe = r => Math.round(Math.max(0, Number(r && r.endTime) - Number(r && r.startTime)) || 0);
+const passedDe = r => ((r && r.assertionResults) || []).filter(a => a && a.status === 'passed').length;
+
+// Informes de vitest de UN run (uno por shard) ⇒ agregado del run. Un mismo
+// fichero en dos informes (artifact repetido, shard re-subido) cuenta una vez:
+// se queda la entrada con más `ms` (determinista).
+function agregar(reportes) {
+  const porNombre = new Map();
+  for (const rep of reportes || []) {
+    for (const r of (rep && rep.testResults) || []) {
+      const fichero = relativo(r && r.name);
+      if (!fichero) continue;
+      const e = { fichero, tests: passedDe(r), ms: msDe(r) };
+      const prev = porNombre.get(fichero);
+      if (!prev || e.ms > prev.ms) porNombre.set(fichero, e);
+    }
+  }
+  const porFichero = [...porNombre.values()].sort((a, b) => (a.fichero < b.fichero ? -1 : a.fichero > b.fichero ? 1 : 0));
+  return {
+    ficheros: porFichero.length,
+    tests: porFichero.reduce((s, e) => s + e.tests, 0),
+    msTotal: porFichero.reduce((s, e) => s + e.ms, 0),
+    porFichero,
+  };
+}
+
+// Los `n` ficheros con más `ms`; empate ⇒ por nombre ascendente.
+function top(agregado, n) {
+  return [...((agregado && agregado.porFichero) || [])]
+    .sort((a, b) => b.ms - a.ms || (a.fichero < b.fichero ? -1 : a.fichero > b.fichero ? 1 : 0))
+    .slice(0, n);
+}
+
+// Directorios (padre inmediato de cada fichero) por `ms`, para el mapa de la
+// revisión inicial. Empate ⇒ por nombre.
+function porDirectorio(agregado, n) {
+  const m = new Map();
+  for (const e of (agregado && agregado.porFichero) || []) {
+    const i = e.fichero.lastIndexOf('/');
+    const dir = i < 0 ? '.' : e.fichero.slice(0, i);
+    const d = m.get(dir) || { directorio: dir, ficheros: 0, tests: 0, ms: 0 };
+    d.ficheros++; d.tests += e.tests; d.ms += e.ms;
+    m.set(dir, d);
+  }
+  return [...m.values()]
+    .sort((a, b) => b.ms - a.ms || (a.directorio < b.directorio ? -1 : a.directorio > b.directorio ? 1 : 0))
+    .slice(0, n);
+}
+
+const pct = (a, b) => (Number.isFinite(a) && Number.isFinite(b) && a !== 0) ? Math.round(((b - a) / a) * 1000) / 10 : null;
+const msPorTest = p => (p.tests > 0 ? p.msTotal / p.tests : null);
+const fuenteDe = p => p.fuente || 'artifact';
+
+function delta(a, b) {
+  if (fuenteDe(a) !== fuenteDe(b)) return { desde: a.fecha, hasta: b.fecha, comparable: false, motivo: `fuente distinta (${fuenteDe(a)} → ${fuenteDe(b)})` };
+  return {
+    desde: a.fecha, hasta: b.fecha, comparable: true,
+    tests: pct(a.tests, b.tests),
+    msTotal: pct(a.msTotal, b.msTotal),
+    msPorTest: pct(msPorTest(a), msPorTest(b)),
+  };
+}
+
+// `serie` = `[{ fecha, tests, msTotal, fuente? }]`, un punto por semana ⇒ Δ%
+// del último punto contra la semana anterior y contra 4 semanas antes. Menos
+// de 2 puntos ⇒ `null`. Sin punto 4 semanas antes ⇒ `cuatroSemanas: null`.
+function tendencia(serie) {
+  const s = [...(serie || [])].filter(p => p && p.fecha).sort((a, b) => (a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0));
+  if (s.length < 2) return null;
+  const ult = s[s.length - 1];
+  return {
+    puntos: s.length,
+    ultimo: { fecha: ult.fecha, tests: ult.tests, msTotal: ult.msTotal, msPorTest: msPorTest(ult), fuente: fuenteDe(ult) },
+    semanal: delta(s[s.length - 2], ult),
+    cuatroSemanas: s.length >= 5 ? delta(s[s.length - 5], ult) : null,
+  };
+}
+
+const RE_LITERAL = /toMatch(Inline)?Snapshot|snapshot|hash|literal capturad|referencia congelada/i;
+const RE_TIMEOUT = /timed? ?out|exceeded the maximum execution time|Test timed out/i;
+const RE_ENTORNO = /ECONNRESET|ENOSPC|ETIMEDOUT|out of memory|heap/i;
+
+function clasificarFallo(mensaje) {
+  const m = String(mensaje == null ? '' : mensaje);
+  if (RE_LITERAL.test(m)) return 'literal';
+  if (RE_TIMEOUT.test(m)) return 'timeout';
+  if (RE_ENTORNO.test(m)) return 'entorno';
+  return 'aserción';
+}
+
+// Log crudo de un job (`actions/jobs/<id>/logs`) ⇒ `{ tests, msTests, msTotal }`.
+// Se normaliza antes de las regex: escapes ANSI y timestamp del runner al inicio
+// de cada línea (sin eso `\s+` no casa: crítica ronda 2). Suma TODAS las líneas
+// de resumen (un log con varios paquetes trae una por paquete). Segundos ⇒ ms.
+function normalizarLog(texto) {
+  return String(texto || '')
+    .replace(/\r/g, '')
+    .replace(/\x1b\[[0-9;]*m/g, '')
+    .replace(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z /gm, '');
+}
+
+function agregarDesdeLog(texto) {
+  const t = normalizarLog(texto);
+  const tests = [...t.matchAll(/^\s*Tests\s+(\d+) passed/gm)].map(m => Number(m[1]));
+  const durs = [...t.matchAll(/^\s*Duration\s+([\d.]+)s \(.*\btests ([\d.]+)s/gm)].map(m => [Number(m[1]), Number(m[2])]);
+  if (!tests.length && !durs.length) return null;
+  return {
+    tests: tests.reduce((s, n) => s + n, 0),
+    msTests: durs.length ? Math.round(durs.reduce((s, d) => s + d[1], 0) * 1000) : null,
+    msTotal: durs.length ? Math.round(durs.reduce((s, d) => s + d[0], 0) * 1000) : null,
+  };
+}
+
+// `ejecuciones` = `[{ run, intento, conclusion, fallidos: [fichero] }]` (un
+// elemento por intento de un run de CI). Inestable = fichero en `fallidos` del
+// intento 1 y con un intento posterior del MISMO run en `success`.
+function inestables(ejecuciones) {
+  const porRun = new Map();
+  for (const e of ejecuciones || []) {
+    if (!e || e.run == null) continue;
+    if (!porRun.has(e.run)) porRun.set(e.run, []);
+    porRun.get(e.run).push(e);
+  }
+  const out = [];
+  for (const [run, es] of porRun) {
+    const primero = es.find(e => Number(e.intento) === 1);
+    if (!primero) continue;
+    const verdeDespues = es.some(e => Number(e.intento) > 1 && e.conclusion === 'success');
+    if (!verdeDespues) continue;
+    for (const fichero of new Set(primero.fallidos || [])) out.push({ run, fichero });
+  }
+  return out.sort((a, b) => (a.fichero < b.fichero ? -1 : a.fichero > b.fichero ? 1 : 0) || (a.run < b.run ? -1 : a.run > b.run ? 1 : 0));
+}
+
+// Anotaciones `::error` de los rojos de PR (`[{ run, path, message }]`) ⇒ por
+// clase y por fichero (runs distintos en que falla). `path` vacío ⇒ `(sin fichero)`.
+function rojos(anotaciones) {
+  const porClase = { literal: 0, timeout: 0, entorno: 0, 'aserción': 0 };
+  const fich = new Map();
+  for (const a of anotaciones || []) {
+    if (!a) continue;
+    const clase = clasificarFallo(a.message);
+    porClase[clase]++;
+    const f = relativo(a.path) || '(sin fichero)';
+    const e = fich.get(f) || { fichero: f, runs: new Set(), clases: {} };
+    e.runs.add(a.run);
+    e.clases[clase] = (e.clases[clase] || 0) + 1;
+    fich.set(f, e);
+  }
+  const porFichero = [...fich.values()]
+    .map(e => ({ fichero: e.fichero, fallos: e.runs.size, clases: e.clases }))
+    .sort((a, b) => b.fallos - a.fallos || (a.fichero < b.fichero ? -1 : a.fichero > b.fichero ? 1 : 0));
+  return { anotaciones: (anotaciones || []).filter(Boolean).length, porClase, porFichero };
+}
+
+// Selección de runs de push verdes de la rama por defecto: el último de cada
+// día UTC de los últimos 7 días (semana actual) y el último de cada una de las
+// `semanas` anteriores (ventanas de 7 días hacia atrás desde `ahora`).
+// `runs` = `[{ id, created_at }]`. Devuelve `{ dias: [{ fecha, run }], semanas: [{ semana, desde, run }] }`.
+function seleccionarRuns(runs, ahora, semanas) {
+  const t0 = new Date(ahora).getTime();
+  const DIA = 86400000;
+  const rs = [...(runs || [])].filter(r => r && r.created_at)
+    .map(r => ({ ...r, t: new Date(r.created_at).getTime() }))
+    .filter(r => r.t <= t0)
+    .sort((a, b) => a.t - b.t);
+  const dias = new Map();
+  for (const r of rs) if (r.t > t0 - 7 * DIA) dias.set(r.created_at.slice(0, 10), r);
+  const sem = [];
+  for (let k = 1; k <= semanas; k++) {
+    const desde = t0 - 7 * (k + 1) * DIA, hasta = t0 - 7 * k * DIA;
+    const enVentana = rs.filter(r => r.t > desde && r.t <= hasta);
+    sem.push({ semana: k, desde: new Date(desde).toISOString().slice(0, 10), run: enVentana.length ? enVentana[enVentana.length - 1] : null });
+  }
+  const limpio = r => (r ? { id: r.id, created_at: r.created_at } : null);
+  return {
+    dias: [...dias.entries()].sort().map(([fecha, r]) => ({ fecha, run: limpio(r) })),
+    semanas: sem.map(s => ({ ...s, run: limpio(s.run) })),
+  };
+}
+
+const s = ms => (ms == null ? '—' : `${(ms / 1000).toFixed(1)} s`);
+const d = v => (v == null ? '—' : `${v > 0 ? '+' : ''}${v} %`);
+const mpt = p => (p.tests > 0 ? `${Math.round(p.msTotal / p.tests)} ms` : '—');
+
+// `metricas.md` desde `metricas.json`: tabla de tendencia, top 20, rojos por
+// clase y por fichero, inestables. Sin informes de vitest lo dice literal.
+function informeMd(m) {
+  const L = [];
+  L.push(`# Métricas de la suite · ${m.repo || ''} · ${m.semana || ''}`, '');
+  L.push(`Generado: ${m.generado || ''} · modo: \`${m.modo || 'semanal'}\` · rama: \`${m.rama || ''}\``, '');
+  if (!m.hayArtifacts) L.push('**sin informes de vitest: falta el upload en `ci.yaml`** (los puntos con `fuente: log` salen de las líneas de resumen de los logs, sin detalle por fichero).', '');
+  L.push('## Tendencia', '', '| Fecha | Fuente | Run | Tests | msTotal | ms/test |', '|---|---|---|---|---|---|');
+  for (const p of m.serie || []) L.push(`| ${p.fecha} | ${p.fuente || 'artifact'} | ${p.run || '—'} | ${p.tests} | ${s(p.msTotal)} | ${mpt(p)} |`);
+  if (!(m.serie || []).length) L.push('| — | — | — | — | — | — |');
+  L.push('');
+  const t = m.tendencia;
+  if (!t) L.push('Δ%: `null` (menos de 2 puntos en la serie).');
+  else for (const [nom, x] of [['semana a semana', t.semanal], ['a 4 semanas', t.cuatroSemanas]]) {
+    if (!x) L.push(`- Δ% ${nom}: \`null\` (sin punto).`);
+    else if (!x.comparable) L.push(`- Δ% ${nom} (${x.desde} → ${x.hasta}): no comparable, ${x.motivo}.`);
+    else L.push(`- Δ% ${nom} (${x.desde} → ${x.hasta}): tests ${d(x.tests)} · msTotal ${d(x.msTotal)} · ms/test ${d(x.msPorTest)}`);
+  }
+  L.push('', 'msTotal: suma por fichero (`artifact`) o `Duration` de pared sumado por shard (`log`); no se comparan entre sí.', '');
+  L.push('## Semana actual (último run verde de cada día)', '', '| Día | Fuente | Run | Tests | msTotal |', '|---|---|---|---|---|');
+  for (const p of m.dias || []) L.push(`| ${p.fecha} | ${p.fuente || 'artifact'} | ${p.run || '—'} | ${p.tests} | ${s(p.msTotal)} |`);
+  if (!(m.dias || []).length) L.push('| — | — | — | — | — |');
+  L.push('', '## Top 20 ficheros por ms', '');
+  if (!(m.top || []).length) L.push('Sin detalle por fichero (no hay informe de vitest en la semana).');
+  else { L.push('| # | Fichero | Tests | ms |', '|---|---|---|---|'); (m.top || []).forEach((e, i) => L.push(`| ${i + 1} | \`${e.fichero}\` | ${e.tests} | ${e.ms} |`)); }
+  if ((m.directorios || []).length) {
+    L.push('', '## Directorios por ms', '', '| Directorio | Ficheros | Tests | ms |', '|---|---|---|---|');
+    for (const e of m.directorios) L.push(`| \`${e.directorio}\` | ${e.ficheros} | ${e.tests} | ${e.ms} |`);
+  }
+  const r = m.rojos || { porClase: {}, porFichero: [], anotaciones: 0 };
+  L.push('', '## Rojos de la semana (CI de PR)', '', `Runs con algún job en \`failure\`: ${m.runsRojos == null ? '—' : m.runsRojos} · anotaciones \`::error\`: ${r.anotaciones}`, '');
+  L.push('| Clase | Anotaciones |', '|---|---|');
+  for (const c of ['literal', 'timeout', 'entorno', 'aserción']) L.push(`| ${c} | ${(r.porClase || {})[c] || 0} |`);
+  L.push('', '| Fichero | Runs en rojo | Clases |', '|---|---|---|');
+  for (const e of (r.porFichero || []).slice(0, 30)) L.push(`| \`${e.fichero}\` | ${e.fallos} | ${Object.entries(e.clases).map(([k, v]) => `${k}: ${v}`).join(', ')} |`);
+  if (!(r.porFichero || []).length) L.push('| — | 0 | — |');
+  L.push('', '## Inestables (fallo en el intento 1, verde en un intento posterior del mismo run)', '');
+  if (!(m.inestables || []).length) L.push('Ninguno.');
+  else for (const e of m.inestables) L.push(`- \`${e.fichero}\` (run ${e.run})`);
+  if ((m.avisos || []).length) { L.push('', '## Avisos de la recolección', ''); for (const a of m.avisos) L.push(`- ${a}`); }
+  return L.join('\n') + '\n';
+}
+
+// Semana ISO `AAAA-Www` de una fecha (título del issue de estado).
+function semanaIso(fecha) {
+  const x = new Date(fecha);
+  const t = new Date(Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), x.getUTCDate()));
+  const dia = t.getUTCDay() || 7;
+  t.setUTCDate(t.getUTCDate() + 4 - dia);
+  const ini = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+  const w = Math.ceil(((t - ini) / 86400000 + 1) / 7);
+  return `${t.getUTCFullYear()}-W${String(w).padStart(2, '0')}`;
+}
+
+module.exports = {
+  relativo, agregar, top, porDirectorio, tendencia, clasificarFallo,
+  normalizarLog, agregarDesdeLog, inestables, rojos, seleccionarRuns, informeMd, semanaIso,
+};
