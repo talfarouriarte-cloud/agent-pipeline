@@ -1874,6 +1874,9 @@ jobs:
       # empuja antes, el push fast-forward se rechaza (`push-rechazado`).
       # `final` (enmienda E1): el step publica `watchdog-merge-mecanico` ANTES
       # del push, no toca `lgtm`/`ci-verde` y «Materializar» mergea con `sha: M`.
+      # AP-144: los gates de E1 se leen en vivo antes del marcador; tras el push
+      # «Materializar» solo espera el head y no cuenta la retirada del
+      # `synchronize` del consumidor (nunca retira `lgtm` con `final`).
       - name: Checkout del consumidor (merge append-only, AP-130)
         if: steps.scan.outputs.adr_append != '' && steps.scan.outputs.adr_append != '[]'
         continue-on-error: true
@@ -1893,6 +1896,8 @@ jobs:
           # AP-142 E1: el marcador `watchdog-merge-mecanico` sale por PAT (autor
           # de confianza para `gate-head.cjs`) ANTES del push.
           ARM_PAT: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          # AP-144: el hold de `skip_labels` se lee en vivo antes del marcador.
+          IN_SKIP_LABELS: ${{ inputs.skip_labels }}
         run: |
           # Sin `-e`: el output `resultados` se escribe SIEMPRE (trap EXIT); un
           # candidato sin entrada lo trata el step siguiente como `sin-resultado`.
@@ -1919,12 +1924,32 @@ jobs:
               # (si no, el `synchronize` vería un head sin marcar). Solo si la
               # primera madre de M es el H0 que evaluó el scan; si el marcador no
               # se publica, el merge sigue sin merge al final.
+              # AP-144 (enmienda de AP-142 E1): los gates de E1 se comprueban AQUÍ,
+              # en vivo y justo antes del marcador (`pulls.get`): head = H0, `lgtm`
+              # y `ci-verde` puestas, sin hold de `skip_labels`, no draft. Si algo
+              # falla ⇒ sin marcador (camino AP-130 de hoy, sin merge al final).
+              # Tras el push, «Materializar» ya no re-exige estos gates: solo espera
+              # el head y descarta la retirada del `synchronize` del consumidor.
               if [ "$H0" != "-" ]; then
                 M=$(git -C .repo rev-parse HEAD); P1=$(git -C .repo rev-parse HEAD^1)
-                if [ "$P1" = "$H0" ] && node -e 'const [m,h,n]=process.argv.slice(1);fetch(`https://api.github.com/repos/${process.env.GITHUB_REPOSITORY}/issues/${n}/comments`,{method:"POST",headers:{Authorization:`Bearer ${process.env.ARM_PAT}`,Accept:"application/vnd.github+json"},body:JSON.stringify({body:`**watchdog · merge mecánico con merge al final (AP-142)**: LGTM vigente sobre \`${h.slice(0,7)}\` y \`ci-verde\`; el merge \`${m.slice(0,7)}\` conserva los dos gates.\n\n<!-- watchdog-merge-mecanico: ${m} revisado=${h} -->`})}).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))' "$M" "$H0" "$NUM"; then
+                if [ "$P1" = "$H0" ] && node -e '
+                  const [m,h,n]=process.argv.slice(1);
+                  const api=`https://api.github.com/repos/${process.env.GITHUB_REPOSITORY}`;
+                  const H={Authorization:`Bearer ${process.env.ARM_PAT}`,Accept:"application/vnd.github+json"};
+                  const skip=(process.env.IN_SKIP_LABELS||"").split(",").map(x=>x.trim()).filter(Boolean);
+                  (async()=>{
+                    const r=await fetch(`${api}/pulls/${n}`,{headers:H});
+                    if(!r.ok){console.log(`gates en vivo: pulls.get HTTP ${r.status}`);process.exit(1);}
+                    const p=await r.json();const ls=(p.labels||[]).map(l=>l.name||l);
+                    const falla=[p.draft&&"draft",ls.some(l=>skip.includes(l))&&"hold",!(p.head&&p.head.sha===h)&&"head ≠ H0",!ls.includes("lgtm")&&"sin lgtm",!ls.includes("ci-verde")&&"sin ci-verde"].filter(Boolean);
+                    if(falla.length){console.log(`gates en vivo: ${falla.join(", ")}`);process.exit(1);}
+                    const c=await fetch(`${api}/issues/${n}/comments`,{method:"POST",headers:H,body:JSON.stringify({body:`**watchdog · merge mecánico con merge al final (AP-142)**: LGTM vigente sobre \`${h.slice(0,7)}\` y \`ci-verde\`, leídos en vivo (AP-144); el merge \`${m.slice(0,7)}\` conserva los dos gates.\n\n<!-- watchdog-merge-mecanico: ${m} revisado=${h} -->`})});
+                    process.exit(c.ok?0:1);
+                  })().catch(e=>{console.log(String(e));process.exit(1);});
+                ' "$M" "$H0" "$NUM"; then
                   OUT=$(printf '%s' "$OUT" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const o=JSON.parse(s);o.final=true;process.stdout.write(JSON.stringify(o))})')
                 else
-                  echo "PR #$NUM: sin marcador watchdog-merge-mecanico (madre $P1 vs H0 $H0, o POST fallido) — merge mecánico sin merge al final."
+                  echo "PR #$NUM: sin marcador watchdog-merge-mecanico (madre $P1 vs H0 $H0, gates en vivo o POST fallido) — merge mecánico sin merge al final."
                 fi
               fi
               # Fast-forward sobre la rama del PR; rechazo (el Creator empujó
@@ -1946,6 +1971,8 @@ jobs:
           RESULTADOS: ${{ steps.adr_append.outputs.resultados }}
           IN_DEFAULT_BRANCH: ${{ inputs.default_branch }}
           IN_SKIP_LABELS: ${{ inputs.skip_labels }}
+          # AP-144: un run de este workflow sobre M en `failure` corta el merge al final.
+          IN_CI_WF: ${{ inputs.ci_workflow_name }}
         with:
           script: |
             const O = { owner: context.repo.owner, repo: context.repo.repo };
@@ -1965,6 +1992,18 @@ jobs:
               if (!res.ok && res.status !== 404) throw new Error(`HTTP ${res.status} ${path}`);
               return res;
             };
+            // AP-144: módulos del merge al final (E1). Sin ellos, fail-closed.
+            const cargar = nombre => {
+              for (const p of [`${process.env.GITHUB_WORKSPACE}/.cola-central/vendored/scripts/${nombre}`, `${process.env.GITHUB_WORKSPACE}/vendored/scripts/${nombre}`]) {
+                try { return require(p); } catch (e) { /* siguiente ubicación */ }
+              }
+              return null;
+            };
+            // Ventana del `synchronize` del consumidor sobre M, contada desde el
+            // marcador (publicado justo antes del push).
+            const VENTANA_SYNC_MS = 120 * 1000;
+            const CONSUMIDOR_LOGIN = 'github-actions[bot]';   // `GITHUB_TOKEN` del `estado-pr` del consumidor
+            const dormir = ms => new Promise(r => setTimeout(r, ms));
             let cands = [], resultados = {};
             try { cands = JSON.parse(process.env.CANDS || '[]'); } catch (e) { core.warning(`adr_append ilegible: ${e.message}`); }
             try { resultados = JSON.parse(process.env.RESULTADOS || '{}') || {}; } catch (e) { core.warning(`resultados ilegibles: ${e.message} — todos los candidatos van a sin-resultado.`); }
@@ -1982,36 +2021,103 @@ jobs:
                   if (cs.some(x => MARK_RE.test(x.body || ''))) { core.info(`PR #${c.number}: ${r0.sha.slice(0, 7)} ya materializado — no-op.`); continue; }
                   // AP-142 E1: merge al final si M lleva su `watchdog-merge-mecanico`
                   // (publicado por PAT antes del push; también en la red por estado).
-                  const FINAL_RE = new RegExp(`^<!-- watchdog-merge-mecanico: ${r0.sha} revisado=[0-9a-f]{40} -->$`, 'm');
-                  const final = cs.some(x => x.user && x.user.login === REVIEWER_LOGIN && FINAL_RE.test(x.body || ''));
+                  const FINAL_RE = new RegExp(`^<!-- watchdog-merge-mecanico: ${r0.sha} revisado=([0-9a-f]{40}) -->$`, 'm');
+                  const marca = cs.filter(x => x.user && x.user.login === REVIEWER_LOGIN && FINAL_RE.test(x.body || '')).pop();
+                  const final = !!marca;
                   // Cómo se resolvió cada ruta (AP-142).
                   const MODO = { append: 'append al final: base + PR', insercion: 'inserción en el mismo punto: PR encima de base' };
                   const res = Array.isArray(r0.resueltas) && r0.resueltas.length ? r0.resueltas
                     : (r0.rutas || []).map(ruta => ({ ruta, modo: /(^|\/)CHANGELOG\.md$/.test(ruta) ? 'insercion' : 'append' }));
                   const como = res.length ? res.map(x => `\`${x.ruta}\` (${MODO[x.modo] || x.modo})`).join('; ') : 'registro / CHANGELOG';
                   const cabecera = `**watchdog · merge mecánico append-only (AP-130, AP-142)**: los conflictos con \`origin/${process.env.IN_DEFAULT_BRANCH}\` eran solo appends al registro o inserciones en el mismo punto de un CHANGELOG: ${como}. Resuelto sin sesión LLM con un commit de merge de dos padres (${r0.sha.slice(0, 7)}), sin reescritura de historia. ${r0.red ? '(Materialización tardía: la del tick del merge no terminó; la detectó la red por estado del scan.) ' : ''}`;
-                  // Estado LEÍDO en vivo, no el del listado del scan: el bloque
-                  // AP-055 del mismo tick (o una enmienda sin acuse, un hold, el
-                  // `synchronize` de CI) puede haber retirado `lgtm` entre el scan
-                  // y aquí; en la red por estado, el tick es otro.
-                  const { data: pf } = await github.rest.pulls.get({ ...O, pull_number: c.number });
-                  const labels = (pf.labels || []).map(l => l.name || l);
-                  const enHold = labels.some(l => SKIP_LABELS.includes(l));
-                  // AP-142 E1 «en el tick»: el merge al final exige, LEÍDO EN VIVO
-                  // justo antes del PUT, head = M, `lgtm` y `ci-verde` puestas, sin
-                  // hold y no draft. Si algo falla ⇒ camino de hoy (fail-closed: el
-                  // veredicto previo no sobrevive y se re-convoca al Reviewer).
-                  const vivo = !pf.draft && !enHold && !!(pf.head && pf.head.sha === r0.sha) && labels.includes('lgtm') && labels.includes('ci-verde');
-                  const caeE1 = final && !vivo
-                    ? `Sin merge al final (E1): el estado en vivo ya no lo permite (${[pf.draft && 'draft', enHold && 'hold', !(pf.head && pf.head.sha === r0.sha) && 'head ≠ M', !labels.includes('lgtm') && 'sin `lgtm`', !labels.includes('ci-verde') && 'sin `ci-verde`'].filter(Boolean).join(', ')}). `
-                    : '';
-                  if (final && vivo) {
-                    // E1: no se tocan `lgtm` ni `ci-verde` ni `needs-review`; merge
-                    // con `sha: M` por PAT (su `closed` dispara el post-merge de
-                    // epic-merge). Si falla, sin reintento: diag y labels intactas
-                    // ⇒ epic-merge lo recoge en su próxima evaluación (E2).
+                  if (final) {
+                    // AP-144 (enmienda de AP-142 E1): los gates se comprobaron EN VIVO
+                    // antes del marcador («Merge append-only del registro»). Aquí, con
+                    // `final`, el Watchdog NUNCA retira `lgtm` ni pone `needs-review`:
+                    // la retirada que no es del consumidor ya la hizo su actor (AP-055
+                    // re-convoca al Reviewer). Todas las lecturas van antes de la
+                    // primera escritura.
+                    const H0 = FINAL_RE.exec(marca.body)[1];
+                    const tMarca = Date.parse(marca.created_at || '');
+                    // Diag sin tocar labels. `terminal` ⇒ lleva `watchdog-rebase-append: M`
+                    // (materialización hecha; epic-merge recoge el PR por E2). Si no, sin
+                    // ese marcador: la red por estado del scan vuelve a evaluar con esta
+                    // misma regla (dedupe por motivo para no repetir el diag cada tick).
+                    const diagE1 = async (clave, motivo, terminal) => {
+                      const DIAG = `<!-- watchdog-e1-diag: ${r0.sha} ${clave} -->`;
+                      core.warning(`PR #${c.number}: sin merge al final (E1) — ${motivo}`);
+                      if (!terminal && cs.some(x => (x.body || '').split('\n').includes(DIAG))) return;
+                      await patCall('POST', `/issues/${c.number}/comments`, {
+                        body: `${cabecera}**diag (AP-144)**: sin merge al final (E1): ${motivo}. Labels intactas: con el marcador \`watchdog-merge-mecanico\` el Watchdog no retira \`lgtm\` ni pone \`needs-review\`.${terminal ? '' : ' Pendiente: la red por estado del siguiente tick vuelve a evaluar.'}\n\n${terminal ? `${MARK}\n` : ''}${DIAG}\n${CAPA}` });
+                    };
+                    // Head: el push acaba de salir; la API puede devolver aún H0.
+                    let pf = null;
+                    for (let i = 0; i < 6; i++) {
+                      if (i) await dormir(5000);
+                      ({ data: pf } = await github.rest.pulls.get({ ...O, pull_number: c.number }));
+                      if (pf.head && pf.head.sha === r0.sha) break;
+                    }
+                    const headV = (pf.head && pf.head.sha) || '';
+                    if (headV !== r0.sha) {
+                      if (headV === H0) await diagE1('head-h0', `merge al final pendiente: head aún en H0 \`${H0.slice(0, 7)}\` tras 6 lecturas`, false);
+                      else await diagE1('head-otro', `el head es \`${headV.slice(0, 7)}\`, ni M ni H0 (alguien empujó otra cosa)`, true);
+                      continue;
+                    }
+                    const labels = (pf.labels || []).map(l => l.name || l);
+                    const terminales = [], pendientes = [], reponer = [];
+                    if (pf.draft) terminales.push('el PR está en draft');
+                    if (labels.some(l => SKIP_LABELS.includes(l))) terminales.push('hold de `skip_labels`');
+                    // Reviewer: el último veredicto sigue siendo LGTM (gate-head).
+                    const GH = cargar('gate-head.cjs');
+                    if (!GH) pendientes.push('`gate-head.cjs` no disponible (fail-closed)');
+                    else if (GH.ultimoVeredicto(cs, REVIEWER_LOGIN) !== 'LGTM') terminales.push(`el último veredicto del Reviewer es \`${GH.ultimoVeredicto(cs, REVIEWER_LOGIN)}\`, no \`LGTM\``);
+                    // `lgtm`/`ci-verde` ausentes: solo la retirada del `synchronize`
+                    // del consumidor sobre M no cuenta como retirada.
+                    const faltan = ['lgtm', 'ci-verde'].filter(l => !labels.includes(l));
+                    if (faltan.length) {
+                      let evs = null;
+                      try { evs = await github.paginate(github.rest.issues.listEvents, { ...O, issue_number: c.number, per_page: 100 }); }
+                      catch (e) { pendientes.push(`eventos de labels ilegibles (${String(e.message).slice(0, 120)})`); }
+                      // Un veredicto del Reviewer posterior al marcador: su sesión (no el
+                      // `synchronize`) pudo retirar `lgtm` como `github-actions[bot]`.
+                      const vTras = cs.some(x => x.user && x.user.login === REVIEWER_LOGIN && verdictRe.test((x.body || '').trim()) && Date.parse(x.created_at || '') >= tMarca);
+                      for (const l of evs ? faltan : []) {
+                        const u = evs.filter(e => e.event === 'unlabeled' && e.label && e.label.name === l).pop();
+                        const actor = (u && u.actor && u.actor.login) || '';
+                        const dt = u ? Date.parse(u.created_at || '') - tMarca : NaN;
+                        if (!u) terminales.push(`\`${l}\` ausente sin retirada registrada`);
+                        else if (actor !== CONSUMIDOR_LOGIN) terminales.push(`\`${l}\` retirada por \`${actor || '?'}\`, no por el consumidor`);
+                        else if (!(dt >= 0 && dt <= VENTANA_SYNC_MS)) terminales.push(`\`${l}\` retirada por \`${CONSUMIDOR_LOGIN}\` fuera de ventana (${Number.isFinite(dt) ? Math.round(dt / 1000) : '?'} s tras el marcador; ventana del \`synchronize\` ${VENTANA_SYNC_MS / 1000} s)`);
+                        else if (l === 'lgtm' && vTras) terminales.push('`lgtm` retirada tras un veredicto del Reviewer posterior al marcador (no es del `synchronize`)');
+                        else reponer.push(l);
+                      }
+                    }
+                    // GATE 3 de epic-merge: 0 enmiendas sin acuse (fail-closed).
+                    const ENM = cargar('enmiendas.cjs');
+                    if (!ENM) pendientes.push('`enmiendas.cjs` no disponible: sin GATE 3 no hay merge desde el Watchdog (fail-closed)');
+                    else {
+                      try {
+                        const { estado } = await ENM.estadoDe({ github, owner: O.owner, repo: O.repo, numero: c.number, esPR: true, headRef: pf.head.ref || c.head_ref, warn: m => core.warning(m) });
+                        const pend = ENM.pendientes(estado).enmiendas;
+                        if (pend.length) terminales.push(`${pend.length} enmienda(s) sin acuse (GATE 3): ${pend.map(e => e.id).join(', ')}`);
+                      } catch (e) { pendientes.push(`lectura de enmiendas falló (${String(e.message).slice(0, 120)})`); }
+                    }
+                    // CI de M en rojo: el residual aceptado es que no haya corrido.
+                    try {
+                      const { data: rs } = await github.rest.actions.listWorkflowRunsForRepo({ ...O, head_sha: r0.sha, per_page: 50 });
+                      if ((rs.workflow_runs || []).some(r => r.name === process.env.IN_CI_WF && r.conclusion === 'failure')) terminales.push(`run \`${process.env.IN_CI_WF}\` de M en \`failure\``);
+                    } catch (e) { pendientes.push(`runs de CI de M ilegibles (${String(e.message).slice(0, 120)})`); }
+                    if (terminales.length || pendientes.length) {
+                      await diagE1(terminales.length ? 'gates' : 'lectura', [...terminales, ...pendientes].join('; '), terminales.length > 0);
+                      continue;
+                    }
+                    // Re-pone por PAT lo que retiró el `synchronize` del consumidor y
+                    // mergea con `sha: M` (su `closed` dispara el post-merge de
+                    // epic-merge). Si el PUT falla, sin reintento: diag y labels
+                    // intactas ⇒ epic-merge lo recoge en su próxima evaluación (E2).
+                    for (const l of reponer) await patCall('POST', `/issues/${c.number}/labels`, { labels: [l] });
                     await patCall('POST', `/issues/${c.number}/comments`, {
-                      body: `${cabecera}LGTM vigente sobre el head revisado y \`ci-verde\`: se conservan los dos gates y el Watchdog mergea con \`sha: ${r0.sha.slice(0, 7)}\` (enmienda E1).\n\n${MARK}\n${CAPA}` });
+                      body: `${cabecera}LGTM vigente sobre el head revisado y \`ci-verde\`: se conservan los dos gates${reponer.length ? ` (re-puesta${reponer.length > 1 ? 's' : ''} ${reponer.map(l => `\`${l}\``).join(' y ')}, retirada${reponer.length > 1 ? 's' : ''} por el \`synchronize\` del consumidor sobre M, AP-144)` : ''} y el Watchdog mergea con \`sha: ${r0.sha.slice(0, 7)}\` (enmienda E1).\n\n${MARK}\n${CAPA}` });
                     try {
                       await patCall('PUT', `/pulls/${c.number}/merge`, { merge_method: 'squash', sha: r0.sha });
                       core.notice(`PR #${c.number}: merge mecánico ${r0.sha.slice(0, 7)} + merge al final (AP-142 E1).`);
@@ -2022,7 +2128,13 @@ jobs:
                     }
                     continue;
                   }
-                  if (caeE1) core.warning(`PR #${c.number}: ${caeE1.trim()}`);
+                  // Sin `final`: camino AP-130 de hoy. Estado LEÍDO en vivo, no el del
+                  // listado del scan: el bloque AP-055 del mismo tick (o una enmienda
+                  // sin acuse, un hold) puede haber retirado `lgtm` entre el scan y
+                  // aquí; en la red por estado, el tick es otro.
+                  const { data: pf } = await github.rest.pulls.get({ ...O, pull_number: c.number });
+                  const labels = (pf.labels || []).map(l => l.name || l);
+                  const enHold = labels.some(l => SKIP_LABELS.includes(l));
                   const hadLgtm = labels.includes('lgtm');
                   const vs = cs.filter(x => verdictRe.test((x.body || '').trim()));
                   const lastV = vs.length ? (vs[vs.length - 1].body || '').trim().split(/\s/)[0].replace(':', '') : null;
@@ -2037,7 +2149,7 @@ jobs:
                     await patCall('DELETE', `/issues/${c.number}/labels/needs-review`).catch(() => {});
                     await patCall('POST', `/issues/${c.number}/labels`, { labels: ['needs-review'] });
                   }
-                  const que = `${caeE1}${hadLgtm ? 'Retirada la label `lgtm`: el veredicto previo no vio lo que entró desde la base. ' : ''}${reconvoca ? 'Re-aplicada `needs-review` por PAT: el Reviewer juzga el HEAD nuevo.' : enHold ? 'Sin `needs-review`: el PR está en hold (`skip_labels`).' : pf.draft ? 'Sin `needs-review`: el PR está en draft (el Reviewer entrará por `ready`).' : `Sin \`needs-review\`: el veredicto vigente es \`${lastV}\`, el turno es del Creator y la próxima review consume el HEAD nuevo.`}`;
+                  const que = `${hadLgtm ? 'Retirada la label `lgtm`: el veredicto previo no vio lo que entró desde la base. ' : ''}${reconvoca ? 'Re-aplicada `needs-review` por PAT: el Reviewer juzga el HEAD nuevo.' : enHold ? 'Sin `needs-review`: el PR está en hold (`skip_labels`).' : pf.draft ? 'Sin `needs-review`: el PR está en draft (el Reviewer entrará por `ready`).' : `Sin \`needs-review\`: el veredicto vigente es \`${lastV}\`, el turno es del Creator y la próxima review consume el HEAD nuevo.`}`;
                   await patCall('POST', `/issues/${c.number}/comments`, {
                     body: `${cabecera}${que}\n\n${MARK}\n${CAPA}` });
                   core.notice(`PR #${c.number}: merge append-only ${r0.sha.slice(0, 7)} — lgtm ${hadLgtm ? 'retirada' : 'ausente'}, needs-review ${reconvoca ? 're-aplicada' : enHold ? 'omitida (hold)' : pf.draft ? 'omitida (draft)' : `omitida (turno del Creator: ${lastV})`}.`);
