@@ -1,0 +1,300 @@
+# Suite steward — revisión semanal de la suite de tests (AP-140, central#410)
+#
+# Ruling 2026-11-04 (fuera de ciclo, posición 19), enmienda del Architect
+# (comentario 6628190884): cada semana se mide la suite de tests del consumidor
+# y una sesión deja (a) un issue de estado `suite-salud` y (b) hasta 3 propuestas
+# `suite-limpieza` + `eje:local` sin arm (12 en `modo: inicial`, la revisión
+# inicial fuerte). El steward PROPONE; qué test se borra lo decide el consumidor.
+#
+# Dos jobs:
+#  - `metricas` (determinista, `github.token`, cero LLM): runs de push verdes de
+#    `ci_workflow_name` sobre `default_branch` —último de cada día de los 7
+#    últimos y último de cada una de las 4 semanas anteriores (8 en `inicial`)—;
+#    artifacts `<report_artifact_prefix>-*` (informes JSON de vitest) o, sin
+#    ellos, los logs de los jobs con resumen de vitest (`fuente: 'log'`); rojos
+#    de PR de 7 días por anotaciones `::error` e intentos. Lógica en
+#    `scripts/suite-metricas.cjs` (graft, AP-068); banco
+#    `scripts/check-suite-metricas.mjs`. Escribe `.suite-steward/metricas.{json,md}`
+#    y los sube como artifact `suite-steward-metricas`.
+#  - `steward` (claude-code-action al pin común): mandato
+#    `docs/agents/suite-steward.md`. El consumo LLM queda solo como `notice`
+#    (paso de `critic.yml`): un run semanal no es de ninguna épica y el Auditor
+#    no lo cosecha.
+#
+# Fuera del régimen serial: no produce PRs ni toma `serial-activo`.
+name: Suite steward
+
+# CALLABLE (agent-pipeline): trigger (cron lunes 05:17 UTC + workflow_dispatch
+# con `modo`) y concurrency en el stub (templates/stubs/stub-suite-steward.yml).
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        default: ubuntu-latest
+      default_branch:
+        type: string
+        default: main
+      ci_workflow_name:
+        # `name:` del workflow de CI del consumidor (el de los runs de push).
+        type: string
+        default: CI
+      report_artifact_prefix:
+        # Artifacts `<prefix>-*` con el informe JSON de vitest (`--reporter=json`).
+        type: string
+        default: vitest-report
+      steward_model:
+        type: string
+        default: claude-opus-5-5
+        # AP-112: la variable `PIPELINE_STEWARD_MODEL` del CONSUMIDOR, si existe
+        # y no está vacía, prevalece sobre este input en `claude_args`.
+      steward_fallback_model:
+        type: string
+        default: claude-fable-5-1  # el par de critic.yml; con precio en model-costs.json
+      max_turns:
+        # En `modo: inicial`, 4 × este valor (paso «Presupuesto»).
+        type: number
+        default: 80
+      modo:
+        # `semanal` | `inicial` (revisión inicial fuerte).
+        type: string
+        default: semanal
+      timeout_minutes:
+        type: number
+        default: 60
+      timeout_minutes_inicial:
+        type: number
+        default: 240
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+      REVIEWER_GITHUB_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+  issues: write
+  actions: read
+  checks: read
+
+jobs:
+  metricas:
+    name: Métricas de la suite
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 30
+    outputs:
+      semana: ${{ steps.calc.outputs.semana }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.default_branch }}
+
+      - name: Graft vendored (capa común servida desde el central — AP-009)
+        uses: talfarouriarte-cloud/agent-pipeline/.github/actions/graft-vendored@main
+
+      # Fail-open por run: una llamada que falla deja un aviso en `metricas.md`
+      # y el job sigue. Solo un `modo` inválido o el módulo ausente lo ponen rojo.
+      - name: Calcular métricas (AP-140)
+        id: calc
+        uses: actions/github-script@v7
+        env:
+          MODO: ${{ inputs.modo }}
+          CI_WORKFLOW_NAME: ${{ inputs.ci_workflow_name }}
+          DEFAULT_BRANCH: ${{ inputs.default_branch }}
+          REPORT_PREFIX: ${{ inputs.report_artifact_prefix }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const WS = process.env.GITHUB_WORKSPACE || process.cwd();
+            const modo = process.env.MODO;
+            if (!['semanal', 'inicial'].includes(modo)) { core.setFailed(`modo inválido: «${modo}» (semanal | inicial).`); return; }
+            let M = null;
+            for (const p of [`${WS}/scripts/suite-metricas.cjs`, `${WS}/vendored/scripts/suite-metricas.cjs`]) {
+              try { M = require(p); break; } catch (e) { /* siguiente ubicación */ }
+            }
+            if (!M) { core.setFailed('scripts/suite-metricas.cjs no injertado (graft).'); return; }
+            const O = { owner: context.repo.owner, repo: context.repo.repo };
+            const rama = process.env.DEFAULT_BRANCH, prefijo = `${process.env.REPORT_PREFIX}-`;
+            const ahora = new Date().toISOString();
+            const DIA = 86400000, semanas = modo === 'inicial' ? 8 : 4;
+            const avisos = [];
+            const intenta = async (que, f, defecto) => { try { return await f(); } catch (e) { avisos.push(`${que}: ${e.status || 'sin-status'} ${String(e.message || e).split('\n')[0]}`); return defecto; } };
+            const desde = d => new Date(Date.parse(ahora) - d * DIA).toISOString().slice(0, 10);
+
+            const wfs = await intenta('listar workflows', () => github.paginate(github.rest.actions.listRepoWorkflows, { ...O, per_page: 100 }), []);
+            const wf = wfs.find(w => w.name === process.env.CI_WORKFLOW_NAME);
+            const entrada = { repo: `${O.owner}/${O.repo}`, rama, modo, generado: ahora, dias: [], semanas: [], anotaciones: [], ejecuciones: [], runsRojos: null, avisos, nTop: 20, nDir: 10 };
+            if (!wf) avisos.push(`no hay workflow con name «${process.env.CI_WORKFLOW_NAME}» (input ci_workflow_name): sin serie ni rojos.`);
+            else {
+              // Serie: runs de push verdes de la rama por defecto.
+              const runs = await intenta('runs de push', () => github.paginate(github.rest.actions.listWorkflowRuns,
+                { ...O, workflow_id: wf.id, branch: rama, event: 'push', status: 'success', created: `>=${desde(7 * (semanas + 1) + 1)}`, per_page: 100 }), []);
+              const sel = M.seleccionarRuns(runs, ahora, semanas);
+              const datosDe = async (run, fecha) => {
+                const arts = await intenta(`artifacts del run ${run.id}`, () => github.paginate(github.rest.actions.listWorkflowRunArtifacts, { ...O, run_id: run.id, per_page: 100 }), []);
+                const reportes = [];
+                for (const a of arts.filter(a => a.name.startsWith(prefijo) && !a.expired)) {
+                  const zip = await intenta(`artifact ${a.name} del run ${run.id}`, () => github.rest.actions.downloadArtifact({ ...O, artifact_id: a.id, archive_format: 'zip' }), null);
+                  if (!zip) continue;
+                  try {
+                    for (const f of M.leerZip(Buffer.from(zip.data)).filter(f => f.nombre.endsWith('.json'))) reportes.push(JSON.parse(f.datos.toString('utf8')));
+                  } catch (e) { avisos.push(`artifact ${a.name} del run ${run.id} ilegible: ${e.message}`); }
+                }
+                if (reportes.length) return { fecha, run: run.id, reportes };
+                // Sin artifacts: logs de TODOS los jobs del run; los que no traen
+                // resumen de vitest devuelven `null` en el módulo y no cuentan.
+                const jobs = await intenta(`jobs del run ${run.id}`, () => github.paginate(github.rest.actions.listJobsForWorkflowRun, { ...O, run_id: run.id, per_page: 100 }), []);
+                const logs = [];
+                for (const j of jobs) {
+                  const l = await intenta(`log del job ${j.id}`, () => github.rest.actions.downloadJobLogsForWorkflowRun({ ...O, job_id: j.id }), null);
+                  if (l && l.data != null) logs.push(typeof l.data === 'string' ? l.data : Buffer.from(l.data).toString('utf8'));
+                }
+                return { fecha, run: run.id, logs };
+              };
+              for (const d of sel.dias) entrada.dias.push(await datosDe(d.run, d.fecha));
+              for (const s of sel.semanas) if (s.run) entrada.semanas.push(await datosDe(s.run, s.run.created_at.slice(0, 10)));
+              // Rojos: runs de PR de los 7 últimos días con algún job `failure`
+              // (o reintentados: un verde en el intento 2 es un inestable).
+              const prs = await intenta('runs de PR', () => github.paginate(github.rest.actions.listWorkflowRuns,
+                { ...O, workflow_id: wf.id, event: 'pull_request', created: `>=${desde(7)}`, per_page: 100 }), []);
+              const candidatos = prs.filter(r => r.conclusion === 'failure' || Number(r.run_attempt) > 1);
+              if (candidatos.length > 100) avisos.push(`${candidatos.length} runs de PR rojos o reintentados: se leen los 100 más recientes.`);
+              let runsRojos = 0;
+              for (const r of candidatos.slice(0, 100)) {
+                const jobs = await intenta(`jobs del run ${r.id}`, () => github.paginate(github.rest.actions.listJobsForWorkflowRun, { ...O, run_id: r.id, filter: 'all', per_page: 100 }), []);
+                const porIntento = new Map();
+                for (const j of jobs) {
+                  const k = Number(j.run_attempt) || 1;
+                  if (!porIntento.has(k)) porIntento.set(k, []);
+                  porIntento.get(k).push(j);
+                }
+                let rojo = false;
+                for (const [intento, js] of porIntento) {
+                  const fallidos = [];
+                  for (const j of js.filter(j => j.conclusion === 'failure')) {
+                    rojo = true;
+                    const an = await intenta(`anotaciones del job ${j.id}`, () => github.paginate(github.rest.checks.listAnnotations, { ...O, check_run_id: j.id, per_page: 100 }), []);
+                    for (const a of an.filter(a => a.annotation_level === 'failure')) {
+                      entrada.anotaciones.push({ run: r.id, path: a.path, message: a.message });
+                      if (a.path && a.path !== '.github') fallidos.push(M.relativo(a.path));
+                    }
+                  }
+                  const conclusion = js.every(j => ['success', 'skipped'].includes(j.conclusion)) ? 'success' : 'failure';
+                  entrada.ejecuciones.push({ run: r.id, intento, conclusion, fallidos });
+                }
+                if (rojo) runsRojos++;
+              }
+              entrada.runsRojos = runsRojos;
+            }
+            const m = M.componer(entrada);
+            fs.mkdirSync(`${WS}/.suite-steward`, { recursive: true });
+            fs.writeFileSync(`${WS}/.suite-steward/metricas.json`, JSON.stringify(m, null, 2) + '\n');
+            fs.writeFileSync(`${WS}/.suite-steward/metricas.md`, M.informeMd(m));
+            core.setOutput('semana', m.semana);
+            for (const a of avisos) core.warning(`AP-140: ${a}`);
+            core.info(`métricas ${m.semana}: ${m.serie.length} punto(s) de serie, ${m.dias.length} día(s), ${m.rojos.anotaciones} anotación(es) de rojo.`);
+
+      - name: Subir métricas
+        uses: actions/upload-artifact@v4
+        with:
+          name: suite-steward-metricas
+          path: .suite-steward/
+          retention-days: 7
+
+  steward:
+    name: Suite steward
+    needs: metricas
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.modo == 'inicial' && inputs.timeout_minutes_inicial || inputs.timeout_minutes }}
+    steps:
+      - name: Checkout (historia completa para `git log -S`)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.default_branch }}
+          fetch-depth: 0
+
+      - name: Graft vendored (capa común servida desde el central — AP-009)
+        uses: talfarouriarte-cloud/agent-pipeline/.github/actions/graft-vendored@main
+
+      - name: Bajar métricas
+        uses: actions/download-artifact@v4
+        with:
+          name: suite-steward-metricas
+          path: .suite-steward/
+
+      # Las expresiones de GitHub no multiplican: 4 × max_turns se calcula aquí.
+      - name: Presupuesto
+        id: presupuesto
+        env:
+          MODO: ${{ inputs.modo }}
+          MAX_TURNS: ${{ inputs.max_turns }}
+        run: |
+          if [ "$MODO" = inicial ]; then echo "turnos=$((MAX_TURNS * 4))" >> "$GITHUB_OUTPUT"; else echo "turnos=$MAX_TURNS" >> "$GITHUB_OUTPUT"; fi
+          grep -qxF '.suite-steward/' .git/info/exclude 2>/dev/null || echo '.suite-steward/' >> .git/info/exclude
+
+      - name: Asegurar ~/.local/bin (instalador nativo de Claude Code)
+        run: mkdir -p "$HOME/.local/bin"
+
+      - name: Run suite steward
+        id: steward
+        # Pin a SHA completo (AP-085/AP-087): mismo pin que el resto de reusables.
+        uses: anthropics/claude-code-action@8cf3482550831fb35a4fc3fbf7ca139cf8028b4c # v1.0.233
+        env:
+          # Blindaje OAuth-only: si OAuth Max falla, rojo en vez de facturar por API key.
+          ANTHROPIC_API_KEY: ""
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: "claude,github-actions"
+          # PAT: los issues salen con autoría del propietario (AP-140, riesgos).
+          github_token: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
+          claude_args: |
+            --model ${{ vars.PIPELINE_STEWARD_MODEL || inputs.steward_model }}
+            --fallback-model ${{ inputs.steward_fallback_model }}
+            --effort high
+            --max-turns ${{ steps.presupuesto.outputs.turnos }}
+            --allowedTools "Read,Glob,Grep,Bash(git log:*),Bash(git grep:*),Bash(gh issue list:*),Bash(gh issue view:*),Bash(gh issue create:*),Bash(gh issue comment:*),Bash(gh issue close:*),Bash(gh api:*)"
+          prompt: |
+            REPO: ${{ github.repository }}
+            MODO: ${{ inputs.modo }}
+            SEMANA: ${{ needs.metricas.outputs.semana }}
+            RAMA: ${{ inputs.default_branch }}
+
+            Eres el suite steward del pipeline de agentes de este repo. Tu
+            mandato completo está en `docs/agents/suite-steward.md` (léelo
+            ENTERO antes de nada; si existe `docs/agents/suite-steward-annex.md`,
+            también). Resumen vinculante:
+
+            1. Lee `.suite-steward/metricas.md` y `.suite-steward/metricas.json`:
+               son la fuente de toda magnitud que publiques. Sin Δ% en un tramo
+               con cambio de fuente.
+            2. Salida 1, SIEMPRE y primero: el issue
+               `Estado de la suite · REPO · SEMANA` con label `suite-salud`
+               (dedupe por título; cierra el de la semana anterior).
+            3. Salida 2: issues `suite-limpieza` + `eje:local`, tope 3 (12 en
+               `inicial`), sin arm y sin mención a ningún agente; cada uno dice
+               qué invariante deja de vigilarse y si otro test lo cubre.
+            4. No editas ficheros, no abres PRs, no armas nada, no comentas en
+               PRs. Si tienes que nombrar la mención de arm, escribe «arroba +
+               claude».
+
+      - name: Anotar el consumo LLM (model-usage, AP-099)
+        if: always() && steps.steward.outcome != 'skipped' && steps.steward.outcome != 'cancelled'
+        uses: actions/github-script@v7
+        env:
+          EXEC_FILE: ${{ steps.steward.outputs.execution_file }}
+        with:
+          script: |
+            const fs = require('fs');
+            const f = process.env.EXEC_FILE || `${process.env.RUNNER_TEMP || '/tmp'}/claude-execution-output.json`;
+            let d = null;
+            try { d = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (e) { core.info(`execution file ilegible (${e.message}): sin dato.`); return; }
+            const msgs = Array.isArray(d) ? d : (d ? [d] : []);
+            const r = [...msgs].reverse().find(m => m && m.type === 'result') || null;
+            const mu = r && r.modelUsage;
+            if (!mu || typeof mu !== 'object' || Object.keys(mu).length === 0) { core.info('sin modelUsage con uso: sin dato.'); return; }
+            const tok = Object.fromEntries(Object.entries(mu).map(([m, u]) => [m, {
+              in: Number(u && u.inputTokens) || 0, out: Number(u && u.outputTokens) || 0,
+              cr: Number(u && u.cacheReadInputTokens) || 0, cw: Number(u && u.cacheCreationInputTokens) || 0 }]));
+            core.notice(`model-usage: ${JSON.stringify({ num_turns: r.num_turns, models: tok })}`);
