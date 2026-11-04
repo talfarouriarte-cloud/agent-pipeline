@@ -247,21 +247,34 @@ symlinkSync(process.cwd(), join(EM_WS, '.epic-merge-central'));
 const REV = 'talfarouriarte-cloud';
 const T = min => new Date(Date.parse('2026-11-01T12:00:00Z') + min * 60000).toISOString();
 const SUBJ = `merge(registro): append-only de ${ADR} (watchdog, AP-130)`;
-const cm = (msg, min) => ({ sha: 's' + min, commit: { message: msg, committer: { date: T(min) } } });
+// AP-139 (central#408): GATE 2 ya no tiene respaldo por comentarios. El LGTM vale
+// por el SHA revisado (`reviewer-lgtm-sha`, autor PAT): head = ese SHA con `lgtm`,
+// o head alcanzable desde él solo por merges `web-flow`. El merge append-only lo
+// commitea `github-actions[bot]` (no `web-flow`): cambia el head y deja el LGTM
+// anterior sin valor (AP-130 §3 por construcción).
+const PREV_J = 'b2'.repeat(20);   // head revisado antes del merge mecánico
+const HEAD_J = 'a1'.repeat(20);   // head vivo del PR
+const cm = (msg, min, { sha = HEAD_J, parents = [PREV_J, 'c3'.repeat(20)], login = 'github-actions[bot]' } = {}) =>
+  ({ sha, parents: parents.map(x => ({ sha: x })), committer: { login }, commit: { message: msg, committer: { date: T(min) } } });
+const feat = (min) => cm('feat', min, { sha: PREV_J, parents: ['d4'.repeat(20)], login: 'claude[bot]' });
 const vd = (v, min) => ({ id: min, body: `${v}\nok`, user: { login: REV }, created_at: T(min) });
+const mk = (sha, min) => ({ id: 2000 + min, body: `**reviewer · \`lgtm\` materializado**\n\n<!-- reviewer-lgtm-sha: ${sha} -->`, user: { login: REV }, created_at: T(min) });
+const upd = (sha, min) => ({ id: 3000 + min, body: `x\n\n<!-- epic-merge-update-branch: ${sha} -->`, user: { login: REV }, created_at: T(min) });
 const marcaAppend = min => ({ id: 1000 + min, body: `**watchdog · merge append-only**\n\n<!-- watchdog-rebase-append: ${SHA} -->`, user: { login: REV }, created_at: T(min) });
-async function gateEM({ comments = [], commits = [], labels = ['lgtm', 'ci-verde'] } = {}) {
-  const w = { merged: false, diags: [] };
-  const pr = { number: 50, state: 'open', merged: false, draft: false, title: 'feat: algo', body: 'Refs #40', head: { ref: 'claude/issue-40-x', sha: 'h1' }, base: { ref: 'main', sha: 'b0' }, labels: labels.map(name => ({ name })) };
+async function gateEM({ comments = [], commits = [], labels = ['lgtm', 'ci-verde'], estado = 'clean', updateFalla = false } = {}) {
+  const w = { merged: false, diags: [], orden: [], borrados: [] };
+  const pr = { number: 50, state: 'open', merged: false, draft: false, title: 'feat: algo', body: 'Refs #40', head: { ref: 'claude/issue-40-x', sha: HEAD_J }, base: { ref: 'main', sha: 'b0' }, labels: labels.map(name => ({ name })) };
   const conocidos = {
     issues: {
       get: async p => ({ data: p.issue_number === 40 ? { number: 40, state: 'open', title: 'Issue 40', body: '', labels: [{ name: 'epica' }] } : { number: p.issue_number, labels: [], body: '' } }),
       listComments: async p => ({ data: p.issue_number === 50 ? comments : [] }),
-      createComment: async p => { w.diags.push(p.body); return { data: { id: 1 } }; },
+      createComment: async p => { w.diags.push(p.body); w.orden.push('comment:' + p.body); return { data: { id: 77 } }; },
+      deleteComment: async p => { w.borrados.push(p.comment_id); return { data: {} }; },
     },
     pulls: {
-      get: async () => ({ data: { ...pr, mergeable_state: 'clean' } }),
+      get: async () => ({ data: { ...pr, mergeable_state: estado } }),
       listCommits: async () => ({ data: commits }),
+      updateBranch: async p => { w.orden.push('update:' + p.expected_head_sha); if (updateFalla) throw Object.assign(new Error('merge conflict'), { status: 422 }); return { data: {} }; },
       merge: async () => { w.merged = true; return { data: {} }; },
     },
     users: { getAuthenticated: async () => ({ data: { login: REV } }) },
@@ -276,44 +289,66 @@ async function gateEM({ comments = [], commits = [], labels = ['lgtm', 'ci-verde
       IN_PARTIAL_ROUND_CAP: '3', IN_PARTIAL_LIFETIME_CAP: '6', IN_DEFAULT_BRANCH: 'main' }, globales: { fetch } });
   return w;
 }
-await caso('(j0) control: sin merge mecánico, label lgtm ⇒ mergea (el doble llega al merge)', async () => {
-  const w = await gateEM({ comments: [vd('LGTM', 0)], commits: [cm('feat', -5)] });
+await caso('(j0) control: sin merge mecánico, LGTM con SHA revisado = head y label lgtm ⇒ mergea (el doble llega al merge)', async () => {
+  const w = await gateEM({ comments: [vd('LGTM', 0), mk(HEAD_J, 0)], commits: [feat(-5)] });
   return w.merged || j(w);
 });
-await caso('(j0b) control: sin merge mecánico ni label, LGTM por comentario (respaldo de GATE 2) ⇒ mergea', async () => {
-  const w = await gateEM({ comments: [vd('LGTM', 0)], commits: [cm('feat', -5)], labels: ['ci-verde'] });
-  return w.merged || j(w);
+await caso('(j0b) sin merge mecánico ni label, LGTM por comentario con head = SHA revisado ⇒ NO mergea (GATE 2 sin respaldo, AP-139)', async () => {
+  const w = await gateEM({ comments: [vd('LGTM', 0), mk(HEAD_J, 0)], commits: [feat(-5)], labels: ['ci-verde'] });
+  return !w.merged || j(w);
 });
-await caso('(j1) merge mecánico + marcador, sin label, LGTM solo ANTERIOR (respaldo de GATE 2) ⇒ NO mergea', async () => {
-  const w = await gateEM({ comments: [vd('LGTM', 0), marcaAppend(11)], commits: [cm('feat', -5), cm(SUBJ, 10)], labels: ['ci-verde'] });
+await caso('(j1) merge mecánico + marcador, sin label, LGTM solo sobre el head ANTERIOR ⇒ NO mergea', async () => {
+  const w = await gateEM({ comments: [vd('LGTM', 0), mk(PREV_J, 0), marcaAppend(11)], commits: [feat(-5), cm(SUBJ, 10)], labels: ['ci-verde'] });
   return !w.merged || j(w);
 });
 await caso('(j2) merge mecánico SIN marcador (iii no terminó), sin label, LGTM anterior ⇒ NO mergea', async () => {
-  const w = await gateEM({ comments: [vd('LGTM', 0)], commits: [cm('feat', -5), cm(SUBJ, 10)], labels: ['ci-verde'] });
+  const w = await gateEM({ comments: [vd('LGTM', 0), mk(PREV_J, 0)], commits: [feat(-5), cm(SUBJ, 10)], labels: ['ci-verde'] });
   return !w.merged || j(w);
 });
 await caso('(j3) label `lgtm` superviviente (DELETE fallido) con LGTM anterior al merge mecánico ⇒ NO mergea', async () => {
-  const w = await gateEM({ comments: [vd('LGTM', 0), marcaAppend(11)], commits: [cm(SUBJ, 10)] });
+  const w = await gateEM({ comments: [vd('LGTM', 0), mk(PREV_J, 0), marcaAppend(11)], commits: [feat(-5), cm(SUBJ, 10)] });
   return !w.merged || j(w);
 });
-await caso('(j4) LGTM POSTERIOR al merge mecánico y al marcador ⇒ mergea', async () => {
-  const w = await gateEM({ comments: [vd('LGTM', 0), marcaAppend(11), vd('LGTM', 30)], commits: [cm(SUBJ, 10)] });
+await caso('(j4) LGTM POSTERIOR al merge mecánico, con su SHA revisado = head ⇒ mergea', async () => {
+  const w = await gateEM({ comments: [vd('LGTM', 0), mk(PREV_J, 0), marcaAppend(11), vd('LGTM', 30), mk(HEAD_J, 30)], commits: [feat(-5), cm(SUBJ, 10)] });
   return w.merged || j(w);
 });
 await caso('(j5) REVIEW posterior al merge mecánico ⇒ NO mergea', async () => {
-  const w = await gateEM({ comments: [vd('LGTM', 0), marcaAppend(11), vd('REVIEW', 30)], commits: [cm(SUBJ, 10)], labels: ['ci-verde'] });
+  const w = await gateEM({ comments: [vd('LGTM', 0), mk(PREV_J, 0), marcaAppend(11), vd('REVIEW', 30)], commits: [feat(-5), cm(SUBJ, 10)], labels: ['ci-verde'] });
   return !w.merged || j(w);
 });
 
 await caso('(j6) LGTM POSTERIOR que CITA el marcador (en línea propia y entre backticks) ⇒ mergea', async () => {
   const cita = { ...vd('LGTM', 30), body: `LGTM\n- marcador \`<!-- watchdog-rebase-append: ${SHA} -->\` presente\n<!-- watchdog-rebase-append: ${SHA} -->` };
-  const w = await gateEM({ comments: [vd('LGTM', 0), marcaAppend(11), cita], commits: [cm(SUBJ, 10)], labels: ['ci-verde'] });
+  const w = await gateEM({ comments: [vd('LGTM', 0), marcaAppend(11), cita, mk(HEAD_J, 30)], commits: [feat(-5), cm(SUBJ, 10)] });
   return w.merged || j(w);
 });
-await caso('(j7) comentario no-veredicto que CITA el marcador entre backticks no desplaza el ancla ⇒ el LGTM posterior al marcador mergea', async () => {
+await caso('(j7) comentario no-veredicto que CITA el marcador entre backticks no estorba ⇒ el LGTM posterior con su SHA mergea', async () => {
   const nota = { id: 40, body: `nota: \`<!-- watchdog-rebase-append: ${SHA} -->\``, user: { login: REV }, created_at: T(40) };
-  const w = await gateEM({ comments: [vd('LGTM', 0), marcaAppend(11), vd('LGTM', 30), nota], commits: [cm(SUBJ, 10)], labels: ['ci-verde'] });
+  const w = await gateEM({ comments: [vd('LGTM', 0), marcaAppend(11), vd('LGTM', 30), mk(HEAD_J, 30), nota], commits: [feat(-5), cm(SUBJ, 10)] });
   return w.merged || j(w);
+});
+await caso('(j8) head = merge `web-flow` de `updateBranch` sobre el SHA revisado, sin label ⇒ mergea (AP-125 §3 por la cadena, AP-139)', async () => {
+  const w = await gateEM({ comments: [vd('LGTM', 0), mk(PREV_J, 0), upd(PREV_J, 5)], commits: [feat(-5), cm('Merge branch main', 10, { login: 'web-flow' })], labels: ['ci-verde'] });
+  return w.merged || j(w);
+});
+await caso('(j9) head `web-flow` sobre el SHA revisado + REVIEW posterior ⇒ NO mergea (crítica ronda 3, D)', async () => {
+  const w = await gateEM({ comments: [vd('LGTM', 0), mk(PREV_J, 0), upd(PREV_J, 5), vd('REVIEW', 20)], commits: [feat(-5), cm('Merge branch main', 10, { login: 'web-flow' })], labels: ['ci-verde'] });
+  return !w.merged || j(w);
+});
+await caso('(j10) head = merge `web-flow` SIN marcador de updateBranch de epic-merge («Resolve conflicts» web) ⇒ NO mergea (enmienda del Architect, punto 2)', async () => {
+  const w = await gateEM({ comments: [vd('LGTM', 0), mk(PREV_J, 0)], commits: [feat(-5), cm('Merge branch main', 10, { login: 'web-flow' })], labels: ['ci-verde'] });
+  return !w.merged || j(w);
+});
+await caso('(j11) rama `behind`: marcador `epic-merge-update-branch` del head ANTES de `updateBranch` (con `expected_head_sha`), sin merge', async () => {
+  const w = await gateEM({ comments: [vd('LGTM', 0), mk(HEAD_J, 0)], commits: [feat(-5)], estado: 'behind' });
+  const iM = w.orden.findIndex(x => x.includes(`<!-- epic-merge-update-branch: ${HEAD_J} -->`));
+  const iU = w.orden.indexOf('update:' + HEAD_J);
+  return (!w.merged && iM >= 0 && iU > iM && !w.borrados.length) || j(w.orden);
+});
+await caso('(j12) rama `behind` con `updateBranch` fallido ⇒ el marcador se borra', async () => {
+  const w = await gateEM({ comments: [vd('LGTM', 0), mk(HEAD_J, 0)], commits: [feat(-5)], estado: 'behind', updateFalla: true });
+  return (!w.merged && w.borrados.includes(77)) || j({ orden: w.orden, borrados: w.borrados });
 });
 
 // ── (k) red por estado del scan ─────────────────────────────────────────────

@@ -124,9 +124,12 @@ if (existsSync(EM)) {
   const epicMerge = cargarStep(emStep.with.script, 'epic-merge');
   const WS = mkdtempSync(join(tmpdir(), 'rv-ws-'));
   symlinkSync(process.cwd(), join(WS, '.epic-merge-central'));
-  async function gate({ prComments = [], labels = ['lgtm', 'ci-verde'] } = {}) {
+  // AP-139: GATE 2 exige el SHA revisado (`reviewer-lgtm-sha`) igual al head.
+  const H1 = '1'.repeat(40);
+  const MK = (id) => ({ id, body: `**reviewer · \`lgtm\` materializado**\n\n<!-- reviewer-lgtm-sha: ${H1} -->`, user: { login: 'talfarouriarte-cloud' } });
+  async function gate({ prComments = [{ id: 96, body: 'LGTM\nok', user: { login: 'talfarouriarte-cloud' } }, MK(97)], labels = ['lgtm', 'ci-verde'] } = {}) {
     const w = { merged: false, labels: [...labels], comments: [...prComments], added: [], removed: [] };
-    const pr = { number: 50, state: 'open', merged: false, draft: false, title: 'feat: rank (ADR-5)', body: 'Refs #40', head: { ref: 'claude/issue-40-x', sha: 'h1' }, base: { ref: 'main', sha: 'b0' }, labels: w.labels.map(name => ({ name })) };
+    const pr = { number: 50, state: 'open', merged: false, draft: false, title: 'feat: rank (ADR-5)', body: 'Refs #40', head: { ref: 'claude/issue-40-x', sha: H1 }, base: { ref: 'main', sha: 'b0' }, labels: w.labels.map(name => ({ name })) };
     const issue = { number: 40, state: 'open', title: 'Issue 40', body: '', labels: [{ name: 'epica' }] };
     const conocidos = {
       issues: {
@@ -160,12 +163,14 @@ if (existsSync(EM)) {
   const MARCA = { id: 99, body: `aviso previo\n${RV.marcador('ADR-5·R·1')}`, user: { login: 'x' } };
   const reAvisos = w => w.comments.filter(c => c.body.includes('aterrizada EN VUELO')).length;
   const LGTM = (id) => ({ id, body: 'LGTM\nok', user: { login: REV } });
-  const g2 = await gate({ prComments: [LGTM(98), MARCA, LGTM(100)] });
+  const g2 = await gate({ prComments: [LGTM(98), MK(99), MARCA, LGTM(100)] });
   caso('gate real: clave ya marcada + LGTM POSTERIOR al marcador ⇒ mergea sin volver a comentar', g2.merged && !g2.removed.includes('lgtm') && reAvisos(g2) === 0);
-  const g3 = await gate({ prComments: [LGTM(98), MARCA], labels: ['ci-verde'] });
-  caso('gate real: clave ya marcada, LGTM solo ANTERIOR al marcador, sin label `lgtm` (respaldo de GATE 2) ⇒ NO mergea y no re-comenta',
-    !g3.merged && reAvisos(g3) === 0 && g3.comments.some(c => c.body.includes('sin veredicto del Reviewer POSTERIOR al marcador')));
-  const g4 = await gate({ prComments: [LGTM(98), MARCA] });
+  // AP-139: sin respaldo por comentarios en GATE 2 — sin label y con el head = SHA
+  // revisado el LGTM no es vigente; el corte llega antes del gate 4.
+  const g3 = await gate({ prComments: [LGTM(98), MK(99), MARCA], labels: ['ci-verde'] });
+  caso('gate real: clave ya marcada, LGTM solo ANTERIOR al marcador, sin label `lgtm` ⇒ NO mergea y no re-comenta (GATE 2 sin respaldo, AP-139)',
+    !g3.merged && reAvisos(g3) === 0 && g3.comments.some(c => c.body.includes('LGTM no vigente')));
+  const g4 = await gate({ prComments: [LGTM(98), MK(99), MARCA] });
   caso('gate real: clave ya marcada, label `lgtm` re-puesta sin veredicto posterior ⇒ NO mergea', !g4.merged && reAvisos(g4) === 0);
   // Módulo: `consumida` con la relación de orden.
   caso('`consumida`: veredicto anterior al marcador ⇒ false', RV.consumida([LGTM(1), MARCA], 'ADR-5·R·1', REV) === false);
