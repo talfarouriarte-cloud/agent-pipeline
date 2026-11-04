@@ -1299,11 +1299,21 @@ jobs:
               try { pf = (await github.rest.pulls.get({ owner, repo, pull_number: prNumber })).data; }
               catch (e) { core.info('pulls.get: ' + e.message); }
               if (pf && (pf.state !== 'open' || pf.merged)) { await diag(prNumber, 'PR ya cerrado/mergeado; no-op.'); return; }
+              // AP-139 (central#408): el gate se ata al HEAD vivo (`pf.head.sha`).
+              // `gate-head.cjs` (checkout sparse) decide el CI por run y el LGTM
+              // vigente. Fail-closed: sin módulo o sin `pf` no hay gate por head
+              // ⇒ no mergeo (re-evalúo en el siguiente evento).
+              let GH = null;
+              try { GH = require(`${process.env.GITHUB_WORKSPACE}/.epic-merge-central/vendored/scripts/gate-head.cjs`); }
+              catch (e) { await diag(prNumber, `gate-head.cjs no disponible (${e.message}): sin gate por head no mergeo (fail-closed, AP-139).`); return; }
+              if (!pf) { await diag(prNumber, 'pulls.get falló: sin head vivo no hay gate por head; no mergeo (AP-139).'); return; }
               // Hecho materializado (ADR-218): CI escribe `ci-verde` al acabar
               // y lo invalida en el attempt 1 de código nuevo. Primario; el
               // payload del evento y la consulta directa quedan de respaldo.
+              // El run del evento solo cuenta si es del head vivo (AP-139): un
+              // push durante el CI del head anterior lo deja sin valor.
               let ciOk = prLabels.includes('ci-verde')
-                || (run && run.name === process.env.IN_CI_WORKFLOW_NAME && run.conclusion === 'success');
+                || GH.ciOkPorRun({ run, headSha: pf.head.sha, ciName: process.env.IN_CI_WORKFLOW_NAME });
               if (!ciOk && pf) {
                 try {
                   const { data: ciRuns } = await github.rest.actions.listWorkflowRunsForRepo({
@@ -1332,60 +1342,36 @@ jobs:
                 }
               }
 
-              // GATE 2: Reviewer LGTM. Hecho materializado primario (ADR-218):
-              // label `lgtm` (post-step determinista de reviewer.yml; CI la
-              // invalida en código nuevo). El escaneo de comentarios queda de
-              // RESPALDO TRANSITORIO (PRs pre-cambio); retirar en fase 2.
-              // AP-130 (central#370, review de #389 🔴): tras un merge mecánico
-              // append-only del registro (commit `merge(registro): append-only
-              // de … (watchdog, AP-N)` en la rama y/o su marcador
-              // `watchdog-rebase-append`) solo cuenta un veredicto del Reviewer
-              // POSTERIOR a ambos — con label `lgtm` o sin ella. Lo que entró
-              // desde la base puede ser una rectificación que AP-055 no ve en
-              // `layout: "dir"`; sin esta relación de orden, el respaldo por
-              // comentarios resucitaba el LGTM anterior (misma clase que
-              // `RV.consumida` en GATE 4). El commit ancla también el caso en que
-              // el Watchdog empujó y no llegó a publicar el marcador.
-              let lgtm = prLabels.includes('lgtm');
-              let appendSinVeredicto = false;
+              // GATE 2: Reviewer LGTM, atado al SHA revisado (AP-139, central#408).
+              // Vigente = último veredicto del Reviewer LGTM y (head = SHA del
+              // marcador `reviewer-lgtm-sha` con la label `lgtm` viva, o head
+              // alcanzable desde él solo por merges `web-flow` de `updateBranch`,
+              // sin `needs-review` pendiente). Se retira el respaldo por
+              // comentarios («RESPALDO TRANSITORIO … retirar en fase 2»),
+              // incluido el caso append-only de AP-130: un merge mecánico del
+              // registro no es `web-flow`, cambia el head y deja el LGTM sin
+              // valor (AP-130 §3 por construcción). Con labels VIVAS de `pf`.
+              let lgtm = false;
+              let ultimoV = null;
+              let shaRev = null;
               try {
-                const esVeredicto = c => c.user && c.user.login === REVIEWER_LOGIN && /^\s*(LGTM|REVIEW|NITS)\b/.test(c.body || '');
-                const pcs = await github.paginate(github.rest.pulls.listCommits, { owner, repo, pull_number: prNumber, per_page: 100 });
-                let tAppend = 0;
-                for (const c of pcs) {
-                  const subj = ((c.commit && c.commit.message) || '').split('\n')[0];
-                  if (/^merge\(registro\): append-only de .+ \(watchdog, AP-\d+\)$/.test(subj))
-                    tAppend = Math.max(tAppend, Date.parse(c.commit.committer && c.commit.committer.date) || 1);
-                }
                 const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: prNumber, per_page: 100 });
-                // Marcador en su forma de máquina (línea propia, sha) y nunca en
-                // un veredicto: un LGTM que lo CITE no se bloquea a sí mismo
-                // (review de #389, ronda 2).
-                const MARCA_RE = /^<!-- watchdog-rebase-append: [0-9a-f]{7,40} -->$/m;
-                let iMarca = -1;
-                comments.forEach((c, i) => { if (!esVeredicto(c) && MARCA_RE.test(c.body || '')) iMarca = i; });
-                if (tAppend || iMarca >= 0) {
-                  const posteriores = comments.filter((c, i) => i > iMarca && esVeredicto(c)
-                    && (!tAppend || Date.parse(c.created_at) > tAppend));
-                  const last = posteriores[posteriores.length - 1];
-                  lgtm = !!(last && /^\s*LGTM\b/.test(last.body));
-                  appendSinVeredicto = !last;
-                } else if (!lgtm) {
-                  const verdicts = comments.filter(esVeredicto);
-                  const last = verdicts[verdicts.length - 1];
-                  lgtm = !!(last && /^\s*LGTM\b/.test(last.body));
+                ultimoV = GH.ultimoVeredicto(comments, REVIEWER_LOGIN);
+                shaRev = GH.shaRevisado(comments, await loginPAT());
+                // Solo los `updateBranch` de este gate (marcador previo, PAT) cuentan
+                // como merge de base (enmienda del Architect a #408, punto 2).
+                const marcadosUpdate = GH.shasUpdateMarcados(comments, await loginPAT());
+                let commits = new Map();
+                if (shaRev && shaRev !== pf.head.sha) {
+                  commits = GH.mapaCommits(await github.paginate(github.rest.pulls.listCommits, { owner, repo, pull_number: prNumber, per_page: 100 }));
                 }
+                lgtm = GH.lgtmVigente({ labels: (pf.labels || []).map(l => l.name), shaRevisado: shaRev, headSha: pf.head.sha, commits, marcadosUpdate, ultimoEsLgtm: ultimoV === 'LGTM' });
               } catch (e) { await diag(prNumber, `chequeo Reviewer falló: ${e.message}`); return; }
               if (!lgtm) {
                 // ¿Espera al Reviewer (sin veredicto aún) o al Creator (REVIEW/NITS abiertos)?
-                let waitingOn = 'estado:esperando-reviewer';
-                try {
-                  const { data: cs2 } = await github.rest.issues.listComments({ owner, repo, issue_number: prNumber, per_page: 100 });
-                  const vs = cs2.filter(c => c.user.login === REVIEWER_LOGIN && /^\s*(LGTM|REVIEW|NITS)\b/.test(c.body || ''));
-                  if (vs.length && /^\s*(REVIEW|NITS)\b/.test(vs[vs.length - 1].body || '')) waitingOn = 'estado:esperando-creator';
-                } catch (e) { core.info('estado lgtm: ' + e.message); }
+                const waitingOn = (ultimoV === 'REVIEW' || ultimoV === 'NITS') ? 'estado:esperando-creator' : 'estado:esperando-reviewer';
                 await setStatus(prNumber, waitingOn);
-                await diag(prNumber, `Reviewer aún no LGTM (${waitingOn.replace('estado:', '')}); espero.${appendSinVeredicto ? ' Merge mecánico append-only del registro (AP-130) sin veredicto del Reviewer POSTERIOR: el LGTM anterior no cuenta.' : ''}`);
+                await diag(prNumber, `LGTM no vigente para el head ${pf.head.sha.slice(0, 7)} (último veredicto: ${ultimoV || 'ninguno'}; SHA revisado: ${shaRev ? shaRev.slice(0, 7) : 'sin marcador'}) — ${waitingOn.replace('estado:', '')}; espero (AP-139).`);
                 return;
               }
 
@@ -1494,6 +1480,22 @@ jobs:
                 }
               }
 
+              // AP-139 (enmienda del Architect a #408, punto 2): ANTES de cada
+              // `pulls.updateBranch` de este gate, marcador con el PAT con el head
+              // previo al update. El merge `web-flow` que crea GitHub solo conserva
+              // el LGTM (`revisadoPorCadena`) si su primera madre está marcada; un
+              // «Resolve conflicts» de la web (también `web-flow`, con código de
+              // resolución) no lo está. Si el update falla, el marcador se borra
+              // (un merge manual posterior sobre ese head no debe heredarlo).
+              // Sin marcador publicado no hay update (el LGTM no sobreviviría).
+              const marcarUpdateBranch = async (sha) => {
+                const { data: c } = await github.rest.issues.createComment({ owner, repo, issue_number: prNumber,
+                  body: `**epic-merge · \`updateBranch\` sobre \`${sha.slice(0, 7)}\`** (AP-139): el merge de la base que crea GitHub conserva el LGTM del head revisado.\n\n<!-- epic-merge-update-branch: ${sha} -->` });
+                return c && c.id;
+              };
+              const desmarcarUpdateBranch = async (id) => {
+                if (id) { try { await github.rest.issues.deleteComment({ owner, repo, comment_id: id }); } catch (e) { core.warning(`[epic-merge] no pude borrar el marcador de updateBranch ${id}: ${e.message}`); } }
+              };
               // MERGE (directo; si ya estuviera cerrado/mergeado, el propio merge lo reporta).
               try {
                 if (process.env.IN_AUTOMERGE !== 'true') { await diag(prNumber, 'gates verdes, pero automerge=false en este repo: el merge es humano (AP-012). Esperando.'); return; }
@@ -1506,12 +1508,24 @@ jobs:
                 // sigue siendo del Watchdog (modo rebase), no de aquí.
                 const { data: fresh } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
                 if (fresh.mergeable_state === 'behind') {
-                  await github.rest.pulls.updateBranch({ owner, repo, pull_number: prNumber });
+                  let idMarca = null;
+                  try { idMarca = await marcarUpdateBranch(fresh.head.sha); }
+                  catch (eM) { await diag(prNumber, `gates verdes pero rama behind; el marcador de updateBranch no se publicó (${eM.message}): no actualizo (sin él el LGTM no sobreviviría al merge de la base).`); return; }
+                  try { await github.rest.pulls.updateBranch({ owner, repo, pull_number: prNumber, expected_head_sha: fresh.head.sha }); }
+                  catch (eU) { await desmarcarUpdateBranch(idMarca); throw eU; }
                   await diag(prNumber, 'gates verdes pero rama behind de la base con protección strict: rama actualizada; el CI re-evalúa y se mergea en la siguiente pasada.');
                   return;
                 }
-                await github.rest.pulls.merge({ owner, repo, pull_number: prNumber, merge_method: 'squash' });
+                // AP-139: el merge fija el head que pasó los gates; si se movió, GitHub
+                // devuelve 409 y no se mergea un head sin CI ni review.
+                await github.rest.pulls.merge({ owner, repo, pull_number: prNumber, merge_method: 'squash', sha: pf.head.sha });
               } catch (e) {
+                // AP-139: 409 = el head se movió entre el gate y el merge. Sin
+                // reintento en este run: el head nuevo entra por su propio evento.
+                if (e && e.status === 409) {
+                  await diag(prNumber, `head movido entre gate y merge (gate sobre ${pf.head.sha.slice(0, 7)}; ${e.message}) — no mergeo; el head nuevo re-entra por su evento (AP-139).`);
+                  return;
+                }
                 // central#333 (AP-125): «Base branch was modified» es transitorio
                 // (la base se movió durante el merge). Hasta 3 veces: marcador en
                 // el PR + `updateBranch` y re-entrada por `workflow_run` del CI
@@ -1528,7 +1542,9 @@ jobs:
                   try {
                     await github.rest.issues.createComment({ owner, repo, issue_number: prNumber,
                       body: `**epic-merge · reintento de merge ${previos + 1}/${EMD.MERGE_RETRY_CAP}**: el merge falló con «${e.message}» (la base se movió durante el merge). Actualizo la rama; el CI re-evalúa y este gate vuelve a entrar.\n\n${EMD.marcadorReintento((pf && pf.head && pf.head.sha) || pr.head.sha)}` });
-                    await github.rest.pulls.updateBranch({ owner, repo, pull_number: prNumber });
+                    const idMarca = await marcarUpdateBranch(pf.head.sha);
+                    try { await github.rest.pulls.updateBranch({ owner, repo, pull_number: prNumber, expected_head_sha: pf.head.sha }); }
+                    catch (eU) { await desmarcarUpdateBranch(idMarca); throw eU; }
                     await diag(prNumber, `MERGE FALLÓ por base modificada (${previos + 1}/${EMD.MERGE_RETRY_CAP}): rama actualizada; re-entro por el CI.`);
                   } catch (e3) { await diag(prNumber, `MERGE FALLÓ por base modificada y updateBranch falló: ${e3.message}`); }
                   return;

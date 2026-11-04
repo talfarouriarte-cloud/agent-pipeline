@@ -781,6 +781,14 @@ jobs:
               try { RV = require(p); break; } catch (e) { /* siguiente ubicación */ }
             }
             if (!RV) core.warning('rect-en-vuelo: módulo `rect-en-vuelo.cjs` no disponible — detector AP-055 INERTE en este tick.');
+            // AP-139 (central#408): gate por head (`gate-head.cjs`) para el belt
+            // AP-024 y las ramas «LGTM no vigente por head nuevo» y «`lgtm` sin CI
+            // en su head» del dispatcher. Sin módulo, AP-024 en modo previo.
+            let GH = null;
+            for (const p of [`${process.env.GITHUB_WORKSPACE}/.cola-central/vendored/scripts/gate-head.cjs`, `${process.env.GITHUB_WORKSPACE}/scripts/gate-head.cjs`]) {
+              try { GH = require(p); break; } catch (e) { /* siguiente ubicación */ }
+            }
+            const REVIEWER_LOGIN = 'talfarouriarte-cloud';   // login del PAT (mismo literal que reviewer.yml/epic-merge.yml)
             // El belt `watchdog-lgtm-rematerialize` (más abajo) lee la cadena
             // COMPLETA con clave; mismo valor que `RV.RECT_MARK_RE` (el banco
             // lo comprueba), local para que el belt no dependa del módulo.
@@ -1026,19 +1034,6 @@ jobs:
                 // ⇒ re-aplicar `lgtm` con el PAT (su `labeled` re-dispara
                 // epic-merge, mismo edge de ADR-218). Cap 1 vía LGTM_REMAT_MARK.
                 const hasLgtm = labels.includes('lgtm');
-                const remats = hcs.filter(c => (c.body || '').includes(LGTM_REMAT_MARK)).length;
-                // Riesgo 1 (merge de código no revisado): si hay commits DESPUÉS
-                // del veredicto, ci.yml ya retiró `ci-verde`+`lgtm` (attempt 1) y
-                // re-materializar saltaría esa invalidación. Misma comprobación
-                // que el turn-close-failsafe: committer.date del head vs el
-                // created_at del comentario del veredicto. Fail-closed: si la
-                // consulta falla se asume commit posterior y NO se re-materializa.
-                let headAfterVerdict = true;
-                try {
-                  const { data: headCommit } = await github.rest.repos.getCommit({ ...O, ref: pr.head.sha });
-                  headAfterVerdict = new Date(headCommit.commit.committer.date) > new Date(lastVerdict.created_at);
-                } catch (e) { core.info(`lgtm-remat/head-check #${pr.number}: ${e.message}`); }
-
                 // Interacción AP-055 (clase 3, label writers × triggers): si una
                 // rectificación aterrizó en la base DESPUÉS de este veredicto y
                 // el bloque de rectificación-en-vuelo retiró `lgtm`, esa ausencia
@@ -1061,14 +1056,77 @@ jobs:
                 // propio tick, que es la mitad que importa.
                 const rectHold = hcs.some(c => RECT_MARK_RE.test(c.body || '')
                   && new Date(c.created_at) > new Date(lastVerdict.created_at));
-                if (!hasLgtm && !headAfterVerdict && remats < 1 && !rectHold) {
-                  why = 'veredicto LGTM en prosa sin label `lgtm` y sin commits posteriores (ventana de crash del post-step del Reviewer)';
+                // Decisión por head (AP-139, central#408): el LGTM vale para el SHA
+                // que escribió el post-step del Reviewer (`reviewer-lgtm-sha`) o
+                // para un head alcanzable desde él solo por merges `web-flow` de
+                // `updateBranch`. Sustituye a `headAfterVerdict` por fecha: un
+                // merge de la base ya no bloquea la re-materialización y un commit
+                // propio la impide siempre. Cap 1 por head SHA (`remats`).
+                let ap024 = null, hcsAll = hcs, gateHeadOk = false, revSha = null, lgtmCommits = new Map(), lgtmMarcados = new Set();
+                if (GH) {
+                  try {
+                    if (hcs.length >= 100) hcsAll = await github.paginate(github.rest.issues.listComments, { ...O, issue_number: pr.number, per_page: 100 });
+                    const rev = GH.shaRevisado(hcsAll, REVIEWER_LOGIN);
+                    const marcados = GH.shasUpdateMarcados(hcsAll, REVIEWER_LOGIN);   // solo los `updateBranch` de epic-merge
+                    let commits = new Map();
+                    if (rev && rev !== pr.head.sha) commits = GH.mapaCommits(await github.paginate(github.rest.pulls.listCommits, { ...O, pull_number: pr.number, per_page: 100 }));
+                    // Fail-closed: si `getCommit` falla, el head cuenta como cambiado.
+                    let headSinCambios = false;
+                    if (!rev) {
+                      try {
+                        const { data: headCommit } = await github.rest.repos.getCommit({ ...O, ref: pr.head.sha });
+                        headSinCambios = new Date(headCommit.commit.committer.date) <= new Date(lastVerdict.created_at);
+                      } catch (e) { core.info(`lgtm-remat/head-check #${pr.number}: ${e.message}`); }
+                    }
+                    ap024 = GH.decidirAp024({ ultimoEsLgtm: true, hasLgtm, shaRevisado: rev, headSha: pr.head.sha,
+                      headSinCambiosDesdeVeredicto: headSinCambios, commits, marcadosUpdate: marcados,
+                      remats: GH.remats({ comentarios: hcsAll, headSha: pr.head.sha }), rectHold });
+                    gateHeadOk = true;
+                    revSha = rev; lgtmCommits = commits; lgtmMarcados = marcados;
+                  } catch (e) { core.warning(`gate-head #${pr.number}: ${e.message} — sin decisión por head en este tick.`); }
+                }
+                if (GH && ap024 === 'remat') {
+                  why = 'veredicto LGTM con su SHA revisado (o head `web-flow` sobre él) y sin label `lgtm` (ventana de crash del post-step o `synchronize` de `updateBranch`)';
                   fix = async () => {   // la label DEBE salir con PAT o su `labeled` no dispara epic-merge (anti-loop)
                     await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['lgtm'] });
                     await github.rest.issues.createComment({ ...O, issue_number: pr.number,
-                      body: `**watchdog · re-materialización de \`lgtm\` por estado (AP-024)**: el último veredicto del Reviewer es LGTM (cabecera ADR-063) y el head no tiene commits posteriores, pero la label \`lgtm\` no se materializó — ventana de crash del post-step del Reviewer (repesca finplan#1438). Label re-aplicada con el PAT: su \`labeled\` re-dispara epic-merge (edge ADR-218). Cap 1 por PR.\n\n${LGTM_REMAT_MARK}\n${CAPA}` });
+                      body: `**watchdog · re-materialización de \`lgtm\` por estado (AP-024, AP-139)**: el último veredicto del Reviewer es LGTM y el head \`${pr.head.sha.slice(0, 7)}\` es su SHA revisado (o se llega a él solo por merges \`web-flow\` de \`updateBranch\` de epic-merge), pero la label \`lgtm\` no está. Label re-aplicada con el PAT: su \`labeled\` re-dispara epic-merge (edge ADR-218). Cap 1 por head.\n\n<!-- watchdog-lgtm-rematerialize: ${pr.head.sha} -->\n${CAPA}` });
                     return true;   // self-comment: marcador propio, no consume el cap 2 de relanzamiento
                   };
+                } else if (GH && ap024 === 'rellenar-y-remat') {
+                  why = 'veredicto LGTM sin marcador `reviewer-lgtm-sha` y head sin cambios desde el veredicto (crash entre veredicto y marcador, o PR anterior a AP-139)';
+                  fix = async () => {   // con el PAT: `shaRevisado` solo lee comentarios del login del PAT
+                    await patCall('POST', `/issues/${pr.number}/comments`, {
+                      body: `**watchdog · relleno del SHA revisado (AP-139)**: el último veredicto del Reviewer es LGTM y el head \`${pr.head.sha.slice(0, 7)}\` no ha cambiado desde él, pero el post-step no dejó el marcador del SHA revisado. Se rellena para este head${hasLgtm ? '' : ' y se re-aplica `lgtm`'}.\n\n${GH.marcaLgtmSha(pr.head.sha)}\n${CAPA}` });
+                    if (!hasLgtm) await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['lgtm'] });
+                    return true;
+                  };
+                } else if (!GH) {
+                  core.warning('gate-head ausente: AP-024 en modo previo; ramas 5-6 inactivas');
+                  const remats = hcs.filter(c => (c.body || '').includes(LGTM_REMAT_MARK)).length;
+                  // Riesgo 1 (merge de código no revisado): si hay commits DESPUÉS
+                  // del veredicto, ci.yml ya retiró `ci-verde`+`lgtm` (attempt 1) y
+                  // re-materializar saltaría esa invalidación. Misma comprobación
+                  // que el turn-close-failsafe: committer.date del head vs el
+                  // created_at del comentario del veredicto. Fail-closed: si la
+                  // consulta falla se asume commit posterior y NO se re-materializa.
+                  let headAfterVerdict = true;
+                  try {
+                    const { data: headCommit } = await github.rest.repos.getCommit({ ...O, ref: pr.head.sha });
+                    headAfterVerdict = new Date(headCommit.commit.committer.date) > new Date(lastVerdict.created_at);
+                  } catch (e) { core.info(`lgtm-remat/head-check #${pr.number}: ${e.message}`); }
+                  if (!hasLgtm && !headAfterVerdict && remats < 1 && !rectHold) {
+                    why = 'veredicto LGTM en prosa sin label `lgtm` y sin commits posteriores (ventana de crash del post-step del Reviewer)';
+                    fix = async () => {   // la label DEBE salir con PAT o su `labeled` no dispara epic-merge (anti-loop)
+                      await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['lgtm'] });
+                      await github.rest.issues.createComment({ ...O, issue_number: pr.number,
+                        body: `**watchdog · re-materialización de \`lgtm\` por estado (AP-024)**: el último veredicto del Reviewer es LGTM (cabecera ADR-063) y el head no tiene commits posteriores, pero la label \`lgtm\` no se materializó — ventana de crash del post-step del Reviewer (repesca finplan#1438). Label re-aplicada con el PAT: su \`labeled\` re-dispara epic-merge (edge ADR-218). Cap 1 por PR.\n\n${LGTM_REMAT_MARK}\n${CAPA}` });
+                      return true;   // self-comment: marcador propio, no consume el cap 2 de relanzamiento
+                    };
+                  }
+                }
+                if (fix) {
+                  // decidido arriba (re-materialización / relleno)
                 } else if (rectHold) {
                   // El veredicto vigente es un LGTM ANTERIOR a la rectificación:
                   // el turno NO es de epic-merge (su gate está cerrado a
@@ -1088,6 +1146,57 @@ jobs:
                     await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['needs-review'] });
                     return false;
                   };
+                } else if (GH && ap024 === 'reviewer') {
+                  // AP-139, LGTM no vigente por head nuevo: hay commits propios
+                  // tras el SHA revisado (o, sin marcador, el head cambió desde el
+                  // veredicto). Código sin revisar: el turno es del Reviewer, no de
+                  // epic-merge ni de architect-resolve — también con automerge=false
+                  // (código sin revisar no es «sala de espera del propietario»).
+                  // `needs-review` presente ya cayó en la primera rama del dispatcher.
+                  turno = 'reviewer';
+                  why = `LGTM sobre ${revSha ? revSha.slice(0, 7) : 'un head sin marcador'}, head ${pr.head.sha.slice(0, 7)}: commits sin revisar`;
+                  fix = async () => {
+                    if (hasLgtm) { try { await patCall('DELETE', `/issues/${pr.number}/labels/lgtm`); } catch (e) { core.info(`lgtm-no-vigente/lgtm #${pr.number}: ${e.message}`); } }
+                    await patCall('DELETE', `/issues/${pr.number}/labels/needs-review`).catch(() => {});
+                    await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['needs-review'] });
+                    return false;   // cap 2 del dispatcher (TURN_MARK), sin marcador nuevo
+                  };
+                } else if (GH && gateHeadOk && hasLgtm && GH.lgtmVigente({ labels, shaRevisado: revSha, headSha: pr.head.sha, commits: lgtmCommits, marcadosUpdate: lgtmMarcados, ultimoEsLgtm: true })) {
+                  // AP-139, `lgtm` vigente sin CI en su head (red del CI-tras-LGTM):
+                  // si el `labeled` se perdió no hay run de CI y epic-merge espera
+                  // en `esperando-ci` para siempre. ≥ 15 min desde el último
+                  // `labeled` de `lgtm` y ningún run de CI (no `skipped`) sobre el
+                  // head ⇒ DELETE + POST de `lgtm` con el PAT (re-dispara
+                  // `labeled`). Cap 1 por head; reincidencia ⇒ `lgtm-sin-ci`. Un PR
+                  // `dirty` no llega aquí (el dispatcher cede al modo PR-dirty).
+                  let sinCi = false;
+                  try {
+                    const evs = await github.paginate(github.rest.issues.listEvents, { ...O, issue_number: pr.number, per_page: 100 });
+                    const lab = evs.filter(e => e.event === 'labeled' && e.label && e.label.name === 'lgtm').pop();
+                    if (lab && ageMin(lab.created_at) >= 15) {
+                      const { data: ciR } = await github.rest.actions.listWorkflowRunsForRepo({ ...O, head_sha: pr.head.sha, per_page: 30 });
+                      sinCi = !ciR.workflow_runs.some(r => r.name === process.env.IN_CI_WF && r.conclusion !== 'skipped');
+                    }
+                  } catch (e) { core.info(`lgtm-sin-ci #${pr.number}: ${e.message}`); }
+                  if (sinCi) {
+                    const CI_REARM = `<!-- watchdog-lgtm-ci-rearm: ${pr.head.sha} -->`;
+                    if (hcsAll.some(c => (c.body || '').split('\n').some(l => l.trim() === CI_REARM))) {
+                      anomalies.push({ type: 'lgtm-sin-ci', number: pr.number, head: pr.head.sha,
+                        note: '`lgtm` vigente sin run de CI sobre su head tras el re-arm del Watchdog (cap 1 por head agotado)' });
+                      continue;
+                    }
+                    why = `\`lgtm\` vigente desde hace ≥ 15 min sin run de CI sobre ${pr.head.sha.slice(0, 7)}`;
+                    fix = async () => {
+                      await patCall('DELETE', `/issues/${pr.number}/labels/lgtm`);
+                      await patCall('POST', `/issues/${pr.number}/labels`, { labels: ['lgtm'] });
+                      await github.rest.issues.createComment({ ...O, issue_number: pr.number,
+                        body: `**watchdog · \`lgtm\` sin CI en su head (AP-139)**: el LGTM es vigente para \`${pr.head.sha.slice(0, 7)}\` pero no hay run de CI sobre ese head pasados 15 min del \`labeled\`. \`lgtm\` retirada y re-aplicada con el PAT para re-disparar el CI. Cap 1 por head; reincidencia ⇒ anomalía \`lgtm-sin-ci\`.\n\n${CI_REARM}\n${CAPA}` });
+                      return true;
+                    };
+                  }
+                }
+                if (fix) {
+                  // transición decidida arriba
                 } else if (process.env.IN_AUTOMERGE === 'false') {
                   // AP-058: con merge humano (automerge=false), este estado es
                   // la sala de espera del propietario, no un zombi — declarar

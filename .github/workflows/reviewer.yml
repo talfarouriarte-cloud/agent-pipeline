@@ -1108,6 +1108,21 @@ jobs:
                 core.warning(`PR #${n}: LGTM con enmienda(s) sin acuse (${pendEnm.map(e => e.id).join(', ')}) — sin lgtm; ${plan.accion}.`);
                 return;
               }
+              // AP-139 (central#408): el LGTM se ata al SHA revisado — el head del
+              // evento que arrancó este job (el que el Reviewer leyó). Un solo
+              // sitio: este post-step corre también tras el LGTM determinista de
+              // AP-053. epic-merge (`gate-head.cjs`, `lgtmVigente`) exige que el
+              // head vivo sea este SHA o se llegue a él solo por merges `web-flow`.
+              // Con el PAT: `shaRevisado` solo lee comentarios del login del PAT.
+              // Fail-closed: si el marcador no se publica, no hay label (el belt
+              // AP-024 del Watchdog lo rellena si el head no cambió).
+              let marcado = false;
+              try {
+                const mk = await patCall('POST', `/issues/${n}/comments`, { body:
+                  `**reviewer · \`lgtm\` materializado sobre \`${headSha.slice(0, 7)}\`** (AP-139): el LGTM vale para este head; un commit propio posterior lo deja sin valor.\n\n<!-- reviewer-lgtm-sha: ${headSha} -->` });
+                marcado = mk.ok;
+              } catch (e) { core.info(`AP-139 marcador: ${e.message}`); }
+              if (!marcado) { core.warning(`PR #${n}: marcador del SHA revisado no publicado — sin label lgtm (fail-closed, AP-139); el belt AP-024 lo repesca.`); return; }
               const res = await fetch(`https://api.github.com/repos/${O.owner}/${O.repo}/issues/${n}/labels`, {
                 method: 'POST',
                 headers: { Authorization: `Bearer ${process.env.ARM_PAT}`, Accept: 'application/vnd.github+json' },
