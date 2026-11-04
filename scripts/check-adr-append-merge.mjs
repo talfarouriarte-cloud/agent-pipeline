@@ -16,6 +16,11 @@
 //   comentarios de GATE 2 (review de #389 🔴).
 //   (k): la red por estado del scan: HEAD = merge mecánico sin marcador ⇒
 //   candidato `materializar` (review de #389 🟡).
+//   (AP142-*): central#418, ruling 2026-11-04 posición 21 + enmienda E1 —
+//   inserción común en CHANGELOG, varios ficheros, `sin-config` tras ver los
+//   conflictos, filtro (v) `esContendiente`/`libreDeContendiente` (fail-closed),
+//   escaneo delante del Gate 0 (`soloMecanico`, `final`) con el scan REAL y
+//   «Materializar» sin ping LLM con `soloMecanico` y con merge al final (E1).
 //
 // Cuelga del piggyback de `check-embedded-js.mjs`.
 import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, existsSync, symlinkSync } from 'fs';
@@ -85,7 +90,7 @@ await caso('(a) dir · dos appends al mismo ADR ⇒ ok, merge de 2 padres, ances
   const ancestro = spawnSync('git', ['merge-base', '--is-ancestor', prSha, r.sha], { cwd: repo }).status === 0;
   const msg = git(repo, 'log', '-1', '--format=%s', r.sha);
   return (padres.length === 2 && padres[0] === prSha && padres[1] === baseSha && contenido === ANC + BLOQ_BASE + BLOQ_PR
-    && ancestro && r.ruta === ADR && /^merge\(registro\): append-only de .* \(watchdog, AP-130\)$/.test(msg) && limpio(repo))
+    && ancestro && j(r.rutas) === j([ADR]) && /^merge\(registro\): append-only de .* \(watchdog, AP-\d+\)$/.test(msg) && limpio(repo))
     || j({ r, padres, prSha, baseSha, contenido, ancestro, msg });
 });
 
@@ -95,13 +100,13 @@ await caso('(b) conflicto en medio del ADR ⇒ na no-append, árbol limpio, sin 
   return (r.ok === false && r.na === 'no-append' && limpio(repo) && git(repo, 'rev-parse', 'HEAD') === prSha) || j(r);
 });
 
-await caso('(c) conflicto en el ADR y en otro fichero ⇒ na varios-conflictos', async () => {
+await caso('(c) conflicto en el ADR y en otro fichero ⇒ na fuera-del-registro (AP-142: ya no varios-conflictos)', async () => {
   const { repo, prSha } = escenario({
     ancestro: { ...CFG_DIR, [ADR]: ANC, 'src/a.txt': 'uno\n' },
     pr: { [ADR]: ANC + BLOQ_PR, 'src/a.txt': 'dos\n' },
     base: { [ADR]: ANC + BLOQ_BASE, 'src/a.txt': 'tres\n' } });
   const r = correrMod(repo);
-  return (r.ok === false && r.na === 'varios-conflictos' && limpio(repo) && git(repo, 'rev-parse', 'HEAD') === prSha) || j(r);
+  return (r.ok === false && r.na === 'fuera-del-registro' && r.detalle === 'src/a.txt' && limpio(repo) && git(repo, 'rev-parse', 'HEAD') === prSha) || j(r);
 });
 
 await caso('(c2) único conflicto fuera del registro ⇒ na fuera-del-registro', async () => {
@@ -139,6 +144,111 @@ await caso('(h) add/add del mismo ADR-NNN.md ⇒ na no-append', async () => {
   return (r.ok === false && r.na === 'no-append' && limpio(repo)) || j(r);
 });
 
+// ── AP-142 (central#418): inserción común en CHANGELOG y varios ficheros ─────
+const L = a => a.join('\n') + '\n';
+const CL = 'packages/app/CHANGELOG.md';
+const CL_ANC = L(['# Changelog', '', '## [Unreleased]', '', '## [1.2.0]', '- viejo']);
+const CL_PR = L(['# Changelog', '', '## [Unreleased]', '', '### PR', '- x', '', '## [1.2.0]', '- viejo']);
+const CL_BASE = L(['# Changelog', '', '## [Unreleased]', '', '### Base', '- y', '', '## [1.2.0]', '- viejo']);
+const CL_ESP = L(['# Changelog', '', '## [Unreleased]', '', '### PR', '- x', '', '### Base', '- y', '', '## [1.2.0]', '- viejo']);
+await caso('(AP142-a) resolverInsercionComun: bloques bajo [Unreleased] con líneas en blanco junto a la inserción ⇒ P + X(PR) + Y(base) + S', async () => {
+  const { resolverInsercionComun } = await import(MOD);
+  const r = resolverInsercionComun({ ancestro: CL_ANC, ours: CL_PR, theirs: CL_BASE });
+  return r === CL_ESP || j(r);
+});
+await caso('(AP142-a) repo real · CHANGELOG con config ⇒ ok, rutas [CHANGELOG], contenido esperado, modo insercion', async () => {
+  const { repo, prSha, baseSha } = escenario({ ancestro: { ...CFG_DIR, [CL]: CL_ANC }, pr: { [CL]: CL_PR }, base: { [CL]: CL_BASE } });
+  const r = correrMod(repo);
+  const padres = r.ok ? git(repo, 'rev-list', '--parents', '-n', '1', r.sha).split(' ').slice(1) : [];
+  return (r.ok && j(r.rutas) === j([CL]) && r.resueltas[0].modo === 'insercion' && readFileSync(join(repo, CL), 'utf8') === CL_ESP
+    && padres[0] === prSha && padres[1] === baseSha && limpio(repo)) || j(r);
+});
+await caso("(AP142-a') sin adr-lint.config.json, el mismo CHANGELOG ⇒ ok: true", async () => {
+  const { repo } = escenario({ ancestro: { [CL]: CL_ANC }, pr: { [CL]: CL_PR }, base: { [CL]: CL_BASE } });
+  const r = correrMod(repo);
+  return (r.ok && readFileSync(join(repo, CL), 'utf8') === CL_ESP) || j(r);
+});
+await caso('(AP142-b) CHANGELOG donde la base cambia una línea del ancestro ⇒ resolverInsercionComun null; repo ⇒ no-append', async () => {
+  const { resolverInsercionComun } = await import(MOD);
+  const base2 = CL_BASE.replace('- viejo', '- viejo (corregido)');
+  const pura = resolverInsercionComun({ ancestro: CL_ANC, ours: CL_PR, theirs: base2 });
+  const { repo, prSha } = escenario({ ancestro: { ...CFG_DIR, [CL]: CL_ANC }, pr: { [CL]: CL_PR.replace('- viejo', '- viejo PR') }, base: { [CL]: base2 } });
+  const r = correrMod(repo);
+  return (pura === null && r.ok === false && r.na === 'no-append' && r.detalle === CL && limpio(repo) && git(repo, 'rev-parse', 'HEAD') === prSha) || j({ pura, r });
+});
+await caso('(AP142-b2) resolverInsercionComun: borrado de una línea del ancestro o add/add ⇒ null', async () => {
+  const { resolverInsercionComun } = await import(MOD);
+  const borra = resolverInsercionComun({ ancestro: CL_ANC, ours: CL_PR, theirs: CL_BASE.replace('- viejo\n', '') });
+  const addadd = resolverInsercionComun({ ancestro: null, ours: CL_PR, theirs: CL_BASE });
+  return (borra === null && addadd === null) || j({ borra, addadd });
+});
+await caso('(AP142-c) dos conflictos (CHANGELOG + registro), los dos resolubles ⇒ ok, rutas de longitud 2, asunto con las dos rutas', async () => {
+  const { repo } = escenario({ ancestro: { ...CFG_DIR, [ADR]: ANC, [CL]: CL_ANC }, pr: { [ADR]: ANC + BLOQ_PR, [CL]: CL_PR }, base: { [ADR]: ANC + BLOQ_BASE, [CL]: CL_BASE } });
+  const r = correrMod(repo);
+  const msg = r.ok ? git(repo, 'log', '-1', '--format=%s', r.sha) : '';
+  return (r.ok && r.rutas.length === 2 && r.rutas.includes(ADR) && r.rutas.includes(CL)
+    && readFileSync(join(repo, ADR), 'utf8') === ANC + BLOQ_BASE + BLOQ_PR && readFileSync(join(repo, CL), 'utf8') === CL_ESP
+    && /^merge\(registro\): append-only de .+, .+ \(watchdog, AP-\d+\)$/.test(msg) && limpio(repo)) || j({ r, msg });
+});
+await caso('(AP142-d) CHANGELOG + un .ts en conflicto ⇒ na fuera-del-registro con la ruta del .ts, sin commit', async () => {
+  const { repo, prSha } = escenario({ ancestro: { ...CFG_DIR, [CL]: CL_ANC, 'src/a.ts': 'uno\n' }, pr: { [CL]: CL_PR, 'src/a.ts': 'dos\n' }, base: { [CL]: CL_BASE, 'src/a.ts': 'tres\n' } });
+  const r = correrMod(repo);
+  return (r.ok === false && r.na === 'fuera-del-registro' && r.detalle === 'src/a.ts' && limpio(repo) && git(repo, 'rev-parse', 'HEAD') === prSha) || j(r);
+});
+await caso('(AP142-d2) MOTIVOS ya no tiene varios-conflictos y conserva sin-config', async () => {
+  const { MOTIVOS } = await import(MOD);
+  return (!MOTIVOS.includes('varios-conflictos') && MOTIVOS.includes('sin-config')) || j(MOTIVOS);
+});
+
+// ── AP-142 punto 3 (v): esContendiente (AP-100 §1) y libreDeContendiente ─────
+const PR_V = { number: 5, title: 'feat: algo', head: { ref: HEAD_REF } };
+const TIT = new Set(['feat: algo', 'Issue 1']);
+await caso('(AP142-f) run con display_title = título del PR ⇒ contendiente', async () => {
+  const { esContendiente } = await import(MOD);
+  return esContendiente({ run: { display_title: 'feat: algo', head_branch: 'main' }, titles: TIT, branch: HEAD_REF }) === true;
+});
+await caso("(AP142-g) run de pull_request_review con display_title 'otro título' y head_branch = rama ⇒ contendiente", async () => {
+  const { esContendiente } = await import(MOD);
+  return esContendiente({ run: { event: 'pull_request_review', display_title: 'otro título', head_branch: HEAD_REF }, titles: TIT, branch: HEAD_REF }) === true;
+});
+await caso('(AP142-h) run con el título del issue de la rama ⇒ contendiente', async () => {
+  const { esContendiente } = await import(MOD);
+  return esContendiente({ run: { display_title: 'Issue 1', head_branch: 'main' }, titles: TIT, branch: HEAD_REF }) === true;
+});
+await caso('(AP142-i) run sin coincidencias ⇒ no', async () => {
+  const { esContendiente } = await import(MOD);
+  return esContendiente({ run: { display_title: 'otra cosa', head_branch: 'main' }, titles: TIT, branch: HEAD_REF }) === false;
+});
+const AHORA = Date.parse('2026-11-04T12:00:00Z');
+const hace = min => new Date(AHORA - min * 60000).toISOString();
+const libre = async o => (await import(MOD)).libreDeContendiente({ pr: PR_V, creatorWf: 'Claude Code', ahoraMs: AHORA,
+  leerIssue: async () => 'Issue 1', listarRuns: async () => [], contarJobs: async () => 1, ...o });
+await caso('(AP142-v1) sin runs ⇒ libre', async () => (await libre({})).libre === true);
+await caso('(AP142-v2) FAIL-CLOSED: runs ilegibles ⇒ no es candidato', async () => {
+  const r = await libre({ listarRuns: async () => { throw new Error('HTTP 502'); } });
+  return (r.libre === false && /ilegibles/.test(r.motivo)) || j(r);
+});
+await caso('(AP142-v3) FAIL-CLOSED: issue de la rama ilegible ⇒ no es candidato', async () => {
+  const r = await libre({ leerIssue: async () => { throw new Error('HTTP 404'); } });
+  return (r.libre === false && /ilegible/.test(r.motivo)) || j(r);
+});
+await caso('(AP142-v4) Creator in_progress con el título del issue de la rama ⇒ no libre; de otro workflow o de otro ítem ⇒ libre', async () => {
+  const run = (o) => ({ id: 9, name: 'Claude Code', display_title: 'Issue 1', head_branch: 'main', created_at: hace(3), ...o });
+  const a = await libre({ listarRuns: async st => (st === 'in_progress' ? [run()] : []) });
+  const b = await libre({ listarRuns: async st => (st === 'in_progress' ? [run({ name: 'CI' })] : []) });
+  const c = await libre({ listarRuns: async st => (st === 'in_progress' ? [run({ display_title: 'otro' })] : []) });
+  return (a.libre === false && b.libre === true && c.libre === true) || j({ a, b, c });
+});
+await caso('(AP142-v5) queued: cascarón (0 jobs, > gracia) ⇒ libre; con jobs, en gracia o jobs ilegibles ⇒ no libre', async () => {
+  const q = (o) => ({ id: 9, name: 'Claude Code', display_title: 'feat: algo', head_branch: 'main', created_at: hace(10), ...o });
+  const lr = r => async st => (st === 'queued' ? [r] : []);
+  const cascaron = await libre({ listarRuns: lr(q()), contarJobs: async () => 0 });
+  const conJobs = await libre({ listarRuns: lr(q()), contarJobs: async () => 1 });
+  const gracia = await libre({ listarRuns: lr(q({ created_at: hace(1) })), contarJobs: async () => 0 });
+  const ilegible = await libre({ listarRuns: lr(q()), contarJobs: async () => { throw new Error('x'); } });
+  return (cascaron.libre && !conJobs.libre && !gracia.libre && !ilegible.libre) || j({ cascaron, conJobs, gracia, ilegible });
+});
+
 await caso('(a2) ancestro sin \\n final y bloque de la base sin \\n final ⇒ líneas separadas', async () => {
   const { resolverAppendOnly } = await import(MOD);
   const r = resolverAppendOnly({ ancestro: 'a', ours: 'a\npr\n', theirs: 'a\nbase' });
@@ -153,27 +263,32 @@ if (!st || typeof st.with?.script !== 'string') { console.error('check-adr-appen
 const run = cargarStep(st.with.script, 'Materializar rebase append-only');
 const SHA = 'abc1234def5678';
 
-function doble({ live = {}, comments = [] } = {}) {
+function doble({ live = {}, comments = [], fallaMerge = false } = {}) {
   const log = { calls: [], warnings: [], notices: [] };
   const github = {
     paginate: async (fn, p) => (await fn(p)).data,
     rest: {
       issues: { listComments: async () => ({ data: comments }) },
-      pulls: { get: async () => ({ data: { draft: !!live.draft, labels: (live.labels || []).map(name => ({ name })) } }) },
+      pulls: { get: async () => ({ data: { draft: !!live.draft, head: { sha: live.head || 'f'.repeat(40) }, labels: (live.labels || []).map(name => ({ name })) } }) },
     },
   };
   const core = { info() {}, notice: m => log.notices.push(m), warning: m => log.warnings.push(m), setOutput() {} };
-  const fetch = async (url, o) => { log.calls.push({ method: o.method, path: url.replace(/^https:\/\/api\.github\.com\/repos\/o\/r/, ''), body: o.body ? JSON.parse(o.body) : null, auth: o.headers.Authorization }); return { ok: true, status: 200 }; };
+  const fetch = async (url, o) => {
+    const path = url.replace(/^https:\/\/api\.github\.com\/repos\/o\/r/, '');
+    log.calls.push({ method: o.method, path, body: o.body ? JSON.parse(o.body) : null, auth: o.headers.Authorization });
+    if (fallaMerge && o.method === 'PUT' && /\/merge$/.test(path)) return { ok: false, status: 405 };
+    return { ok: true, status: 200 };
+  };
   return { github, core, fetch, log };
 }
-async function iii({ cands, resultados, live, comments }) {
-  const d = doble({ live, comments });
-  const env = { ARM_PAT: 'PAT', CANDS: j(cands), RESULTADOS: resultados == null ? '' : j(resultados), IN_DEFAULT_BRANCH: 'main' };
+async function iii({ cands, resultados, live, comments, fallaMerge }) {
+  const d = doble({ live, comments, fallaMerge });
+  const env = { ARM_PAT: 'PAT', CANDS: j(cands), RESULTADOS: resultados == null ? '' : j(resultados), IN_DEFAULT_BRANCH: 'main', IN_SKIP_LABELS: 'human-needed,pause-agents' };
   await run({ github: d.github, context: { repo: { owner: 'o', repo: 'r' }, eventName: 'schedule' }, core: d.core, require }, { env, globales: { fetch: d.fetch } });
   return d.log;
 }
 const C = { number: 5, head_ref: HEAD_REF, head_sha: 'x', rebases: 0 };
-const OK = { 5: { ok: true, sha: SHA, ruta: ADR } };
+const OK = { 5: { ok: true, sha: SHA, rutas: [ADR], resueltas: [{ ruta: ADR, modo: 'append' }] } };
 const has = (l, m, p) => l.calls.some(c => c.method === m && c.path === p);
 const post = l => l.calls.filter(c => c.method === 'POST' && c.path === '/issues/5/comments').map(c => c.body.body);
 const addNR = l => l.calls.some(c => c.method === 'POST' && c.path === '/issues/5/labels' && c.body.labels.includes('needs-review'));
@@ -201,7 +316,7 @@ await caso('(f5) labels del scan ≠ vivas: lgtm ya retirada en vivo ⇒ no se D
   const l = await iii({ cands: [{ ...C, labels: ['lgtm'] }], resultados: OK, live: { labels: [] } });
   return (!has(l, 'DELETE', '/issues/5/labels/lgtm') && addNR(l)) || j(l);
 });
-for (const na of ['sin-config', 'workflows-en-base', 'varios-conflictos', 'fuera-del-registro', 'no-append', 'merge-error', 'modulo-ausente', 'checkout-fallido', 'push-rechazado']) {
+for (const na of ['sin-config', 'workflows-en-base', 'fuera-del-registro', 'no-append', 'merge-error', 'modulo-ausente', 'checkout-fallido', 'push-rechazado']) {
   await caso(`(f6) na ${na} ⇒ ping LLM con REBASE_MARK, ping-creator, línea -na y cap rebases+1`, async () => {
     const l = await iii({ cands: [{ ...C, rebases: 1 }], resultados: { 5: { ok: false, na } }, live: { labels: ['lgtm'] } });
     const b = post(l);
@@ -235,6 +350,79 @@ await caso('(f11) candidato `materializar` (red del scan) sin resultados ⇒ mar
   return (b.length === 1 && b[0].includes(`<!-- watchdog-rebase-append: ${SHA} -->`) && !b[0].includes('<!-- watchdog-rebase -->')
     && b[0].includes('Materialización tardía') && has(l, 'DELETE', '/issues/5/labels/lgtm') && addNR(l)) || j(l);
 });
+
+// ── AP-142: «Materializar» con `soloMecanico` y con merge al final (E1) ───────
+const MEC_MARK = { body: `x\n\n<!-- watchdog-merge-mecanico: ${SHA.padEnd(40, '0')} revisado=${'1'.repeat(40)} -->`, user: { login: 'talfarouriarte-cloud' } };
+const SHA40 = SHA.padEnd(40, '0');
+const OK40 = { 5: { ok: true, sha: SHA40, rutas: [ADR, CL], resueltas: [{ ruta: ADR, modo: 'append' }, { ruta: CL, modo: 'insercion' }] } };
+for (const na of ['no-append', 'fuera-del-registro', 'push-rechazado', 'sin-resultado']) {
+  await caso(`(AP142-m1) soloMecanico + na ${na} ⇒ sin ping LLM ni ninguna escritura`, async () => {
+    const l = await iii({ cands: [{ ...C, soloMecanico: true }], resultados: na === 'sin-resultado' ? null : { 5: { ok: false, na } }, live: { labels: ['lgtm'] } });
+    return (l.calls.length === 0 && l.notices.some(n => n.includes('sin ping LLM'))) || j(l);
+  });
+}
+await caso('(AP142-m2) soloMecanico + ok sin marcador mecánico ⇒ materializa como hoy (lgtm retirada, needs-review)', async () => {
+  const l = await iii({ cands: [{ ...C, soloMecanico: true }], resultados: OK, live: { labels: ['lgtm'] } });
+  return (post(l).length === 1 && has(l, 'DELETE', '/issues/5/labels/lgtm') && addNR(l)) || j(l);
+});
+await caso('(AP142-m3) E1: ok + marcador watchdog-merge-mecanico de M (PAT) ⇒ sin tocar labels, PUT merge squash con sha M por PAT, texto por ruta', async () => {
+  const l = await iii({ cands: [{ ...C, final: true, soloMecanico: true }], resultados: OK40, live: { labels: ['lgtm', 'ci-verde'], head: SHA40 }, comments: [MEC_MARK] });
+  const b = post(l), m = l.calls.find(c => c.method === 'PUT' && c.path === '/pulls/5/merge');
+  return (b.length === 1 && b[0].includes(`<!-- watchdog-rebase-append: ${SHA40} -->`) && b[0].includes('append al final: base + PR')
+    && b[0].includes('inserción en el mismo punto: PR encima de base') && !l.calls.some(c => /labels/.test(c.path))
+    && m && m.body.merge_method === 'squash' && m.body.sha === SHA40 && pat(l)
+    && l.calls.findIndex(c => c.method === 'POST') < l.calls.indexOf(m)) || j(l);
+});
+await caso('(AP142-m4) E1: marcador de un autor no de confianza ⇒ sin merge al final (camino de hoy)', async () => {
+  const l = await iii({ cands: [C], resultados: OK40, live: { labels: ['lgtm', 'ci-verde'] }, comments: [{ ...MEC_MARK, user: { login: 'claude[bot]' } }] });
+  return (!l.calls.some(c => c.method === 'PUT') && has(l, 'DELETE', '/issues/5/labels/lgtm')) || j(l);
+});
+await caso('(AP142-m5) E1: pulls.merge falla ⇒ diag con el error, sin reintento, labels intactas', async () => {
+  const l = await iii({ cands: [{ ...C, final: true }], resultados: OK40, live: { labels: ['lgtm', 'ci-verde'], head: SHA40 }, comments: [MEC_MARK], fallaMerge: true });
+  const b = post(l);
+  return (b.length === 2 && /diag \(AP-142 E1\)/.test(b[1]) && /HTTP 405/.test(b[1]) && l.calls.filter(c => c.method === 'PUT').length === 1
+    && !l.calls.some(c => /labels/.test(c.path))) || j(l);
+});
+await caso('(AP142-m6) E1 en la red por estado: candidato materializar con marcador mecánico ⇒ merge al final', async () => {
+  const l = await iii({ cands: [{ ...C, materializar: SHA40 }], resultados: null, live: { labels: ['lgtm', 'ci-verde'], head: SHA40 }, comments: [MEC_MARK] });
+  return (l.calls.some(c => c.method === 'PUT' && c.body.sha === SHA40) && !l.calls.some(c => /labels/.test(c.path))) || j(l);
+});
+
+// Review de #420 🔴: E1 «en el tick» se lee EN VIVO justo antes del PUT. El
+// `final` del scan puede estar caducado (AP-055 del mismo tick retiró `lgtm`,
+// hold, head movido) ⇒ sin PUT y camino de hoy (fail-closed).
+const sinPut = l => !l.calls.some(c => c.method === 'PUT');
+await caso('(AP142-m7) E1 con `lgtm` ya retirada en vivo (AP-055 del mismo tick) ⇒ sin PUT, camino de hoy con needs-review', async () => {
+  const l = await iii({ cands: [{ ...C, final: true }], resultados: OK40, live: { labels: ['ci-verde'], head: SHA40 }, comments: [MEC_MARK] });
+  const b = post(l);
+  return (sinPut(l) && b.length === 1 && /Sin merge al final \(E1\)/.test(b[0]) && b[0].includes('sin `lgtm`') && addNR(l)
+    && !has(l, 'DELETE', '/issues/5/labels/lgtm')) || j(l);
+});
+await caso('(AP142-m8) E1 en la red por estado con `lgtm` retirada en vivo ⇒ sin PUT', async () => {
+  const l = await iii({ cands: [{ ...C, materializar: SHA40 }], resultados: null, live: { labels: ['ci-verde'], head: SHA40 }, comments: [MEC_MARK] });
+  return (sinPut(l) && /Sin merge al final \(E1\)/.test(post(l)[0] || '') && addNR(l)) || j(l);
+});
+for (const [nombre, live, motivo] of [
+  ['sin ci-verde', { labels: ['lgtm'], head: SHA40 }, 'sin `ci-verde`'],
+  ['hold human-needed', { labels: ['lgtm', 'ci-verde', 'human-needed'], head: SHA40 }, 'hold'],
+  ['head ≠ M', { labels: ['lgtm', 'ci-verde'], head: 'e'.repeat(40) }, 'head ≠ M'],
+  ['draft', { labels: ['lgtm', 'ci-verde'], head: SHA40, draft: true }, 'draft'],
+]) {
+  await caso(`(AP142-m9) E1 con ${nombre} en vivo ⇒ sin PUT, lgtm retirada, motivo declarado`, async () => {
+    const l = await iii({ cands: [{ ...C, final: true }], resultados: OK40, live, comments: [MEC_MARK] });
+    const b = post(l);
+    const nr = addNR(l);
+    return (sinPut(l) && b.length === 1 && b[0].includes(motivo)
+      && (live.labels.includes('lgtm') ? has(l, 'DELETE', '/issues/5/labels/lgtm') : true)
+      && (nombre === 'hold human-needed' || nombre === 'draft' ? !nr : nr)) || j(l);
+  });
+}
+// El scan no entrega `final` a un PR que AP-055 acaba de tocar en el tick.
+{
+  const wdTxt = readFileSync('.github/workflows/watchdog.yml', 'utf8');
+  await caso('(AP142-m10) modo d): `final` exige !rectHandled (AP-055 del mismo tick)', async () =>
+    /final: !rectHandled\.has\(pr\.number\) && !!\(mecanicos\.get\(pr\.number\) \|\| \{\}\)\.final/.test(wdTxt) || 'falta el filtro rectHandled en el push de adrAppend');
+}
 
 // ── (j) gate REAL de epic-merge tras un merge mecánico ──────────────────────
 const emWf = yaml.load(readFileSync('.github/workflows/epic-merge.yml', 'utf8'));
@@ -393,6 +581,62 @@ await caso('(k3) HEAD normal ⇒ sin candidato', async () => {
   return (Array.isArray(cands) && cands.length === 0) || j(cands);
 });
 
+// ── AP-142: el scan REAL delante del Gate 0 ───────────────────────────────────
+async function scanDelante({ labels = ['lgtm', 'ci-verde'], runsCreator = [], ref = HEAD_REF, comments, issueFalla = false, sinModulo = false, estado = 'dirty' }) {
+  const out = {};
+  const H = 'f'.repeat(40);
+  const pr = { number: 5, title: 'feat: algo', body: '', draft: false, head: { ref, sha: H }, base: { ref: 'main' }, labels: labels.map(name => ({ name })), created_at: T(-60), updated_at: T(-60), user: { login: 'claude[bot]' } };
+  const ahora = new Date().toISOString();
+  // Siempre un run del pipeline ajeno en vuelo ⇒ Gate 0 cerrado.
+  const ajeno = { id: 1, name: 'CI', display_title: 'otro PR', head_branch: 'claude/issue-9-y', created_at: ahora, status: 'in_progress' };
+  const cs = comments || [{ body: 'LGTM\n\nok', user: { login: REV }, created_at: T(-30) }, { body: `<!-- reviewer-lgtm-sha: ${H} -->`, user: { login: REV }, created_at: T(-30) }];
+  const conocidos = {
+    pulls: { list: async () => ({ data: [pr] }), get: async () => ({ data: { ...pr, mergeable: estado === 'dirty' ? false : true, mergeable_state: estado } }) },
+    issues: { listComments: async p => ({ data: p.issue_number === 5 ? cs : [] }), get: async () => { if (issueFalla) throw new Error('HTTP 404'); return { data: { title: 'Issue 1' } }; } },
+    actions: {
+      listWorkflowRunsForRepo: async p => ({ data: { workflow_runs: p.status === 'in_progress' ? [ajeno, ...runsCreator.map(r => ({ created_at: ahora, ...r }))] : [] } }),
+      listJobsForWorkflowRun: async () => ({ data: { total_count: 1, jobs: [] } }) },
+  };
+  const vacio = async () => ({ data: [] });
+  const rest = new Proxy({}, { get: (_, ns) => new Proxy({}, { get: (_, m) => (conocidos[ns] && conocidos[ns][m]) || vacio }) });
+  const github = { rest, paginate: async (fn, p) => { const r = await fn(p); return Array.isArray(r.data) ? r.data : (r.data && (r.data.workflow_runs || r.data.items)) || []; } };
+  const fetch = async () => ({ ok: true, status: 200, json: async () => ([]), text: async () => '' });
+  const warnings = [];
+  const core = { setOutput: (k, v) => { out[k] = String(v); }, notice() {}, warning: m => warnings.push(String(m)), info() {} };
+  await scanRun({ github, context: { repo: { owner: 'o', repo: 'r' }, eventName: 'schedule', payload: {}, runId: 1 }, core },
+    { env: { GITHUB_WORKSPACE: sinModulo ? SC_SIN : SC_WS, STATUS_TOKEN: 'x', ARM_PAT: 'x', IN_CREATOR_WF: 'Claude Code', IN_REVIEWER_WF: 'Opus Reviewer', IN_CI_WF: 'CI',
+      IN_EPIC_MERGE_WF: 'Epic merge', IN_EXTRA_WFS: '', IN_LOOKBACK_MIN: '45', IN_SKIP_LABELS: 'human-needed,pause-agents', IN_AUTOMERGE: 'true', IN_DEFAULT_BRANCH: 'main' },
+      globales: { fetch } });
+  return { cands: JSON.parse(out.adr_append || 'null'), warnings, H };
+}
+const SC_SIN = mkdtempSync(join(tmpdir(), 'aam-wd-sin-'));
+await caso('(AP142-s1) Gate 0 cerrado · PR dirty con lgtm + ci-verde + LGTM vigente, sin contendiente ⇒ candidato soloMecanico con final', async () => {
+  const { cands } = await scanDelante({});
+  return (Array.isArray(cands) && cands.length === 1 && cands[0].number === 5 && cands[0].soloMecanico === true && cands[0].final === true) || j(cands);
+});
+await caso('(AP142-s2) Gate 0 cerrado · sin ci-verde ⇒ candidato soloMecanico sin final', async () => {
+  const { cands } = await scanDelante({ labels: ['lgtm'] });
+  return (cands.length === 1 && cands[0].soloMecanico && cands[0].final === false) || j(cands);
+});
+await caso('(AP142-s3) Gate 0 cerrado · sin lgtm, en hold, rama no claude/ o no dirty ⇒ sin candidatos', async () => {
+  const a = await scanDelante({ labels: ['ci-verde'] });
+  const b = await scanDelante({ labels: ['lgtm', 'pause-agents'] });
+  const c = await scanDelante({ ref: 'feature/humano' });
+  const d = await scanDelante({ estado: 'clean' });
+  return [a, b, c, d].every(x => j(x.cands) === '[]') || j([a.cands, b.cands, c.cands, d.cands]);
+});
+await caso('(AP142-s4) Gate 0 cerrado · Creator vivo por título del PR, por issue de la rama o por head_branch ⇒ sin candidatos', async () => {
+  const r1 = await scanDelante({ runsCreator: [{ id: 2, name: 'Claude Code', display_title: 'feat: algo', head_branch: 'main' }] });
+  const r2 = await scanDelante({ runsCreator: [{ id: 3, name: 'Claude Code', display_title: 'Issue 1', head_branch: 'main' }] });
+  const r3 = await scanDelante({ runsCreator: [{ id: 4, name: 'Claude Code', display_title: 'otro título', head_branch: HEAD_REF, event: 'pull_request_review' }] });
+  return [r1, r2, r3].every(x => j(x.cands) === '[]') || j([r1.cands, r2.cands, r3.cands]);
+});
+await caso('(AP142-s5) Gate 0 cerrado · FAIL-CLOSED: issue de la rama ilegible o módulo ausente ⇒ sin candidatos (con aviso)', async () => {
+  const a = await scanDelante({ issueFalla: true });
+  const b = await scanDelante({ sinModulo: true });
+  return (j(a.cands) === '[]' && j(b.cands) === '[]' && b.warnings.some(w => w.includes('merge-mecanico') && w.includes('fail-closed'))) || j([a.cands, b.cands, b.warnings]);
+});
+
 // ── (i) costura del scan y de los steps ─────────────────────────────────────
 await caso('(i) el modo PR-dirty entrega candidatos y no publica el ping; steps nuevos tras el scan', async () => {
   const scan = steps.find(s => s.id === 'scan').with.script;
@@ -407,6 +651,30 @@ await caso('(i) el modo PR-dirty entrega candidatos y no publica el ping; steps 
     && /^always\(\) && /.test(st.if) && /trap .*resultados=/.test(mg.run) && mg.run.includes('vendored/scripts/adr-append-merge.mjs')
     && mg.run.includes('if (!c.materializar)'))
     || j({ iScan, iCo, iMg, iMat });
+});
+await caso('(AP142-costura) escaneo dirty ANTES del Gate 0 con (i)–(v) por el módulo; soloMecanico solo con el gate cerrado; el ping LLM lo excluye; marcador E1 antes del push', async () => {
+  const scan = steps.find(s => s.id === 'scan').with.script;
+  const iGate = scan.indexOf('// ── Gate 0:');
+  const pre = scan.slice(scan.indexOf('// ── Merge mecánico DELANTE del Gate 0'), iGate);
+  const cerrado = scan.slice(iGate, scan.indexOf('// ── Dispatcher de TURNO'));
+  const mat = st.with.script;
+  const mg = steps.find(s => s.id === 'adr_append').run;
+  const fallos = [];
+  if (!pre || iGate < 0) fallos.push('sin bloque delante del Gate 0');
+  if (!pre.includes("pr.head.ref.startsWith('claude/')") || !pre.includes('skip(pr.labels)') || !pre.includes("labels.includes('lgtm')")) fallos.push('filtros (i)/(ii)/(iv)');
+  if (!/mergeable_state !== 'dirty'/.test(pre) || !/rebases >= 2/.test(pre)) fallos.push('filtro (iii)');
+  if (!/MM\.libreDeContendiente\(/.test(pre) || !/merge-mecanico\.cjs/.test(pre) || !/if \(!MM\) core\.warning/.test(pre)) fallos.push('(v) por el módulo, fail-closed sin él');
+  if (!/GH\.lgtmVigente\(/.test(pre) || !pre.includes("labels.includes('ci-verde')") || !pre.includes('marcadosMecanico')) fallos.push('E1 final: lgtmVigente + ci-verde');
+  if (!/soloMecanico: true/.test(cerrado) || !/core\.setOutput\('adr_append'/.test(cerrado)) fallos.push('gate cerrado sin output soloMecanico');
+  if (/soloMecanico: true/.test(scan.slice(scan.indexOf('// ── Dispatcher de TURNO')))) fallos.push('soloMecanico también con el gate abierto');
+  const iSolo = mat.indexOf('if (c.soloMecanico)'), iPing = mat.indexOf('${REBASE_MARK}\\n@claude');
+  if (iSolo < 0 || iPing < 0 || iSolo > iPing) fallos.push('el ping LLM no excluye soloMecanico');
+  const iMarca = mg.indexOf('watchdog-merge-mecanico: ${m} revisado=${h}'), iPush = mg.indexOf('git -C .repo push');
+  if (iMarca < 0 || iPush < 0 || iMarca > iPush) fallos.push('marcador E1 no va antes del push');
+  // El módulo implementa AP-100 §1 (título del PR, issue de la rama, head_branch).
+  const mm = readFileSync('vendored/scripts/merge-mecanico.cjs', 'utf8');
+  if (!/ts\.has\(run\.display_title\) \|\| \(!!branch && run\.head_branch === branch\)/.test(mm) || !/claude\\\/issue-\(\\d\+\)-/.test(mm)) fallos.push('merge-mecanico.cjs no implementa AP-100 §1');
+  return fallos.length === 0 || j(fallos);
 });
 
 if (fallos.length) {
