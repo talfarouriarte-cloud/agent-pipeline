@@ -21,6 +21,10 @@
 //   conflictos, filtro (v) `esContendiente`/`libreDeContendiente` (fail-closed),
 //   escaneo delante del Gate 0 (`soloMecanico`, `final`) con el scan REAL y
 //   «Materializar» sin ping LLM con `soloMecanico` y con merge al final (E1).
+//   (AP144-*): central#423 — gates de E1 en vivo ANTES del marcador (costura del
+//   step bash, m7) y, tras el push, solo el head con relectura, la retirada del
+//   `synchronize` del consumidor (`github-actions[bot]`, ≤ 120 s) re-puesta, GATE 3
+//   de enmiendas, CI rojo de M y nunca DELETE `lgtm`/`needs-review` con `final`.
 //
 // Cuelga del piggyback de `check-embedded-js.mjs`.
 import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, existsSync, symlinkSync } from 'fs';
@@ -263,13 +267,20 @@ if (!st || typeof st.with?.script !== 'string') { console.error('check-adr-appen
 const run = cargarStep(st.with.script, 'Materializar rebase append-only');
 const SHA = 'abc1234def5678';
 
-function doble({ live = {}, comments = [], fallaMerge = false } = {}) {
-  const log = { calls: [], warnings: [], notices: [] };
+// `heads`: secuencia de heads de las sucesivas lecturas de `pulls.get` (la última
+// se repite); `events`: `issues.listEvents`; `runs`: runs de `head_sha` (AP-144).
+function doble({ live = {}, comments = [], fallaMerge = false, heads = null, events = [], runs = [] } = {}) {
+  const log = { calls: [], warnings: [], notices: [], gets: 0, sleeps: [] };
   const github = {
     paginate: async (fn, p) => (await fn(p)).data,
     rest: {
-      issues: { listComments: async () => ({ data: comments }) },
-      pulls: { get: async () => ({ data: { draft: !!live.draft, head: { sha: live.head || 'f'.repeat(40) }, labels: (live.labels || []).map(name => ({ name })) } }) },
+      issues: { listComments: async () => ({ data: comments }), listEvents: async () => ({ data: events }) },
+      pulls: { get: async () => {
+        const h = heads ? heads[Math.min(log.gets, heads.length - 1)] : live.head;
+        log.gets++;
+        return { data: { draft: !!live.draft, head: { sha: h || 'f'.repeat(40), ref: HEAD_REF }, labels: (live.labels || []).map(name => ({ name })), body: '', user: { login: 'claude[bot]' } } };
+      } },
+      actions: { listWorkflowRunsForRepo: async () => ({ data: { workflow_runs: runs } }) },
     },
   };
   const core = { info() {}, notice: m => log.notices.push(m), warning: m => log.warnings.push(m), setOutput() {} };
@@ -279,12 +290,15 @@ function doble({ live = {}, comments = [], fallaMerge = false } = {}) {
     if (fallaMerge && o.method === 'PUT' && /\/merge$/.test(path)) return { ok: false, status: 405 };
     return { ok: true, status: 200 };
   };
-  return { github, core, fetch, log };
+  // Las esperas entre lecturas del head no esperan en el banco: se registran.
+  const setTimeout = (f, ms) => { log.sleeps.push(ms); queueMicrotask(f); return 0; };
+  return { github, core, fetch, setTimeout, log };
 }
-async function iii({ cands, resultados, live, comments, fallaMerge }) {
-  const d = doble({ live, comments, fallaMerge });
-  const env = { ARM_PAT: 'PAT', CANDS: j(cands), RESULTADOS: resultados == null ? '' : j(resultados), IN_DEFAULT_BRANCH: 'main', IN_SKIP_LABELS: 'human-needed,pause-agents' };
-  await run({ github: d.github, context: { repo: { owner: 'o', repo: 'r' }, eventName: 'schedule' }, core: d.core, require }, { env, globales: { fetch: d.fetch } });
+async function iii({ cands, resultados, live, comments, fallaMerge, heads, events, runs, ws = process.cwd() }) {
+  const d = doble({ live, comments, fallaMerge, heads, events, runs });
+  const env = { ARM_PAT: 'PAT', CANDS: j(cands), RESULTADOS: resultados == null ? '' : j(resultados), IN_DEFAULT_BRANCH: 'main', IN_SKIP_LABELS: 'human-needed,pause-agents',
+    IN_CI_WF: 'CI', GITHUB_WORKSPACE: ws };
+  await run({ github: d.github, context: { repo: { owner: 'o', repo: 'r' }, eventName: 'schedule' }, core: d.core, require }, { env, globales: { fetch: d.fetch, setTimeout: d.setTimeout } });
   return d.log;
 }
 const C = { number: 5, head_ref: HEAD_REF, head_sha: 'x', rebases: 0 };
@@ -352,9 +366,16 @@ await caso('(f11) candidato `materializar` (red del scan) sin resultados ⇒ mar
 });
 
 // ── AP-142: «Materializar» con `soloMecanico` y con merge al final (E1) ───────
-const MEC_MARK = { body: `x\n\n<!-- watchdog-merge-mecanico: ${SHA.padEnd(40, '0')} revisado=${'1'.repeat(40)} -->`, user: { login: 'talfarouriarte-cloud' } };
 const SHA40 = SHA.padEnd(40, '0');
+const H0 = '1'.repeat(40);
+const T0 = Date.parse('2026-11-04T12:00:00Z');   // created_at del marcador
+const tS = s => new Date(T0 + s * 1000).toISOString();
+const MEC_MARK = { id: 900, body: `x\n\n<!-- watchdog-merge-mecanico: ${SHA40} revisado=${H0} -->`, user: { login: 'talfarouriarte-cloud' }, created_at: tS(0), author_association: 'OWNER' };
+// Último veredicto del Reviewer: LGTM sobre H0, anterior al marcador.
+const VD_LGTM = { id: 800, body: 'LGTM\n\nbien', user: { login: 'talfarouriarte-cloud' }, created_at: tS(-600), author_association: 'OWNER' };
+const E1C = [VD_LGTM, MEC_MARK];
 const OK40 = { 5: { ok: true, sha: SHA40, rutas: [ADR, CL], resueltas: [{ ruta: ADR, modo: 'append' }, { ruta: CL, modo: 'insercion' }] } };
+const unl = (label, login, s) => ({ event: 'unlabeled', label: { name: label }, actor: { login }, created_at: tS(s) });
 for (const na of ['no-append', 'fuera-del-registro', 'push-rechazado', 'sin-resultado']) {
   await caso(`(AP142-m1) soloMecanico + na ${na} ⇒ sin ping LLM ni ninguna escritura`, async () => {
     const l = await iii({ cands: [{ ...C, soloMecanico: true }], resultados: na === 'sin-resultado' ? null : { 5: { ok: false, na } }, live: { labels: ['lgtm'] } });
@@ -366,7 +387,7 @@ await caso('(AP142-m2) soloMecanico + ok sin marcador mecánico ⇒ materializa 
   return (post(l).length === 1 && has(l, 'DELETE', '/issues/5/labels/lgtm') && addNR(l)) || j(l);
 });
 await caso('(AP142-m3) E1: ok + marcador watchdog-merge-mecanico de M (PAT) ⇒ sin tocar labels, PUT merge squash con sha M por PAT, texto por ruta', async () => {
-  const l = await iii({ cands: [{ ...C, final: true, soloMecanico: true }], resultados: OK40, live: { labels: ['lgtm', 'ci-verde'], head: SHA40 }, comments: [MEC_MARK] });
+  const l = await iii({ cands: [{ ...C, final: true, soloMecanico: true }], resultados: OK40, live: { labels: ['lgtm', 'ci-verde'], head: SHA40 }, comments: E1C });
   const b = post(l), m = l.calls.find(c => c.method === 'PUT' && c.path === '/pulls/5/merge');
   return (b.length === 1 && b[0].includes(`<!-- watchdog-rebase-append: ${SHA40} -->`) && b[0].includes('append al final: base + PR')
     && b[0].includes('inserción en el mismo punto: PR encima de base') && !l.calls.some(c => /labels/.test(c.path))
@@ -374,49 +395,127 @@ await caso('(AP142-m3) E1: ok + marcador watchdog-merge-mecanico de M (PAT) ⇒ 
     && l.calls.findIndex(c => c.method === 'POST') < l.calls.indexOf(m)) || j(l);
 });
 await caso('(AP142-m4) E1: marcador de un autor no de confianza ⇒ sin merge al final (camino de hoy)', async () => {
-  const l = await iii({ cands: [C], resultados: OK40, live: { labels: ['lgtm', 'ci-verde'] }, comments: [{ ...MEC_MARK, user: { login: 'claude[bot]' } }] });
+  const l = await iii({ cands: [C], resultados: OK40, live: { labels: ['lgtm', 'ci-verde'] }, comments: [VD_LGTM, { ...MEC_MARK, user: { login: 'claude[bot]' } }] });
   return (!l.calls.some(c => c.method === 'PUT') && has(l, 'DELETE', '/issues/5/labels/lgtm')) || j(l);
 });
 await caso('(AP142-m5) E1: pulls.merge falla ⇒ diag con el error, sin reintento, labels intactas', async () => {
-  const l = await iii({ cands: [{ ...C, final: true }], resultados: OK40, live: { labels: ['lgtm', 'ci-verde'], head: SHA40 }, comments: [MEC_MARK], fallaMerge: true });
+  const l = await iii({ cands: [{ ...C, final: true }], resultados: OK40, live: { labels: ['lgtm', 'ci-verde'], head: SHA40 }, comments: E1C, fallaMerge: true });
   const b = post(l);
   return (b.length === 2 && /diag \(AP-142 E1\)/.test(b[1]) && /HTTP 405/.test(b[1]) && l.calls.filter(c => c.method === 'PUT').length === 1
     && !l.calls.some(c => /labels/.test(c.path))) || j(l);
 });
 await caso('(AP142-m6) E1 en la red por estado: candidato materializar con marcador mecánico ⇒ merge al final', async () => {
-  const l = await iii({ cands: [{ ...C, materializar: SHA40 }], resultados: null, live: { labels: ['lgtm', 'ci-verde'], head: SHA40 }, comments: [MEC_MARK] });
+  const l = await iii({ cands: [{ ...C, materializar: SHA40 }], resultados: null, live: { labels: ['lgtm', 'ci-verde'], head: SHA40 }, comments: E1C });
   return (l.calls.some(c => c.method === 'PUT' && c.body.sha === SHA40) && !l.calls.some(c => /labels/.test(c.path))) || j(l);
 });
 
-// Review de #420 🔴: E1 «en el tick» se lee EN VIVO justo antes del PUT. El
-// `final` del scan puede estar caducado (AP-055 del mismo tick retiró `lgtm`,
-// hold, head movido) ⇒ sin PUT y camino de hoy (fail-closed).
+// AP-144 (central#423, enmienda de AP-142 E1): los gates se comprueban en vivo
+// ANTES del marcador; tras el push, con `final`, solo se espera el head y la
+// retirada del `synchronize` del consumidor no cuenta. Nunca DELETE `lgtm` ni
+// `needs-review` con `final`.
 const sinPut = l => !l.calls.some(c => c.method === 'PUT');
-await caso('(AP142-m7) E1 con `lgtm` ya retirada en vivo (AP-055 del mismo tick) ⇒ sin PUT, camino de hoy con needs-review', async () => {
-  const l = await iii({ cands: [{ ...C, final: true }], resultados: OK40, live: { labels: ['ci-verde'], head: SHA40 }, comments: [MEC_MARK] });
-  const b = post(l);
-  return (sinPut(l) && b.length === 1 && /Sin merge al final \(E1\)/.test(b[0]) && b[0].includes('sin `lgtm`') && addNR(l)
-    && !has(l, 'DELETE', '/issues/5/labels/lgtm')) || j(l);
-});
-await caso('(AP142-m8) E1 en la red por estado con `lgtm` retirada en vivo ⇒ sin PUT', async () => {
-  const l = await iii({ cands: [{ ...C, materializar: SHA40 }], resultados: null, live: { labels: ['ci-verde'], head: SHA40 }, comments: [MEC_MARK] });
-  return (sinPut(l) && /Sin merge al final \(E1\)/.test(post(l)[0] || '') && addNR(l)) || j(l);
-});
-for (const [nombre, live, motivo] of [
-  ['sin ci-verde', { labels: ['lgtm'], head: SHA40 }, 'sin `ci-verde`'],
-  ['hold human-needed', { labels: ['lgtm', 'ci-verde', 'human-needed'], head: SHA40 }, 'hold'],
-  ['head ≠ M', { labels: ['lgtm', 'ci-verde'], head: 'e'.repeat(40) }, 'head ≠ M'],
-  ['draft', { labels: ['lgtm', 'ci-verde'], head: SHA40, draft: true }, 'draft'],
-]) {
-  await caso(`(AP142-m9) E1 con ${nombre} en vivo ⇒ sin PUT, lgtm retirada, motivo declarado`, async () => {
-    const l = await iii({ cands: [{ ...C, final: true }], resultados: OK40, live, comments: [MEC_MARK] });
-    const b = post(l);
-    const nr = addNR(l);
-    return (sinPut(l) && b.length === 1 && b[0].includes(motivo)
-      && (live.labels.includes('lgtm') ? has(l, 'DELETE', '/issues/5/labels/lgtm') : true)
-      && (nombre === 'hold human-needed' || nombre === 'draft' ? !nr : nr)) || j(l);
+const sinLabels = l => !l.calls.some(c => /labels/.test(c.path));
+const diagE1 = l => post(l).find(b => /diag \(AP-144\)/.test(b)) || '';
+const conMark = b => b.includes(`<!-- watchdog-rebase-append: ${SHA40} -->`);
+// (AP142-m7) pasa al punto 1: COSTURA TEXTUAL del step bash «Merge append-only
+// del registro» (sin arnés: el POST del marcador va por `node -e fetch`).
+{
+  const mg = steps.find(s => s.id === 'adr_append');
+  await caso('(AP142-m7) costura: `pulls.get` en vivo ANTES del marcador con head = H0, `lgtm`, `ci-verde`, sin hold y no draft; si falla, sin marcador', async () => {
+    const r = mg.run, fallos = [];
+    const iGet = r.indexOf('fetch(`${api}/pulls/${n}`'), iMarca = r.indexOf('watchdog-merge-mecanico: ${m} revisado=${h}');
+    if (iGet < 0 || iMarca < 0 || iGet > iMarca) fallos.push('pulls.get no va antes del marcador');
+    for (const t of ['p.draft&&"draft"', 'skip.includes(l))&&"hold"', 'p.head.sha===h)&&"head ≠ H0"', '!ls.includes("lgtm")&&"sin lgtm"', '!ls.includes("ci-verde")&&"sin ci-verde"', 'if(falla.length){', 'process.exit(1);}'])
+      if (!r.includes(t)) fallos.push(`falta ${t}`);
+    if ((mg.env || {}).IN_SKIP_LABELS !== '${{ inputs.skip_labels }}') fallos.push('env sin IN_SKIP_LABELS');
+    return fallos.length === 0 || j(fallos);
   });
 }
+await caso('(AP142-m8) E1 en la red por estado con `lgtm` retirada en vivo por el PAT ⇒ sin PUT, 0 escrituras de labels, diag con marcador', async () => {
+  const l = await iii({ cands: [{ ...C, materializar: SHA40 }], resultados: null, live: { labels: ['ci-verde'], head: SHA40 }, comments: E1C,
+    events: [unl('lgtm', 'talfarouriarte-cloud', 40)] });
+  const d = diagE1(l);
+  return (sinPut(l) && sinLabels(l) && d.includes('`lgtm` retirada por `talfarouriarte-cloud`') && conMark(d)) || j(l);
+});
+for (const [nombre, live, motivo] of [
+  ['hold human-needed', { labels: ['lgtm', 'ci-verde', 'human-needed'], head: SHA40 }, 'hold'],
+  ['draft', { labels: ['lgtm', 'ci-verde'], head: SHA40, draft: true }, 'draft'],
+]) {
+  await caso(`(AP142-m9) E1 con ${nombre} en vivo ⇒ sin PUT, diag con motivo, labels intactas`, async () => {
+    const l = await iii({ cands: [{ ...C, final: true }], resultados: OK40, live, comments: E1C });
+    const d = diagE1(l);
+    return (sinPut(l) && sinLabels(l) && post(l).length === 1 && d.includes(motivo) && conMark(d)) || j(l);
+  });
+}
+await caso('(AP144-a) primera lectura con head H0 y segunda con M ⇒ merge (una espera de 5 s)', async () => {
+  const l = await iii({ cands: [{ ...C, final: true }], resultados: OK40, live: { labels: ['lgtm', 'ci-verde'] }, heads: [H0, SHA40], comments: E1C });
+  return (l.calls.some(c => c.method === 'PUT' && c.body.sha === SHA40) && sinLabels(l) && j(l.sleeps) === '[5000]') || j(l);
+});
+await caso('(AP144-b) head = M, `ci-verde` retirada por github-actions[bot] 30 s tras el marcador ⇒ la re-pone por PAT y mergea, sin needs-review', async () => {
+  const l = await iii({ cands: [{ ...C, final: true }], resultados: OK40, live: { labels: ['lgtm'], head: SHA40 }, comments: E1C,
+    events: [unl('ci-verde', 'github-actions[bot]', 30)] });
+  const iAdd = l.calls.findIndex(c => c.method === 'POST' && c.path === '/issues/5/labels' && j(c.body.labels) === '["ci-verde"]');
+  const iPut = l.calls.findIndex(c => c.method === 'PUT' && c.body.sha === SHA40);
+  return (iAdd >= 0 && iPut > iAdd && !addNR(l) && !has(l, 'DELETE', '/issues/5/labels/lgtm') && pat(l)) || j(l);
+});
+await caso('(AP144-c) head = M, `lgtm` retirada por el PAT (AP-055) tras el marcador ⇒ sin PUT y 0 escrituras de labels', async () => {
+  const l = await iii({ cands: [{ ...C, final: true }], resultados: OK40, live: { labels: ['ci-verde'], head: SHA40 }, comments: E1C,
+    events: [unl('lgtm', 'talfarouriarte-cloud', 20)] });
+  return (sinPut(l) && sinLabels(l) && diagE1(l).includes('no por el consumidor')) || j(l);
+});
+await caso("(AP144-c') head = M, `ci-verde` retirada por otro actor (y antes por el consumidor) ⇒ sin PUT, labels intactas", async () => {
+  const l = await iii({ cands: [{ ...C, final: true }], resultados: OK40, live: { labels: ['lgtm'], head: SHA40 }, comments: E1C,
+    events: [unl('ci-verde', 'github-actions[bot]', 10), { event: 'labeled', label: { name: 'ci-verde' }, actor: { login: 'github-actions[bot]' }, created_at: tS(60) }, unl('ci-verde', 'alguien', 90)] });
+  return (sinPut(l) && sinLabels(l) && diagE1(l).includes('retirada por `alguien`')) || j(l);
+});
+await caso('(AP144-d) head = M, run CI de M en failure ⇒ sin PUT', async () => {
+  const l = await iii({ cands: [{ ...C, final: true }], resultados: OK40, live: { labels: ['lgtm', 'ci-verde'], head: SHA40 }, comments: E1C,
+    runs: [{ name: 'CI', conclusion: 'failure', head_sha: SHA40 }, { name: 'Otro', conclusion: 'success' }] });
+  return (sinPut(l) && sinLabels(l) && diagE1(l).includes('`CI` de M en `failure`')) || j(l);
+});
+await caso('(AP144-e) head = otro SHA ⇒ diag con marcador y 0 escrituras de labels (6 lecturas)', async () => {
+  const l = await iii({ cands: [{ ...C, final: true }], resultados: OK40, live: { labels: ['lgtm', 'ci-verde'], head: 'e'.repeat(40) }, comments: E1C });
+  const d = diagE1(l);
+  return (sinPut(l) && sinLabels(l) && l.gets === 6 && l.sleeps.length === 5 && d.includes('ni M ni H0') && conMark(d)) || j(l);
+});
+await caso('(AP144-e2) head sigue en H0 ⇒ diag «pendiente» SIN marcador de materialización (la red lo re-evalúa); repetido ⇒ sin segundo diag', async () => {
+  const l = await iii({ cands: [{ ...C, final: true }], resultados: OK40, live: { labels: ['lgtm', 'ci-verde'], head: H0 }, comments: E1C });
+  const d = diagE1(l);
+  const l2 = await iii({ cands: [{ ...C, final: true }], resultados: OK40, live: { labels: ['lgtm', 'ci-verde'], head: H0 }, comments: [...E1C, { body: d, user: { login: 'talfarouriarte-cloud' } }] });
+  return (sinPut(l) && sinLabels(l) && d.includes('head aún en H0') && !d.includes('watchdog-rebase-append') && l2.calls.length === 0) || j({ l, l2 });
+});
+const ENM_SIN_ACUSE = { id: 777, body: 'Enmienda: cambia X.\n\n<!-- enmienda -->', user: { login: 'talfarouriarte-cloud' }, author_association: 'OWNER', created_at: tS(5) };
+await caso('(AP144-f) red por estado: `lgtm` retirada por github-actions[bot] tras el marcador, último veredicto LGTM y una enmienda sin acuse (reviewer.yml) ⇒ sin PUT, 0 labels', async () => {
+  const l = await iii({ cands: [{ ...C, materializar: SHA40 }], resultados: null, live: { labels: ['ci-verde'], head: SHA40 }, comments: [...E1C, ENM_SIN_ACUSE],
+    events: [unl('lgtm', 'github-actions[bot]', 30)] });
+  return (sinPut(l) && sinLabels(l) && diagE1(l).includes('sin acuse (GATE 3)')) || j(l);
+});
+await caso("(AP144-f') `lgtm` retirada por github-actions[bot] en ventana tras un veredicto LGTM POSTERIOR al marcador (enmienda ya acusada) ⇒ sin PUT", async () => {
+  const l = await iii({ cands: [{ ...C, materializar: SHA40 }], resultados: null, live: { labels: ['ci-verde'], head: SHA40 },
+    comments: [...E1C, { ...VD_LGTM, id: 801, created_at: tS(20) }], events: [unl('lgtm', 'github-actions[bot]', 25)] });
+  return (sinPut(l) && sinLabels(l) && diagE1(l).includes('veredicto del Reviewer posterior al marcador')) || j(l);
+});
+await caso('(AP144-g) `ci-verde` retirada por github-actions[bot] 10 min tras el marcador ⇒ fuera de ventana, sin PUT, motivo distinguible', async () => {
+  const l = await iii({ cands: [{ ...C, final: true }], resultados: OK40, live: { labels: ['lgtm'], head: SHA40 }, comments: E1C,
+    events: [unl('ci-verde', 'github-actions[bot]', 600)] });
+  return (sinPut(l) && sinLabels(l) && diagE1(l).includes('fuera de ventana (600 s')) || j(l);
+});
+{
+  const WS = mkdtempSync(join(tmpdir(), 'aam-e1-'));
+  mkdirSync(join(WS, 'vendored', 'scripts'), { recursive: true });
+  symlinkSync(resolve('vendored/scripts/gate-head.cjs'), join(WS, 'vendored', 'scripts', 'gate-head.cjs'));
+  await caso('(AP144-h) `enmiendas.cjs` ausente ⇒ sin PUT (fail-closed), diag sin marcador de materialización', async () => {
+    const l = await iii({ cands: [{ ...C, final: true }], resultados: OK40, live: { labels: ['lgtm', 'ci-verde'], head: SHA40 }, comments: E1C, ws: WS });
+    const d = diagE1(l);
+    return (sinPut(l) && sinLabels(l) && d.includes('`enmiendas.cjs` no disponible') && !conMark(d)) || j(l);
+  });
+}
+await caso('(AP144-costura) en «Materializar…», la rama con `final` no contiene DELETE de `labels/lgtm` ni `needs-review`', async () => {
+  const mat = st.with.script;
+  const i = mat.indexOf('if (final) {'), f = mat.indexOf('// Sin `final`: camino AP-130 de hoy.');
+  const rama = i >= 0 && f > i ? mat.slice(i, f) : '';
+  return (rama && !/labels\/lgtm/.test(rama) && !/needs-review'/.test(rama) && !/labels: \['needs-review'\]/.test(rama) && !/'DELETE'/.test(rama)) || 'rama final ausente o con escritura prohibida';
+});
 // El scan no entrega `final` a un PR que AP-055 acaba de tocar en el tick.
 {
   const wdTxt = readFileSync('.github/workflows/watchdog.yml', 'utf8');
