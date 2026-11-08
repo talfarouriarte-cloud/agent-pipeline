@@ -2627,6 +2627,8 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 
 **Fecha.** 2026-09-30.
 
+> **Enmienda (2026-11-08, AP-148, central#437) al §2.** Entre (b) y (c) entra (b′): `node scripts/related-tests.mjs`, acotado a 8 min, va **antes** de `gh pr ready` y antes del comentario de cierre, y se repite en cada turno que empuja sobre un PR `ready`. El resto de la verificación cara sigue después de (c). Si la sesión muere dentro del script, los materializadores de `ready` no cambian: el PR queda `ready` sin marcador y el Reviewer pide la ejecución. Ver AP-148.
+
 ## AP-096 — Guard de horneado de invariantes extendido a todo `correctivo` (sueltos incluidos), plantilla del correctivo del Auditor con `pre-épica:` verbatim y dry-run horneado por architect-resolve como camino ordinario (2026-09-30)
 
 **Contexto.** Ruling mensual 2026-09-29/30 (cola, posición 7) sobre central#260, que funde #255 y #227. (1) #260: el guard `sin-invariantes-stall` (AP-021) y su hermano `dry-run-ausente-stall` (AP-029) solo miraban el primer eslabón de una `epica`. Para los sueltos, «invariantes declarados o exención declarada» era memoria de sesión del Architect: 6 sueltos `correctivo` de asesoramiento-financiero (#2287, #2292, #2316, #2340, #2347, #2352) llegaron al Creator sin bloque ni `invariantes-na`, uno de ellos tras el compromiso explícito del Architect en #2294. El Auditor infería qué ejecutar del ADR o de la DoD en vez de leerlo declarado (principio 1 de `protocol.md`). (2) #255: el Auditor horneó el correctivo asesoramiento-financiero#2305 con el bloque completo y el dry-run ejecutado, pero bajo el token `pre-correctivo:`; el guard lo paró 20 s después del arm. `epic-auditor.md` §5 no nombraba el token y la fila `pre-épica:` de `protocol.md` solo declaraba emisor al Architect. (3) #227: 2/2 épicas post-AP-029 de ese consumidor llegaron al arm sin líneas `pre-épica:` porque el Architect diseña en chat sin poder ejecutar el dry-run; architect-resolve las horneó en 13-31 min cada vez.
@@ -3299,6 +3301,8 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 
 **Fecha.** 2026-11-01.
 
+> **Enmienda (2026-11-08, AP-148, central#437) al conjunto (b) de los tests de cierre.** Con `.claude/related-tests.json` en el repo, los tests de cierre son la selección de `scripts/related-tests.mjs`: los del diff y sus importadores, directos y transitivos, por grafo estático de imports, hasta 60 por paquete; lo que pasa del tope se declara. Sin config, el conjunto (a)+(b)+(c) de este AP sigue igual. Ver AP-148.
+
 ## AP-125 — Guard de rango al consumir `epic-audit`, dedupe de panel consciente del veredicto, reintento de «Base branch was modified» y rectificación en vuelo en el gate de merge (2026-11-01)
 
 **Contexto.** Ruling de la revisión mensual de noviembre, posición 4 (central#368; funde #333 y #304; #297 quedó resuelta por AP-104 y no entra; crítica cerrada en ronda 3 con `critica-na`, AP-117/119). Cuatro huecos de `epic-merge`:
@@ -3610,6 +3614,8 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 **Criterio falsable** (process-reviewer, lotes de noviembre): 0 `audit-p0: trabajo-perdido` cuya ruta perdida esté en `.claude/**` con el hook activo; 0 invocaciones del runner con > 25 rutas en logs de sesión del Creator (si aparece una, se cita el run: el tope no está activo en ese consumidor); 0 invocaciones del runner con `$(` o backtick en la cola en esos logs (el log muestra el comando sin expandir, así que esta forma no la ve el conteo anterior; si aparece una, se cita el run con el nº de ficheros que expandió y se reabre el § 3); banco `check-hooks` verde con 35 casos; la línea `base no resoluble` no aparece en ningún log de sesión del Creator de noviembre (si aparece, se cita el run y se corrige la fuente de `<base>`).
 
 **Fecha.** 2026-11-01.
+
+> **Enmienda (2026-11-08, AP-148, central#437) al §4.** Con `.claude/related-tests.json`, el conjunto (b) se **ejecuta** hasta el tope de 60 tests por paquete con `scripts/related-tests.mjs` (subproceso, lotes de 25: el tope de rutas de `test-discipline` no lo ve) y solo se declara lo que pasa de ese tope. Sin config, el §4 sigue igual. `test-discipline.sh` no cambia. Ver AP-148.
 
 ## AP-134 — Puertas de CI e issue legibles para el Reviewer: `gh pr checks` y `gh issue view` en `--allowedTools`, veredicto literal ante fallo de lectura y `Checks: read` + `Commit statuses: read` en el PAT como precondición (2026-11-01)
 
@@ -4008,5 +4014,47 @@ El ruling citaba `AP-142` para este registro; ese número lo tomó central#418 (
 **Términos de AP-099 que mueve.** (a) Intervención humana: con un 504 de GitHub Releases se para toda la cadena, y cada issue queda en `critica-na` y `stalled` hasta que alguien lo re-arma.
 
 **Criterio falsable (30 días).** 0 sesiones muertas con `bun: command not found` o `Install Bun` en rojo; banco verde.
+
+**Fecha.** 2026-11-08.
+
+## AP-148 — Tests relacionados del head en sesión, con marcador por SHA en un comentario único, y el Reviewer comprueba los tests en el diff; enmienda AP-095 §2, AP-124 (b) y AP-133 §4 (2026-11-08)
+
+**Contexto.** central#437. Ruling del 2026-11-08 fuera de ciclo, posición 26, por delegación del propietario en el Architect del central: «Ruling corregido tras crítica ronda 2» más la enmienda de las 10:39 que resuelve D y H de la ronda 3 de la crítica. El propietario: «no me parece normal que tengamos tantos Ci rojos». Medido por el Architect sobre los CI de finplan del 2026-11-04 al 2026-11-08: 74 PRs con CI; 17 (23 %) llegaron al LGTM con tests rojos deterministas (rojo tras el reintento). En 9 el test que falla lo había modificado el propio PR (finplan#3699, #3686, #3648, #3633, #3610, #3609, #3607, #3587, #3584); en otros 6 el PR rompió tests que no tocaba (#3692, #3647, #3631, #3533, #3523, #3517). Causa: «tests afectados» lo decidía el Creator a ojo, sin rastro de qué corrió ni sobre qué SHA, y desde AP-139 (central#408) el CI de PR corre después del LGTM, así que nada mecánico veía el rojo antes de la review.
+
+**Decisión.**
+1. **Script** `vendored/scripts/related-tests.mjs` (servido por el graft en `scripts/`; lo ejecuta el Creator con la herramienta Bash y `timeout: 600000`).
+   - *Cambiados:* `git diff --name-only --no-renames --diff-filter=ACMD <merge-base>..HEAD` contra `origin/<base>` (un renombrado sale como borrado de la ruta vieja más el alta de la nueva; las rutas borradas cuentan como destino de import, así que un test que aún importa un fichero borrado o movido se selecciona como importador directo), repartidos por los paquetes de `.claude/related-tests.json` (`[{ "dir", "runner", "tests" }]`, rutas relativas al paquete).
+   - *Selección determinista sin ejecutar:* (i) los tests cambiados; (ii) los tests que importan, directa o transitivamente, un cambiado del paquete. Grafo por escaneo estático de `import … from`, `import(…)`, `import '…'` y `export … from`, con rutas relativas (incluido `./x.js` → `./x.ts`) y alias de `compilerOptions.paths` del `tsconfig.json` del paquete. Un import que no se resuelve se ignora.
+   - *Tope de 60 tests por paquete:* (i) entero siempre; si queda hueco, los importadores directos por ruta ascendente; después los transitivos por ruta ascendente. El resto se declara. (i) > 60 ⇒ se ejecuta (i), se declara todo (ii) y el marcador lleva `tope-superado-por-diff`.
+   - *Ejecución:* el `runner` del paquete como subproceso (cwd = paquete), en lotes de 25 rutas, con plazo total de 8 min; al vencer, mata el grupo de procesos y da `tiempo-agotado` (lo no ejecutado cuenta como declarado).
+   - *Resultado:* `verde` | `rojo` (con los ficheros, de las líneas `FAIL` del runner o el lote entero) | `tiempo-agotado` | `sin-config` (sin config: no ejecuta nada). Exit 1 solo con `rojo`.
+   - *Publicación:* un comentario único por PR. La primera ejecución lo crea y las siguientes lo editan por `PATCH`. Su primera línea es el marcador `<!-- related-tests: <sha40> <resultado> ejecutados=<n> declarados=<m>[ tope-superado-por-diff] -->`, seguida de las listas de ejecutados, declarados y tests del diff. Fallo de publicación ⇒ aviso y el marcador por stdout (fail-open).
+2. **Cuándo** (`creator.md`, `vendored/CLAUDE.loop.md`): antes de (c) `gh pr ready` en el primer cierre, y en cada turno que empuja commits sobre un PR `ready`, después del último push; siempre antes del comentario de cierre del turno. Con `rojo`, se corrige y se vuelve a ejecutar antes de cerrar.
+3. **Motor** (`claude-code.yml`): el recuento del cap de comentarios de `claude[bot]` y la lista `botComments` del Auto-label (de la que sale `last`) excluyen los comentarios cuyo cuerpo empieza por `<!-- related-tests`, con un solo predicado escrito igual en los dos sitios: `isRelatedTests(body) = String(body ?? '').trimStart().startsWith('<!-- related-tests')`. El orden de publicación deja de importar (cubre la sesión de PR en la que el comentario se crea después del tracking comment, y al consumidor que adopta la config con el PR abierto). `bot_comment_cap` sigue en 8. Son las dos únicas líneas del motor que cambian.
+4. **Reviewer** (`reviewer.md` § «Tests del diff»):
+   - *Contenido, con independencia del resultado:* «comportamiento cambiado sin test: `<fichero>`», «test no actualizado: `<test>` asierta `<x>` que el diff cambia» y «test aflojado: `<test>`» (`skip`, `todo`, rango ensanchado, `expect` quitado sin justificar) son `REVIEW`.
+   - *Evidencia del head:* `rojo`, marcador de otro SHA o sin comentario ⇒ no `LGTM`, `REVIEW` «tests relacionados sin verde en el head (`<resultado>`)»; `tiempo-agotado` solo bloquea si algún test del diff no se ejecutó; `sin-config` (o sin comentario en un repo sin config) no bloquea.
+5. **Enmiendas.** AP-095 §2: la ejecución de `related-tests` va delante de (c); el resto de la verificación cara sigue después. AP-124 (b) y AP-133 §4: con config, el conjunto (b) se ejecuta hasta el tope de 60 por paquete y solo se declara lo que pasa del tope; sin config, siguen igual. `test-discipline.sh` no cambia: no ve el subproceso, y el comando `node scripts/related-tests.mjs` no casa con su patrón de runners.
+6. **Banco** `scripts/check-related-tests.mjs` (piggyback de `check-embedded-js.mjs`): casos (a)–(i) del ruling sobre el módulo real, (h) con un subproceso real que excede el plazo; (j)–(l) ejecutan el predicado extraído de `claude-code.yml`; costuras de `reviewer.md`, `creator.md` y `CLAUDE.loop.md`.
+7. **Registro:** este AP y la fila del marcador `related-tests` en `protocol.md`.
+
+**Decisiones del Creator declaradas.**
+- *`sin-config` también se publica.* El ruling solo dice «sin ejecutar». Publicarlo deja rastro del SHA en los repos sin adoptar (el comentario no cuenta para el cap) y el Reviewer trata además la ausencia de comentario en un repo sin `.claude/related-tests.json` como `sin-config`, para no pedir una ejecución que no aporta nada.
+- *Marcador de otro SHA = sin marcador.* La regla del ruling es «del head SHA»; el hallazgo lo dice como `otro SHA <sha corto>`.
+- *Ficheros rojos:* de las líneas `FAIL`/`×` de la salida del runner (vitest, jest); si no se reconoce ninguna, se marca el lote entero.
+- *Aviso de head no pusheado:* si `HEAD` no es `@{u}`, el script avisa (AP-089) pero publica igual.
+- *Cuerpo acotado:* las listas del comentario se recortan («… y N más») hasta que el cuerpo entero cabe en 60 000 caracteres. Si la API devolviera 422 por tamaño, el head se quedaría sin marcador de forma determinista justo en los PRs con más importadores.
+
+**Qué NO.** No adelanta el CI completo a antes del LGTM (AP-139 se queda). No hay job de CI nuevo ni hook nuevo. No cambia el presupuesto ni los shards ni `bot_comment_cap`. No sube el `.claude/related-tests.json` de finplan: lo hace el Architect en el PR de adopción (`packages/app`, `packages/engine`).
+
+**Riesgos.** (a) El grafo estático no ve imports por `require` ni rutas calculadas, ni los mocks de `vi.mock` por ruta: esos tests no se seleccionan y los cubre el CI. (b) El primer `rojo` de una tanda es un ciclo de sesión más del Creator, que antes pagaba el CI. (c) Un `runner` mal declarado en la config da `rojo` en todos los PRs del paquete hasta que se corrige. (d) El grafo es por paquete: no ve imports entre paquetes por nombre de workspace (un cambio en `packages/engine` no selecciona tests de `packages/app` que importan `@finplan/engine`), por diseño del ruling («un cambiado del paquete»), ni los `paths` heredados por `extends` del `tsconfig.json` (solo lee el `tsconfig.json` del paquete). Esos tests los cubre el CI. (e) Un tercer lector del «último `claude[bot]`» del PR, `Launch next epic issue` de `claude-code.yml`, no usa `isRelatedTests`: si el comentario `related-tests` es posterior al tracking comment, ese paso no ve el `launch-next` del cierre. El impacto es bajo (el tracking comment pierde el HTML, AP-013, y `epic-merge` ya consume `launch-next`) y la enmienda D+H limita el motor a los dos filtros, así que queda fuera de este AP.
+
+**Términos de AP-099 que mueve.** (b) Calidad: el 23 % de los PRs llega al CI con tests rojos deterministas, y cada uno cuesta un ciclo de CI, Creator y Reviewer.
+
+**Criterio falsable (30 días, finplan).**
+- PRs con CI de PR rojo determinista por tests (rojo tras el reintento) ≤ 5 % de los PRs con CI. Línea base: 23 %.
+- Todo LGTM lleva, en el comentario `related-tests`, el head con `verde`, `tiempo-agotado` con todos los tests del diff entre los ejecutados, o `sin-config`.
+- En los PRs con CI rojo por tests que queden, ningún test que falle asierta algo que el diff cambia sin que el Reviewer lo marcara (verificador: Auditor, leyendo cada caso).
+- Banco verde.
 
 **Fecha.** 2026-11-08.

@@ -452,8 +452,12 @@ jobs:
               issue_number: prNumber,
               per_page: 100,
             });
+            // AP-148 (central#437): el comentario único `related-tests` (lo crea y
+            // lo edita por PATCH `scripts/related-tests.mjs`) no cuenta para el
+            // cap. Mismo predicado que el Auto-label (banco check-related-tests).
+            const isRelatedTests = (body) => String(body ?? '').trimStart().startsWith('<!-- related-tests');
             const botComments = comments.filter(
-              c => c.user.login === 'claude[bot]'
+              c => c.user.login === 'claude[bot]' && !isRelatedTests(c.body)
             );
 
             if (botComments.length >= CAP) {
@@ -3755,8 +3759,13 @@ jobs:
               issue_number: prNumber,
               per_page: 100,
             });
+            // AP-148 (central#437): el comentario `related-tests` nunca es el
+            // cierre del turno; si su primera publicación cae tras el tracking
+            // comment, excluirlo deja `last` en el tracking. Mismo predicado que
+            // el cap (banco check-related-tests).
+            const isRelatedTests = (body) => String(body ?? '').trimStart().startsWith('<!-- related-tests');
             const botComments = comments.filter(
-              c => c.user.login === 'claude[bot]'
+              c => c.user.login === 'claude[bot]' && !isRelatedTests(c.body)
             );
             if (botComments.length === 0) return;
 
