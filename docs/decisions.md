@@ -3985,3 +3985,28 @@ El ruling citaba `AP-142` para este registro; ese número lo tomó central#418 (
 - Banco verde.
 
 **Fecha.** 2026-11-04.
+
+## AP-147 — Bun desde el registro npm antes de cada sesión de `claude-code-action`; GitHub Releases (`setup-bun`) queda solo como respaldo (2026-11-08)
+
+**Contexto.** central#438. Ruling del 2026-11-08 fuera de ciclo, posición 27, por delegación del propietario en el Architect del central (sin crítica: `critica-na` por fail-open, AP-117). Entre las 10:00Z y las 10:11Z del 2026-11-08, `github.com/oven-sh/bun/releases/download/…` devolvió `504` (comprobado también desde fuera de Actions con `curl`). `anthropics/claude-code-action` instala Bun en cada sesión con `oven-sh/setup-bun` y `no-cache: true` (`action.yml:192-206` en `8cf34825`): **todas** las sesiones del pipeline (Critic, Creator, Reviewer y los demás, en todos los repos) murieron en el setup con `bun: command not found`. Ejemplo: central#437, dos ciclos Critic→Creator muertos, `critica-na` y `stalled` (runs 42469608373 y 42470032875). La action ya admite `path_to_bun_executable` (`action.yml:148-151, 208-215`): si se le pasa, se salta `setup-bun`.
+
+**Decisión.**
+1. **Paso previo** `Bun desde npm (AP-147)`, `id: bun-npm`, justo antes del `uses:` en los 6 jobs que usan la action (`claude-code.yml`, `critic.yml`, `reviewer.yml`, `process-review.yml`, `suite-steward.yml`, `watchdog.yml`). `npm install -g --no-audit --no-fund bun@$BUN_VERSION`: el binario llega por el paquete opcional `@oven/bun-linux-*` del registro npm, no por Releases. Hasta 3 intentos, 10 s entre ellos. Si `bun --version` es `$BUN_VERSION`, publica `path=$(command -v bun)`; si no, `path=` vacío y `::warning::Bun desde npm falló; la action usará setup-bun`. `continue-on-error: true`: nunca rompe el job.
+2. **Input.** Cada `uses:` recibe `path_to_bun_executable: ${{ steps.bun-npm.outputs.path }}`. Con `path` vacío la action hace lo de antes (`setup-bun`): respaldo en los dos sentidos.
+3. **Versión en un solo sitio por paso:** `BUN_VERSION: 1.3.14` en el `env` del paso, con comentario que apunta a `action.yml:197` del SHA pinneado. Al subir el pin de la action, se revisa.
+4. **Banco** `scripts/check-bun-npm.mjs` (colgado del piggyback de `check-embedded-js.mjs`): todo job con `anthropics/claude-code-action@` tiene antes un paso `id: bun-npm` con `continue-on-error: true` y `env.BUN_VERSION`, y la action recibe `path_to_bun_executable: ${{ steps.bun-npm.outputs.path }}`. Se ejercita a sí mismo con mutaciones en memoria que tienen que ponerlo rojo.
+5. **Registro:** este AP y la sección «Dependencias externas de la sesión» de `protocol.md`.
+
+**Decisiones del Creator declaradas.**
+- *`if:` del paso.* El paso `bun-npm` copia el `if:` del paso de la action (Creator, Critic, Reviewer, process-review): no instala Bun cuando la sesión no va a correr. El banco exige que coincidan, para que no diverjan al tocar uno solo.
+- *`BUN_VERSION` igual en los 6 workflows*, también exigido por el banco: el pin de la action es uno solo.
+
+**Qué NO.** No sube el pin de la action. No toca los workflows del consumidor: los stubs llaman a los reusables del central. No cambia la superficie `workflow_call`.
+
+**Riesgos.** (a) Un `runner` sin `npm` en el PATH (self-hosted) cae siempre al respaldo, con el `warning`: el comportamiento de antes. (b) Si npm y Releases caen a la vez, la sesión muere como antes. (c) El paso suma unos segundos de `npm install` por sesión.
+
+**Términos de AP-099 que mueve.** (a) Intervención humana: con un 504 de GitHub Releases se para toda la cadena, y cada issue queda en `critica-na` y `stalled` hasta que alguien lo re-arma.
+
+**Criterio falsable (30 días).** 0 sesiones muertas con `bun: command not found` o `Install Bun` en rojo; banco verde.
+
+**Fecha.** 2026-11-08.
