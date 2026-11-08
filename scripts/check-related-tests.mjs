@@ -11,6 +11,8 @@
 //      acotado al límite de tamaño del comentario;
 //  (e) grafo `a.ts` ← `b.ts` ← `b.test.ts` y `a.test.ts`: con `a.ts` cambiado
 //      se seleccionan los dos tests;
+//  (e2) `src/lib/x.ts` borrado (o lado viejo de un renombrado) y `y.test.ts`
+//      aún lo importa ⇒ `y.test.ts` seleccionado (de punta a punta);
 //  (f) tope: 61 tests transitivos ⇒ (i), directos y transitivos por ruta hasta 60;
 //  (f2) (i) con 63 ficheros ⇒ los 63, todo (ii) declarado, `tope-superado-por-diff`;
 //  (f3) 2 de (i) y 70 directos ⇒ los 2 y los 58 primeros directos por ruta;
@@ -113,6 +115,18 @@ const CONF = (pkgs) => JSON.stringify(pkgs.map((dir) => ({ dir, runner: 'npx vit
   const inv = RT.grafoInverso(ficheros, (f) => fich[f], []);
   const sel = RT.seleccionar({ cambiados: ['src/a.ts'], ficheros, esTest: (f) => /\.test\.ts$/.test(f), inv });
   ok(igual(sel.ejecutar, ['src/a.test.ts', 'src/b.test.ts']) && sel.declarar.length === 0, '(e) a.ts cambiado selecciona a.test.ts (directo) y b.test.ts (transitivo)');
+}
+
+// (e2) borrado: el test que aún importa la ruta vieja sale como directo.
+{
+  const d = fixture({
+    '.claude/related-tests.json': CONF(['packages/app']),
+    'packages/app/src/y.test.ts': "import { x } from './lib/x';\n",
+    'packages/app/src/z.test.ts': 'export const z = 1;\n',
+  });
+  const { llamadas, exec } = espia();
+  const r = await RT.relatedTests({ cwd: d, cambiados: ['packages/app/src/lib/x.ts'], exec });
+  ok(llamadas.length === 1 && llamadas[0].cmd === "npx vitest run 'src/y.test.ts'" && r.ejecutados === 1, '(e2) un borrado selecciona a quien aún lo importa');
 }
 
 // (f)/(f2)/(f3) tope.

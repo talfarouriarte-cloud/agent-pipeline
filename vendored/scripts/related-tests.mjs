@@ -8,7 +8,8 @@
 // al CI con tests rojos deterministas, 9 de ellos en un test que el propio PR
 // había tocado. Este script hace la selección mecánica y deja la evidencia:
 //
-//  1. Cambiados: `git diff --name-only <merge-base>..HEAD` contra la rama base,
+//  1. Cambiados: `git diff --name-only --no-renames <merge-base>..HEAD` contra
+//     la rama base (incluye borrados y el lado viejo de los renombrados),
 //     repartidos por los paquetes de `.claude/related-tests.json`:
 //       [{ "dir": "packages/app", "runner": "npx vitest run",
 //          "tests": "src/**/*.test.{ts,tsx}" }, …]
@@ -156,8 +157,11 @@ export function resolver(desde, spec, existe, alias) {
 }
 
 // `leer(rel)` devuelve el fuente; `ficheros` son las rutas relativas al paquete.
-export function grafoInverso(ficheros, leer, alias) {
-  const existe = new Set(ficheros);
+// `ausentes`: cambiados que ya no están en el head (borrados y el lado viejo de
+// los renombrados). Cuentan como destino de import, para que un test que aún los
+// importa salga como importador; no se leen (no hay fuente).
+export function grafoInverso(ficheros, leer, alias, ausentes = []) {
+  const existe = new Set([...ficheros, ...ausentes]);
   const inv = new Map();
   for (const f of ficheros) {
     let src;
@@ -177,9 +181,10 @@ export function seleccionar({ cambiados, ficheros, esTest, inv, tope = TOPE }) {
   const existe = new Set(ficheros);
   const delDiff = cambiados.filter((f) => existe.has(f) && esTest(f)).sort();
   const enDiff = new Set(delDiff);
-  // BFS inverso desde los cambiados: distancia 1 = importador directo.
+  // BFS inverso desde los cambiados (también los ausentes del head: sus
+  // importadores siguen en el árbol): distancia 1 = importador directo.
   const dist = new Map();
-  let frente = cambiados.filter((f) => existe.has(f));
+  let frente = [...cambiados];
   for (const f of frente) dist.set(f, 0);
   for (let d = 1; frente.length; d++) {
     const sig = [];
@@ -245,7 +250,9 @@ export async function relatedTests({ cwd = process.cwd(), cambiados, timeoutMs =
     const raiz = resolve(cwd, p.dir || '.');
     const ficheros = listar(raiz);
     const re = globToRegExp(p.tests);
-    const inv = grafoInverso(ficheros, (f) => readFileSync(join(raiz, f), 'utf8'), aliases(raiz));
+    const presentes = new Set(ficheros);
+    const ausentes = p.cambiados.filter((f) => !presentes.has(f));
+    const inv = grafoInverso(ficheros, (f) => readFileSync(join(raiz, f), 'utf8'), aliases(raiz), ausentes);
     const sel = seleccionar({ cambiados: p.cambiados, ficheros, esTest: (f) => re.test(f), inv });
     const rojos = [];
     const hechos = [];
@@ -354,7 +361,8 @@ async function main() {
   if (existsSync(join(raiz, CONFIG))) {
     try { git('fetch', '--quiet', 'origin', base); } catch { /* fail-open: el ref local puede bastar */ }
     const mb = git('merge-base', 'HEAD', `origin/${base}`);
-    cambiados = git('diff', '--name-only', '--diff-filter=ACMR', mb, 'HEAD').split('\n').filter(Boolean);
+    // `--no-renames`: un renombrado sale como D (ruta vieja) + A (nueva).
+    cambiados = git('diff', '--name-only', '--no-renames', '--diff-filter=ACMD', mb, 'HEAD').split('\n').filter(Boolean);
   }
   const r = await relatedTests({ cwd: raiz, cambiados, timeoutMs: o.timeoutMs || Number(process.env.RELATED_TESTS_TIMEOUT_MS) || TIMEOUT_MS, log: (s) => console.error(s) });
   const body = cuerpo(sha, r);

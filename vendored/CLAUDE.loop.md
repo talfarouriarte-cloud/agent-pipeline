@@ -50,8 +50,9 @@ comandos de typecheck/tests, zonas de rigor, ficheros congelados. -->
   `gh pr ready` y en cada turno que empuja commits sobre un PR
   `ready`, después del último push y siempre antes del comentario de
   cierre**, con la herramienta Bash y `timeout: 600000`. Con `rojo`,
-  corrige y vuelve a ejecutarlo antes de cerrar. Sin marcador `verde`
-  del head, el Reviewer no da LGTM. Sin `.claude/related-tests.json`
+  corrige y vuelve a ejecutarlo antes de cerrar. Sin marcador del head
+  en `verde` (o en `tiempo-agotado` con los tests del diff entre los
+  ejecutados, o en `sin-config`), el Reviewer no da LGTM. Sin `.claude/related-tests.json`
   da `sin-config` y no ejecuta nada: entonces derivas tú el conjunto
   como antes (hermanos de cada fichero cambiado, `grep -rl` de cada
   símbolo exportado cambiado, la lista del issue) y la invocación
