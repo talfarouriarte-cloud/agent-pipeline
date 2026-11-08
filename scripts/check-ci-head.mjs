@@ -145,7 +145,9 @@ const rv = yaml.load(readFileSync('.github/workflows/reviewer.yml', 'utf8'));
 const pasos = rv.jobs.review.steps;
 const iCi = pasos.findIndex(s => s && s.name === 'Estado de CI del head (AP-137)');
 const iRun = pasos.findIndex(s => s && s.name === 'Run Reviewer');
-afirma(iCi >= 0 && iCi === iRun - 1, `(costura) el step de CI debe ir justo antes de «Run Reviewer» (índices ${iCi}/${iRun})`);
+// AP-147: entre los dos solo cabe el paso `bun-npm`, que va justo antes del `uses:` de la action.
+const iPrevio = pasos[iRun - 1] && pasos[iRun - 1].id === 'bun-npm' ? iRun - 2 : iRun - 1;
+afirma(iCi >= 0 && iCi === iPrevio, `(costura) el step de CI debe ir justo antes de «Run Reviewer» (o de su paso bun-npm) (índices ${iCi}/${iRun})`);
 const ciStep = pasos[iCi] || {};
 afirma(iRun >= 0 && ciStep.if === pasos[iRun].if, '(costura) el step de CI debe llevar el mismo `if:` que «Run Reviewer»');
 afirma(/^actions\/github-script@/.test(ciStep.uses || '') && ciStep.with && ciStep.with['github-token'] === '${{ github.token }}', '(costura) github-script con `github-token: ${{ github.token }}`');
