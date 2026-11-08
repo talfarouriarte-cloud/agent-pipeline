@@ -310,7 +310,7 @@ function apiGh(metodo, ruta, datos, paginar = false) {
   return paginar ? j.flat() : j;
 }
 
-const git = (...a) => execFileSync('git', a, { encoding: 'utf8' }).trim();
+const git = (...a) => execFileSync('git', a, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 
 function args(argv) {
   const o = { publicar: true };

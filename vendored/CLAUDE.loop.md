@@ -32,21 +32,33 @@ comandos de typecheck/tests, zonas de rigor, ficheros congelados. -->
   del typecheck del repo y de los tests de los ficheros afectados (comandos en la sección Dominio; líneas
   de resumen bastan). Afirmar "tests en verde" sin pegar la salida
   incumple la DoD; el Reviewer puede exigir la cita.
-  **Los «tests de los ficheros afectados» se DERIVAN del diff, no se
-  copian de la lista del issue** (AP-124, central#298): pega el
-  comando y su salida. El conjunto mínimo es la unión de (a)
-  `git diff --name-only <base>...HEAD` y, por cada fichero de código,
-  sus tests hermanos (`<nombre>.test.*` en el mismo directorio o en
-  `__tests__/`); (b) por cada símbolo exportado cuya firma o cuerpo
-  cambió en el diff, `grep -rl "<símbolo>" --include='*.test.*'`
-  sobre el paquete; (c) la lista del issue, si la hay. La suite
-  completa sigue prohibida (regla dura de `creator.md`).
-  **Por encima del tope de rutas, el conjunto (b) se declara, no se
-  ejecuta** (AP-133, central#384): `test-discipline` bloquea una
-  invocación del runner con más de `PIPELINE_MAX_TEST_PATHS` rutas
-  (25 por defecto). En sesión corres los hermanos de (a) y la lista
-  (c); el conjunto (b) que lo supere lo pegas en el cierre como
-  comando + número de ficheros, y lo verifica el CI.
+  **Los «tests de los ficheros afectados» los selecciona
+  `node scripts/related-tests.mjs`, no tu criterio** (AP-148,
+  central#437; enmienda AP-124 (b) y AP-133 §4). El script toma
+  `git diff` contra el merge-base con la rama base, reparte los
+  cambiados por los paquetes de `.claude/related-tests.json` y
+  selecciona (i) los tests que el diff toca y (ii) los que importan,
+  directa o transitivamente, un fichero cambiado del paquete (grafo
+  estático de imports, con alias de `tsconfig` `paths`). El conjunto
+  (b) de AP-124 se ejecuta así hasta el **tope de 60 tests por
+  paquete** ((i) entero siempre; luego directos y transitivos por
+  ruta), y lo que pase del tope se **declara** en el marcador y lo
+  cubre el CI. El script llama al runner como subproceso, en lotes de
+  25, con plazo de 8 min, y publica un comentario único del PR,
+  editado en cada ejecución: `<!-- related-tests: <sha> <resultado>
+  ejecutados=<n> declarados=<m> -->`. **Ejecútalo antes de (c)
+  `gh pr ready` y en cada turno que empuja commits sobre un PR
+  `ready`, después del último push y siempre antes del comentario de
+  cierre**, con la herramienta Bash y `timeout: 600000`. Con `rojo`,
+  corrige y vuelve a ejecutarlo antes de cerrar. Sin marcador `verde`
+  del head, el Reviewer no da LGTM. Sin `.claude/related-tests.json`
+  da `sin-config` y no ejecuta nada: entonces derivas tú el conjunto
+  como antes (hermanos de cada fichero cambiado, `grep -rl` de cada
+  símbolo exportado cambiado, la lista del issue) y la invocación
+  manual del runner sigue sujeta al tope de
+  `PIPELINE_MAX_TEST_PATHS` rutas de `test-discipline` (25 por
+  defecto, AP-133). La suite completa sigue prohibida (regla dura de
+  `creator.md`).
 - Si el trabajo desborda el contexto disponible, parte el PR en
   unidades menores y abre el primero solicitando feedback antes de
   continuar.
@@ -154,7 +166,10 @@ El objetivo es que las cadenas corran solas de spec a valor completo. Cada agent
 
 ## Loop protocol with Reviewer
 
-**Round order: fix → typecheck → commit → push → tests.** Never
+**Round order: fix → typecheck → commit → push → tests.** On a PR
+already `ready`, «tests» is `node scripts/related-tests.mjs` (Bash
+`timeout: 600000`) after the last push of the turn, before the closing
+comment (AP-148): the Reviewer needs its `verde` marker on the head. Never
 verify before pushing: an unpushed tree dies with the session (finplan
 PR #1974, #2299, #2301 — work lost, AP-089). The `test-discipline`
 hook blocks test/bench runs on a published branch while there is
@@ -277,6 +292,7 @@ push — the push closes the turn (AP-079). No tag needed.
 
 - Maximum 8 `claude[bot]` comments on a PR before the workflow
   forces `human-needed` and stops you.
+  Exception (AP-148): the single `related-tests` comment is edited in place and does not count toward the cap.
 - If you observe label `pause-agents`, stop immediately.
 
 See ADR-064 (which supersedes ADR-063) in `decisions.md` for the
@@ -331,7 +347,8 @@ Flujo de los tres momentos:
    (b) pre-reviewer: RECOMENDADO si el harness lo permite, NO
    obligatorio (`pre-reviewer: no ejecutado — <motivo>` es huella
    válida; si aplicas hallazgos, push + `gh pr edit` + bloque
-   nuevo); (c) `gh pr ready`. La verificación cara, si el issue
+   nuevo); (b′) `node scripts/related-tests.mjs` (AP-148, enmienda
+   AP-095 §2: acotado a 8 min, va antes de (c)); (c) `gh pr ready`. La verificación cara, si el issue
    la exige en sesión, va DESPUÉS, con su salida como comentario.
    La suite completa nunca: los criterios `verificador: CI|Auditor`
    de la DoD los verifica el gate o el Auditor, no tu sesión.

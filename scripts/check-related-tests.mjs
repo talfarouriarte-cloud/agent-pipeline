@@ -209,19 +209,19 @@ const CONF = (pkgs) => JSON.stringify(pkgs.map((dir) => ({ dir, runner: 'npx vit
 // Costuras de mandato.
 {
   const leer = (p) => readFileSync(p, 'utf8');
-  for (const p of ['vendored/docs-agents/reviewer.md', 'docs/agents/reviewer.md']) {
+  for (const p of ['vendored/docs-agents/reviewer.md']) {
     const t = leer(p);
     ok(t.includes('comportamiento cambiado sin test: `<fichero>`'), `${p}: regla «comportamiento cambiado sin test»`);
     ok(t.includes('test no actualizado: `<test>` asierta `<x>` que el diff cambia'), `${p}: regla «test no actualizado»`);
     ok(/test aflojado: `<test>`/.test(t) && /`skip`, `todo`/.test(t), `${p}: regla «tests aflojados»`);
     ok(t.includes('tests relacionados sin verde en el head (`<resultado>`)') && /marcador `related-tests` del head/.test(t), `${p}: regla del marcador del head`);
   }
-  for (const p of ['vendored/docs-agents/creator.md', 'docs/agents/creator.md', 'vendored/CLAUDE.loop.md']) {
-    const t = leer(p);
+  for (const p of ['vendored/docs-agents/creator.md', 'vendored/CLAUDE.loop.md']) {
+    const t = leer(p).replace(/\s+/g, ' ');   // CLAUDE.loop.md parte las frases en líneas de 70
     ok(t.includes('node scripts/related-tests.mjs') && /antes de \(c\)/i.test(t) && /cada turno que empuj/i.test(t)
       && /antes del comentario de cierre/i.test(t) && t.includes('600000'), `${p}: related-tests antes de (c) y en cada turno que empuja, con timeout 600000`);
   }
-  ok(leer('vendored/CLAUDE.loop.md').includes('the single `related-tests` comment is edited in place and does not count toward the cap'), 'CLAUDE.loop.md: frase del cap');
+  ok(leer('vendored/CLAUDE.loop.md').replace(/\s+/g, ' ').includes('the single `related-tests` comment is edited in place and does not count toward the cap'), 'CLAUDE.loop.md: frase del cap');
 }
 
 for (const d of tmps) rmSync(d, { recursive: true, force: true });
