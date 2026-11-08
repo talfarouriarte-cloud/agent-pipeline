@@ -170,7 +170,9 @@ El objetivo es que las cadenas corran solas de spec a valor completo. Cada agent
 **Round order: fix → typecheck → commit → push → tests.** On a PR
 already `ready`, «tests» is `node scripts/related-tests.mjs` (Bash
 `timeout: 600000`) after the last push of the turn, before the closing
-comment (AP-148): the Reviewer needs its `verde` marker on the head. Never
+comment (AP-148): the Reviewer needs its marker on the head in `verde`
+(or `tiempo-agotado` with the diff's tests among those run, or
+`sin-config`). Never
 verify before pushing: an unpushed tree dies with the session (finplan
 PR #1974, #2299, #2301 — work lost, AP-089). The `test-discipline`
 hook blocks test/bench runs on a published branch while there is
