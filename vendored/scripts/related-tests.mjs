@@ -42,7 +42,7 @@ export const TIMEOUT_MS = 8 * 60 * 1000;
 export const NOTA_TOPE = 'tope-superado-por-diff';
 const EXTS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
 const SALTAR = new Set(['node_modules', '.git', 'dist', 'build', 'coverage', '.next', '.turbo']);
-const MAX_LISTA = 400;   // líneas por lista en el comentario (límite de 65 536 caracteres)
+const MAX_CUERPO = 60000;   // el comentario de GitHub admite 65 536 caracteres
 
 // Prefijo del cuerpo: el mismo predicado vive en `claude-code.yml` (cap y Auto-label).
 export const PREFIJO = '<!-- related-tests';
@@ -269,22 +269,32 @@ export async function relatedTests({ cwd = process.cwd(), cambiados, timeoutMs =
 }
 
 // ── Cuerpo del comentario.
-const lista = (titulo, xs) => {
-  const vis = xs.slice(0, MAX_LISTA).map((x) => `- \`${x}\``);
-  if (xs.length > MAX_LISTA) vis.push(`- … y ${xs.length - MAX_LISTA} más`);
+const lista = (titulo, xs, max) => {
+  const vis = xs.slice(0, max).map((x) => `- \`${x}\``);
+  if (xs.length > max) vis.push(`- … y ${xs.length - max} más`);
   return `<details><summary>${titulo} (${xs.length})</summary>\n\n${vis.join('\n') || '_ninguno_'}\n\n</details>`;
 };
+// Recorta las listas hasta que el cuerpo entero quepa: un 422 por tamaño dejaría
+// el head sin marcador en los PRs que más importadores arrastran.
 export function cuerpo(sha, r) {
+  let max = Infinity;
+  for (;;) {
+    const b = cuerpoCon(sha, r, max);
+    if (b.length <= MAX_CUERPO || max === 0) return b;
+    max = max === Infinity ? 400 : Math.floor(max / 2);
+  }
+}
+function cuerpoCon(sha, r, max) {
   const lineas = [marcador({ sha, ...r }), '', `**related-tests** · head \`${sha.slice(0, 12)}\` · **${r.resultado}**${r.tope ? ` · ${NOTA_TOPE}` : ''} (AP-148)`, ''];
   if (r.resultado === 'sin-config') lineas.push(`Sin \`${CONFIG}\`: no se ejecuta nada (el repo no ha adoptado el gate).`);
-  if (r.rojos.length) lineas.push('Fallan:', ...r.rojos.map((f) => `- \`${f}\``), '');
+  if (r.rojos.length) lineas.push('Fallan:', ...r.rojos.slice(0, max).map((f) => `- \`${f}\``), ...(r.rojos.length > max ? [`- … y ${r.rojos.length - max} más`] : []), '');
   if (r.resultado === 'tiempo-agotado') lineas.push('El plazo de 8 min venció: los no ejecutados cuentan como declarados.', '');
   for (const p of r.paquetes) {
     const pre = (f) => posix.join(p.dir, f);
     lineas.push(`#### \`${p.dir || '.'}\`${p.omitido ? ' — sin cambiados, no se ejecuta' : ''}`);
     if (p.omitido) continue;
     const noHechos = p.ejecutar.filter((f) => !p.hechos.includes(f));
-    lineas.push(lista('ejecutados', p.hechos.map(pre)), lista('declarados (los cubre el CI)', [...noHechos, ...p.declarar].map(pre)), lista('tests del diff', p.delDiff.map(pre)), '');
+    lineas.push(lista('ejecutados', p.hechos.map(pre), max), lista('declarados (los cubre el CI)', [...noHechos, ...p.declarar].map(pre), max), lista('tests del diff', p.delDiff.map(pre), max), '');
   }
   return lineas.join('\n');
 }

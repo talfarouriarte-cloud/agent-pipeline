@@ -7,7 +7,8 @@
 //  (a) los cambiados se reparten por paquete según la config;
 //  (b) un paquete sin cambiados no se ejecuta;
 //  (c) sin `.claude/related-tests.json` ⇒ `sin-config` sin ejecutar nada;
-//  (d) formato del marcador (incluida la nota `tope-superado-por-diff`);
+//  (d) formato del marcador (incluida la nota `tope-superado-por-diff`) y cuerpo
+//      acotado al límite de tamaño del comentario;
 //  (e) grafo `a.ts` ← `b.ts` ← `b.test.ts` y `a.test.ts`: con `a.ts` cambiado
 //      se seleccionan los dos tests;
 //  (f) tope: 61 tests transitivos ⇒ (i), directos y transitivos por ruta hasta 60;
@@ -97,6 +98,11 @@ const CONF = (pkgs) => JSON.stringify(pkgs.map((dir) => ({ dir, runner: 'npx vit
   const b = RT.cuerpo(sha, { resultado: 'verde', paquetes: [], ejecutados: 0, declarados: 0, tope: false, rojos: [] });
   ok(RT.isRelatedTests(b) && b.split('\n')[0] === RT.marcador({ sha, resultado: 'verde', ejecutados: 0, declarados: 0 }), '(d) el cuerpo empieza por el marcador');
   ok(!RT.MARCA_RE.test(`texto ${m}`), '(d) una cita en prosa no es marcador');
+  // Cuerpo acotado: dos paquetes con 2000 declarados de ruta larga caben en el comentario.
+  const largo = (i) => `src/features/modulo-con-nombre-largo/${String(i).padStart(4, '0')}/componente.test.tsx`;
+  const pk = (dir) => ({ dir, hechos: [], ejecutar: [], declarar: Array.from({ length: 2000 }, (_, i) => largo(i)), delDiff: [] });
+  const grande = RT.cuerpo(sha, { resultado: 'verde', paquetes: [pk('packages/app'), pk('packages/engine')], ejecutados: 0, declarados: 4000, tope: false, rojos: [] });
+  ok(grande.length <= 60000 && RT.MARCA_RE.test(grande.split('\n')[0]) && /… y \d+ más/.test(grande), '(d) el cuerpo entero se recorta por debajo del límite del comentario');
 }
 
 // (e) grafo transitivo.

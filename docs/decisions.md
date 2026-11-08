@@ -4043,6 +4043,7 @@ El ruling citaba `AP-142` para este registro; ese número lo tomó central#418 (
 - *Marcador de otro SHA = sin marcador.* La regla del ruling es «del head SHA»; el hallazgo lo dice como `otro SHA <sha corto>`.
 - *Ficheros rojos:* de las líneas `FAIL`/`×` de la salida del runner (vitest, jest); si no se reconoce ninguna, se marca el lote entero.
 - *Aviso de head no pusheado:* si `HEAD` no es `@{u}`, el script avisa (AP-089) pero publica igual.
+- *Cuerpo acotado:* las listas del comentario se recortan («… y N más») hasta que el cuerpo entero cabe en 60 000 caracteres. Si la API devolviera 422 por tamaño, el head se quedaría sin marcador de forma determinista justo en los PRs con más importadores.
 
 **Qué NO.** No adelanta el CI completo a antes del LGTM (AP-139 se queda). No hay job de CI nuevo ni hook nuevo. No cambia el presupuesto ni los shards ni `bot_comment_cap`. No sube el `.claude/related-tests.json` de finplan: lo hace el Architect en el PR de adopción (`packages/app`, `packages/engine`).
 
