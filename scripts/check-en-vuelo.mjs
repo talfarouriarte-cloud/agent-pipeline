@@ -107,14 +107,14 @@ async function gatear({ action = 'labeled', label = 'needs-review', draft = true
 }
 {
   const g = await gatear({});
-  check(g.outputs.run === 'false' && g.removed.includes('needs-review') && g.creados.length === 1 && /<!-- review-diferida: draft · aaa111 -->/.test(g.creados[0]),
+  check(g.outputs.run === 'false' && g.removed.includes('needs-review') && g.creados.length === 1 && /<!-- review-diferida: draft aaa111 -->/.test(g.creados[0]),
     '(g) `labeled: needs-review` sobre draft ⇒ run=false, label retirada, un comentario `review-diferida: draft`');
   const g2 = await gatear({ comments: g.comments });
   check(g2.outputs.run === 'false' && g2.removed.includes('needs-review') && g2.creados.length === 0, '(g) segundo evento sobre el mismo head ⇒ retira la label, no comenta otra vez');
   const g3 = await gatear({ comments: g.comments, sha: 'bbb222' });
   check(g3.creados.length === 1, '(g) head nuevo ⇒ un aviso nuevo');
   const h = await gatear({ draft: false, labels: ['estado:esperando-architect'] });
-  check(h.outputs.run === 'false' && h.removed.includes('needs-review') && h.creados.length === 1 && /<!-- review-diferida: escalada · aaa111 -->/.test(h.creados[0]),
+  check(h.outputs.run === 'false' && h.removed.includes('needs-review') && h.creados.length === 1 && /<!-- review-diferida: escalada aaa111 -->/.test(h.creados[0]),
     '(h) `estado:esperando-architect` + `labeled: needs-review` ⇒ run=false, label retirada, comentario `review-diferida: escalada`');
   const h2 = await gatear({ action: 'ready_for_review', draft: false, labels: ['estado:esperando-architect'] });
   check(h2.outputs.run === 'false' && h2.removed.length === 0 && h2.creados.length === 0, '(h) escalada viva + `ready_for_review` ⇒ run=false, en silencio');

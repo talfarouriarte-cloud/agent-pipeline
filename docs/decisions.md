@@ -1190,7 +1190,7 @@ Adopción de **drafts** sobre la «Alternativa menor» (hacer del bloque AP-042 
 
 > **Enmienda (2026-11-01, AP-136, central#392).** `open-review-failsafe` cede también ante una escalada del Creator: con una escalada fresca (`[CREATOR-ESCALATED]` o el belt HTML) en el PR o en el issue, o con `stalled`/`estado:esperando-architect` en el PR, no aplica `needs-review` aunque el PR ya esté `ready` (aud. asesoramiento#3384). Lógica en `vendored/scripts/escalada-creator.cjs`; sin módulo, statu quo.
 
-> **Enmienda (2026-11-10, AP-149, central#443).** El gate de `reviewer.yml` ya no descarta en silencio una convocatoria explícita sobre un draft: con `labeled: needs-review` retira la label y comenta una vez por head con `<!-- review-diferida: draft · <sha> -->`. El `opened` y el `ready_for_review` sobre draft siguen en silencio (primer hito). El backstop del draft huérfano vuelve a evaluarse con otros runs vivos en el repo (Gate 0 por ítem) y recoge los drafts que la escalada dejó convertidos antes de AP-149. Ver AP-149.
+> **Enmienda (2026-11-10, AP-149, central#443).** El gate de `reviewer.yml` ya no descarta en silencio una convocatoria explícita sobre un draft: con `labeled: needs-review` retira la label y comenta una vez por head con `<!-- review-diferida: draft <sha40> -->`. El `opened` y el `ready_for_review` sobre draft siguen en silencio (primer hito). El backstop del draft huérfano vuelve a evaluarse con otros runs vivos en el repo (Gate 0 por ítem) y recoge los drafts que la escalada dejó convertidos antes de AP-149. Ver AP-149.
 
 **Fecha.** 2026-07-22.
 ---
@@ -4083,7 +4083,7 @@ El ruling citaba `AP-142` para este registro; ese número lo tomó central#418 (
 3. **Gate del Reviewer** (`reviewer.yml`, step `gate`). Orden: fork → `pause-agents` → **escalada** → draft → resto.
    - *Escalada viva* (`estado:esperando-architect`): `run=false` con cualquier evento.
    - *Draft*: `run=false` como hoy.
-   - En los dos, si el evento es `labeled: needs-review`, se retira la label y se comenta una vez por head con `<!-- review-diferida: draft · <sha> -->` o `<!-- review-diferida: escalada · <sha> -->`. `opened` y `ready_for_review` siguen en silencio.
+   - En los dos, si el evento es `labeled: needs-review`, se retira la label y se comenta una vez por head con `<!-- review-diferida: draft <sha40> -->` o `<!-- review-diferida: escalada <sha40> -->`. `opened` y `ready_for_review` siguen en silencio.
    - El comentario usa el token del job (`github-actions[bot]`): no dispara nada y no entra en el cap NITS de `reviewer.yml` (filtra por `REVIEWER_LOGIN`) ni en el de `claude[bot]` de `claude-code.yml`. No se toca ningún contador. No se pone `stalled`: el Watchdog, con el punto 1, vuelve a ver el PR.
 4. **Banco.** `scripts/check-en-vuelo.mjs` (nuevo, piggyback de `check-embedded-js.mjs`): módulo (a)–(d), (j), (l) y gate del Reviewer (g)–(i) sobre el script embebido real. `scripts/check-watchdog-gate0.mjs`: su run `enVuelo` (Creator sin ítem) cae en `global: true` y sus casos previos no cambian; se añaden (e), (j), (k) y (l) sobre el scan real. `scripts/check-escalada-creator.mjs`: (f) sin `convertPullRequestToDraft` en `claude-code.yml`, y los casos de PR `ready` + escalada ya no esperan la conversión.
 5. **Registro.** Este AP; enmiendas en AP-047, AP-122 §2, AP-136 y AP-142 §3 (su «Qué NO» «No cambia el Gate 0 para nada más» queda superado). AP-081 (cascarones) no cambia. Fila de `review-diferida` en `protocol.md`. No hay `pipeline-map` en el central (`templates/pipeline-map.template.md` no se toca): las filas de los consumidores las actualiza el Architect en un PR de adopción por consumidor.
@@ -4091,7 +4091,6 @@ El ruling citaba `AP-142` para este registro; ese número lo tomó central#418 (
 **Decisiones del Creator declaradas.**
 - *Páginas de runs.* El ruling fija `per_page: 100` y la crítica ronda 2 dejó abierto qué hacer con una página llena. Se pagina mientras la página venga llena y dentro de `MAX_RUN_AGE_H`; con 5 páginas llenas ⇒ `global: true`.
 - *`issues.get(N)` caído.* 404 ⇒ no hay título que casar (sigue). Otro error ⇒ ese PR y su issue cuentan como en vuelo (fail-closed por ítem), para no cegar todo el Watchdog por un issue.
-- *Marcador por head.* El ruling dejó el marcador sin texto; se fija `review-diferida: <draft|escalada> · <head sha>`, que da el «una vez por head».
 
 **Qué NO.** No cambia `LIVENESS_MIN`, `MAX_RUN_AGE_H`, el cron ni la concurrency del stub. No hay `markReady` nuevo en el post-step «re-review por estado». No hay `stalled` desde el Reviewer. No toca architect-resolve. No cambia la superficie `workflow_call`.
 
