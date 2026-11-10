@@ -344,7 +344,7 @@ if (existsSync(EM) && existsSync(CC) && existsSync(WD)) {
   const lib = cuerpo(scan, 'COLA.liberarCola(', 'for (const issue of issues)');
   caso('watchdog scan: barrido de liberación con `COLA.liberarCola`, arm `arm-de-cola` por el PAT', lib !== '' && /patCall\('POST'/.test(lib) && /<!-- arm-de-cola -->/.test(lib));
   caso('watchdog scan: en pausa, un ítem `en-cola` se salta ANTES de la sospecha/cola-huerfana',
-    antes(scan, "if ((pausaCola || colaLiberada) && issue.labels.some(l => l.name === 'en-cola')) continue;", 'watchdog-cola-huerfana-sospecha'));
+    antes(scan, "if ((pausaCola || colaLiberada || colaDiferida) && issue.labels.some(l => l.name === 'en-cola')) continue;", 'watchdog-cola-huerfana-sospecha'));
   // Los guards en línea de cadena y panel reconocen el `eslabon-suspendido` que
   // acompaña a la retención (el de `retenerArm` va sin número).
   const inl = [...cc.matchAll(/\/(\^\[ \\t\]\*<!--\\s\*eslabon-suspendido[^/]*)\/m\.test\(/g)].map((x) => new RegExp(x[1], 'm'));

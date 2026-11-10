@@ -787,13 +787,14 @@ await caso('(k3) HEAD normal ⇒ sin candidato', async () => {
 });
 
 // ── AP-142: el scan REAL delante del Gate 0 ───────────────────────────────────
-async function scanDelante({ labels = ['lgtm', 'ci-verde'], runsCreator = [], ref = HEAD_REF, comments, issueFalla = false, sinModulo = false, estado = 'dirty', automerge = 'true' }) {
+async function scanDelante({ labels = ['lgtm', 'ci-verde'], runsCreator = [], ref = HEAD_REF, comments, issueFalla = false, sinModulo = false, estado = 'dirty', automerge = 'true', ajenoRun = null }) {
   const out = {};
   const H = 'f'.repeat(40);
   const pr = { number: 5, title: 'feat: algo', body: '', draft: false, head: { ref, sha: H }, base: { ref: 'main' }, labels: labels.map(name => ({ name })), created_at: T(-60), updated_at: T(-60), user: { login: 'claude[bot]' } };
   const ahora = new Date().toISOString();
-  // Siempre un run del pipeline ajeno en vuelo ⇒ Gate 0 cerrado.
-  const ajeno = { id: 1, name: 'CI', display_title: 'otro PR', head_branch: 'claude/issue-9-y', created_at: ahora, status: 'in_progress' };
+  // Siempre un run del pipeline ajeno en vuelo ⇒ Gate 0 cerrado. AP-149: el gate
+  // es por ítem; un Creator sin ítem identificable lo sigue cerrando entero.
+  const ajeno = ajenoRun || { id: 1, name: 'Claude Code', display_title: 'otro PR', head_branch: 'main', created_at: ahora, status: 'in_progress' };
   const cs = comments || [{ body: 'LGTM\n\nok', user: { login: REV }, created_at: T(-30) }, { body: `<!-- reviewer-lgtm-sha: ${H} -->`, user: { login: REV }, created_at: T(-30) }];
   const conocidos = {
     pulls: { list: async () => ({ data: [pr] }), get: async () => ({ data: { ...pr, mergeable: estado === 'dirty' ? false : true, mergeable_state: estado } }) },
@@ -840,6 +841,14 @@ await caso('(AP142-s3) Gate 0 cerrado · sin lgtm, en hold, rama no claude/ o no
   const d = await scanDelante({ estado: 'clean' });
   return [a, b, c, d].every(x => j(x.cands) === '[]') || j([a.cands, b.cands, c.cands, d.cands]);
 });
+await caso('(AP149-s6) Gate 0 por ítem · run de CI vivo SOBRE el PR 5 (pull_requests) ⇒ modo d) le entrega solo el candidato soloMecanico, como con el gate cerrado', async () => {
+  const { cands } = await scanDelante({ ajenoRun: { id: 1, name: 'CI', display_title: 'feat: algo', head_branch: HEAD_REF, pull_requests: [{ number: 5 }], created_at: new Date().toISOString(), status: 'in_progress' } });
+  return (Array.isArray(cands) && cands.length === 1 && cands[0].number === 5 && cands[0].soloMecanico === true && cands[0].final === 'e1') || j(cands);
+});
+await caso('(AP149-s7) Gate 0 por ítem · run de CI vivo sobre OTRO PR ⇒ el PR 5 se evalúa con el gate abierto (candidato normal del modo d))', async () => {
+  const { cands } = await scanDelante({ ajenoRun: { id: 1, name: 'CI', display_title: 'otro PR', head_branch: 'claude/issue-9-y', created_at: new Date().toISOString(), status: 'in_progress' } });
+  return (Array.isArray(cands) && cands.length === 1 && cands[0].number === 5 && !cands[0].soloMecanico) || j(cands);
+});
 await caso('(AP142-s4) Gate 0 cerrado · Creator vivo por título del PR, por issue de la rama o por head_branch ⇒ sin candidatos', async () => {
   const r1 = await scanDelante({ runsCreator: [{ id: 2, name: 'Claude Code', display_title: 'feat: algo', head_branch: 'main' }] });
   const r2 = await scanDelante({ runsCreator: [{ id: 3, name: 'Claude Code', display_title: 'Issue 1', head_branch: 'main' }] });
@@ -881,7 +890,12 @@ await caso('(AP142-costura) escaneo dirty ANTES del Gate 0 con (i)–(v) por el 
   if (!/MM\.libreDeContendiente\(/.test(pre) || !/merge-mecanico\.cjs/.test(pre) || !/if \(!MM\) core\.warning/.test(pre)) fallos.push('(v) por el módulo, fail-closed sin él');
   if (!/GH\.lgtmVigente\(/.test(pre) || !pre.includes("labels.includes('ci-verde')") || !pre.includes('marcadosMecanico')) fallos.push('E1 final: lgtmVigente + ci-verde');
   if (!/soloMecanico: true/.test(cerrado) || !/core\.setOutput\('adr_append'/.test(cerrado)) fallos.push('gate cerrado sin output soloMecanico');
-  if (/soloMecanico: true/.test(scan.slice(scan.indexOf('// ── Dispatcher de TURNO')))) fallos.push('soloMecanico también con el gate abierto');
+  // AP-149 (Gate 0 por ítem): con el gate abierto, `soloMecanico` solo para un PR
+  // del conjunto en vuelo (lo que recibía con el gate cerrado), en el modo d).
+  const tras = scan.slice(scan.indexOf('// ── Dispatcher de TURNO'));
+  const solos = tras.split('soloMecanico: true').length - 1;
+  const iEv = tras.indexOf('if (EV.items.has(pr.number)) {'), iSoloEv = tras.indexOf('soloMecanico: true');
+  if (solos > 1 || (solos === 1 && !(iEv >= 0 && iSoloEv > iEv && iSoloEv - iEv < 400))) fallos.push('soloMecanico con el gate abierto fuera de un PR en vuelo (AP-149)');
   const iSolo = mat.indexOf('if (c.soloMecanico)'), iPing = mat.indexOf('${REBASE_MARK}\\n@claude');
   if (iSolo < 0 || iPing < 0 || iSolo > iPing) fallos.push('el ping LLM no excluye soloMecanico');
   const iMarca = mg.indexOf('watchdog-merge-mecanico: ${m} revisado=${h}'), iPush = mg.indexOf('git -C .repo push');

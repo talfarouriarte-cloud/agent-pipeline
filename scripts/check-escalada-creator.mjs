@@ -172,10 +172,10 @@ const payIssue = { issue: { number: 40 }, comment: { created_at: TRIG } };
   check(wpv.added.join() === '50:estado:esperando-architect,50:stalled' && wpv.warnings.some(m => /no injertado/.test(m)), '(int) sesión desde el PR sin módulo ⇒ fail-open al comportamiento actual, con aviso', wpv);
   const wiv = await escalated({ payload: payIssue, workspace: wsVacio, comentarios: { 50: [ESCALADA] } });
   check(wiv.added.length === 0 && wiv.warnings.some(m => /no injertado/.test(m)), '(int) sesión del issue sin módulo ⇒ statu quo (nada), con aviso', wiv);
-  // Camino ready (#3373/#3384): PR ya ready ⇒ vuelve a draft y se retira needs-review.
+  // Camino ready (#3373/#3384): PR ya ready ⇒ se retira needs-review. AP-149: sigue ready (sin conversión a draft).
   const wr = await escalated({ payload: payIssue, pr: { ...prBase, draft: false, labels: [{ name: 'needs-review' }] }, comentarios: { 50: [ESCALADA] } });
-  check(wr.added.join() === '50:estado:esperando-architect,50:stalled' && wr.graphql.includes('convertPullRequestToDraft') && wr.removed.includes('50:needs-review'),
-    '(int) PR ya ready + escalada ⇒ stalled + estado + convertPullRequestToDraft + retira needs-review', wr);
+  check(wr.added.join() === '50:estado:esperando-architect,50:stalled' && !wr.graphql.includes('convertPullRequestToDraft') && wr.removed.includes('50:needs-review'),
+    '(int) PR ya ready + escalada ⇒ stalled + estado + retira needs-review, SIN convertPullRequestToDraft (AP-149)', wr);
   // Sin escalada / escalada anterior al disparador ⇒ nada.
   const wn = await escalated({ payload: payIssue, comentarios: { 50: [{ ...ESCALADA, created_at: '2026-10-05T09:00:00Z' }] } });
   check(wn.added.length === 0, '(int) escalada anterior al comentario disparador ⇒ nada', wn);
@@ -231,10 +231,10 @@ async function muerte({ outcome = 'success', jobStatus = '', workspace = ws, ...
   const fresco = { ...viejo, created_at: '2026-10-05T10:31:00Z' };
   const wmf = await muerte({ outcome: 'failure', comentarios: { 50: [ESCALADA, fresco] } });
   check(wmf.added.length === 0 && wmf.comments.length === 0, '(int) materializador de ready: marcador fresco ⇒ no duplica', wmf);
-  // Pre-reviewer 3: PR ya ready + escalada + job no success ⇒ materializa y devuelve a draft.
+  // Pre-reviewer 3: PR ya ready + escalada + job no success ⇒ materializa; AP-149: sin vuelta a draft.
   const wrf = await muerte({ outcome: 'failure', pr: { ...prBase, draft: false, labels: [{ name: 'needs-review' }] }, comentarios: { 50: [ESCALADA] } });
-  check(wrf.added.join() === '50:estado:esperando-architect,50:stalled' && wrf.graphql.includes('convertPullRequestToDraft') && wrf.removed.includes('50:needs-review'),
-    '(int) materializador de ready: PR ya ready + failure + escalada ⇒ stalled + estado + vuelta a draft + retira needs-review', wrf);
+  check(wrf.added.join() === '50:estado:esperando-architect,50:stalled' && !wrf.graphql.includes('convertPullRequestToDraft') && wrf.removed.includes('50:needs-review'),
+    '(int) materializador de ready: PR ya ready + failure + escalada ⇒ stalled + estado + retira needs-review, sigue ready (AP-149)', wrf);
   const wrs = await muerte({ pr: { ...prBase, draft: false }, comentarios: { 50: [ESCALADA] } });
   check(wrs.added.length === 0 && wrs.graphql.length === 0 && !wrs.ready, '(int) materializador de ready: PR ya ready + success + escalada ⇒ nada aquí (creator-escalated lo materializa)', wrs);
   // (d, 1.er ruling) draft + success SIN escalada ⇒ actúa como hoy.
@@ -252,7 +252,9 @@ rmSync(wsVacio, { recursive: true, force: true });
   check(/success\(\)/.test(stepEsc.if || '') && /steps\.check_flight\.outputs\.blocked/.test(stepEsc.if || ''), 'costura: el `if:` de creator-escalated conserva success() y los steps.* de guarda');
   const inv = s => /scripts\/escalada-creator\.cjs/.test(s || '');
   const orf = steps.find(s => s.name === 'Materializar review en la apertura del PR (open-review-failsafe)');
-  check(inv(stepEsc.with.script) && /resolverPr/.test(stepEsc.with.script) && /escaladaFresca/.test(stepEsc.with.script) && /convertPullRequestToDraft/.test(stepEsc.with.script), 'costura: creator-escalated invoca el módulo (resolverPr, escaladaFresca) y devuelve a draft');
+  check(inv(stepEsc.with.script) && /resolverPr/.test(stepEsc.with.script) && /escaladaFresca/.test(stepEsc.with.script), 'costura: creator-escalated invoca el módulo (resolverPr, escaladaFresca)');
+  // (f) AP-149 (central#443): ningún camino de claude-code.yml convierte un PR a draft.
+  check(!/convertPullRequestToDraft/.test(readFileSync('.github/workflows/claude-code.yml', 'utf8')), '(f) AP-149: no queda `convertPullRequestToDraft` en claude-code.yml');
   check(orf && inv(orf.with.script) && /cedeAnteEscalada/.test(orf.with.script), 'costura: open-review-failsafe invoca el módulo (cedeAnteEscalada)');
   check(orf && orf.with.script.indexOf('cedeAnteEscalada') < orf.with.script.indexOf("labels: ['needs-review']"), 'costura: open-review-failsafe cede ANTES de aplicar needs-review');
   const ms = stepMuerte.with.script;

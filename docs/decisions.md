@@ -1190,6 +1190,8 @@ Adopción de **drafts** sobre la «Alternativa menor» (hacer del bloque AP-042 
 
 > **Enmienda (2026-11-01, AP-136, central#392).** `open-review-failsafe` cede también ante una escalada del Creator: con una escalada fresca (`[CREATOR-ESCALATED]` o el belt HTML) en el PR o en el issue, o con `stalled`/`estado:esperando-architect` en el PR, no aplica `needs-review` aunque el PR ya esté `ready` (aud. asesoramiento#3384). Lógica en `vendored/scripts/escalada-creator.cjs`; sin módulo, statu quo.
 
+> **Enmienda (2026-11-10, AP-149, central#443).** El gate de `reviewer.yml` ya no descarta en silencio una convocatoria explícita sobre un draft: con `labeled: needs-review` retira la label y comenta una vez por head con `<!-- review-diferida: draft <sha40> -->`. El `opened` y el `ready_for_review` sobre draft siguen en silencio (primer hito). El backstop del draft huérfano vuelve a evaluarse con otros runs vivos en el repo (Gate 0 por ítem) y recoge los drafts que la escalada dejó convertidos antes de AP-149. Ver AP-149.
+
 **Fecha.** 2026-07-22.
 ---
 
@@ -3256,6 +3258,8 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 
 > **Enmienda (2026-11-04, AP-142, central#418).** Delante del Gate 0 va ahora, además del `stalled` del punto 2, el escaneo de PRs `dirty` para el merge mecánico (registro + CHANGELOG): solo PRs `claude/`, sin hold, con `lgtm` y sin contendiente vivo AP-100 §1 (`merge-mecanico.cjs`, fail-closed). Con el gate cerrado el output `adr_append` lleva solo esos candidatos con `soloMecanico: true`, sin ping LLM. El resto del Gate 0 (turno, CI rojo, rebase LLM) no cambia; ver AP-142.
 
+> **Enmienda (2026-11-10, AP-149, central#443).** El Gate 0 deja de ser global salvo en los casos `global: true` (run del Creator o del Reviewer sin ítem identificable, lectura de runs o de issues caída, módulo `en-vuelo.cjs` ausente). En el resto calcula el conjunto de ítems con run vivo y cada bucle por ítem de detrás del gate los salta. Lo que va delante (`stalled` del punto 2, merge mecánico de AP-142) no cambia. Ver AP-149.
+
 ## AP-123 — Enmiendas en vuelo, residuales P0: acuse por `gh api` y por body del PR, tope por solapamiento, entrega del disparo por la foto pre-sesión y el diferidor solo difiere pings (2026-11-01)
 
 **Contexto.** Ruling de la revisión mensual de noviembre, posición 1 (central#348; funde #374 y #339 parcial; LGTM del Critic en ronda 3). El mecanismo de central#327 funciona, pero tiene tres costuras rotas en `vendored/scripts/enmiendas.cjs` o en sus textos:
@@ -3685,6 +3689,8 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 
 **Fecha.** 2026-11-01.
 
+> **Enmienda (2026-11-10, AP-149, central#443).** Se retira la conversión a draft de un PR `ready` al materializar la escalada (los dos caminos de `claude-code.yml`: post-step de terminales y post-step `creator-escalated`). No tenía inversa: nadie devolvía el PR a `ready` al resolverse la escalada, y en asesoramiento#3758 la cadena quedó 27 min parada con `needs-review` inerte. Lo que protegía ya lo protegen las labels: `epic-merge` no mergea con `estado:esperando-architect`, los convocantes ceden ante la escalada viva y el gate del Reviewer cede también (AP-149 §3). Se mantiene todo lo demás: `estado:esperando-architect` + `stalled`, retirada de `needs-review`, el marcador `creator-escalated-materializado` y la cesión de los convocantes. Ver AP-149.
+
 ## AP-137 — Lectura de CI con el `GITHUB_TOKEN` del job: `checks/statuses/actions: read` en `reviewer.yml` y `claude-code.yml`, `.pipeline/ci-head.md` para el Reviewer y `CI_READ_TOKEN` para el Auditor (los PAT finos no tienen Checks) (2026-11-02)
 
 **Contexto.** central#399 (ruling de la revisión mensual 2026-11-01, fuera de ciclo, posición 16, corregido tras las rondas 1 y 2 del Critic; armado tras la ronda 3). Origen: central#242/#225 (AP-134). Dos instrumentos dependen de leer CI: el ledger de tokens del Auditor (anotaciones `model-usage` en `check-runs/<job>/annotations`, AP-070/AP-099 (b)) y la puerta de CI del Reviewer (`gh pr checks`/`statusCheckRollup`, AP-134). Con token fino ambos exigen el permiso de repositorio **Checks: read**, y los PAT finos no lo ofrecen (comprobado por el propietario en la UI, 2026-11-01): el 403 de 10/10 paneles del lote finplan del 2026-11-01 no tiene arreglo del lado del PAT. Un PAT clásico con `repo` se descarta: daría escritura sobre todos los repos de la cuenta a un token que las sesiones llevan en un entorno con shell. El `GITHUB_TOKEN` del job sí admite `checks: read`.
@@ -3872,6 +3878,8 @@ Los dos checks nuevos cuelgan del piggyback de `check-embedded-js.mjs`. El banco
 
 > **Enmienda (2026-11-04, AP-146, central#427).** E1 admite una variante E1′: con `lgtm` vigente **sin** `ci-verde` (cualquier automerge) el merge mecánico conserva `lgtm`, re-dispara el CI con la label `ci-rerun` y **no** mergea; mergea epic-merge (E2) cuando el CI sobre M pone `ci-verde`. El `final` del scan pasa a valer `'e1'`/`'e1p'`/ausente. E1 con `ci-verde` no cambia; el camino sin `lgtm` tampoco. Ver AP-146.
 
+> **Enmienda (2026-11-10, AP-149, central#443).** Queda superada la frase del «Qué NO» «No cambia el Gate 0 para nada más (turno, CI rojo, rebase LLM)»: el Gate 0 pasa a ser por ítem. Un PR del conjunto en vuelo recibe en el modo d) solo lo que recibía con el gate cerrado (el candidato de merge mecánico con `soloMecanico`, sin ping LLM). Ver AP-149.
+
 ## AP-143 — `serial-ok` simétrico en la titularidad de la serie: su PR no bloquea ni el guard serial ni el des-encolado (`titularesSerie`, cinco lectores) (2026-11-04)
 
 **Contexto.** central#421. Ruling del 2026-11-04 fuera de ciclo, posición 22, por delegación del propietario en el Architect del central, corregido tras la ronda 1 del Critic (opción (i): semántica completa) y con LGTM de la ronda 2. En asesoramiento-financiero, el merge de #3547 (eslabón 14/23 de la épica ADR-325) lanzó #3493, pero el guard serial lo dejó en `en-cola` con «ya hay un Creator en vuelo (#3562)». #3562 es el PR del suelto #3558, que lleva `serial-ok` por decisión del propietario: la limpieza de la suite va en paralelo a la épica. Lo re-armó a mano el Architect. `serial-ok` era asimétrico: sacaba al issue que lo lleva del guard (sale antes del cálculo de titulares), pero su PR `claude/issue-N-*` seguía contando como titular para todos los demás, en el guard y en los cuatro lectores del des-encolado. Es el mismo caso que resolvió la exención de auditoría (2026-07-13, #1312): «fuera del régimen serial: ni recibe la label, ni bloquea, ni es bloqueado».
@@ -4058,3 +4066,43 @@ El ruling citaba `AP-142` para este registro; ese número lo tomó central#418 (
 - Banco verde.
 
 **Fecha.** 2026-11-08.
+
+## AP-149 — Gate 0 del Watchdog por ítem; la escalada del Creator ya no devuelve el PR a draft; el gate del Reviewer avisa en vez de callar; enmienda AP-047, AP-122 §2, AP-136 y AP-142 §3 (2026-11-10)
+
+**Contexto.** central#443 (origen asesoramiento#3758). Ruling corregido tras la crítica ronda 1, 2026-11-10, fuera de ciclo, posición 28, por delegación del propietario en el Architect del central; crítica ronda 2 en LGTM. En asesoramiento#3758 el Creator escaló dentro de un PR `ready`; AP-136 lo devolvió a draft; tras el ruling y el push nuevo, el post-step «re-review por estado» puso `needs-review` sobre el draft, el gate del Reviewer salió con `run=false` dejando la label puesta, y la cadena quedó 27 min parada sin ninguna label de parada (la detectó el propietario). El backstop del draft huérfano (AP-047) no lo recogió porque el Watchdog no evaluaba nada: su Gate 0 era global y, con la paralelización actual, siempre hay un run vivo (asesoramiento, 2026-11-10 08:03–12:21 UTC: 40 de 40 runs `success` del Watchdog salieron por el gate). La hipótesis de la propuesta (el backstop cede por marcadores de escalada del hilo) era falsa: no los lee.
+
+**Decisión.**
+1. **Gate 0 por ítem** (`watchdog.yml`, step `scan`; módulo `vendored/scripts/en-vuelo.cjs`, del checkout sparse `.cola-central`).
+   - `itemsEnVuelo(runs, { prs, issues, workflows })` ⇒ `{ items, global, motivo, creatorVivo }`. Identidad de `check_flight` (AP-100 §1): número en `pull_requests[]`, misma `head_branch` que el PR, rama `claude/issue-N-*` (N y su PR) o `display_title` igual al título del PR o del issue. Un PR y el issue de su rama van siempre juntos.
+   - `enVueloDelRepo(...)` lee los runs (`per_page: 100`, paginado hasta salir de `MAX_RUN_AGE_H`, con tope de 5 páginas por estado), aplica los filtros de siempre (workflows de `PIPELINE`, `MAX_RUN_AGE_H`, cascarones `queued` sin jobs pasada `QUEUED_GRACE_MIN`), lee los issues abiertos con `paginate` delante del gate y, por cada PR `claude/issue-N-*` cuyo N no esté en esa lista, `issues.get(N)`.
+   - Run del Creator o del Reviewer sin ítem identificable ⇒ `global: true`. Run de otro workflow sin ítem (p. ej. `Epic Merge` por `workflow_run`) ⇒ no cierra el gate para nadie. Lectura de runs o de issues caída, o páginas llenas hasta el tope ⇒ `global: true` (fail-closed, statu quo), con `core.warning`. Sin módulo ⇒ gate global de siempre.
+   - Con `global: true`, el `return` de hoy. Con `global: false`, saltan los ítems del conjunto `pendClose`, el bloque AP-055, el dispatcher de turno, el modo d) y el bucle de issues. `stIss` y el merge mecánico siguen delante del gate como hoy. En el modo d), un PR del conjunto entrega solo su candidato de merge mecánico con `soloMecanico`.
+   - El barrido `COLA.liberarCola` solo corre sin ningún run del Creator vivo en el repo; si lo hay, `notice` «liberación de cola diferida: Creator en vuelo» y los ítems `en-cola` se saltan en ese tick (ni sospecha de asentamiento ni `cola-huerfana`).
+   - `notice` «Gate 0 por ítem: en vuelo #a, #b…; evaluados N PRs abiertos fuera del conjunto». Con `global: true`, el texto de hoy más el motivo.
+2. **La escalada del Creator ya no convierte el PR a draft.** Se borran las dos llamadas `convertPullRequestToDraft` de `claude-code.yml` (post-step de terminales y post-step `creator-escalated`). El resto de AP-136 se mantiene. Los drafts ya convertidos que haya en vuelo los recoge el backstop de AP-047, que con el punto 1 vuelve a evaluarse.
+3. **Gate del Reviewer** (`reviewer.yml`, step `gate`). Orden: fork → `pause-agents` → **escalada** → draft → resto.
+   - *Escalada viva* (`estado:esperando-architect`): `run=false` con cualquier evento.
+   - *Draft*: `run=false` como hoy.
+   - En los dos, si el evento es `labeled: needs-review`, se retira la label y se comenta una vez por head con `<!-- review-diferida: draft <sha40> -->` o `<!-- review-diferida: escalada <sha40> -->`. `opened` y `ready_for_review` siguen en silencio.
+   - El comentario usa el token del job (`github-actions[bot]`): no dispara nada y no entra en el cap NITS de `reviewer.yml` (filtra por `REVIEWER_LOGIN`) ni en el de `claude[bot]` de `claude-code.yml`. No se toca ningún contador. No se pone `stalled`: el Watchdog, con el punto 1, vuelve a ver el PR.
+4. **Banco.** `scripts/check-en-vuelo.mjs` (nuevo, piggyback de `check-embedded-js.mjs`): módulo (a)–(d), (j), (l) y gate del Reviewer (g)–(i) sobre el script embebido real. `scripts/check-watchdog-gate0.mjs`: su run `enVuelo` (Creator sin ítem) cae en `global: true` y sus casos previos no cambian; se añaden (e), (j), (k), (k′) (issue armado con Creator vivo propio y el gate abierto por otro run ⇒ sin `issue-armed-no-pr`) y (l) sobre el scan real, más dos costuras: los cinco saltos `EV.items.has(` (`pendClose`, los tres bucles de `openAgentPRs` y el de issues) van antes del primer `await` de su bucle, y `MAX_RUN_AGE_H`/`QUEUED_GRACE_MIN` del scan valen lo mismo que los que exporta `en-vuelo.cjs` (review PR #444). `scripts/check-escalada-creator.mjs`: (f) sin `convertPullRequestToDraft` en `claude-code.yml`, y los casos de PR `ready` + escalada ya no esperan la conversión.
+5. **Registro.** Este AP; enmiendas en AP-047, AP-122 §2, AP-136 y AP-142 §3 (su «Qué NO» «No cambia el Gate 0 para nada más» queda superado). AP-081 (cascarones) no cambia. Fila de `review-diferida` en `protocol.md`. No hay `pipeline-map` en el central (`templates/pipeline-map.template.md` no se toca): las filas de los consumidores las actualiza el Architect en un PR de adopción por consumidor.
+
+**Decisiones del Creator declaradas.**
+- *Páginas de runs.* El ruling fija `per_page: 100` y la crítica ronda 2 dejó abierto qué hacer con una página llena. Se pagina mientras la página venga llena y dentro de `MAX_RUN_AGE_H`; con 5 páginas llenas ⇒ `global: true`.
+- *`issues.get(N)` caído.* 404 ⇒ no hay título que casar (sigue). Otro error ⇒ ese PR y su issue cuentan como en vuelo (fail-closed por ítem), para no cegar todo el Watchdog por un issue.
+
+**Qué NO.** No cambia `LIVENESS_MIN`, `MAX_RUN_AGE_H`, el cron ni la concurrency del stub. No hay `markReady` nuevo en el post-step «re-review por estado». No hay `stalled` desde el Reviewer. No toca architect-resolve. No cambia la superficie `workflow_call`.
+
+**Riesgos.** (a) Un run de un workflow de `PIPELINE` que no sea Creator ni Reviewer y no se pueda ubicar (p. ej. CI por `push` a una rama humana) no protege a nadie; la protección anti-carrera la da `LIVENESS_MIN`. (b) Un `display_title` que coincida por casualidad con el título de otro ítem lo mete en el conjunto (falso positivo conservador: ese tick no se evalúa). (c) Reactivación de capas dormidas: con el Gate 0 global casi siempre cerrado, el relanzamiento de turno, los reintentos de CI (modo d), los rebase pings y el backstop del draft (AP-047) apenas corrían; tras el merge vuelven a la vez. El backstop recogerá además los drafts que la escalada convirtió antes de AP-149. Los caps por ítem (TURN_MARK cap 2, `watchdog-ci-retry`…) acotan el daño. Es esperable un pico de relanzamientos y anomalías en los primeros ticks en asesoramiento y wmcb: el Auditor no lo lee como regresión, y el criterio falsable se mide a partir de ese pico. (d) `enVueloDelRepo` relee la página 1 de runs `in_progress`/`queued` que el merge mecánico de AP-142 ya leyó (`runsMemo`). Son llamadas de más por tick, no un error. Pasar `runsMemo` como lector inyectado queda pendiente: toca `watchdog.yml`.
+
+**Términos de AP-099 que mueve.** (a) Fiabilidad: el Watchdog es la red de segundo orden de la flota y no evaluaba nada con un run vivo en el repo.
+
+**Criterio falsable (7 días, asesoramiento y wmcb).**
+- Runs `success` del Watchdog que salen sin evaluar ningún ítem, con al menos un PR de agente abierto fuera del conjunto en vuelo: 0. Línea base: 40/40 el 2026-11-10.
+- PRs de agente en draft sin `estado:esperando-architect`, sin run propio y sin moverse más de 30 min: 0.
+- Runs del Reviewer con `run=false` por draft o escalada que dejen `needs-review` puesta: 0.
+- Ningún PR mergeado con `estado:esperando-architect` puesta.
+- Banco verde.
+
+**Fecha.** 2026-11-10.

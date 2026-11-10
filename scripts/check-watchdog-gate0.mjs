@@ -13,6 +13,7 @@
 import { mkdtempSync, readFileSync, symlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { createRequire } from 'module';
 import yaml from 'js-yaml';
 import { cargarStep } from './lib/github-script.mjs';
 
@@ -47,11 +48,14 @@ const armedNoPr = (w, n) => (anomalias(w) || []).some(a => a.type === 'issue-arm
 
 // `inFlight: false` deja pasar el Gate 0 y recorre el resto del scan (detector
 // de issues incluido, review PR #380 🔴 1): lo no doblado devuelve vacío.
+// AP-149: `world.runs` sustituye al run `enVuelo` por defecto (lista de runs con
+// su `status`); `world.full` da el `pulls.get` de cada PR.
 async function scan(world, { eventName = 'schedule', payload = {}, inFlight = true } = {}) {
-  const w = { added: [], comments: [], outputs: {}, warnings: [], notices: [] };
+  const w = { added: [], comments: [], outputs: {}, warnings: [], notices: [], infos: [], graphql: [], fetches: [] };
   const enVuelo = { id: 500, name: CREATOR_WF, status: 'in_progress', created_at: new Date(Date.now() - 60000).toISOString() };
   const conocidos = {
-    pulls: { list: async () => ({ data: world.prs || [] }) },
+    pulls: { list: async () => ({ data: world.prs || [] }),
+      get: async p => ({ data: (world.full || {})[p.pull_number] || { number: p.pull_number, draft: false, mergeable_state: 'clean' } }) },
     issues: {
       get: async p => {
         const i = (world.issues || []).find(x => x.number === p.issue_number) || (world.otros || {})[p.issue_number];
@@ -66,24 +70,78 @@ async function scan(world, { eventName = 'schedule', payload = {}, inFlight = tr
       createComment: async p => { w.comments.push({ n: p.issue_number, body: p.body }); },
     },
     actions: {
-      listWorkflowRunsForRepo: async p => ({ data: { workflow_runs: inFlight && p.status === 'in_progress' ? [enVuelo] : [] } }),
+      listWorkflowRunsForRepo: async p => ({ data: { workflow_runs: world.runs ? (p.status ? world.runs.filter(r => r.status === p.status) : [])
+        : inFlight && p.status === 'in_progress' ? [enVuelo] : [] } }),
       listJobsForWorkflowRun: async () => ({ data: { total_count: 1, jobs: [] } }),
       reRunWorkflowFailedJobs: async () => ({}),
     },
   };
   const vacio = async () => ({ data: [] });
   const rest = new Proxy({}, { get: (_, ns) => new Proxy({}, { get: (_, m) => (conocidos[ns] && conocidos[ns][m]) || vacio }) });
-  const github = { rest, paginate: async (fn, p) => { const r = await fn(p); return Array.isArray(r.data) ? r.data : (r.data && (r.data.workflow_runs || r.data.items)) || []; } };
-  const fetch = async () => ({ ok: true, status: 200, json: async () => ([]), text: async () => '' });
+  const github = { rest, graphql: async (q, v) => { w.graphql.push(q); return {}; }, paginate: async (fn, p) => { const r = await fn(p); return Array.isArray(r.data) ? r.data : (r.data && (r.data.workflow_runs || r.data.items)) || []; } };
+  const fetch = async (url, o = {}) => { w.fetches.push(`${o.method || 'GET'} ${url}${o.body ? ' ' + o.body : ''}`); return { ok: true, status: 200, json: async () => ([]), text: async () => '' }; };
   const context = { repo: { owner: 'o', repo: 'r' }, eventName, payload, runId: 1 };
   const core = { setOutput: (k, v) => { w.outputs[k] = String(v); }, notice: m => w.notices.push(String(m)),
-    warning: m => w.warnings.push(String(m)), info() {} };
+    warning: m => w.warnings.push(String(m)), info: m => w.infos.push(String(m)) };
   await run({ github, context, core }, { env: ENV, globales: { fetch } });
   return w;
 }
 const anomalias = w => JSON.parse(w.outputs.anomalies || 'null');
 
+// AP-149 (central#443): Gate 0 por ítem. Draft huérfano #60 (rama de #61), sin
+// escalada, pasado LIVENESS_MIN; otro ítem con un run vivo.
+const DRAFT = { number: 60, title: 'PR del 61', node_id: 'N60', labels: lbl([]), head: { ref: 'claude/issue-61-20261110-1100', sha: 'abc' }, base: { ref: 'main', sha: 'b0' }, updated_at: HACE(20) };
+const FULL = { 60: { number: 60, draft: true, mergeable_state: 'clean' } };
+const RUN = (id, name, extra) => ({ id, name, status: 'in_progress', created_at: HACE(1), ...extra });
+const markReady = w => w.graphql.some(q => /markPullRequestReadyForReview/.test(q));
+const needsReview = (w, n) => w.fetches.some(f => f.startsWith('POST ') && f.includes(`/issues/${n}/labels`) && f.includes('needs-review'));
+const liberaCola = w => w.infos.concat(w.notices).some(m => /barrido de liberación/.test(m));
+const ENCOLA = { number: 80, title: 'En cola', labels: lbl(['en-cola']), body: '', created_at: HACE(300), updated_at: HACE(120) };
+
 const BANCO = [
+  ['(e) run vivo de CI sobre OTRO PR ⇒ el draft huérfano #60 recibe markReady + needs-review (asesoramiento#3758)',
+    async () => {
+      const w = await scan({ prs: [DRAFT], full: FULL, issues: [{ number: 61, title: 'Issue 61', labels: lbl([]) }],
+        runs: [RUN(700, 'CI', { head_branch: 'claude/issue-99-x', pull_requests: [{ number: 99 }] })] });
+      return markReady(w) && needsReview(w, 60) && w.notices.some(m => /Gate 0 por ítem: en vuelo #99/.test(m));
+    }],
+  ['(e) control: el mismo draft con run vivo SOBRE su propio issue (display_title) ⇒ ni markReady ni needs-review',
+    async () => {
+      const w = await scan({ prs: [DRAFT], full: FULL, issues: [{ number: 61, title: 'Issue 61', labels: lbl([]) }],
+        runs: [RUN(701, CREATOR_WF, { head_branch: 'main', display_title: 'Issue 61' })] });
+      return !markReady(w) && !needsReview(w, 60);
+    }],
+  ['(j) Creator vivo sobre el issue 61 FUERA del listado de issues ⇒ `issues.get(61)` lo identifica: el draft #60 NO recibe markReady',
+    async () => {
+      const w = await scan({ prs: [DRAFT], full: FULL, issues: [], otros: { 61: { number: 61, title: 'Issue 61' } },
+        runs: [RUN(702, CREATOR_WF, { head_branch: 'main', display_title: 'Issue 61' })] });
+      return !markReady(w) && !needsReview(w, 60);
+    }],
+  ['(k) Creator vivo sobre cualquier ítem ⇒ liberarCola no se llama; ítem `en-cola` sin anomalía ni marcador de asentamiento',
+    async () => {
+      const w = await scan({ issues: [{ number: 70, title: 'Issue 70', labels: lbl([]) }, ENCOLA], comments: { 80: [ARM] },
+        runs: [RUN(703, CREATOR_WF, { head_branch: 'main', display_title: 'Issue 70' })] });
+      return !liberaCola(w) && w.notices.some(m => /liberación de cola diferida: Creator en vuelo/.test(m))
+        && !armedNoPr(w, 80) && !w.comments.some(c => c.n === 80 && /cola-huerfana-sospecha/.test(c.body));
+    }],
+  ['(k) sin Creator vivo, con un run de CI sobre otro PR ⇒ liberarCola sí se llama',
+    async () => {
+      const w = await scan({ issues: [{ number: 70, title: 'Issue 70', labels: lbl([]) }],
+        runs: [RUN(704, 'CI', { head_branch: 'feature/y', pull_requests: [{ number: 98 }] })] });
+      return liberaCola(w) && !w.notices.some(m => /liberación de cola diferida/.test(m));
+    }],
+  ['(l) run del Reviewer sin ítem identificable ⇒ gate global (como hoy): el draft no recibe markReady',
+    async () => {
+      const w = await scan({ prs: [DRAFT], full: FULL, issues: [], runs: [RUN(705, 'Opus Reviewer', { head_branch: 'main', display_title: '???' })] });
+      return !markReady(w) && w.notices.some(m => /nada que vigilar/.test(m));
+    }],
+  ['(k′) issue armado sin PR con Creator vivo sobre él (display_title), gate abierto por un run de CI sobre otro PR ⇒ sin issue-armed-no-pr para él; el control #22 sí la recibe',
+    async () => {
+      const w = await scan({ issues: [{ ...ARMADO(21), title: 'Issue 21' }, ARMADO(22)], comments: { 21: [ARM], 22: [ARM] },
+        runs: [RUN(706, CREATOR_WF, { head_branch: 'main', display_title: 'Issue 21' }),
+          RUN(707, 'CI', { head_branch: 'feature/z', pull_requests: [{ number: 97 }] })] });
+      return !armedNoPr(w, 21) && armedNoPr(w, 22) && w.notices.some(m => /Gate 0 por ítem: en vuelo .*#21/.test(m));
+    }],
   ['(a) issue con stalled y 0 autonomous-decision, Creator en vuelo ⇒ found=true y stalled-autonomous-resolve',
     async () => {
       const w = await scan({ issues: [{ number: 7, title: 'X', labels: lbl(['stalled']) }] });
@@ -133,9 +191,33 @@ const BANCO = [
     async () => armedNoPr(await scan({ issues: [ARMADO(20)], comments: { 20: [ARM, { ...MARCA(40), body: 'ver `<!-- cola-absorbida: #40 -->`' }] }, otros: { 40: { number: 40, state: 'open' } } }, { inFlight: false }), 20)],
 ];
 
+// AP-149, review PR #444 🟡: costura de los cinco saltos por ítem. Dentro de cada
+// bucle por ítem detrás del gate, `EV.items.has(` aparece antes del primer efecto
+// (el primer `await`). Tres no tienen caso de comportamiento (`pendClose` y el
+// bloque AP-055): sin la costura, quitar su `continue` no pondría rojo nada.
+const BUCLES = [['for (const it of pendClose)', 1], ['for (const pr of openAgentPRs)', 3], ['for (const issue of issues)', 1]];
+for (const [cab, cuantos] of BUCLES) {
+  const pos = [];
+  for (let i = script.indexOf(cab); i !== -1; i = script.indexOf(cab, i + 1)) pos.push(i);
+  BANCO.push([`costura: ${cuantos} × \`${cab}\` con \`EV.items.has(\` antes del primer await`, async () =>
+    pos.length === cuantos && pos.every(i => {
+      const cuerpo = script.slice(i, script.indexOf('await ', i));
+      return cuerpo.includes('EV.items.has(');
+    })]);
+}
+// Review PR #444 🔵: el módulo y el scan declaran los mismos filtros del Gate 0;
+// si uno cambia sin el otro, el camino con módulo (casi todos los ticks) usaría el
+// valor viejo sin aviso.
+{
+  const EVM = createRequire(import.meta.url)('../vendored/scripts/en-vuelo.cjs');
+  const lit = k => Number((script.match(new RegExp(`const ${k} = (\\d+);`)) || [])[1]);
+  BANCO.push(['costura: `MAX_RUN_AGE_H` y `QUEUED_GRACE_MIN` del scan iguales a los de en-vuelo.cjs', async () =>
+    lit('MAX_RUN_AGE_H') === EVM.MAX_RUN_AGE_H && lit('QUEUED_GRACE_MIN') === EVM.QUEUED_GRACE_MIN]);
+}
+
 const rojos = [];
 for (const [nombre, fn] of BANCO) {
   try { if (!(await fn())) rojos.push(nombre); } catch (e) { rojos.push(`${nombre}: excepción ${e.message}`); }
 }
 if (rojos.length) { console.error('CHECK-WATCHDOG-GATE0 ROJO:'); rojos.forEach(e => console.error('  - ' + e)); process.exit(1); }
-console.log(`check-watchdog-gate0 verde: ${BANCO.length} casos de stalled antes del Gate 0 y de absorción vigente en el detector de issues (AP-122).`);
+console.log(`check-watchdog-gate0 verde: ${BANCO.length} casos de stalled antes del Gate 0, absorción vigente en el detector de issues (AP-122) y Gate 0 por ítem (AP-149).`);

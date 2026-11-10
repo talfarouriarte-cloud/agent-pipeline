@@ -675,8 +675,26 @@ jobs:
             // runs 32996107223/32996107159 con job a los 2 min). Gracia de
             // QUEUED_GRACE_MIN para el lag de creacion del grafo.
             const QUEUED_GRACE_MIN = 2;
+            // AP-149 (central#443): Gate 0 POR ÍTEM. El global dejaba ciego al
+            // scan con cualquier run vivo en el repo (asesoramiento 2026-11-10:
+            // 40/40 runs del Watchdog por el gate; draft de #3758 27 min parado).
+            // `en-vuelo.cjs` da el conjunto de ítems con run vivo (identidad de
+            // `check_flight`) y cada bucle por ítem de detrás del gate los salta.
+            // `global: true` (run del Creator/Reviewer sin ítem identificable,
+            // lectura caída) ⇒ el `return` de siempre. Sin módulo ⇒ el gate
+            // global de siempre (statu quo).
+            let EV = null;
+            let ENV_MOD = null;
+            for (const p of [`${process.env.GITHUB_WORKSPACE}/.cola-central/vendored/scripts/en-vuelo.cjs`, `${process.env.GITHUB_WORKSPACE}/scripts/en-vuelo.cjs`]) {
+              try { ENV_MOD = require(p); break; } catch (e) { /* siguiente ubicación */ }
+            }
+            if (ENV_MOD) {
+              EV = await ENV_MOD.enVueloDelRepo({ github, O, pipeline: PIPELINE, prs,
+                workflows: { creator: process.env.IN_CREATOR_WF, reviewer: process.env.IN_REVIEWER_WF },
+                warn: m => core.warning(m) });
+            } else core.warning('en-vuelo: módulo `en-vuelo.cjs` no disponible — Gate 0 global en este tick (statu quo).');
             let inFlight = false;
-            for (const status of ['in_progress', 'queued']) {
+            for (const status of (EV ? [] : ['in_progress', 'queued'])) {
               const { data } = await github.rest.actions.listWorkflowRunsForRepo({
                 ...O, status, per_page: 50,
               });
@@ -696,14 +714,15 @@ jobs:
               }
               if (inFlight) break;
             }
-            if (inFlight) {
+            if (!EV) EV = { items: new Set(), global: inFlight, motivo: inFlight ? 'run vivo (gate global, sin módulo)' : null, creatorVivo: inFlight };
+            if (EV.global) {
               // AP-122: el gate ya no descarta lo recogido arriba — emite solo
               // los `stalled-autonomous-resolve` (lo único que va delante del
               // gate) y termina; el resto de anomalías espera a que el repo calle.
               const delante = anomalies.filter(a => a.type === 'stalled-autonomous-resolve');
-              core.notice(delante.length
+              core.notice((delante.length
                 ? `Runs del pipeline activos; solo stalled antes del Gate 0: ${delante.map(a => '#' + a.number).join(', ')}.`
-                : 'Runs del pipeline activos; nada que vigilar.');
+                : 'Runs del pipeline activos; nada que vigilar.') + (EV.motivo ? ` (${EV.motivo})` : ''));
               core.setOutput('found', String(delante.length > 0));
               core.setOutput('anomalies', JSON.stringify(delante));
               // AP-142: con el gate cerrado, solo el merge mecánico de (i)–(v), sin ping LLM.
@@ -714,13 +733,18 @@ jobs:
               }
               return;
             }
+            if (EV.items.size) {
+              const fuera = new Set([...prs.map(p => p.number)].filter(n => !EV.items.has(n)));
+              core.notice(`Gate 0 por ítem: en vuelo ${[...EV.items].sort((a, b) => a - b).map(n => '#' + n).join(', ')}; evaluados ${fuera.size} PRs abiertos fuera del conjunto (AP-149).`);
+            }
 
             // ── Dispatcher de TURNO (ADR-217, 2026-07-10, state-driven).
             // Sustituye a pr-stalled (envejecimiento de 30 min) y absorbe el
             // modo e. Invariante: todo ítem abierto tiene turno asignado.
-            // El gate 0 garantiza que al llegar aquí NADIE está activo (sigue
-            // cierto: el dispatcher va DETRÁS del gate; solo `stalled` va
-            // delante desde AP-122) ⇒
+            // El gate 0 garantiza que al llegar aquí NADIE está activo SOBRE EL
+            // ÍTEM (desde AP-149 el gate es por ítem: el bucle salta los del
+            // conjunto en vuelo; el dispatcher va DETRÁS del gate; solo `stalled`
+            // va delante desde AP-122) ⇒
             // turno-de-agente == zombi confirmado: relanzar la transición
             // rota (mecánico, cap 2 vía TURN_MARK); turno de NADIE ⇒
             // anomalía inmediata; gate humano declarado ⇒ sano (skip).
@@ -766,6 +790,7 @@ jobs:
                 state: 'open', labels: 'estado:cierre-pendiente-humano', per_page: 30 });
               for (const it of pendClose) {
                 if (it.pull_request) continue;
+                if (EV.items.has(it.number)) continue;   // AP-149: Gate 0 por ítem
                 if (it.labels.some(l => (l.name || l) === 'pause-agents' || (l.name || l) === 'human-needed')) continue;
                 const { data: ccs } = await github.rest.issues.listComments({ ...O, issue_number: it.number, per_page: 100 });
                 const trusted = c => ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(c.author_association) || c.user?.login === 'claude[bot]';
@@ -870,6 +895,7 @@ jobs:
             const rectCfgs = new Map();
             for (const pr of openAgentPRs) {
               if (!RV) break;
+              if (EV.items.has(pr.number)) continue;   // AP-149: Gate 0 por ítem
               if (skip(pr.labels)) continue;
               try {
                 let cfg = null;
@@ -924,6 +950,7 @@ jobs:
               } catch (e) { core.warning(`rect-en-vuelo #${pr.number}: ${e.message}`); }
             }
             for (const pr of openAgentPRs) {
+              if (EV.items.has(pr.number)) continue;   // AP-149: Gate 0 por ítem
               if (skip(pr.labels)) continue;
               // El bloque de rectificación en vuelo ya materializó la transición
               // de este PR en ESTE tick (comentario + labels): el dispatcher no
@@ -1403,6 +1430,15 @@ jobs:
             // sigue rojo, anomalía para el Architect (ping-creator).
             const CI_RETRY_MARK = '<!-- watchdog-ci-retry -->';
             for (const pr of openAgentPRs) {
+              // AP-149: Gate 0 por ítem. Un PR en vuelo recibe lo que recibía con el
+              // gate cerrado: solo el merge mecánico de AP-142, sin ping LLM.
+              if (EV.items.has(pr.number)) {
+                if (mecanicos.has(pr.number)) {
+                  adrAppend.push({ ...mecanicos.get(pr.number), soloMecanico: true });
+                  core.setOutput('adr_append', JSON.stringify(adrAppend));
+                }
+                continue;
+              }
               if (skip(pr.labels)) continue;
 
               // Modo PR-dirty (incidente #1054, 2026-07-04): un PR en conflicto no
@@ -1616,7 +1652,7 @@ jobs:
             // `pausa-cola`): la cola retenida es LEGÍTIMA — ni sospecha ni
             // `cola-huerfana` ni re-arm sobre ítems `en-cola` (abajo). SIN
             // PAUSA: barrido determinista (sin LLM) de serie libre + `en-cola`
-            // — llegados aquí no hay ningún run del pipeline vivo (gate 0) —,
+            // — solo sin Creator vivo en el repo (AP-149, abajo) —,
             // que arma la cabeza por el orden de central#313 con el
             // `arm-de-cola` normal, fail-closed (`COLA.liberarCola`: cero PRs
             // `claude/*`, cero `serial-activo`, ningún arm reciente). El arm sale
@@ -1653,7 +1689,13 @@ jobs:
             if (!CRIT) core.warning('critica.cjs no disponible: el detector issue-armed-no-pr usa substring y no cede ante la crítica en curso (AP-128 inerte este tick).');
             let pausaCola = null;     // objeto de pausa si el repo está EN PAUSA
             let colaLiberada = null;  // nº armado por el barrido de este tick
-            if (COLA && COLA.liberarCola) {
+            // AP-149: el barrido daba por hecho que no había ningún run vivo (gate
+            // global). Con el gate por ítem solo corre sin Creator vivo en el repo
+            // (sea cual sea su ítem): el riesgo de doble Creator no cambia. En ese
+            // tick tampoco se evalúa `cola-huerfana` (ítems `en-cola` saltados).
+            const colaDiferida = !!EV.creatorVivo;
+            if (colaDiferida) core.notice('liberación de cola diferida: Creator en vuelo (AP-149) — sin barrido ni cola-huerfana en este tick.');
+            if (COLA && COLA.liberarCola && !colaDiferida) {
               try {
                 const r = await COLA.liberarCola({ github, owner: O.owner, repo: O.repo,
                   warn: (m) => core.warning(m),
@@ -1677,10 +1719,12 @@ jobs:
             const depCache = new Map();  // AP-126: cada #N se lee una vez por tick
             for (const issue of issues) {
               if (issue.pull_request) continue;        // solo issues puros
+              if (EV.items.has(issue.number)) continue;   // AP-149: Gate 0 por ítem
               if (skip(issue.labels)) continue;
               // central#314: en pausa, o con la cola recién armada por el
               // barrido de este tick, un ítem `en-cola` no es anomalía.
-              if ((pausaCola || colaLiberada) && issue.labels.some(l => l.name === 'en-cola')) continue;
+              // AP-149: tampoco con la liberación diferida por un Creator en vuelo.
+              if ((pausaCola || colaLiberada || colaDiferida) && issue.labels.some(l => l.name === 'en-cola')) continue;
               if (ageMin(issue.updated_at) < STALL_MIN) continue;
 
               // ¿Rama de PR abierta para este issue? Entonces el trabajo vive en
