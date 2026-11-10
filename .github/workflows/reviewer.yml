@@ -163,11 +163,17 @@ jobs:
 
             core.notice(`gate ctx: action=${action} author=${author}(${authorType}) headRef=${headRef} headRepo=${headRepo} label=${eventLabel} sender=${sender} labels=[${labels}] prefix=${prefix}`);
 
-            let run = false, reason = '';
+            let run = false, reason = '', diferida = null;
             if (headRepo !== `${context.repo.owner}/${context.repo.repo}`) {
               reason = 'PR de fork (sin acceso a secrets)';
             } else if (labels.includes('pause-agents')) {
               reason = 'kill-switch pause-agents (ADR-063)';
+            } else if (labels.includes('estado:esperando-architect')) {
+              // AP-149 (central#443): escalada al Architect abierta (AP-136). Sustituye
+              // a la vuelta a draft, que no tenía inversa: con cualquier evento no se
+              // revisa hasta que architect-resolve retire la label.
+              reason = 'escalada al Architect abierta (estado:esperando-architect, AP-149) — no se revisa hasta que architect-resolve la cierre';
+              diferida = 'escalada';
             } else if (pr.draft) {
               // AP-047: un draft es el PR de un hito intermedio del Creator; NUNCA
               // se revisa. La review llega en la transición ready: desde AP-094 por
@@ -179,6 +185,7 @@ jobs:
               // Belt del job-if (que ya salta el `opened`+draft): cubre cualquier
               // `labeled` que llegue mientras el PR siga en draft.
               reason = 'PR en draft (primer hito, AP-047) — review diferida a ready-por-estado; un draft nunca se revisa';
+              diferida = 'draft';
             } else if (action === 'opened' || action === 'ready_for_review') {
               // AP-094: `ready_for_review` lleva el MISMO guard que `opened` — es
               // el nacimiento a revisable de un PR draft-first. Lo emite el propio
@@ -198,6 +205,29 @@ jobs:
             }
             core.notice(`gate: run=${run} — ${reason}`);
             core.setOutput('run', run ? 'true' : 'false');
+            // AP-149 (central#443, asesoramiento#3758): una convocatoria explícita
+            // (`labeled: needs-review`) que el gate difiere no se descarta en
+            // silencio — la label quedaba puesta diciendo «review pedida» cuando
+            // nunca iba a correr. Se retira y se avisa UNA vez por head. Token del
+            // job (`github-actions[bot]`): ni dispara nada ni entra en ningún cap.
+            // `opened`/`ready_for_review` sobre draft siguen en silencio (AP-047).
+            // Sin `stalled`: el Watchdog (Gate 0 por ítem) recoge el PR. Fail-open.
+            if (diferida && action === 'labeled' && eventLabel === 'needs-review') {
+              const { owner, repo } = context.repo;
+              try { await github.rest.issues.removeLabel({ owner, repo, issue_number: pr.number, name: 'needs-review' }); }
+              catch (e) { core.info(`review-diferida: removeLabel needs-review #${pr.number}: ${e.message}`); }
+              const marca = `<!-- review-diferida: ${diferida} ${pr.head?.sha || ''} -->`;
+              try {
+                const cs = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: pr.number, per_page: 100 });
+                if (!cs.some(c => (c.body || '').includes(marca))) {
+                  const texto = diferida === 'draft'
+                    ? 'convocatoria recibida con el PR en draft: no se revisa; el PR vuelve a revisable con `ready` (o el backstop del Watchdog si su Creator ya no está).'
+                    : 'escalada al Architect abierta: no se revisa hasta que architect-resolve la cierre.';
+                  await github.rest.issues.createComment({ owner, repo, issue_number: pr.number,
+                    body: `**reviewer · gate**: ${texto} \`needs-review\` retirada (AP-149).\n\n${marca}` });
+                }
+              } catch (e) { core.warning(`review-diferida: aviso no publicado en #${pr.number} (${e.message}).`); }
+            }
 
       # ── Divergencia pin↔default (AP-052, repesca finplan#1674) ──────────────
       # Un `with:` del stub consumidor pisa EN SILENCIO un default que el central

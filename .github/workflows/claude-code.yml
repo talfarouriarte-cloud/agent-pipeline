@@ -2915,8 +2915,8 @@ jobs:
               // y del issue. Si el JOB no va en `success` (sesión caída o un
               // post-step anterior en rojo), creator-escalated (gateado por
               // `success()`) no correrá: la escalada se materializa aquí, con el
-              // mismo marcador (dedupe por ventana entre ambos) y, si el PR ya
-              // estaba `ready`, de vuelta a draft. Lógica en
+              // mismo marcador (dedupe por ventana entre ambos); el PR no vuelve
+              // a draft (AP-149). Lógica en
               // `vendored/scripts/escalada-creator.cjs`; módulo ausente o lectura
               // caída ⇒ statu quo, con aviso.
               {
@@ -2941,19 +2941,13 @@ jobs:
                     if (fresca && jobStatus !== 'success' && !labelsPr.includes('stalled') && !yaMaterializada) {
                       await github.rest.issues.addLabels({ owner, repo, issue_number: openPr.number, labels: ['estado:esperando-architect'] });
                       await github.rest.issues.addLabels({ owner, repo, issue_number: openPr.number, labels: ['stalled'] });
-                      let aDraft = '';
+                      // AP-149: el PR `ready` ya no vuelve a draft (sin inversa al
+                      // resolverse la escalada); lo protegen las labels.
                       if (!openPr.draft) {
-                        try {
-                          await github.graphql(`mutation($id:ID!){ convertPullRequestToDraft(input:{pullRequestId:$id}){ pullRequest { number isDraft } } }`, { id: openPr.node_id });
-                          aDraft = ' El PR estaba `ready`: devuelto a DRAFT.';
-                        } catch (e) {
-                          aDraft = ' El PR estaba `ready` y `convertPullRequestToDraft` falló: sigue `ready`; el gate de epic-merge (`estado:esperando-architect`) cubre el merge.';
-                          core.warning(`AP-136: convertPullRequestToDraft falló para PR #${openPr.number} (${e.message}).`);
-                        }
                         await github.rest.issues.removeLabel({ owner, repo, issue_number: openPr.number, name: 'needs-review' }).catch(() => {});
                       }
                       await github.rest.issues.createComment({ owner, repo, issue_number: openPr.number,
-                        body: `**claude-code · creator-escalated**: el Creator de #${n} escaló al Architect en su PR y el job no terminó en \`success\` (sesión \`${process.env.STEP_CREATOR_OUTCOME}\`, job \`${jobStatus}\`; el post-step creator-escalated no corre fuera de \`success()\`). Estado materializado por PAT desde el post-step de terminales (AP-136): \`stalled\` ⇒ architect-resolve por evento + \`estado:esperando-architect\`; sin \`needs-review\`.${aDraft}\n\n<!-- creator-escalated-materializado -->` });
+                        body: `**claude-code · creator-escalated**: el Creator de #${n} escaló al Architect en su PR y el job no terminó en \`success\` (sesión \`${process.env.STEP_CREATOR_OUTCOME}\`, job \`${jobStatus}\`; el post-step creator-escalated no corre fuera de \`success()\`). Estado materializado por PAT desde el post-step de terminales (AP-136): \`stalled\` ⇒ architect-resolve por evento + \`estado:esperando-architect\`; sin \`needs-review\`.\n\n<!-- creator-escalated-materializado -->` });
                     }
                     core.notice(`AP-136: PR #${openPr.number} de #${n} con escalada al Architect (${fresca ? 'escalada fresca del Creator' : labelsPr.filter(l => l === 'stalled' || l === 'estado:esperando-architect').join(', ')}) — ni ready ni needs-review.`);
                     return;
@@ -4154,18 +4148,12 @@ jobs:
             core.warning(`PR #${prNumber}: escalada del Creator materializada por estado `
               + `— stalled + estado:esperando-architect (creator-escalated).`);
             // AP-136 (aud. asesoramiento#3373/#3384): el Creator ya marcó `ready`
-            // (paso (c) de AP-095) y escaló después. El PR vuelve a DRAFT (con el
-            // PAT) y se retira `needs-review`: ni el Reviewer ni un re-ready por
-            // estado lo recogen mientras espera al Architect. Si la conversión
-            // falla, el gate de epic-merge (`estado:esperando-architect`) cubre el
-            // merge.
+            // (paso (c) de AP-095) y escaló después. Se retira `needs-review`.
+            // AP-149 (central#443): el PR ya NO vuelve a draft — la conversión no
+            // tenía inversa al resolverse la escalada (asesoramiento#3758, 27 min
+            // parado). Lo protegen las labels: epic-merge no mergea con
+            // `estado:esperando-architect` y el gate del Reviewer cede ante ella.
             if (!pr.draft) {
-              try {
-                await github.graphql(`mutation($id:ID!){ convertPullRequestToDraft(input:{pullRequestId:$id}){ pullRequest { number isDraft } } }`, { id: pr.node_id });
-                core.notice(`creator-escalated: PR #${prNumber} devuelto a draft (AP-136).`);
-              } catch (e) {
-                core.warning(`creator-escalated: convertPullRequestToDraft falló para PR #${prNumber} (${e.message}) — sigue ready; el gate de epic-merge cubre el merge.`);
-              }
               if ((pr.labels || []).some(l => (typeof l === 'string' ? l : l.name) === 'needs-review')) {
                 await github.rest.issues.removeLabel({ owner, repo, issue_number: prNumber, name: 'needs-review' }).catch(() => {});
               }
