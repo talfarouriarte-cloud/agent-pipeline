@@ -13,6 +13,7 @@
 import { mkdtempSync, readFileSync, symlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { createRequire } from 'module';
 import yaml from 'js-yaml';
 import { cargarStep } from './lib/github-script.mjs';
 
@@ -134,6 +135,13 @@ const BANCO = [
       const w = await scan({ prs: [DRAFT], full: FULL, issues: [], runs: [RUN(705, 'Opus Reviewer', { head_branch: 'main', display_title: '???' })] });
       return !markReady(w) && w.notices.some(m => /nada que vigilar/.test(m));
     }],
+  ['(k′) issue armado sin PR con Creator vivo sobre él (display_title), gate abierto por un run de CI sobre otro PR ⇒ sin issue-armed-no-pr para él; el control #22 sí la recibe',
+    async () => {
+      const w = await scan({ issues: [{ ...ARMADO(21), title: 'Issue 21' }, ARMADO(22)], comments: { 21: [ARM], 22: [ARM] },
+        runs: [RUN(706, CREATOR_WF, { head_branch: 'main', display_title: 'Issue 21' }),
+          RUN(707, 'CI', { head_branch: 'feature/z', pull_requests: [{ number: 97 }] })] });
+      return !armedNoPr(w, 21) && armedNoPr(w, 22) && w.notices.some(m => /Gate 0 por ítem: en vuelo .*#21/.test(m));
+    }],
   ['(a) issue con stalled y 0 autonomous-decision, Creator en vuelo ⇒ found=true y stalled-autonomous-resolve',
     async () => {
       const w = await scan({ issues: [{ number: 7, title: 'X', labels: lbl(['stalled']) }] });
@@ -182,6 +190,30 @@ const BANCO = [
   ['(f) marcador citado entre backticks no cuenta ⇒ issue-armed-no-pr',
     async () => armedNoPr(await scan({ issues: [ARMADO(20)], comments: { 20: [ARM, { ...MARCA(40), body: 'ver `<!-- cola-absorbida: #40 -->`' }] }, otros: { 40: { number: 40, state: 'open' } } }, { inFlight: false }), 20)],
 ];
+
+// AP-149, review PR #444 🟡: costura de los cinco saltos por ítem. Dentro de cada
+// bucle por ítem detrás del gate, `EV.items.has(` aparece antes del primer efecto
+// (el primer `await`). Tres no tienen caso de comportamiento (`pendClose` y el
+// bloque AP-055): sin la costura, quitar su `continue` no pondría rojo nada.
+const BUCLES = [['for (const it of pendClose)', 1], ['for (const pr of openAgentPRs)', 3], ['for (const issue of issues)', 1]];
+for (const [cab, cuantos] of BUCLES) {
+  const pos = [];
+  for (let i = script.indexOf(cab); i !== -1; i = script.indexOf(cab, i + 1)) pos.push(i);
+  BANCO.push([`costura: ${cuantos} × \`${cab}\` con \`EV.items.has(\` antes del primer await`, async () =>
+    pos.length === cuantos && pos.every(i => {
+      const cuerpo = script.slice(i, script.indexOf('await ', i));
+      return cuerpo.includes('EV.items.has(');
+    })]);
+}
+// Review PR #444 🔵: el módulo y el scan declaran los mismos filtros del Gate 0;
+// si uno cambia sin el otro, el camino con módulo (casi todos los ticks) usaría el
+// valor viejo sin aviso.
+{
+  const EVM = createRequire(import.meta.url)('../vendored/scripts/en-vuelo.cjs');
+  const lit = k => Number((script.match(new RegExp(`const ${k} = (\\d+);`)) || [])[1]);
+  BANCO.push(['costura: `MAX_RUN_AGE_H` y `QUEUED_GRACE_MIN` del scan iguales a los de en-vuelo.cjs', async () =>
+    lit('MAX_RUN_AGE_H') === EVM.MAX_RUN_AGE_H && lit('QUEUED_GRACE_MIN') === EVM.QUEUED_GRACE_MIN]);
+}
 
 const rojos = [];
 for (const [nombre, fn] of BANCO) {
